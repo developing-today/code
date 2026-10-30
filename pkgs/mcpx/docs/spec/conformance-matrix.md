@@ -14,61 +14,61 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | 2024-11-05 | server | MUST NOT | 6 | 6 | 0 | 0 | 4 |
 | 2024-11-05 | server | SHOULD | 36 | 34 | 2 | 0 | 45 |
 | 2024-11-05 | server | SHOULD NOT | 1 | 1 | 0 | 0 | 1 |
-| 2024-11-05 | server | MAY | 10 | 9 | 1 | 0 | 14 |
+| 2024-11-05 | server | MAY | 9 | 9 | 0 | 0 | 15 |
 | 2024-11-05 | server | other | 11 | 11 | 0 | 0 | 1 |
 | 2024-11-05 | client | MUST | 26 | 25 | 1 | 0 | 28 |
 | 2024-11-05 | client | MUST NOT | 9 | 9 | 0 | 0 | 1 |
 | 2024-11-05 | client | SHOULD | 31 | 26 | 5 | 0 | 50 |
 | 2024-11-05 | client | SHOULD NOT | 1 | 1 | 0 | 0 | 1 |
-| 2024-11-05 | client | MAY | 10 | 9 | 1 | 0 | 14 |
+| 2024-11-05 | client | MAY | 9 | 9 | 0 | 0 | 15 |
 | 2024-11-05 | client | other | 7 | 7 | 0 | 0 | 5 |
-| 2025-03-26 | server | MUST | 51 | 43 | 8 | 0 | 30 |
+| 2025-03-26 | server | MUST | 44 | 43 | 1 | 0 | 37 |
 | 2025-03-26 | server | MUST NOT | 7 | 7 | 0 | 0 | 8 |
-| 2025-03-26 | server | SHOULD | 50 | 43 | 7 | 0 | 53 |
+| 2025-03-26 | server | SHOULD | 45 | 43 | 2 | 0 | 58 |
 | 2025-03-26 | server | SHOULD NOT | 4 | 3 | 1 | 0 | 1 |
-| 2025-03-26 | server | MAY | 19 | 16 | 3 | 0 | 18 |
+| 2025-03-26 | server | MAY | 16 | 16 | 0 | 0 | 21 |
 | 2025-03-26 | server | other | 11 | 11 | 0 | 0 | 1 |
-| 2025-03-26 | client | MUST | 41 | 31 | 10 | 0 | 40 |
+| 2025-03-26 | client | MUST | 35 | 31 | 4 | 0 | 46 |
 | 2025-03-26 | client | MUST NOT | 12 | 11 | 1 | 0 | 3 |
-| 2025-03-26 | client | SHOULD | 44 | 33 | 11 | 0 | 59 |
+| 2025-03-26 | client | SHOULD | 39 | 33 | 6 | 0 | 64 |
 | 2025-03-26 | client | SHOULD NOT | 2 | 1 | 1 | 0 | 3 |
-| 2025-03-26 | client | MAY | 17 | 15 | 2 | 0 | 20 |
+| 2025-03-26 | client | MAY | 15 | 15 | 0 | 0 | 22 |
 | 2025-03-26 | client | other | 7 | 7 | 0 | 0 | 5 |
-| 2025-06-18 | server | MUST | 65 | 51 | 14 | 0 | 36 |
+| 2025-06-18 | server | MUST | 52 | 51 | 1 | 0 | 49 |
 | 2025-06-18 | server | MUST NOT | 10 | 9 | 1 | 0 | 8 |
-| 2025-06-18 | server | SHOULD | 52 | 46 | 6 | 0 | 63 |
+| 2025-06-18 | server | SHOULD | 48 | 46 | 2 | 0 | 67 |
 | 2025-06-18 | server | SHOULD NOT | 4 | 3 | 1 | 0 | 1 |
-| 2025-06-18 | server | MAY | 17 | 15 | 2 | 0 | 18 |
+| 2025-06-18 | server | MAY | 15 | 15 | 0 | 0 | 20 |
 | 2025-06-18 | server | other | 15 | 15 | 0 | 0 | 3 |
-| 2025-06-18 | client | MUST | 52 | 37 | 15 | 0 | 49 |
+| 2025-06-18 | client | MUST | 42 | 37 | 5 | 0 | 59 |
 | 2025-06-18 | client | MUST NOT | 13 | 11 | 2 | 0 | 5 |
-| 2025-06-18 | client | SHOULD | 52 | 40 | 12 | 0 | 63 |
+| 2025-06-18 | client | SHOULD | 48 | 40 | 8 | 0 | 67 |
 | 2025-06-18 | client | SHOULD NOT | 2 | 1 | 1 | 0 | 3 |
-| 2025-06-18 | client | MAY | 15 | 13 | 2 | 0 | 20 |
+| 2025-06-18 | client | MAY | 13 | 13 | 0 | 0 | 22 |
 | 2025-06-18 | client | other | 10 | 8 | 2 | 0 | 8 |
-| 2025-11-25 | server | MUST | 115 | 98 | 17 | 0 | 65 |
+| 2025-11-25 | server | MUST | 102 | 98 | 4 | 0 | 78 |
 | 2025-11-25 | server | MUST NOT | 22 | 19 | 3 | 0 | 13 |
-| 2025-11-25 | server | SHOULD | 78 | 64 | 14 | 0 | 81 |
+| 2025-11-25 | server | SHOULD | 73 | 64 | 9 | 0 | 86 |
 | 2025-11-25 | server | SHOULD NOT | 11 | 10 | 1 | 0 | 3 |
-| 2025-11-25 | server | MAY | 27 | 25 | 2 | 0 | 28 |
+| 2025-11-25 | server | MAY | 25 | 25 | 0 | 0 | 30 |
 | 2025-11-25 | server | other | 19 | 19 | 0 | 0 | 2 |
-| 2025-11-25 | client | MUST | 76 | 57 | 19 | 0 | 104 |
+| 2025-11-25 | client | MUST | 65 | 57 | 8 | 0 | 115 |
 | 2025-11-25 | client | MUST NOT | 16 | 14 | 2 | 0 | 19 |
-| 2025-11-25 | client | SHOULD | 67 | 48 | 19 | 0 | 92 |
+| 2025-11-25 | client | SHOULD | 58 | 48 | 10 | 0 | 101 |
 | 2025-11-25 | client | SHOULD NOT | 5 | 4 | 1 | 0 | 9 |
-| 2025-11-25 | client | MAY | 20 | 17 | 3 | 0 | 35 |
+| 2025-11-25 | client | MAY | 17 | 17 | 0 | 0 | 38 |
 | 2025-11-25 | client | other | 13 | 11 | 2 | 0 | 8 |
-| 2026-07-28 | server | MUST | 128 | 109 | 19 | 0 | 96 |
+| 2026-07-28 | server | MUST | 113 | 109 | 4 | 0 | 111 |
 | 2026-07-28 | server | MUST NOT | 44 | 42 | 2 | 0 | 20 |
-| 2026-07-28 | server | SHOULD | 75 | 64 | 11 | 0 | 85 |
+| 2026-07-28 | server | SHOULD | 69 | 64 | 5 | 0 | 91 |
 | 2026-07-28 | server | SHOULD NOT | 11 | 10 | 1 | 0 | 9 |
-| 2026-07-28 | server | MAY | 31 | 29 | 2 | 0 | 30 |
+| 2026-07-28 | server | MAY | 29 | 29 | 0 | 0 | 32 |
 | 2026-07-28 | server | other | 23 | 22 | 1 | 0 | 4 |
-| 2026-07-28 | client | MUST | 91 | 65 | 26 | 0 | 133 |
+| 2026-07-28 | client | MUST | 73 | 65 | 8 | 0 | 151 |
 | 2026-07-28 | client | MUST NOT | 25 | 23 | 2 | 0 | 39 |
-| 2026-07-28 | client | SHOULD | 75 | 57 | 18 | 0 | 85 |
+| 2026-07-28 | client | SHOULD | 66 | 57 | 9 | 0 | 94 |
 | 2026-07-28 | client | SHOULD NOT | 13 | 11 | 2 | 0 | 7 |
-| 2026-07-28 | client | MAY | 14 | 11 | 3 | 0 | 47 |
+| 2026-07-28 | client | MAY | 11 | 11 | 0 | 0 | 50 |
 | 2026-07-28 | client | other | 13 | 11 | 2 | 0 | 14 |
 
 ## 2024-11-05
@@ -83,7 +83,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 
 | requirement | level | side | mcpx as server | mcpx as client |
 |---|---|---|---|---|
-| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
 
 ### cancellation
 
@@ -398,28 +398,28 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 
 | requirement | level | side | mcpx as server | mcpx as client |
 |---|---|---|---|---|
-| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [streamable-http-auth-discovery-version-header](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#server-metadata-discovery-headers) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-implement-oauth21](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-dcr-should](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#dynamic-client-registration) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-rfc8414-server-should-client-must](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#overview) | SHOULD / MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-grant-types](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#oauth-grant-types) | SHOULD | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-401-when-unauthorized](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#example-authorization-code-grant) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-base-url-discards-path](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#authorization-base-url) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-default-endpoints-fallback](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-2025-03-26-security-list](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#security-considerations) | MUST / SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-2025-03-26-implementation-reqs](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#implementation-requirements) | MUST / REQUIRED / SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-third-party-session-binding](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#session-binding-requirements) | MAY / MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
+| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [streamable-http-auth-discovery-version-header](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#server-metadata-discovery-headers) | SHOULD | client | n/a: addresses the other side | n/a: no OAuth |
+| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #1975 | **gap** not implemented: #1950 |
+| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-implement-oauth21](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#overview) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-dcr-should](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#dynamic-client-registration) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-rfc8414-server-should-client-must](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#overview) | SHOULD / MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-grant-types](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#oauth-grant-types) | SHOULD | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-401-when-unauthorized](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#example-authorization-code-grant) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-base-url-discards-path](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#authorization-base-url) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-default-endpoints-fallback](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#fallbacks-for-servers-without-metadata-discovery) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-2025-03-26-security-list](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#security-considerations) | MUST / SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-2025-03-26-implementation-reqs](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#implementation-requirements) | MUST / REQUIRED / SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-third-party-session-binding](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization#session-binding-requirements) | MAY / MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
 
 ### cancellation
 
@@ -788,38 +788,38 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 
 | requirement | level | side | mcpx as server | mcpx as client |
 |---|---|---|---|---|
-| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #1975 | **gap** not implemented: #1950 |
+| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
 | [authz-as-implements-oauth21](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-dcr-should](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#dynamic-client-registration) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-as-metadata-rfc8414](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-401-www-authenticate](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#authorization-server-location) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-client-rfc8414-discovery](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#server-metadata-discovery) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-dcr-should](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#dynamic-client-registration) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #1975 | n/a: addresses the other side |
+| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-as-metadata-rfc8414](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#overview) | MUST | both | n/a: catalogue marks it n/a | n/a: optional feature mcpx does not implement |
+| [authz-401-www-authenticate](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#authorization-server-location) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-client-rfc8414-discovery](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#server-metadata-discovery) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | n/a: catalogue marks it n/a | **gap** not implemented: #1950 |
 | [authz-as-short-lived-and-rotate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | SHOULD / MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-pkce](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#authorization-code-protection) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-pkce](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization#authorization-code-protection) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
 
 ### cancellation
 
@@ -1222,46 +1222,46 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 
 | requirement | level | side | mcpx as server | mcpx as client |
 |---|---|---|---|---|
-| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #1975 | **gap** not implemented: #1950 |
+| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
 | [authz-as-implements-oauth21](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-dcr-may-deprecated](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration) | MAY | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-as-metadata-rfc8414-or-oidc](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-prm-discovery-header-or-well-known](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-client-as-discovery-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-dcr-may-deprecated](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration) | MAY | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #1975 | n/a: addresses the other side |
+| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-as-metadata-rfc8414-or-oidc](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | n/a: catalogue marks it n/a | n/a: optional feature mcpx does not implement |
+| [authz-prm-discovery-header-or-well-known](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-client-as-discovery-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | n/a: catalogue marks it n/a | **gap** not implemented: #1950 |
 | [authz-as-short-lived-and-rotate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | SHOULD / MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-pkce-verify-s256](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#authorization-code-protection) | MUST | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-registration-priority](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-cimd](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#implementation-requirements) | SHOULD / MUST | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-preregistration](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#pre-registration) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-scope-in-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD / MUST / MUST NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-scope-selection-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-insufficient-scope-403](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-step-up](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | SHOULD / MAY | client | n/a: addresses the other side | **gap** not implemented: #253 |
+| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-pkce-verify-s256](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#authorization-code-protection) | MUST | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-registration-priority](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration) | SHOULD | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-cimd](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#implementation-requirements) | SHOULD / MUST | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-preregistration](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#pre-registration) | SHOULD | client | n/a: addresses the other side | n/a: no OAuth client |
+| [authz-scope-in-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD / MUST / MUST NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-scope-selection-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-insufficient-scope-403](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-step-up](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | SHOULD / MAY | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
 | [authz-cimd-as-security](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#client-id-metadata-document-security) | MUST / SHOULD | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
 
 ### cancellation
 
@@ -1838,55 +1838,55 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 
 | requirement | level | side | mcpx as server | mcpx as client |
 |---|---|---|---|---|
-| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authorization-http-should-conform-stdio-should-not](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | SHOULD / SHOULD NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authorization-custom-auth-may](https://modelcontextprotocol.io/specification/2026-07-28/basic/index#auth) | MAY | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-optional](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | OPTIONAL | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-http-should-conform](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-stdio-use-environment](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | SHOULD NOT | both | **gap** not implemented: #1975 | **gap** not implemented: #1950 |
+| [authz-alt-transport-best-practice](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protocol-requirements) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
 | [authz-as-implements-oauth21](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-dcr-may-deprecated](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration) | MAY | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-as-metadata-rfc8414-or-oidc](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-prm-discovery-header-or-well-known](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-client-as-discovery-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-client-validates-issuer-in-metadata](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST / MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-client-per-as-registration-state](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST / MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-dcr-may-deprecated](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#dynamic-client-registration) | MAY | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-bearer-header](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-token-every-request](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-no-token-in-query](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-requirements) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-server-validates-token](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-validates-audience](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-client-sends-only-own-as-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #1950 |
+| [authz-accept-only-own-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#token-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-no-token-passthrough](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#access-token-privilege-restriction) | MUST NOT | server | **gap** not implemented: #1975 | n/a: addresses the other side |
+| [authz-error-status-codes](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#error-handling) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-server-prm-rfc9728](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-prm-lists-authorization-servers](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-as-metadata-rfc8414-or-oidc](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#overview) | MUST | both | n/a: catalogue marks it n/a | n/a: optional feature mcpx does not implement |
+| [authz-prm-discovery-header-or-well-known](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-client-parses-www-authenticate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#protected-resource-metadata-discovery-requirements) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-client-as-discovery-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-client-validates-issuer-in-metadata](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-metadata-discovery) | MUST / MUST NOT | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-client-per-as-registration-state](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/authorization-server-discovery#authorization-server-location) | MUST / MUST NOT | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-resource-indicator](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#resource-parameter-implementation) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-canonical-uri-guidance](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#canonical-server-uri) | SHOULD | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-secure-token-storage](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | MUST | both | n/a: catalogue marks it n/a | **gap** not implemented: #1950 |
 | [authz-as-short-lived-and-rotate](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#token-theft) | SHOULD / MUST | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-pkce-verify-s256](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#authorization-code-protection) | MUST | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-client-registration-required](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#client-registration) | MUST | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-registration-priority](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-cimd](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#implementation-requirements) | SHOULD / MUST | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-preregistration](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#pre-registration) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-dcr-application-type](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#application-type-and-redirect-uri-constraints) | MUST / SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-credentials-bound-to-issuer](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#authorization-server-binding) | MUST / MUST NOT | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-scope-in-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD / MUST / MUST NOT | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-scope-selection-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-insufficient-scope-403](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-all-scopes-single-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | **gap** not implemented: #253 | n/a: addresses the other side |
-| [authz-step-up](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | SHOULD / MAY | client | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-server-scope-hierarchy](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | MUST | server | **gap** not implemented: #253 | n/a: addresses the other side |
+| [authz-https-and-redirect-uris](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#communication-security) | MUST | both | n/a: catalogue marks it n/a | n/a: catalogue marks it n/a |
+| [authz-pkce-verify-s256](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#authorization-code-protection) | MUST | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-open-redirection](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#open-redirection) | MUST / SHOULD | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-proxy-consent-per-client](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#confused-deputy-problem) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-client-registration-required](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#client-registration) | MUST | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-registration-priority](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration) | SHOULD | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-cimd](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#implementation-requirements) | SHOULD / MUST | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-preregistration](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#pre-registration) | SHOULD | client | n/a: addresses the other side | n/a: no OAuth client |
+| [authz-dcr-application-type](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#application-type-and-redirect-uri-constraints) | MUST / SHOULD | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-credentials-bound-to-issuer](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/client-registration#authorization-server-binding) | MUST / MUST NOT | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-scope-in-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD / MUST / MUST NOT | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-scope-selection-order](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#scope-selection-strategy) | SHOULD | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-insufficient-scope-403](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-all-scopes-single-challenge](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#runtime-insufficient-scope-errors) | SHOULD | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
+| [authz-step-up](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | SHOULD / MAY | client | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-server-scope-hierarchy](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#step-up-authorization-flow) | MUST | server | n/a: optional feature mcpx does not implement | n/a: addresses the other side |
 | [authz-cimd-as-security](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations#client-id-metadata-document-security) | MUST / SHOULD | auth-server | n/a: addresses the other side | n/a: addresses the other side |
-| [authz-iss-validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#authorization-response-validation) | MUST / SHOULD / MUST NOT | client, auth-server | n/a: addresses the other side | **gap** not implemented: #253 |
-| [authz-refresh-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens) | MUST / SHOULD / MAY / MUST NOT / SHOULD NOT | client, server | **gap** not implemented: #253 | **gap** not implemented: #253 |
-| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | **gap** not implemented: #253 | **gap** not implemented: #253 |
+| [authz-iss-validation](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#authorization-response-validation) | MUST / SHOULD / MUST NOT | client, auth-server | n/a: addresses the other side | n/a: optional feature mcpx does not implement |
+| [authz-refresh-tokens](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#refresh-tokens) | MUST / SHOULD / MAY / MUST NOT / SHOULD NOT | client, server | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
+| [authz-follow-security-considerations](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization/security-considerations) | MUST | both | n/a: optional feature mcpx does not implement | n/a: optional feature mcpx does not implement |
 
 ### caching
 
