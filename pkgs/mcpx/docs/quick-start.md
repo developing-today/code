@@ -49,7 +49,14 @@ an *agent* tool is one of:
 - give your agent [`AGENTS.md`](../AGENTS.md) — the loop, the script
   contract and the secrets rules, in the file agents already read; or
 - install the opencode plugin — see [install](./install.md#channels),
-  "just the plugin".
+  "just the plugin" — and turn on what you want it to do: the plugin
+  ships with `tools` and `instructions` **off**, so a bare copy gives
+  your agent neither callable tools nor prompt guidance. For tools, name
+  the plugin in config with options
+  (`["./.opencode/plugin/mcpx-session.ts", { "tools": true }]`, or set
+  `MCPX_PLUGIN_TOOLS=1`); for the usage paragraphs, `instructions:
+  true` or `MCPX_PLUGIN_INSTRUCTIONS=1`. See
+  [plugins](./plugins.md#opencode-v1-plugin) for the full option list.
 
 ## Next
 
