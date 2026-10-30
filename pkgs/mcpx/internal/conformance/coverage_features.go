@@ -98,12 +98,12 @@ func init() {
 			"prompts-client-paginate",
 			"prompts-respect-capability-negotiation",
 		),
+		C("prompts-validate-io", "mcpclient.TestValidatePromptResult@all"),
 	)
 	registerGaps(
 		Gap{ID: "resources-annotations-defs", Side: Client, Issue: "#207", Why: "mcpclient.Resource has no annotations field; they are dropped on parse"},
 		Gap{ID: "tools-display-name-precedence", Side: Client, Issue: "#207", Why: "tool title and annotations.title are carried but nothing that displays a tool uses them"},
 		Gap{ID: "tools-annotations-untrusted", Side: Client, Issue: "#257", Why: "destructiveHint from any upstream decides whether a call is confirmed; a false hint (or readOnlyHint true) is trusted"},
 		Gap{ID: "tools-annotations-hints-no-decisions", Side: Client, Issue: "#257", Why: "the consumer confirmDestructive gate is decided by an untrusted upstream annotation"},
-		Gap{ID: "prompts-validate-io", Side: Client, Issue: "#257", Why: "an upstream prompts/get result is passed on unvalidated"},
 	)
 }

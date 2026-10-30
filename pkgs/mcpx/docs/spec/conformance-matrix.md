@@ -226,7 +226,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | [prompts-embedded-must-include](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#embedded-resources) | MUST | server | tested: `conformance.TestFeaturesServer/2024-11-05/prompts/prompts-embedded-must-include` | n/a: addresses the other side |
 | [prompts-validate-args](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | server | tested: `conformance.TestFeaturesServer/2024-11-05/prompts/prompts-validate-args` | n/a: addresses the other side |
 | [prompts-respect-capability-negotiation](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | both | tested: `conformance.TestFeaturesServer/2024-11-05/prompts/prompts-respect-capability-negotiation` | tested: `conformance.TestFeaturesClient/2024-11-05/prompts/prompts-respect-capability-negotiation` |
-| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2024-11-05/prompts/prompts-validate-io` | **gap** #257: an upstream prompts/get result is passed on unvalidated |
+| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2024-11-05/prompts/prompts-validate-io`; `mcpclient.TestValidatePromptResult` | covered |
 
 ### prompts / errors
 
@@ -575,7 +575,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | [prompts-embedded-must-include](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#embedded-resources) | MUST | server | tested: `conformance.TestFeaturesServer/2025-03-26/prompts/prompts-embedded-must-include` | n/a: addresses the other side |
 | [prompts-validate-args](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | server | tested: `conformance.TestFeaturesServer/2025-03-26/prompts/prompts-validate-args` | n/a: addresses the other side |
 | [prompts-respect-capability-negotiation](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | both | tested: `conformance.TestFeaturesServer/2025-03-26/prompts/prompts-respect-capability-negotiation` | tested: `conformance.TestFeaturesClient/2025-03-26/prompts/prompts-respect-capability-negotiation` |
-| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-03-26/prompts/prompts-validate-io` | **gap** #257: an upstream prompts/get result is passed on unvalidated |
+| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-03-26/prompts/prompts-validate-io`; `mcpclient.TestValidatePromptResult` | covered |
 
 ### prompts / errors
 
@@ -994,7 +994,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | [prompts-embedded-must-include](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#embedded-resources) | MUST | server | tested: `conformance.TestFeaturesServer/2025-06-18/prompts/prompts-embedded-must-include` | n/a: addresses the other side |
 | [prompts-validate-args](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | server | tested: `conformance.TestFeaturesServer/2025-06-18/prompts/prompts-validate-args` | n/a: addresses the other side |
 | [prompts-respect-capability-negotiation](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | both | tested: `conformance.TestFeaturesServer/2025-06-18/prompts/prompts-respect-capability-negotiation` | tested: `conformance.TestFeaturesClient/2025-06-18/prompts/prompts-respect-capability-negotiation` |
-| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-06-18/prompts/prompts-validate-io` | **gap** #257: an upstream prompts/get result is passed on unvalidated |
+| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-06-18/prompts/prompts-validate-io`; `mcpclient.TestValidatePromptResult` | covered |
 
 ### prompts / errors
 
@@ -1516,7 +1516,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | [prompts-embedded-must-include](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#embedded-resources) | MUST | server | tested: `conformance.TestFeaturesServer/2025-11-25/prompts/prompts-embedded-must-include` | n/a: addresses the other side |
 | [prompts-validate-args](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | server | tested: `conformance.TestFeaturesServer/2025-11-25/prompts/prompts-validate-args` | n/a: addresses the other side |
 | [prompts-respect-capability-negotiation](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | both | tested: `conformance.TestFeaturesServer/2025-11-25/prompts/prompts-respect-capability-negotiation` | tested: `conformance.TestFeaturesClient/2025-11-25/prompts/prompts-respect-capability-negotiation` |
-| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-11-25/prompts/prompts-validate-io` | **gap** #257: an upstream prompts/get result is passed on unvalidated |
+| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2025-11-25/prompts/prompts-validate-io`; `mcpclient.TestValidatePromptResult` | covered |
 
 ### prompts / errors
 
@@ -2222,7 +2222,7 @@ Every normative requirement of every revision (catalogue: `docs/spec/requirement
 | [prompts-embedded-must-include](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#embedded-resources) | MUST | server | tested: `conformance.TestFeaturesServer/2026-07-28/prompts/prompts-embedded-must-include` | n/a: addresses the other side |
 | [prompts-validate-args](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | server | tested: `conformance.TestFeaturesServer/2026-07-28/prompts/prompts-validate-args` | n/a: addresses the other side |
 | [prompts-respect-capability-negotiation](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#implementation-considerations) | SHOULD | both | tested: `conformance.TestFeaturesServer/2026-07-28/prompts/prompts-respect-capability-negotiation` | tested: `conformance.TestFeaturesClient/2026-07-28/prompts/prompts-respect-capability-negotiation` |
-| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2026-07-28/prompts/prompts-validate-io` | **gap** #257: an upstream prompts/get result is passed on unvalidated |
+| [prompts-validate-io](https://modelcontextprotocol.io/specification/2026-07-28/server/prompts#security) | MUST | both | tested: `conformance.TestFeaturesServer/2026-07-28/prompts/prompts-validate-io`; `mcpclient.TestValidatePromptResult` | covered |
 
 ### prompts / errors
 
