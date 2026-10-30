@@ -69,6 +69,7 @@ const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${p
 const home = (path: string): ProjectHomeDoc => ({ repo: CODE, path, url: blob(path) });
 const ref = (repo: string, n: number): RefKey => `${repo}#${n}`;
 const code = (n: number): RefKey => ref(CODE, n);
+const nix = (n: number): RefKey => ref(NIX, n);
 
 export const PROJECT_CONFIGS: ProjectConfig[] = [
   {
@@ -115,6 +116,17 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       code(1090),
       code(1092),
       code(1093),
+      // Pre-seed predecessor set in dezren39/nix (#501-#508, all since
+      // closed there): the parallel epics this project's code-side epics
+      // above were seeded from. See the gaps entry below for the overlap.
+      nix(501),
+      nix(502),
+      nix(503),
+      nix(504),
+      nix(505),
+      nix(506),
+      nix(507),
+      nix(508),
     ],
     editorial: {
       done: [
@@ -181,6 +193,18 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           title: "Nothing physically installed yet",
           detail:
             "Basement power and space block the full fleet; the target is 3–5 machines first. All current progress is design, inventory, and preparation.",
+        },
+        {
+          title: "Predecessor epics live in dezren39/nix (#501-#508)",
+          detail:
+            "This program was pre-seeded by a parallel epic set in dezren39/nix, all since closed there: #501 (hardware inventory and hardware-stats gathering) is the pre-seed of code #1080, #502 (BMC/BIOS configuration audit) of code #1081, #503 (TALM bootstrap for non-identical drives) overlaps code #1086, #504 (storage pools: RAID10 HDD and NVMe tiers) overlaps code #1085, #505 covers the egress strategy and #507 (OCI always-free maximization) the cloud extension behind code #1091, #506 is a boats.dev research spike with no code-side epic, and #508 is the nix-side program epic. They are tracked above alongside the code epics so the page shows the full lineage instead of only the code-side half.",
+          refs: [nix(501), nix(502), nix(503), nix(504), nix(505), nix(506), nix(507), nix(508)],
+        },
+        {
+          title: "Status sources disagree on hardware inventory & firmware audit",
+          detail:
+            "The Grist roadmap row 'Hardware inventory + firmware/BMC audit' reads In progress / Q4 2026, while the org Project pool and the home doc (planning/roadmaps/basement-cluster.md) say Todo / planned for the same work (code #1080 and #1081, pre-seeded by dezren39/nix#501 and #502). The orchestrator is the Project writer, so the Grist row is the outlier — but this page surfaces both readings rather than silently picking one; the disagreement is reconciled in Grist/Project by their owners, not here.",
+          refs: [code(1080), code(1081), nix(501), nix(502)],
         },
         {
           title: "OCI tenancy stuck in provisioning",
