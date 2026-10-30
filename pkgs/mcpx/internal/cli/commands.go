@@ -1076,6 +1076,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Session:   sessionKey,
 		Output:    eo.Output,
 		Artifacts: eo.artifactOptions(mustGetwd()),
+		Deps:      a.depsOptions(mustGetwd()),
 	}
 	if wire.Artifacts != nil {
 		wire.Capabilities = []string{execsvc.CapabilityArtifacts}

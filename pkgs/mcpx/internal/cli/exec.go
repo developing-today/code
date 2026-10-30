@@ -554,6 +554,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		LauncherName:   sh.launcherName,
 		AllowRepeat:    sh.allowRepeat,
 		CaptureConsole: &sh.captureConsole,
+		Deps:           a.depsOptions(cwd),
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {

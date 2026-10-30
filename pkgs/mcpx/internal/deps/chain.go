@@ -410,3 +410,31 @@ func (s Set) Describe() string {
 // SearchPath is the resolved paths.deps, exposed so the CLI can print what was
 // searched when discovery found nothing.
 func SearchPath(cfg Config) searchpath.Resolved { return cfg.Paths }
+
+// JSON is the manifest's bytes as a runtime should see them: the file's own
+// content, with comments and trailing commas removed when it was a
+// package.jsonc. The name to write it under is resolved separately, because a
+// runtime is told package.json and given this text.
+func (m *Manifest) JSON() ([]byte, error) {
+	raw, err := os.ReadFile(m.Path)
+	if err != nil {
+		return nil, err
+	}
+	if m.JSONC {
+		raw = StripJSONC(raw)
+	}
+	return raw, nil
+}
+
+// LockfileText is the content of the project's lockfile, honoured frozen. It
+// is empty when there is none.
+func (m *Manifest) LockfileText() (name string, text []byte) {
+	if len(m.Lockfiles) == 0 {
+		return "", nil
+	}
+	b, err := os.ReadFile(m.Lockfiles[0])
+	if err != nil {
+		return "", nil
+	}
+	return filepath.Base(m.Lockfiles[0]), b
+}

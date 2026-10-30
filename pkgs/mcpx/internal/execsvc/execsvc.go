@@ -141,6 +141,36 @@ type Options struct {
 	CaptureConsole *bool `json:"captureConsole,omitempty"`
 	// Phases are lines run around the script, as runner.Phases.
 	Phases *Phases `json:"phases,omitempty"`
+	// Deps says where the script's packages come from (#1913). It travels as
+	// data -- specifiers and the manifest's own text -- because a path would
+	// name the caller's filesystem, which a daemon without shared storage
+	// cannot read.
+	Deps *DepsOptions `json:"deps,omitempty"`
+}
+
+// DepsOptions is a script's dependency set as it crosses the wire.
+//
+// Manifest and Lockfile carry the files' CONTENT rather than a path, for the
+// same reason phase lines do: a remote daemon that receives a path can only
+// read its own filesystem, and the caller meant theirs. The names are
+// separate so the workdir gets a file the runtime recognises.
+type DepsOptions struct {
+	// Packages are explicit specifiers: name or name@version.
+	Packages []string `json:"packages,omitempty"`
+	// Manifest is the manifest's text, already comment-stripped when it came
+	// from a package.jsonc.
+	Manifest string `json:"manifest,omitempty"`
+	// ManifestName is the filename to write it as: package.json by default.
+	ManifestName string `json:"manifestName,omitempty"`
+	// Lockfile is the lockfile's text, honoured frozen and never rewritten.
+	Lockfile string `json:"lockfile,omitempty"`
+	// LockfileName is the filename to write it as, such as bun.lock.
+	LockfileName string `json:"lockfileName,omitempty"`
+	// Source is the resolved deps.source, carried so the daemon materialises
+	// the same set the caller judged.
+	Source string `json:"source,omitempty"`
+	// AutoInstall is the resolved deps.autoInstall: off, fallback or always.
+	AutoInstall string `json:"autoInstall,omitempty"`
 }
 
 // Phases is runner.Phases on the wire.
