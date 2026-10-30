@@ -15,6 +15,7 @@ import (
 
 	"strings"
 
+	mcpx "github.com/dezren39/mcpx"
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/daemon"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -706,6 +707,14 @@ func (a *App) CmdHelp(_ context.Context, args []string) error {
 		fmt.Print(Usage())
 		return nil
 	}
+	if args[0] == "agents" {
+		// A help topic, not a command: the agent documentation embedded
+		// in the binary, printed verbatim -- no heading, no wrapping --
+		// so the output is byte-identical to AGENTS.md and an agent can
+		// consume it exactly as it would the file.
+		fmt.Print(mcpx.AgentDocs)
+		return nil
+	}
 	return a.helpFor(args[0])
 }
 
@@ -863,6 +872,8 @@ func Usage() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("HELP TOPICS\n")
+	b.WriteString("  mcpx help agents               print the agent documentation (AGENTS.md) embedded in this binary\n\n")
 	b.WriteString("  mcpx help <command>            usage, flags and settings for one command\n\n")
 	b.WriteString(usageFooter)
 	return b.String()
