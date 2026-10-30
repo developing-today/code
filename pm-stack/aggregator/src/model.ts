@@ -1071,6 +1071,7 @@ export type UsageSourceClass = "api" | "console" | "manual" | "estimate" | "invo
 export type UsageUnit =
   | "pct"
   | "usd"
+  | "cny"
   | "count"
   | "gb"
   | "tokens"
@@ -1276,7 +1277,9 @@ export interface SnapshotRecord {
   serviceId: string;
   metricId: string;
   value: number | { low: number; high: number };
-  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
+  /** "cny" is a first-class currency unit (#1052): a yuan balance is
+   * stored in yuan and never converted — no FX rate exists here. */
+  unit: "pct" | "usd" | "cny" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
   limit?: number | null;
   resetsAt?: string | null;
   source: UsageSourceClass;

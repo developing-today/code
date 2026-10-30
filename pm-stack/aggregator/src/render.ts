@@ -1721,6 +1721,7 @@ const SOURCE_CLASS_LABELS: Record<string, string> = {
 export function fmtMetricValue(v: number | null, unit: string): string {
   if (v == null) return "not measured";
   if (unit === "usd") return `$${v.toFixed(2)}`;
+  if (unit === "cny") return `¥${v.toFixed(2)}`;
   if (unit === "gb") return `${v} GB`;
   if (unit === "pct") return `${v}%`;
   return v.toLocaleString();
@@ -1760,9 +1761,25 @@ function attentionStripHtml(usage: UsageView): string {
   return `<h2>Needs attention</h2>${rows}`;
 }
 
+/**
+ * The DeepSeek PAYG reserve's balance, from the snapshot store (#1052):
+ * the newest unit "cny" record. Shown in ¥ with its own measured-at —
+ * the yuan figure as read, never converted to dollars.
+ */
+function paygBalanceHtml(usage: UsageView): string {
+  const recs = (usage.history["deepseek:api"] ?? []).filter(
+    (r) => r.unit === "cny" && typeof r.value === "number",
+  );
+  if (!recs.length) return "";
+  const last = recs[recs.length - 1];
+  return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
+}
+
 function paygCardHtml(usage: UsageView): string {
+  const balance = paygBalanceHtml(usage);
+  const balanceBlock = balance ? `<div>${balance}</div>` : "";
   if (!usage.payg.length) {
-    return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">pay-as-you-go agent spend</span></div><div class="muted">No metered spill recorded in local records.</div></div>`;
+    return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">pay-as-you-go agent spend</span></div><div class="muted">No metered spill recorded in local records.</div>${balanceBlock}</div>`;
   }
   const lines = usage.payg
     .map((l: PaygLine) => {
@@ -1776,7 +1793,7 @@ function paygCardHtml(usage: UsageView): string {
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
-  return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">metered spill, counted per Decision 004 — estimates at 1.2 × high</span><br><span class="badge ${total > 5 ? "near" : "healthy"}">$${total.toFixed(2)} projected unbilled</span></div><div>${lines}</div></div>`;
+  return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">metered spill, counted per Decision 004 — estimates at 1.2 × high</span><br><span class="badge ${total > 5 ? "near" : "healthy"}">$${total.toFixed(2)} projected unbilled</span></div><div>${lines}${balanceBlock}</div></div>`;
 }
 
 function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
