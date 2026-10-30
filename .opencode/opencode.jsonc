@@ -6990,7 +6990,7 @@
         // meta door is dead (attestation; see the "muse" provider
         // note).
         // 2026-10-30 (amendment, Drew): the leaf now seats
-        // muse-direct/muse-wonder-1.0-contributor#max (Responses
+        // muse-direct/muse-wonder-1.0-contributor#xhigh (Responses
         // direct mode replaced both older Meta doors; the #max
         // variant is preserved). Same position in the ordered chain.
         // 2026-10-26: Sol addressed through sol-plan (four doors) instead of a single direct
@@ -7005,7 +7005,7 @@
         "targets": [
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
-          "muse-direct/muse-wonder-1.0-contributor#max",
+          "muse-direct/muse-wonder-1.0-contributor#xhigh",
           "opencode-route/sol-plan#xhigh"
         ],
         "selection": "ordered",
