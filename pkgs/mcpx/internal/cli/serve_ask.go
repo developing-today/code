@@ -330,6 +330,7 @@ type lazyMCP struct {
 	// build and inputs are seams for tests; nil means the App's own.
 	build  func(ctx context.Context) (*mcpserver.Server, error)
 	inputs func() string
+	retire func(*mcpserver.Server)
 
 	mu      sync.Mutex
 	srv     *mcpserver.Server
@@ -386,7 +387,20 @@ func (l *lazyMCP) get(ctx context.Context) (*mcpserver.Server, error) {
 		// the error, not a surface that no longer matches config.)
 		return nil, err
 	}
+	old := l.srv
 	l.srv, l.builtFP = srv, fp
+	if old != nil && old != srv {
+		// PM-13 follow-up (#1942): the replaced surface is retired, not
+		// abandoned. Its legacy sessions would otherwise keep their GET
+		// streams, notification subscriptions, and listen streams open
+		// against a server nothing routes to, accumulating with every
+		// rebuild. Clients re-initialize against the new surface.
+		retire := l.retire
+		if retire == nil {
+			retire = (*mcpserver.Server).CloseSessions
+		}
+		retire(old)
+	}
 	return srv, nil
 }
 

@@ -1017,6 +1017,14 @@ func callContext(r *http.Request, body config.CallContext, session string) confi
 			cc.PID = n
 		}
 	}
+	// A caller reporting this daemon's own PID is reporting a process
+	// every caller of the daemon shares -- /v1/exec runs, whose script
+	// env carries the daemon's os.Getpid(). That PID keys shared
+	// instances; it must never read as caller-private when an ephemeral
+	// run ends (#1942 follow-up).
+	if cc.PID > 0 && cc.PID == os.Getpid() {
+		cc.PIDShared = true
+	}
 	if !cc.Ephemeral {
 		cc.Ephemeral = r.Header.Get("X-Mcpx-Ephemeral") == "1"
 	}
