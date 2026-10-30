@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // CallContext is what a caller knows about itself. The daemon resolves a
@@ -64,7 +65,7 @@ func (s Scope) Key(ctx CallContext) (key string, degraded string) {
 		if ctx.Cwd == "" {
 			return fallback(ctx), "cwd is unknown"
 		}
-		return "cwd:" + canonical(ctx.Cwd), ""
+		return "cwd:" + keyPath(ctx.Cwd), ""
 
 	case ScopeRepo, ScopeWorktree:
 		if ctx.Cwd == "" {
@@ -76,13 +77,13 @@ func (s Scope) Key(ctx CallContext) (key string, degraded string) {
 		w, _, err := locateGit(ctx.Cwd)
 		switch {
 		case err != nil:
-			return "cwd:" + canonical(ctx.Cwd), err.Error()
+			return "cwd:" + keyPath(ctx.Cwd), err.Error()
 		case s == ScopeRepo:
-			return "repo:" + w.commonDir, ""
+			return "repo:" + keyPath(w.commonDir), ""
 		case w.worktree != "":
-			return "worktree:" + w.worktree, ""
+			return "worktree:" + keyPath(w.worktree), ""
 		default:
-			return "cwd:" + canonical(ctx.Cwd), "no worktree: " + w.noWorktree
+			return "cwd:" + keyPath(ctx.Cwd), "no worktree: " + w.noWorktree
 		}
 
 	case ScopeSession:
@@ -153,4 +154,53 @@ func canonical(p string) string {
 		return resolved
 	}
 	return filepath.Clean(p)
+}
+
+// keyPath is canonical plus directory identity, for use as a scope key
+// (#1912). canonical keeps the caller's spelling, so on a case-insensitive
+// volume (APFS by default, SMB/vfat mounts) /Users/x/Repo and /users/x/repo
+// -- one directory -- keyed separately and spawned a second instance. The
+// error was always over-isolation, never accidental sharing.
+//
+// The fix keys on identity, not spelling: stat the canonical path and look
+// its (device, inode) up in a side table that remembers the first spelling
+// seen for that identity; every spelling of the directory keys to the
+// first. The key stays a plain readable path, which is what `mcpx daemons`
+// and the degraded-scope log print. Two genuinely different directories
+// that differ only by case have different inodes, so a case-sensitive
+// volume can never merge them -- the unsafe direction is impossible.
+//
+// When the stat fails (a deleted or unreadable cwd) or the platform has
+// no identity to give, the canonical path alone is the key: today's
+// behaviour, and still the safe direction. Keys are computed by the
+// daemon and held in memory for its lifetime, never persisted, so an
+// identity that changes across a filesystem rebuild needs no migration;
+// the table holds one entry per distinct directory actually scoped.
+var identitySpellings = struct {
+	sync.Mutex
+	byID map[[2]uint64]string
+}{byID: map[[2]uint64]string{}}
+
+func keyPath(p string) string {
+	c := canonical(p)
+	dev, ino, ok := dirIdentity(c)
+	if !ok {
+		return c
+	}
+	id := [2]uint64{dev, ino}
+	identitySpellings.Lock()
+	defer identitySpellings.Unlock()
+	if first, seen := identitySpellings.byID[id]; seen && first != c {
+		// Reuse is only sound while the remembered spelling still names
+		// this identity. An inode is recycled when its directory is
+		// deleted, and the recycled number must not resurrect the dead
+		// directory's spelling as a live directory's key.
+		if fdev, fino, fok := dirIdentity(first); !fok || fdev != dev || fino != ino {
+			identitySpellings.byID[id] = c
+			return c
+		}
+		return first
+	}
+	identitySpellings.byID[id] = c
+	return c
 }

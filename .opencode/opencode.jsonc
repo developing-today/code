@@ -68,6 +68,14 @@
   // but re-enabling one needs a dedupe decision first. Their live door is
   // "opendesign" (on).
   // ==========================================================================
+  // 2026-10-30 (route audit): "deepseek" joins the list below. Its
+  // definition is the DeepSeek OFFICIAL API — a pay-as-you-go funds
+  // door, not a plan pool — and no route seats it (DeepSeek models
+  // reach the tiers through the plan doors: OpenCode Go, ClinePass,
+  // OpenDesign, Command Code). It has taken no traffic since
+  // 2026-10-25. Per the switchboard rule this flip is the whole job;
+  // its full definition stays in the provider block, and deleting
+  // the line re-enables it if the direct door is ever wanted.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -86,6 +94,7 @@
     "code-design",
     "design-code",
     "open-design",
+    "deepseek",
     "claude-code",
     "muse"
   ],
@@ -6383,6 +6392,20 @@
       // keep listing the GLM models (catalog rule); no route seats them.
       "gemini-flash-plan": {
         "name": "Gemini Flash - plan providers",
+        // 2026-10-30 (route audit): this pool is single-door on
+        // antigravity-ls, and that fragility is real — when the ls
+        // proxy was down (2026-10-24/25) every Gemini Flash call
+        // failed with ConnectionRefused (38 failures in
+        // route_attempt) with nothing to fail over to. The obvious
+        // second door, antigravity-agy, is deliberately NOT seated
+        // here: bin/agy-proxy.mjs is text-only (it builds its prompt
+        // from body.messages, ignores body.tools, and never returns
+        // structured tool calls — Codex P1 on the audit PR, verified
+        // against the proxy source), so an agy leaf would silently
+        // end tool-using turns with a text "success" and block
+        // failover. Seat agy here only once the proxy bridges tool
+        // calls; until then ls is the only tool-capable Gemini Flash
+        // door and this pool rides on its proxy being up.
         "targets": [
           {
             "model": "antigravity-ls/gemini-3.8-flash",
@@ -6399,6 +6422,12 @@
         // model in #1324; the block extension lands in this PR). The
         // leaf is dormant while claude-code is disabled and rejoins
         // automatically on re-enable.
+        // 2026-10-30 (route audit): with claude-code dormant this
+        // pool is single-live-door on antigravity-ls. antigravity-agy
+        // is deliberately NOT seated as the second door: its proxy
+        // is text-only (no tool-call bridging — see the note in
+        // gemini-flash-plan). The pool's resilience is the ls proxy
+        // plus claude-code's return.
         "targets": [
           "claude-code/claude-sonnet-5-5",
           {
@@ -6416,6 +6445,10 @@
         // provider block now lists claude-opus-5-5 (proxy catalog in
         // #1324; block extension in this PR). Dormant while
         // claude-code is disabled; rejoins on re-enable.
+        // 2026-10-30 (route audit): single-live-door on
+        // antigravity-ls, same as sonnet-plan — antigravity-agy is
+        // not seated (text-only proxy, no tool-call bridging; see
+        // the note in gemini-flash-plan).
         "targets": [
           "claude-code/claude-opus-5-5",
           {
@@ -6707,16 +6740,28 @@
         // TO REVERT to the all-DeepSeek standard operating procedure:
         // delete (or comment out) this route and point workhorse's
         // first target back at "opencode-route/deepseek-flash#high".
+        // 2026-10-30 (route audit): the Meta leg's model changed from
+        // meta/muse-spark-1.3 to meta/muse-spark-1.3-contributor. Same
+        // direct meta door, same single Meta plan, same weight — the
+        // plain SKU now fails 100% from this client: route_attempt
+        // shows 8/8 HTTP 403 since 2026-10-30 03:40Z, "This API key is
+        // billed to a Muse Code subscription. Muse Code subscriptions
+        // cover requests from the Muse Code client only." (the active
+        // meta credential is the Muse Code plan key), while the
+        // contributor SKU on the same key keeps succeeding (286
+        // successes on 2026-10-29). The leg still burns the Meta plan
+        // toward the 2026-11-02 reset as intended; revert this one
+        // line if Meta serves the plain SKU to this client again.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "meta/muse-spark-1.3",
+          "meta/muse-spark-1.3-contributor",
           "antigravity-agy/gemini-4-argon#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-route/deepseek-flash": 1,
-          "meta/muse-spark-1.3": 1,
+          "meta/muse-spark-1.3-contributor": 1,
           "antigravity-agy/gemini-4-argon": 2
         }
       },

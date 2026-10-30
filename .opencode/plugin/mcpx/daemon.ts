@@ -43,7 +43,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { DaemonOps } from "./ops.gen.ts"
+import { DaemonOps, OpError } from "./ops.gen.ts"
 
 /**
  * Every tunable in one place.
@@ -152,6 +152,52 @@ export type Resolution = {
   configHash: string
   running: boolean
   sources?: string[]
+}
+
+/**
+ * What POST /v1/exec answers with `output: "structured"` -- the daemon's own
+ * `execsvc.Result`, field for field.
+ *
+ * Written out because the answer is a bare document, not an `{ result: ... }`
+ * envelope, and because the plugin used to declare an `output` field that no
+ * version of this struct ever had: every exec fell back to dumping the whole
+ * response into the model's context.
+ */
+export type ExecResult = {
+  runId?: string
+  result?: unknown
+  emits?: unknown[]
+  logs?: Array<{ ts?: string; level?: string; msg?: string; attrs?: Record<string, unknown> }>
+  stdout?: string
+  artifacts?: unknown[]
+  exitCode?: number
+  durationMs?: number
+  runtime?: string
+  timedOut?: boolean
+  error?: string
+}
+
+/**
+ * The text a model should see for an exec result.
+ *
+ * The script's own value first, then what it emitted, then raw stdout -- the
+ * three fields that carry answers. Everything else (run id, logs, artifacts,
+ * timings) is for a human or a follow-up call, and printing it is how one
+ * megabyte of JSON ends up in a context window.
+ */
+export const renderExec = (res: ExecResult): string => {
+  const parts: string[] = []
+  if (res.error) parts.push(`mcpx exec: ${res.error}`)
+  if (res.result !== undefined) {
+    parts.push(typeof res.result === "string" ? res.result : JSON.stringify(res.result, null, 2))
+  }
+  if (res.emits?.length) {
+    parts.push(res.emits.map((e) => (typeof e === "string" ? e : JSON.stringify(e))).join("\n"))
+  }
+  if (res.stdout) parts.push(res.stdout)
+  if (res.timedOut) parts.push("(the script timed out)")
+  if (res.exitCode !== undefined && res.exitCode !== 0) parts.push(`(exit ${res.exitCode})`)
+  return parts.length ? parts.join("\n") : "(no output)"
 }
 
 /** Which rung produced a candidate, kept so a report can explain itself. */
@@ -482,16 +528,27 @@ export class DaemonClient {
    * knows to fall back rather than reporting a failure that is really a
    * version difference.
    *
+   * Through the generated method, so the body's keys are the route's -- the
+   * same lesson `call()` learned: a hand-built body that names a field the
+   * route does not read still passes every fake anyone writes for it.
+   *
+   * `session` is the harness session the script is running for. The daemon
+   * leases one pooled MCP instance per session, so two exec calls carrying
+   * the same session see the same servers and the same state; without it
+   * every exec gets whichever instance is free.
+   *
    * @op exec
    */
-  async exec(source: string): Promise<{ output?: string; result?: unknown } | undefined> {
-    const res = await this.postRaw("/v1/exec", {
-      source,
-      options: { output: "structured" },
-    })
-    if (res.status === 404) return undefined
-    if (!res.ok) throw new Error(`mcpx /v1/exec: ${res.status} ${res.statusText}`)
-    return (await res.json()) as { output?: string; result?: unknown }
+  async exec(source: string, session?: string): Promise<ExecResult | undefined> {
+    try {
+      return (await this.ops.exec({
+        source,
+        options: { output: "structured", ...(session ? { session } : {}) },
+      })) as ExecResult
+    } catch (err) {
+      if (err instanceof OpError && err.status === 404) return undefined
+      throw err
+    }
   }
 
   /**
