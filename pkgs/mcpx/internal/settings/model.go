@@ -69,8 +69,11 @@ func modelSettings() []Setting {
 			Long: "Model ids live in the provider/model namespace (#1925): " +
 				"openai/gpt-5, ollama/qwen3:8b. The prefix says which " +
 				"provider the id belongs to and is stripped before the id " +
-				"reaches that provider's API. Empty means each backend's " +
-				"own default.",
+				"reaches that provider's API. Empty means no default: " +
+				"an API backend then requires the operation itself to " +
+				"name a model (an unnamed request to it is unavailable " +
+				"rather than sent under an invented id), and sampling " +
+				"asks with no model hint.",
 		},
 		{
 			Path: "model.budget", Scope: ScopeDaemon, Kind: KindInt, Default: "0",

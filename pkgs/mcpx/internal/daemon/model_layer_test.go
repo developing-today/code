@@ -2,15 +2,19 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/dezren39/mcpx/internal/events"
 	"github.com/dezren39/mcpx/internal/model"
 	"github.com/dezren39/mcpx/internal/scripting"
 )
@@ -205,5 +209,83 @@ func TestModelRepairProviderCarriesLayerBounds(t *testing.T) {
 	}
 	if rp.Name() != "openai" {
 		t.Errorf("Name = %q", rp.Name())
+	}
+}
+
+// Codex P2 (PR #2592): the model-layer sampling path must publish the
+// sampling lifecycle like the upstream path does -- sample.opened
+// BEFORE the wait (a sample.opened hook answerer can only answer a
+// question it hears about) and sample.answered after it.
+func TestBrokerSamplerPublishesSampleLifecycle(t *testing.T) {
+	bus := events.New(0)
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{}}
+	reg, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker, err := OpenBroker(Paths{State: filepath.Join(dir, "state")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broker.Close() })
+	reg.InstallHooks(bus, broker, nil)
+	sub, _ := bus.Subscribe(events.Filter{Kinds: []string{"sample"}}, 0)
+	defer sub.Close()
+
+	s := &Server{reg: reg}
+	pol := defaultConsumerPolicy()
+	pol.ModelTimeout = 5 * time.Second
+	ctx := withPolicy(context.Background(), pol)
+	fn := s.brokerSampler("sess-1")
+	type outcome struct {
+		resp model.Response
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, err := fn(ctx, model.Request{Messages: []model.Message{{Role: "user", Content: "hi"}}})
+		done <- outcome{resp, err}
+	}()
+
+	recv := func(want events.Kind) events.Event {
+		t.Helper()
+		select {
+		case e := <-sub.C:
+			if e.Kind != want {
+				t.Fatalf("got event %s, want %s", e.Kind, want)
+			}
+			return e
+		case <-time.After(5 * time.Second):
+			t.Fatalf("no %s event arrived", want)
+		}
+		return events.Event{}
+	}
+	// The opened event must arrive while the question is still
+	// unanswered -- that ordering is the whole finding.
+	recv(events.SampleOpened)
+	pending, err := reg.broker.Pending(elicit.Filter{Session: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	err = reg.broker.Respond(elicit.Answer{
+		ID:      pending[0].ID,
+		Action:  elicit.Accept,
+		By:      "tester",
+		Content: json.RawMessage(`{"model":"m1","role":"assistant","content":{"type":"text","text":"hi back"}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recv(events.SampleAnswered)
+	out := <-done
+	if out.err != nil {
+		t.Fatalf("sampler: %v", out.err)
+	}
+	if out.resp.Text != "hi back" {
+		t.Errorf("resp = %+v, want the answered text", out.resp)
 	}
 }

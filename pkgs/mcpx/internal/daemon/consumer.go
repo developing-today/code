@@ -925,6 +925,14 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		if err != nil {
 			return model.Response{}, err
 		}
+		// Publish the lifecycle before waiting, as the upstream
+		// sampling path does (hooks.go): a sample.opened hook is how
+		// an event-driven answerer learns there is a question to
+		// answer, so without this event model.provider=sampling
+		// requests time out unanswered even when a hook answerer is
+		// configured (Codex review, PR #2592).
+		s.reg.publish(events.Event{Kind: events.SampleOpened, Server: question.Server,
+			Data: mustJSON(elicitEventSummary(question))})
 		// model.timeout must bound the WAIT, not only the question's
 		// initial TTL: an answerer reading the question via
 		// /v1/elicit/{id} renews its expiry (Broker.Get touches), so a
@@ -937,6 +945,8 @@ func (s *Server) brokerSampler(session string) model.SampleFunc {
 		if err != nil {
 			return model.Response{}, err
 		}
+		s.reg.publish(events.Event{Kind: events.SampleAnswered, Server: question.Server,
+			Data: mustJSON(elicitAnsweredSummary(question, ans))})
 		if ans.Action != elicit.Accept {
 			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
 		}

@@ -125,5 +125,7 @@ func configured(cfg Config, name string, lookup func(string) string) Provider {
 	if cfg.APIKeyEnv != "" {
 		key = lookup(cfg.APIKeyEnv)
 	}
-	return NewOpenAIProvider(name, base, key, cfg.Timeout)
+	p := NewOpenAIProvider(name, base, key, cfg.Timeout)
+	p.defaultModel = ModelID(cfg.DefaultModel)
+	return p
 }

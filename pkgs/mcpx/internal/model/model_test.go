@@ -83,7 +83,7 @@ func TestOpenAIProviderHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewOpenAIProvider("openai", srv.URL, "", time.Second)
-	_, err := p.Generate(context.Background(), Request{Messages: []Message{{Content: "hi"}}})
+	_, err := p.Generate(context.Background(), Request{Model: "gpt-5", Messages: []Message{{Content: "hi"}}})
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("err = %v, want an HTTP 429 error the caller can fall back on", err)
 	}
@@ -210,5 +210,48 @@ func TestTokenLimitParam(t *testing.T) {
 		if got := tokenLimitParam(tc.model); got != tc.want {
 			t.Errorf("tokenLimitParam(%q) = %q, want %q", tc.model, got, tc.want)
 		}
+	}
+}
+
+// Codex P2 (PR #2592): with neither a request model nor model.default,
+// Generate must not send the invented id "default" -- it reports the
+// provider unavailable and sends nothing.
+func TestOpenAIProviderNoModelNamedIsUnavailable(t *testing.T) {
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+	}))
+	defer srv.Close()
+	p := NewOpenAIProvider("openai", srv.URL, "", time.Second)
+	_, err := p.Generate(context.Background(), Request{Messages: []Message{{Content: "hi"}}})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+	if hit {
+		t.Fatal("a request was sent even though no model was named")
+	}
+}
+
+// Codex P2 (PR #2592): model.default, resolved through Resolve, is the
+// model an unnamed request sends -- the configured default, not an
+// invented one.
+func TestResolveDefaultModelReachesProvider(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"gpt-5","choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := Resolve(Config{Provider: "openai", BaseURL: srv.URL, DefaultModel: "openai/gpt-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Generate(context.Background(), Request{Messages: []Message{{Content: "hi"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["model"] != "gpt-5" {
+		t.Errorf("model sent = %v, want the configured default gpt-5", gotBody["model"])
 	}
 }

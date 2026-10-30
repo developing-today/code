@@ -23,6 +23,10 @@ type OpenAIProvider struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
+	// defaultModel is model.default for this provider (bare id, prefix
+	// stripped), set by Resolve. It is the only fallback Generate may
+	// use: an API backend has no default of its own to fall back to.
+	defaultModel string
 }
 
 // NewOpenAIProvider builds the backend. name is the provider's name in the
@@ -68,7 +72,16 @@ type chatMessage struct {
 func (p *OpenAIProvider) Generate(ctx context.Context, req Request) (Response, error) {
 	modelID := ModelID(req.Model)
 	if modelID == "" {
-		modelID = "default"
+		modelID = p.defaultModel
+	}
+	if modelID == "" {
+		// Never invent an id: sending the literal "default" (the old
+		// behaviour) makes the endpoint reject a configuration the
+		// settings describe as valid, and the caller cannot tell the
+		// failure from a real answer attempt. Naming no model is a
+		// configuration gap, reported as unavailable so callers fall
+		// back deterministically (Codex review, PR #2592).
+		return Response{}, fmt.Errorf("model: provider %s: no model named (set model.default or name a model in the request): %w", p.name, ErrUnavailable)
 	}
 	payload := map[string]any{
 		"model":    modelID,
