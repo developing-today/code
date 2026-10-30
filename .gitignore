@@ -161,10 +161,14 @@ codedb.snapshot
 .opencode/antigravity-accounts.json
 .opencode/opencode-notifier-state.json
 
-# Runtime residue from fleet sessions and local tooling (2026-10-29):
-# local state, session working dirs, config backups, stray redirect captures.
+# Runtime residue from local tooling (2026-10-29): gh state dir and
+# stray shell redirect captures only. Session working dirs
+# (bin/work/sessions/) and config backups (.opencode/*.bak-*) are NOT
+# ignored: sessions leave real work products there (agent notes, queue
+# packets, probe reports) and config backups are audit references -
+# hiding them behind .gitignore loses work. They are cleaned by moving
+# them to dated residue dirs (e.g. ~/primary-residue-2026-10-29), never
+# by ignoring them. Drews call, 2026-10-29: fix so files arent ignored.
 /.local/
-/bin/work/sessions/
-.opencode/*.bak-*
 /r.out
 /r.err
