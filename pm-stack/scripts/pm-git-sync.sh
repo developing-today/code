@@ -112,7 +112,7 @@ retry_owed() {
     if [ ! -e "$f" ]; then continue; fi
     unit="${f##*/owed-}"
     case "$ATTEMPTED" in
-      *" $unit "*) continue ;;
+    *" $unit "*) continue ;;
     esac
     subtree="$(sed -n '1p' "$f")"
     dep="$(sed -n '2p' "$f")"
