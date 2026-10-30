@@ -32,12 +32,12 @@ type chatMessage struct {
 }
 
 type chatCompletionReq struct {
-	Model       string          `json:"model"`
-	Messages    []chatMessage   `json:"messages"`
-	Tools       []openAITool    `json:"tools,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
+	Model       string        `json:"model"`
+	Messages    []chatMessage `json:"messages"`
+	Tools       []openAITool  `json:"tools,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	MaxTokens   *int          `json:"max_tokens,omitempty"`
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
