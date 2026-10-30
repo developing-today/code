@@ -58,9 +58,12 @@
   // claude-code/claude-haiku-5-5 is an optional preference, NOT part of
   // enabling — the workhorse default works either way.)
   //
-  // PERMANENT EXCEPTION: "muse" NEVER leaves this list. It is a banned
-  // duplicate door into the same single Meta pool as "meta" (see the
-  // warning at its definition) — "meta" is the only Meta door.
+  // REVERSED 2026-10-30 (Drew, direct order): "muse" leaves this list.
+  // The direct "meta" door is dead by Meta's design (attestation —
+  // see the note at the "muse" provider), so muse-proxy is now the
+  // only working door into the same single Meta pool, and the
+  // routes seat muse/* leaves where the meta/* leaves sat, at the
+  // same weights and positions.
   //
   // KNOWN EXCEPTION: the design-code / code-design / open-design proxy
   // blocks further down stay commented out (preserved legacy: four blocks,
@@ -95,8 +98,7 @@
     "design-code",
     "open-design",
     "deepseek",
-    "claude-code",
-    "muse"
+    "claude-code"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -5244,7 +5246,20 @@
 
       }
     },
-// DISABLED 2026-10-25 per Drew — NEVER route sessions to the "muse" provider. It is a second, wasteful door into the SAME single Meta pool as "meta" — the Muse API High Usage plan — reached through the muse terminal program's OAuth login via muse-proxy (the proxy strips META_API_KEY so calls take the OAuth plan route, not the PAYG key route). It is NOT the assistant Muse's Power subscription (the assistant exists only in the app/website and is never a session pool) and NOT a separate pool or "muse plan allowance". The ONLY door sessions may use into the High Usage pool is the "meta" provider. Commented out per fleet rule (disable, never delete).
+// RE-ENABLED 2026-10-30 (Drew, direct order): this provider — the
+// muse program's OAuth session via muse-proxy — is now the ONLY
+// working door into the single Meta plan (the Muse API High Usage
+// plan). Verified 2026-10-30: the direct "meta" provider is dead by
+// Meta's design — the plan API key returns 403
+// client_attestation_denied from any non-Muse-Code client, and the
+// OAuth access_token returns 401 invalid_api_key at
+// /chat/completions; only the genuine muse program passes
+// attestation. (The 2026-10-25 disable assumed the direct key door
+// worked; it does not.) The routes seat muse/* leaves at the
+// positions and weights the meta/* leaves held. The proxy strips
+// META_API_KEY so calls take the OAuth plan route, not the PAYG key
+// route. This is NOT the assistant Muse's Power subscription and
+// NOT a separate pool — same one Meta pool, working door.
      "muse": {
        "npm": "@ai-sdk/openai-compatible",
        "name": "Muse (CLI via muse-proxy)",
@@ -6461,6 +6476,9 @@
       },
       "spark-plan": {
         "name": "Muse Spark 1.3 Contributor - plan providers",
+        // 2026-10-30: the reserve leaf now reaches the Meta plan through
+        // muse-proxy (provider "muse") — the direct meta door is dead
+        // (attestation; see the "muse" provider note). Same last position.
         // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
         // contributor door — meta direct, ClinePass (live completion
         // probed 2026-10-28), Command Code (live :18748 list), and
@@ -6485,7 +6503,7 @@
           "opencode-go/muse-spark-1.3-contributor",
           "commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
-          "meta/muse-spark-1.3-contributor"
+          "muse/muse-spark-1.3"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -6706,6 +6724,10 @@
       },
       "workhorse-primary": {
         "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Argon round-robin",
+        // 2026-10-30: the Spark leg now runs through muse-proxy
+        // (provider "muse", muse/muse-spark-1.3) — the direct meta
+        // door is dead (attestation; see the "muse" provider note).
+        // Same weight 1, same round-robin position.
         // TEMPORARY (2026-10-29, Drew, code#2173): workhorse's primary
         // slot round-robins between the DeepSeek plan route
         // (deepseek-flash#high — the standard operating procedure's
@@ -6754,14 +6776,14 @@
         // line if Meta serves the plain SKU to this client again.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "meta/muse-spark-1.3-contributor",
+          "muse/muse-spark-1.3",
           "antigravity-agy/gemini-4-argon#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-route/deepseek-flash": 1,
-          "meta/muse-spark-1.3-contributor": 1,
+          "muse/muse-spark-1.3": 1,
           "antigravity-agy/gemini-4-argon": 2
         }
       },
@@ -6852,6 +6874,10 @@
       },
       "summit": {
         "name": "Summit - very complex design only, deliberate use",
+        // 2026-10-30: the Wonder leaf now runs through muse-proxy
+        // (provider "muse", muse/muse-wonder-1.0#max) — the direct
+        // meta door is dead (attestation; see the "muse" provider
+        // note). Same position in the ordered chain.
         // 2026-10-26: Sol addressed through sol-plan (four doors) instead of a single direct
         // OpenAI leaf; Wonder runs the contributor model (always cheaper on the Meta plan).
         // 2026-10-27 pool redesign: Argon #high inserts at #2 and Sol
@@ -6864,7 +6890,7 @@
         "targets": [
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
-          "meta/muse-wonder-1.0-contributor#max",
+          "muse/muse-wonder-1.0#max",
           "opencode-route/sol-plan#xhigh"
         ],
         "selection": "ordered",
