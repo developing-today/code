@@ -204,6 +204,14 @@ describe("project registry", () => {
       expect(idLinks.some((r) => r.endsWith(`pkgs/id/${doc}`))).toBe(true);
     }
     expect((id.editorial?.done ?? []).map((e) => e.title).join("\n")).toContain("validation in progress");
+    // #1125 coverage-gap disclosure: the id page must state that its pool
+    // (Area=id-train) is a subset of the open app/id issues, with a dated
+    // count — never implying the pool is the whole project.
+    const idGaps = (id.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(idGaps).toContain("id-train");
+    expect(idGaps).toContain("app/id");
+    expect(idGaps).toMatch(/\d+ open app\/id issues on \d{4}-\d{2}-\d{2}/);
+    expect(id.editorial?.gaps.some((e) => (e.refs ?? []).includes("developing-today/code#1125"))).toBe(true);
     expect((id.editorial?.done ?? []).map((e) => e.title)).not.toContain("Phases 9–11 delivered");
 
     const fleet = projectConfigById("repo-fleet")!;
