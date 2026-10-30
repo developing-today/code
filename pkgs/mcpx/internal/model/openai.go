@@ -43,6 +43,23 @@ func NewOpenAIProvider(name, baseURL, apiKey string, timeout time.Duration) *Ope
 
 func (p *OpenAIProvider) Name() string { return p.name }
 
+// tokenLimitParam names the request field that bounds the answer for one
+// model. Most chat models take max_tokens, but OpenAI's o-series and
+// GPT-5 models reject that field outright -- every request to them would
+// fail and the caller would silently fall back to its deterministic
+// answer -- so they are sent max_completion_tokens instead (Codex
+// review, PR #2592). Other OpenAI-compatible endpoints keep max_tokens,
+// the field they have always accepted.
+func tokenLimitParam(modelID string) string {
+	id := strings.ToLower(modelID)
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-5"} {
+		if strings.HasPrefix(id, prefix) {
+			return "max_completion_tokens"
+		}
+	}
+	return "max_tokens"
+}
+
 type chatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -58,7 +75,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req Request) (Response, e
 		"messages": chatMessages(req.Messages),
 	}
 	if req.MaxTokens > 0 {
-		payload["max_tokens"] = req.MaxTokens
+		payload[tokenLimitParam(modelID)] = req.MaxTokens
 	}
 	if len(req.Stop) > 0 {
 		payload["stop"] = req.Stop

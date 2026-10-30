@@ -704,7 +704,13 @@ func (s *Server) resolveProviderFor(provider, model string) scripting.Provider {
 // pre-filling one path's default into the other (Codex review, PR #2592).
 // session is the intent session, propagated to sampling questions so an
 // answerer polling /v1/elicit?session=<session> can see them.
-func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string, session string) (string, string, error) {
+// explicitProvider is the provider the caller named on THIS request
+// (empty for none): the caller-over-daemon contract Client.Intent
+// documents -- an explicit choice is the generation provider, and the
+// daemon's model layer applies only when no override was supplied.
+// Letting the layer take precedence sent a request's Claude model id
+// to the configured OpenAI endpoint (Codex review, PR #2592).
+func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string, session string, explicitProvider string) (string, string, error) {
 	nss, err := s.reg.CodegenNamespaces(nil, config.Profile{All: true})
 	if err != nil {
 		return "", "", err
@@ -726,7 +732,7 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 	// plus the note that no model answered -- which is the scope guard's
 	// required shape. With model.provider at its default (none) this
 	// whole branch is skipped and generation behaves as it always has.
-	mp, merr := s.modelLayer(ctx, session)
+	mp, merr := s.modelLayerWanted(ctx, session, explicitProvider == "")
 	if merr != nil {
 		// Finding (Codex, PR #2592): a model layer that was configured
 		// but cannot resolve (model.provider=plugin, sampling with no
@@ -780,6 +786,16 @@ var errNoModel = fmt.Errorf("no model provider answered")
 // provider WAS configured but cannot be built (plugin, sampling with no
 // path): the caller must surface that as no-model, never silently invoke
 // a different provider in its place (Codex review, PR #2592).
+// modelLayerWanted is modelLayer behind the caller's explicit-provider
+// choice: an intent request that named its own provider does not consult
+// the daemon's model layer at all.
+func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bool) (model.Provider, error) {
+	if !wanted {
+		return nil, nil
+	}
+	return s.modelLayer(ctx, session)
+}
+
 func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
 	pol := s.policyFor(ctx)
 	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
@@ -804,10 +820,7 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 	if modelID == "" {
 		modelID = pol.ModelDefault
 	}
-	maxTokens := pol.PromptMaxTokens
-	if pol.ModelBudget > 0 && (maxTokens == 0 || pol.ModelBudget < maxTokens) {
-		maxTokens = pol.ModelBudget
-	}
+	maxTokens := modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
 	resp, err := prov.Generate(ctx, model.Request{
 		Model:     modelID,
 		Messages:  []model.Message{{Role: "system", Content: system}, {Role: "user", Content: prompt}},
@@ -825,6 +838,59 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 		used += "/" + answered
 	}
 	return stripFences(resp.Text), used, nil
+}
+
+// modelMaxTokens applies the model layer's token bounds to one call:
+// the per-call ask (prompt.maxTokens), capped by model.budget when one
+// is configured. A nonpositive per-call value is UNSET, never a value:
+// the OpenAI backend omits a nonpositive limit, which would leave the
+// endpoint's own limit in force and silently bypass a configured
+// budget ceiling (Codex review, PR #2592).
+func modelMaxTokens(perCall, budget int) int {
+	max := perCall
+	if max < 0 {
+		max = 0
+	}
+	if budget > 0 && (max == 0 || budget < max) {
+		max = budget
+	}
+	return max
+}
+
+// modelRepairProvider adapts the resolved model-layer backend to the
+// scripting.Provider shape Repair speaks, so a script the model layer
+// generated is repaired by the SAME backend -- under the layer's budget
+// -- and never by an independently resolved legacy provider the user
+// did not select for this generation: with prompt.sample=never and a
+// local model.baseURL, the old code sent the generated script and the
+// catalog to an auto-discovered provider on validation failure (Codex
+// review, PR #2592).
+type modelRepairProvider struct {
+	s       *Server
+	mp      model.Provider
+	modelID string
+}
+
+func (p modelRepairProvider) Name() string { return p.mp.Name() }
+
+func (p modelRepairProvider) Complete(ctx context.Context, req scripting.CompletionRequest) (string, error) {
+	pol := p.s.policyFor(ctx)
+	modelID := p.modelID
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	resp, err := p.mp.Generate(ctx, model.Request{
+		Model: modelID,
+		Messages: []model.Message{
+			{Role: "system", Content: req.SystemPrompt},
+			{Role: "user", Content: req.UserPrompt},
+		},
+		MaxTokens: modelMaxTokens(req.MaxTokens, pol.ModelBudget),
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Text, nil
 }
 
 // brokerSampler is the sampling backend's path into the elicitation

@@ -29,7 +29,7 @@ func TestGenerateModelLayerResolutionErrorSkipsLegacyProvider(t *testing.T) {
 		called = true
 		return "return 1;", nil
 	})
-	_, _, err := s.generate(ctx, "get chicago weather", prov, "", "")
+	_, _, err := s.generate(ctx, "get chicago weather", prov, "", "", "")
 	if !errors.Is(err, errNoModel) {
 		t.Fatalf("err = %v, want errNoModel", err)
 	}
@@ -55,7 +55,7 @@ func TestGenerateModelLayerAloneAnswers(t *testing.T) {
 	pol.ModelDefault = "openai/test-model"
 	pol.ModelTimeout = 5 * time.Second
 	ctx := withPolicy(context.Background(), pol)
-	source, used, err := s.generate(ctx, "get chicago weather", nil, "", "")
+	source, used, err := s.generate(ctx, "get chicago weather", nil, "", "", "")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -106,5 +106,104 @@ func TestBrokerSamplerSessionAndTimeout(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("sampling wait was not bounded by model.timeout")
+	}
+}
+
+// Codex P2 (PR #2592): an intent request's EXPLICIT provider is the
+// caller's own choice for that request (the Client.Intent contract);
+// a configured model.provider must not take precedence over it and
+// send the caller's model id to a different endpoint.
+func TestGenerateExplicitProviderSkipsModelLayer(t *testing.T) {
+	layerHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		layerHit = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"test-model","choices":[{"message":{"role":"assistant","content":"return 2;"}}]}`)
+	}))
+	defer srv.Close()
+	s := intentTestServer()
+	pol := defaultConsumerPolicy()
+	pol.ModelProvider = "openai"
+	pol.ModelBaseURL = srv.URL
+	pol.ModelTimeout = 5 * time.Second
+	ctx := withPolicy(context.Background(), pol)
+	legacyCalled := false
+	prov := scripting.NewCallbackProvider("legacy", func(ctx context.Context, req scripting.CompletionRequest) (string, error) {
+		legacyCalled = true
+		return "return 1;", nil
+	})
+	source, _, err := s.generate(ctx, "get chicago weather", prov, "caller-model", "", "claude")
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !legacyCalled {
+		t.Error("explicit provider was not used for generation")
+	}
+	if layerHit {
+		t.Error("model layer was invoked despite the request's explicit provider")
+	}
+	if !strings.Contains(source, "return 1;") {
+		t.Errorf("source = %q, want the explicit provider's answer", source)
+	}
+}
+
+// Codex P2 (PR #2592): a negative per-call token limit is unset, not a
+// way around model.budget -- the backend omits a nonpositive limit, so
+// an unclamped -1 would leave the endpoint's own limit in force.
+func TestModelMaxTokens(t *testing.T) {
+	for _, tc := range []struct{ perCall, budget, want int }{
+		{-1, 500, 500},
+		{-1, 0, 0},
+		{0, 500, 500},
+		{0, 0, 0},
+		{100, 500, 100},
+		{900, 500, 500},
+		{100, 0, 100},
+	} {
+		if got := modelMaxTokens(tc.perCall, tc.budget); got != tc.want {
+			t.Errorf("modelMaxTokens(%d, %d) = %d, want %d", tc.perCall, tc.budget, got, tc.want)
+		}
+	}
+}
+
+type recordingModelProvider struct {
+	name string
+	got  model.Request
+}
+
+func (p *recordingModelProvider) Name() string { return p.name }
+func (p *recordingModelProvider) Generate(ctx context.Context, req model.Request) (model.Response, error) {
+	p.got = req
+	return model.Response{Text: "return 3;", Provider: p.name}, nil
+}
+
+// Codex P2 (PR #2592): repair of a model-layer script goes through the
+// layer's own backend, with the layer's budget clamping the repair
+// request's own token ask and model.default supplying the model id.
+func TestModelRepairProviderCarriesLayerBounds(t *testing.T) {
+	s := intentTestServer()
+	pol := defaultConsumerPolicy()
+	pol.ModelBudget = 500
+	pol.ModelDefault = "openai/test-model"
+	ctx := withPolicy(context.Background(), pol)
+	rec := &recordingModelProvider{name: "openai"}
+	rp := modelRepairProvider{s: s, mp: rec}
+	out, err := rp.Complete(ctx, scripting.CompletionRequest{
+		SystemPrompt: "sys", UserPrompt: "fix it", MaxTokens: 3000,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if out != "return 3;" {
+		t.Errorf("out = %q", out)
+	}
+	if rec.got.MaxTokens != 500 {
+		t.Errorf("repair MaxTokens = %d, want the model.budget cap 500", rec.got.MaxTokens)
+	}
+	if rec.got.Model != "openai/test-model" {
+		t.Errorf("repair Model = %q, want model.default", rec.got.Model)
+	}
+	if rp.Name() != "openai" {
+		t.Errorf("Name = %q", rp.Name())
 	}
 }

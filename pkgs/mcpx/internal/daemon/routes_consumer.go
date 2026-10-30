@@ -448,7 +448,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source, used, err := s.generate(r.Context(), req.Prompt, prov, model, req.Session)
+	source, used, err := s.generate(r.Context(), req.Prompt, prov, model, req.Session, req.Provider)
 	if err != nil {
 		out.Model = "none"
 		out.Message = "no recipe matched, and no model answered. " +
@@ -467,8 +467,22 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	cat := s.reg.DiagnoseCatalog()
 	val := scripting.Validate(source, &cat)
 	out.Diagnostics = nonNilDiagnostics(val.Diagnostics)
-	if val.HasFatal() && prov != nil {
-		if rep, rerr := scripting.Repair(r.Context(), source, nil, val.Diagnostics, &cat, prov); rerr == nil && rep != nil {
+	// Repair goes to the provider that GENERATED the script. When the
+	// model layer generated it (configured, and no explicit provider on
+	// this request), that is the layer's own backend, adapted -- never
+	// the independently resolved legacy prov, which may be a provider
+	// the user did not select at all (Codex review, PR #2592). A layer
+	// that no longer resolves means no repair, not a different provider.
+	repairProv := prov
+	if req.Provider == "" && layerSet {
+		if mp, merr := s.modelLayer(r.Context(), req.Session); merr != nil {
+			repairProv = nil
+		} else if mp != nil {
+			repairProv = modelRepairProvider{s: s, mp: mp, modelID: model}
+		}
+	}
+	if val.HasFatal() && repairProv != nil {
+		if rep, rerr := scripting.Repair(r.Context(), source, nil, val.Diagnostics, &cat, repairProv); rerr == nil && rep != nil {
 			out.Source = rep.RepairedSource
 			source = rep.RepairedSource
 			out.Diagnostics = nonNilDiagnostics(rep.Validation.Diagnostics)

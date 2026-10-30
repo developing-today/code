@@ -62,8 +62,13 @@ func TestOpenAIProviderSendsChatCompletion(t *testing.T) {
 	if gotBody["model"] != "gpt-5" {
 		t.Errorf("model sent = %v (provider prefix must be stripped)", gotBody["model"])
 	}
-	if gotBody["max_tokens"] != float64(42) {
-		t.Errorf("max_tokens = %v", gotBody["max_tokens"])
+	// gpt-5 is one of the models that reject max_tokens outright; it
+	// must be sent max_completion_tokens (see tokenLimitParam).
+	if gotBody["max_completion_tokens"] != float64(42) {
+		t.Errorf("max_completion_tokens = %v", gotBody["max_completion_tokens"])
+	}
+	if _, ok := gotBody["max_tokens"]; ok {
+		t.Errorf("gpt-5 request carried max_tokens, which it rejects: %v", gotBody)
 	}
 	rf, ok := gotBody["response_format"].(map[string]any)
 	if !ok || rf["type"] != "json_schema" {
@@ -184,5 +189,26 @@ func TestResolvePluginAndSamplingWithoutPath(t *testing.T) {
 	}
 	if _, err := Resolve(Config{Provider: "bogus"}); err == nil {
 		t.Error("unknown provider must error, not silently resolve")
+	}
+}
+
+// Codex P2 (PR #2592): the token-limit field is per model family --
+// o-series and GPT-5 reject max_tokens; everything else, including
+// non-OpenAI OpenAI-compatible endpoints, keeps it.
+func TestTokenLimitParam(t *testing.T) {
+	for _, tc := range []struct{ model, want string }{
+		{"o1", "max_completion_tokens"},
+		{"o3", "max_completion_tokens"},
+		{"o4-mini", "max_completion_tokens"},
+		{"gpt-5", "max_completion_tokens"},
+		{"gpt-5-mini", "max_completion_tokens"},
+		{"gpt-4o", "max_tokens"},
+		{"gpt-4.1", "max_tokens"},
+		{"qwen3:8b", "max_tokens"},
+		{"llama3.1", "max_tokens"},
+	} {
+		if got := tokenLimitParam(tc.model); got != tc.want {
+			t.Errorf("tokenLimitParam(%q) = %q, want %q", tc.model, got, tc.want)
+		}
 	}
 }
