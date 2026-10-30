@@ -88,6 +88,21 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     }
   }
 
+  // Contributor variants (#2753 amendment): the Meta pool's contributor
+  // models are distinct upstream ids (muse-spark-1.3-contributor,
+  // muse-wonder-1.0-contributor), optionally carrying an effort suffix
+  // AFTER the contributor part (muse-wonder-1.0-contributor-high — the
+  // effort suffix was already stripped above). Peel the contributor part
+  // off for the base-model lookup and re-attach it to the resolved ids,
+  // so the direct path sends the contributor id upstream verbatim. A
+  // plain base-model request keeps the plain id — contributor is the
+  // caller's choice, never a proxy rewrite.
+  let contributor = false;
+  if (modelStr.endsWith('-contributor')) {
+    contributor = true;
+    modelStr = modelStr.slice(0, -'-contributor'.length);
+  }
+
   // Bare aliases
   if (modelStr === 'spark' || modelStr === 'muse-spark') modelStr = 'muse-spark-1.3';
   if (modelStr === 'wonder' || modelStr === 'muse-wonder') modelStr = 'muse-wonder-1.0';
@@ -101,10 +116,11 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     effort = modelConfig.defaultEffort;
   }
 
+  const baseModel = contributor ? `${modelConfig.id}-contributor` : modelConfig.id;
   return {
-    baseModel: modelConfig.id,
+    baseModel,
     effort,
-    fullName: `${modelConfig.id}-${effort}`
+    fullName: `${baseModel}-${effort}`
   };
 };
 
