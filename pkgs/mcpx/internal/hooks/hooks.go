@@ -28,6 +28,8 @@ package hooks
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -257,4 +259,79 @@ func joinKinds() string {
 		parts[i] = string(k)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ArgvFor resolves a hook's action to a command line.
+//
+// run is verbatim: the declaration is the argv, never a shell string.
+// A JS module runs under the first JS runtime on PATH, in the order
+// the script settings try them (deno, bun, node). A Python module runs
+// under python3, or `uv run` when python3 is absent -- Python is a
+// module kind here because #1872 names it one, resolved in this one
+// place so the choice is made once.
+func ArgvFor(h Hook) ([]string, error) {
+	switch h.Executor {
+	case ExecRun:
+		if len(h.Run) == 0 {
+			return nil, fmt.Errorf("hook %s: empty run", h.Name)
+		}
+		return h.Run, nil
+	case ExecModulePython:
+		if p, err := exec.LookPath("python3"); err == nil {
+			return []string{p, h.Module}, nil
+		}
+		if p, err := exec.LookPath("uv"); err == nil {
+			return []string{p, "run", h.Module}, nil
+		}
+		return nil, fmt.Errorf("hook %s: no python3 or uv on PATH for module %s", h.Name, h.Module)
+	case ExecModuleJS:
+		for _, rt := range []string{"deno", "bun", "node"} {
+			p, err := exec.LookPath(rt)
+			if err != nil {
+				continue
+			}
+			if rt == "deno" {
+				return []string{p, "run", "-A", h.Module}, nil
+			}
+			return []string{p, h.Module}, nil
+		}
+		return nil, fmt.Errorf("hook %s: no deno, bun or node on PATH for module %s", h.Name, h.Module)
+	}
+	return nil, fmt.Errorf("hook %s: unknown executor %q", h.Name, h.Executor)
+}
+
+// Ready reports whether the hook's executor can run at all on this
+// machine -- "yes" if ready, or "no: <reason>" explaining why it cannot.
+func Ready(h Hook) string {
+	switch h.Executor {
+	case ExecRun:
+		if len(h.Run) == 0 {
+			return "no: empty run"
+		}
+		if _, err := exec.LookPath(h.Run[0]); err != nil {
+			return "no: " + h.Run[0] + " not on PATH"
+		}
+	case ExecModulePython:
+		if _, err := os.Stat(h.Module); err != nil {
+			return "no: module file missing"
+		}
+		if _, err := exec.LookPath("python3"); err == nil {
+			return "yes"
+		}
+		if _, err := exec.LookPath("uv"); err == nil {
+			return "yes"
+		}
+		return "no: python3 or uv not on PATH"
+	case ExecModuleJS:
+		if _, err := os.Stat(h.Module); err != nil {
+			return "no: module file missing"
+		}
+		for _, rt := range []string{"deno", "bun", "node"} {
+			if _, err := exec.LookPath(rt); err == nil {
+				return "yes"
+			}
+		}
+		return "no: deno, bun or node not on PATH"
+	}
+	return "yes"
 }

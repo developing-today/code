@@ -9,8 +9,10 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/events"
 )
 
@@ -20,6 +22,11 @@ import (
 // #6's gap contract in miniature -- one explicit marker, never a
 // silent hole.
 const queueDepth = 32
+
+// hookOutputLimit bounds how much of a hook's combined stdout+stderr is
+// retained in daemon memory (defaults.ExecStderrLimit). Output is still
+// drained, so excess bytes are discarded, not left blocking the pipes.
+const hookOutputLimit = 65536
 
 // Stats is one hook's counters since the runner started. Doctor and
 // status read these; a hook that is slow or failing is visible here
@@ -80,6 +87,9 @@ func (r *Runner) Stats() []Stats {
 }
 
 // Start subscribes and launches the workers. Stop ends them.
+// Bus-level drops (the shared subscription overflowing before fanout)
+// are folded into every hook's Dropped counter at fanout time, so the
+// per-hook gap marker (finding 2) covers this delivery stage too.
 func (r *Runner) Start() {
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	sub, _ := r.bus.Subscribe(events.Filter{}, 0)
@@ -94,20 +104,32 @@ func (r *Runner) Start() {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
+		var lastBusDropped uint64
 		for e := range sub.C {
 			// The runner's own voice is never a hook trigger.
 			if strings.HasPrefix(string(e.Kind), "hook.") {
 				continue
 			}
+			// Bus-level drops: the shared subscription overflowed
+			// before fanout, so every matching hook missed this many
+			// events. Fold the delta into each matching hook's
+			// Dropped counter (finding 2).
+			busNow := sub.Dropped.Load()
+			busDelta := busNow - lastBusDropped
+			lastBusDropped = busNow
 			for _, h := range r.hooks {
 				if !h.Matches(e) {
 					continue
 				}
+				loss := busDelta
 				select {
 				case queues[h.Name] <- e:
 				default:
+					loss++
+				}
+				if loss > 0 {
 					r.mu.Lock()
-					r.stats[h.Name].Dropped++
+					r.stats[h.Name].Dropped += loss
 					r.mu.Unlock()
 				}
 			}
@@ -144,6 +166,16 @@ func (r *Runner) work(h Hook, q chan events.Event) {
 	}
 }
 
+// limitedHookOutput returns the bounded writer for one hook execution:
+// the daemon's ExecStderrLimit where configured, else hookOutputLimit.
+func limitedHookOutput() *cappedWriter {
+	max := defaults.ExecStderrLimit
+	if max <= 0 {
+		max = hookOutputLimit
+	}
+	return &cappedWriter{max: max}
+}
+
 // payload is the JSON a hook receives on stdin: the event itself, plus
 // the runner's delivery facts (which hook, and how many events were
 // dropped for it since the last delivery).
@@ -162,7 +194,7 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 	if err != nil {
 		return
 	}
-	argv, err := argvFor(h)
+	argv, err := ArgvFor(h)
 	if err != nil {
 		r.recordFailure(h, e, 0, err)
 		return
@@ -170,6 +202,14 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 	ctx, cancel := context.WithTimeout(r.ctx, h.Timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = time.Second
 	cmd.Stdin = bytes.NewReader(body)
 	cmd.Env = append(os.Environ(),
 		"MCPX_HOOK_NAME="+h.Name,
@@ -180,9 +220,9 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		"MCPX_HOOK_EVENT_SESSION="+e.Session,
 		"MCPX_HOOK_EVENT_URI="+e.URI,
 	)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	var out = limitedHookOutput()
+	cmd.Stdout = out
+	cmd.Stderr = out
 	start := time.Now()
 	runErr := cmd.Run()
 	dur := time.Since(start)
@@ -238,43 +278,38 @@ func (r *Runner) recordFailure(h Hook, e events.Event, dur time.Duration, err er
 	}
 }
 
-// argvFor resolves a hook's action to a command line.
-//
-// run is verbatim: the declaration is the argv, never a shell string.
-// A JS module runs under the first JS runtime on PATH, in the order
-// the script settings try them (deno, bun, node). A Python module runs
-// under python3, or `uv run` when python3 is absent -- Python is a
-// module kind here because #1872 names it one, resolved in this one
-// place so the choice is made once.
+// argvFor resolves a hook's action to a command line. It is kept for
+// external callers that already name it; new code prefers ArgvFor.
 func argvFor(h Hook) ([]string, error) {
-	switch h.Executor {
-	case ExecRun:
-		if len(h.Run) == 0 {
-			return nil, fmt.Errorf("hook %s: empty run", h.Name)
+	return ArgvFor(h)
+}
+
+// cappedWriter keeps a bounded head of hook output: enough to say why
+// it failed, bounded so a chatty hook cannot exhaust daemon memory.
+// Excess bytes are drained and discarded, never retained.
+type cappedWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if room := w.max - w.buf.Len(); room > 0 {
+		if len(p) > room {
+			w.buf.Write(p[:room])
+		} else {
+			w.buf.Write(p)
 		}
-		return h.Run, nil
-	case ExecModulePython:
-		if p, err := exec.LookPath("python3"); err == nil {
-			return []string{p, h.Module}, nil
-		}
-		if p, err := exec.LookPath("uv"); err == nil {
-			return []string{p, "run", h.Module}, nil
-		}
-		return nil, fmt.Errorf("hook %s: no python3 or uv on PATH for module %s", h.Name, h.Module)
-	case ExecModuleJS:
-		for _, rt := range []string{"deno", "bun", "node"} {
-			p, err := exec.LookPath(rt)
-			if err != nil {
-				continue
-			}
-			if rt == "deno" {
-				return []string{p, "run", "-A", h.Module}, nil
-			}
-			return []string{p, h.Module}, nil
-		}
-		return nil, fmt.Errorf("hook %s: no deno, bun or node on PATH for module %s", h.Name, h.Module)
 	}
-	return nil, fmt.Errorf("hook %s: unknown executor %q", h.Name, h.Executor)
+	return len(p), nil
+}
+
+func (w *cappedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 func firstLine(s string) string {
