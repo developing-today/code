@@ -47,10 +47,9 @@ type Defaults struct {
 		Trace    bool     `json:"trace"`
 	} `json:"logging"`
 	Daemon struct {
+		ReapInterval   string `json:"reapInterval"`
+		SaveInterval   string `json:"saveInterval"`
 		TSNetUpTimeout string `json:"tsnetUpTimeout"`
-
-		ReapInterval string `json:"reapInterval"`
-		SaveInterval string `json:"saveInterval"`
 	} `json:"daemon"`
 	Secrets struct {
 		RequestRetention string `json:"requestRetention"`
@@ -171,6 +170,14 @@ type Defaults struct {
 		RemoteOutput string `json:"remoteOutput"`
 		Delivery     string `json:"delivery"`
 	} `json:"exec"`
+	// Cache governs the one content-addressed cache mechanism (#1908):
+	// the byte and age bounds every kind is evicted against, and how old
+	// a lease may be before the process holding it is presumed dead.
+	Cache struct {
+		MaxBytes      string `json:"maxBytes"`
+		MaxAge        string `json:"maxAge"`
+		LeaseStaleAge string `json:"leaseStaleAge"`
+	} `json:"cache"`
 	// Artifacts governs the outbox: files a script produced, held for a
 	// caller to fetch rather than printed into its context.
 	Artifacts struct {
@@ -477,9 +484,11 @@ var (
 	LogIncludes = builtin.Logging.Include
 	LogTrace    = builtin.Logging.Trace
 
-	ReapInterval           = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
-	DaemonTSNetUpTimeout       = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
-	SaveInterval           = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	ReapInterval = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
+	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	// TSNetUpTimeout bounds how long a tsnet node may take to authenticate
+	// and reach Running before its listener is believed.
+	TSNetUpTimeout         = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")
@@ -635,7 +644,18 @@ var (
 	// beside itself. They are visible in the user's directory.
 	ExecEntries      = builtin.Exec.Entries
 	ExecRemoteOutput = builtin.Exec.RemoteOutput
-	ExecDelivery     = builtin.Exec.Delivery
+
+	// CacheMaxBytes bounds the total size of one cache kind. Entries
+	// differ by five orders of magnitude (a flake resolution is bytes, a
+	// prepared dependency tree is hundreds of megabytes), so the shared
+	// bound is in bytes, never in entry count alone.
+	CacheMaxBytes = mustBytes(builtin.Cache.MaxBytes, "cache.maxBytes")
+	// CacheMaxAge bounds how long an unused cache entry is kept.
+	CacheMaxAge = mustDur(builtin.Cache.MaxAge, "cache.maxAge")
+	// CacheLeaseStaleAge is how old an entry's lease may be before the
+	// process holding it is presumed dead and the entry may be evicted.
+	CacheLeaseStaleAge = mustDur(builtin.Cache.LeaseStaleAge, "cache.leaseStaleAge")
+	ExecDelivery       = builtin.Exec.Delivery
 
 	ArtifactTTL = mustDur(builtin.Artifacts.TTL, "artifacts.ttl")
 	// ArtifactMaxBytes is the ceiling for one artifact. A screenshot is

@@ -20,6 +20,7 @@ func Registry() []Setting {
 	s = append(s, execSettings()...)
 	s = append(s, pathSettings()...)
 	s = append(s, daemonSettings()...)
+	s = append(s, hookSettings()...)
 	s = append(s, outputSettings()...)
 	s = append(s, protoSettings()...)
 	s = append(s, transportSettings()...)
@@ -338,6 +339,48 @@ func scriptSettings() []Setting {
 	}
 }
 
+// hookSettings are the config-declared hooks of docs/decisions/0001:
+// one structured `hooks` setting, in the same JSON-in-a-string shape as
+// script.runtimes and presets, because the registry has no structured
+// kind and those two are the precedent for one that needs it.
+func hookSettings() []Setting {
+	return []Setting{
+		{
+			Path: "hooks", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Declared hooks",
+			Short:    "config-declared hooks over the event bus: a JSON array of hook objects",
+			Long: "A JSON array. Each entry is one hook: {name, on, run | module, " +
+				"when, timeoutMs, failure}. `on` is an events.Filter kind prefix " +
+				"verbatim -- \"elicit\" matches every elicitation event, \"*\" " +
+				"matches everything hookable; resource.watching is never on the " +
+				"bus and hook.* is the runner's own, and both are refused. `run` " +
+				"is an argv array, never a shell string -- write [\"sh\", \"-c\", " +
+				"...\"] to ask for a shell. `module` is a file run for its kind: " +
+				".py by python3 (or uv run), .ts/.js/.mjs by deno, bun or node. " +
+				"Every hook is phase observe: it runs after the fact, off the " +
+				"bus, under a hard timeout, and can never slow, veto or rewrite " +
+				"what it watched. The event arrives as JSON on stdin, with " +
+				"MCPX_HOOK_* variables for the flat fields. A non-zero exit is a " +
+				"result, not an error: it is counted, `mcpx hook ls` and doctor " +
+				"report it, and a hook.failed event is published. \"failure\": " +
+				"\"closed\" marks a hook whose failures are guard-shaped; the " +
+				"default is \"open\".",
+		},
+		{
+			Path: "hooks.timeout", Kind: KindDuration, Default: "2s",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Hook timeout",
+			Short:    "the hard timeout for a declared hook that does not set its own",
+			Long: "Low on purpose: a hook is an observer, and an observer that " +
+				"needs longer than this is a job, not a hook. A hook may set its " +
+				"own timeoutMs; this is the cut for the ones that do not.",
+		},
+	}
+}
+
 func pathSettings() []Setting {
 	spliceLong := "A list. A null entry stands for whatever the layer below provided, " +
 		"so [\"./mine\", null] searches yours first and then the usual places. " +
@@ -388,6 +431,21 @@ func pathSettings() []Setting {
 				"a mechanical transformation, and a specification is a better " +
 				"source than a hand-written wrapper because it is already correct " +
 				"and it changes when the service does. " + spliceLong,
+		},
+		{
+			Path: "paths.plugins", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient,
+			Name:  "Plugin search path",
+			Short: "directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins",
+			Long: "A plugin is an MCP server (#1870, Approach C). A directory " +
+				"holding mcpx-plugin.json is a plugin -- the manifest names it, " +
+				"gives its spawn recipe or remote url, and may state the mcpx API " +
+				"it requires and the hooks it subscribes to. Any other executable " +
+				"in a named directory, and any mcpx-plugin-<name> executable on " +
+				"PATH, is a plugin with default manifest values. Discovered " +
+				"plugins are added as servers of their own, so they are pooled " +
+				"and appear in mcpx ls, the catalog and the generated client " +
+				"like any configured server. " + spliceLong,
 		},
 		{
 			Path: "paths.state", Kind: KindString, Default: "",
@@ -442,7 +500,11 @@ func daemonSettings() []Setting {
 				"one on a VPN -- and mcpx will not try to start that one, because " +
 				"answering from a local daemon when a remote one is unreachable " +
 				"would be worse than failing. unix:///path targets a different " +
-				"socket on this machine.",
+				"socket on this machine; ssh://[user@]host[:port] reaches a daemon " +
+				"through your own ssh (no port or credential on the far side), with " +
+				"?bin= for a remote mcpx not on PATH and ?sock= for a specific remote " +
+				"daemon; tsnet://name reaches one by tailnet identity. See " +
+				"docs/remote.md.",
 			Commands: []string{"run", "exec", "call", "ls", "types", "catalog",
 				"search", "status", "client", "serve", "tui", "prompts", "resources"},
 		},
@@ -471,6 +533,32 @@ func daemonSettings() []Setting {
 				"inherited. 0.0.0.0 exposes it to everything that can route to " +
 				"this host.",
 			Commands: []string{"daemon"},
+		},
+		{
+			Path: "daemon.ui", Kind: KindBool, Default: "true",
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui"},
+			Name:  "Web dashboard",
+			Short: "serve the dashboard page at /dashboard",
+			Long: "The embedded page is served on the loopback bind the daemon " +
+				"uses unless somebody widened it. Set daemon.address beyond " +
+				"loopback and the page is served only when this was asked for " +
+				"explicitly, because the API is unauthenticated: widening the " +
+				"bind should not also expose a UI nobody chose to publish. " +
+				"`mcpx dashboard` keeps working on the default bind. Setting " +
+				"it to false removes the route entirely and /dashboard answers " +
+				"404.",
+		},
+		{
+			Path: "daemon.uiDir", Kind: KindString, Default: "",
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui-dir"},
+			Name:  "Dashboard directory",
+			Short: "serve your own pages instead of the embedded dashboard",
+			Long: "When set, /dashboard serves index.html and everything beside it " +
+				"from this directory, so a frontend can be edited without " +
+				"rebuilding the binary. A ~ prefix is expanded to the home " +
+				"directory. Empty keeps the embedded single-file page, which " +
+				"is what a stock install should get: one nix derivation and no " +
+				"second build system.",
 		},
 		{
 			Path: "daemon.inline", Kind: KindBool, Default: "false",

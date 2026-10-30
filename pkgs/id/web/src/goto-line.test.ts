@@ -148,7 +148,7 @@ describe("go-to-line command", () => {
     expect(input?.labels?.[0]).toBe(label);
   });
 
-  it("creates a .goto-line-dialog element in the container", () => {
+  it("creates a .goto-line-dialog element in the container with dialog accessibility attributes", () => {
     const { view, container } = createViewWithGotoLine("line1\nline2\nline3");
     views.push(view);
     containers.push(container);
@@ -158,6 +158,8 @@ describe("go-to-line command", () => {
 
     const dialog = container.querySelector(".goto-line-dialog");
     expect(dialog).not.toBeNull();
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-label")).toBe("Go to line");
   });
 
   it("dialog contains an input element", () => {

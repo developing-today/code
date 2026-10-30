@@ -126,3 +126,14 @@ func TestAnEmailAddressIsNotAPlaceholder(t *testing.T) {
 		t.Fatalf("placeholders = %+v", r.Placeholders)
 	}
 }
+
+func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
+	r := recipes.Parse("x", "/tmp/x.ts",
+		"// @tool false\nawait demo.echo({ message: \"hi\" });")
+	if !r.OptOut {
+		t.Error("@tool false should opt the recipe out")
+	}
+	if len(r.Placeholders) != 0 {
+		t.Fatalf("the @tool marker is metadata, not an input: placeholders = %+v", r.Placeholders)
+	}
+}
