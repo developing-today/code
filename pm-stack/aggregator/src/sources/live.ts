@@ -1081,9 +1081,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         } else if (feedBacked && feedAgeMs !== undefined) {
           out.ageMs = feedAgeMs;
         }
-        if (key === "registry" && lastRegistryMergedCount !== null) {
-          out.count = lastRegistryMergedCount;
-          out.countLabel = "session records";
+        if (key === "registry") {
+          // The registry facet's age is the age of the feed its records
+          // merge from, so it derives from the loaded feed alone —
+          // gating it on lastRegistryMergedCount made the age (and the
+          // #1148 watchdog's registry item, which reads it) depend on
+          // some earlier request having called registry() (Codex P2,
+          // PR #2431). The COUNT still requires a real merge.
+          if (lastRegistryMergedCount !== null) {
+            out.count = lastRegistryMergedCount;
+            out.countLabel = "session records";
+          }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
             if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";

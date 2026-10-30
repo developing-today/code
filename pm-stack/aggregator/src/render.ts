@@ -494,6 +494,14 @@ function layout(
 export const sessionObjectRef = (id: string): string => `session:${id}`;
 export const ghObjectRef = (ref: RefKey): string => `gh:${ref}`;
 export function tierItemObjectRef(item: TierItem): string {
+  // Watchdog items (#1148) all carry the implementation issue as their
+  // display ref, but each watchdog:<input> is an independent object:
+  // keying them all by the shared gh: ref would give every watchdog
+  // card the same DOM id, actions, dismissal state, and comment
+  // thread, so dismissing one input's card would suppress them all
+  // (Codex P1 on PR #2431). Watchdog cards key by their unique id;
+  // the gh: ref still renders as the card's issue link.
+  if (item.source === "watchdog") return `orch:${item.id}`;
   return item.ref ? ghObjectRef(item.ref) : `orch:${item.id}`;
 }
 
@@ -2229,10 +2237,16 @@ export function attentionSections(
       : undefined;
   const tierAct = (item: TierItem) => {
     const objectRef = tierItemObjectRef(item);
+    // #1148 watchdog cards describe the aggregator's CURRENT diagnosis,
+    // not the publisher's possibly-obsolete section, so the #1152 gate
+    // must not disable them: the orchestration-outage card is exactly
+    // the one that has to stay actionable while the tier source is
+    // absent/invalid/stale (Codex P2, PR #2431).
+    const disabledReason = item.source === "watchdog" ? undefined : sectionDisabledReason;
     return {
       actions: act?.actionsByObject?.get(objectRef),
       identities: act?.identities,
-      ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+      ...(disabledReason ? { disabledReason } : {}),
       comments: act?.commentsByObject?.get(objectRef),
       commentOpts: act?.commentOpts,
     };
