@@ -787,7 +787,7 @@ async function handler(req: Request): Promise<Response> {
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
     const view = await healthContext();
-    const body: Record<string, unknown> = { status: "ok", source: prov() };
+    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
