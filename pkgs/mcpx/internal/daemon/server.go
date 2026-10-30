@@ -285,15 +285,18 @@ func (s *Server) Listen(tcpPort int) error {
 // publish writes the daemon record clients find the daemon by.
 func (s *Server) publish() error {
 	cfgPath := ""
+	daemonKey := ""
 	if cfg := s.currentConfig(); cfg != nil {
 		cfgPath = cfg.Path
+		daemonKey = FingerprintConfig(cfg.Sources)
 	}
 	return s.paths.WriteInfo(Info{
 		PID:        os.Getpid(),
 		Socket:     s.paths.Socket,
 		Endpoint:   s.endpoint,
 		ConfigPath: cfgPath,
-		ConfigHash: s.reg.ConfigHash(),
+		SchemaHash: s.reg.ConfigHash(),
+		DaemonKey:  daemonKey,
 		Version:    s.version,
 		StartedAt:  s.started.Format(time.RFC3339),
 	})
