@@ -520,12 +520,17 @@ people who trust different sets.
 
 **Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
 Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
-It is stated once, in full, because ten review rounds showed that patching clauses one at a time
-keeps opening a hole somewhere else.
+It is stated once, in full, because eleven review rounds showed that patching clauses one at a time
+keeps opening a hole somewhere else. "Undefined" covers **two** named preconditions, both of them
+a *selected input* that no longer applies under the pinned `R`: the set version `S` is forked
+(below) and the view-configuration event `C.config_event_id` is forked (`config_applied`).
 
 ```
 // ---- inputs, all immutable, all named in provenance (§3.4) -----------------
 //   C  = view config       (view_id, config_seq, scopes, exceptions)
+//        config_seq names ONE event — the view-configuration event at that owner chain
+//        position — so C is `(config_event_id, scopes, exceptions)` and §4.1 requires
+//        applied(R, config_event_id) before any of it may steer a total.
 //   S  = set version       (set_id, set_seq)  — the selected writer-set version
 //   F  = claim frontier    — no claim after it is eligible
 //   R  = resolution state  — the pinned resolution-input snapshot that fixes applied()
@@ -555,6 +560,18 @@ versions(S)     ⇔  { v : v ∈ applied prefix of S.owner's chain under R, v.se
                     // view: the view's own set version is forked, so there is nothing to
                     // project. Refusing is the answer; silently projecting the surviving
                     // branch would attribute a total to an input the owner did not select.
+config_applied(C, R) ⇔  applied(R, C.config_event_id)
+                    // THE SAME RULE FOR THE CONFIGURATION EVENT. `config_seq` names one
+                    // owner-chain event, and that event can be at or above a fork point even
+                    // while S survives: a writer-set version at seq 5 stands, a fork at seq 10
+                    // invalidates the `view.exception` published at seq 10 — and without this
+                    // conjunct the exception would still count a stranger's claim, letting a
+                    // rejected owner-chain branch keep steering the total. If the selected
+                    // configuration event does not apply under R, project() is undefined for
+                    // this view for exactly the reason S's forked case is: the view's own
+                    // input is gone. §4.6's validity_now is what explains it.
+                    // This is one rule, not two: scopes and exceptions both live in C, so
+                    // gating the event that carries them gates every use of them at once.
 adm_versions(S) ⇔  { v ∈ versions(S) : v.kind = idset.writer }
                     // admission-bearing versions only. A rescind is a version but carries no
                     // entries (§3.3), so counting it in `seen_by` would make the newest thing an
@@ -625,6 +642,11 @@ Each clause exists because a review round proved its absence broke something:
    event that *is* in `F`'s causal past changes `R`'s name rather than silently changing the
    total under the same name. Exceptions do not
    escape this gate either — they lift scope and the writer-set requirement, never validity.
+   **`S` and `C` are themselves events, and both must apply.** The two "undefined" rules above
+   (`S.set_seq ∈ versions(S)`, `config_applied(C, R)`) are this same gate applied to the view's
+   own two selected events rather than to a claim: a projection whose set version *or* whose
+   configuration event a fork proof has invalidated has no input to project against, and says so
+   instead of reporting a total from a rejected branch (round 11, finding 32).
 2. **`past(F, c)` — the claim set is closed.** Pinning the set version fixes *membership*; only
    this fixes *which claims* are eligible. Without it, re-evaluating a saved view after new claims
    arrive returns a different total.
@@ -881,7 +903,11 @@ there, and no mechanism in this spec should (that would be the ambient leak §5.
 `view.exception` is a **view-configuration event**: it advances `config_seq` (§3.4), because
 §4.1's input tuple contains `exceptions` and provenance is only meaningful if every change to `C`
 moves the pin. Recording it as a config event rather than as a loose side-table row is what makes
-"these two totals had the same provenance" a true statement.
+"these two totals had the same provenance" a true statement. Being an event is also what makes it
+**gated**: an exception published at a chain position a fork proof invalidates does not fire,
+because §4.1's `config_applied(C, R)` requires the selected configuration event to apply under the
+pinned `R` (round 11, finding 32) — otherwise a rejected branch of the owner's chain would keep
+counting a stranger's claim while `S` itself looked healthy.
 
 An exception for a claim that does **not exist** locally is kept and simply does not fire — the
 view stores the hash, the lookup misses, and the result is identical to not having it yet. That is
@@ -1015,8 +1041,25 @@ the multi-key form ("an attacker mints 10,000 keys"). So:
 - **Bounded, ordered, paginated discovery** is required, not optional: `Discovery` carries
   `total_authors` and a cursor, and a page is capped. §5.1's result type is therefore
   `Discovery { counted, uncounted_page: Vec<UncountedGroup>, total_authors, next_cursor }`.
+- **`total_authors` is a bounded count, not an exact one, and the bound is part of its type.** The
+  only persisted author index is keyed `(author, seq)` (§4.2), `subject` is a stored *value* rather
+  than a key component (§9 slice 3), and the search substrate rebuilds its index over the full live
+  claim set on **every** call (`search_store`/`search_terms`,
+  [`search.rs`](../../pkgs/id/src/search.rs)) — so an exact distinct-author count per subject has no
+  index path and would make the *first* page cost O(all matching claims). That is the opposite of
+  what §5.1 exists to guarantee. The decision:
+  - the discovery scan is capped at `MAX_AUTHORS_SCANNED` distinct authors (a #2032 budget value);
+  - `total_authors` is returned as `TotalAuthors { kind: Exact, n }` when the scan finished inside
+    the cap, and `TotalAuthors { kind: AtLeast, n, scanned: MAX_AUTHORS_SCANNED }` when it did not;
+  - the result type therefore cannot present a lower bound as a total, and a renderer that shows
+    "at least 500 authors" is not lying while one that shows "500" would be;
+  - if a later slice needs exactness, it adds a **subject-keyed author index** maintained on append
+    and pays for it in slice 3's cost and in abuse-case row 2 — not in this query's first page.
+  The row-2 compute bound is restated with this: projection cost is writer-set-shaped, and
+  discovery cost is `O(MAX_AUTHORS_SCANNED)`, not `O(matching claims)`.
 - The page cap and any bucket-width values are **delegated to #2032** with the other budget
-  numbers (§6) — this spec sets the *shape* (bounded + cursor + honest total), not the number.
+  numbers (§6) — this spec sets the *shape* (bounded + cursor + a total marked `Exact`/`AtLeast`),
+  not the number.
 - **Retained residual risk, stated plainly:** multi-key discovery flooding is **not solved** by
   this spec. Grouping and pagination keep the UI *usable* under flood, but an attacker willing to
   mint keys can still fill many pages and consume the viewer's attention. Author-clustering
@@ -1024,7 +1067,8 @@ the multi-key form ("an attacker mints 10,000 keys"). So:
   mechanism, and are **out of scope here** — they belong with #2032/#2033's abuse controls, not
   with the projection layer.
 - The §9 slice-5 test must therefore cover **both** shapes: 10k claims from 1 key (one cluster)
-  **and** 10k keys with 1 claim each (10k clusters, bounded page, honest `total_authors`). The
+  **and** 10k keys with 1 claim each (10k clusters, bounded page, a `total_authors` that reports
+  `AtLeast` when the author scan hits `MAX_AUTHORS_SCANNED`). The
   second is the one that fails today, so it is the test that matters.
 
 ### 5.2 `petname` is viewer-local and must never be presented as identity
@@ -1062,8 +1106,9 @@ enum Tier { Hot, Cold { expires_at: RetentionWindow } }
 // Hot  if counted by any view this server serves, or pinned by its owner,
 //      or named by a view exception,
 //      or it is a view-configuration input of a view this server serves
-//      (the view config itself, and every writer-set or rescind version that
-//       view's projection reads) — see the second constraint below.
+//      (the view config itself, every writer-set or rescind version that
+//       view's projection reads, and every membership-action event its
+//       pinned resolution snapshot R consumed) — see the third constraint below.
 // Cold otherwise.
 ```
 
@@ -1093,9 +1138,23 @@ because the numbers are not this spec's to set. Three constraints from the code:
   cannot causally reference an admission published later — `prune_behind_cut` protects explicit
   roots and their ancestors, not later policy inputs. So: **the configuration of every view this
   server serves, and every writer-set/rescind version its projection reads** (the applied prefix
-  up to `S.set_seq` for `S.set_id`, plus any group events the pinned frontier needs, §4.5), **are
-  retention roots in their own right, independent of whether they count.** They are `protected`
-  roots passed to the same `prune_behind_cut` contract, not a new mechanism.
+  up to `S.set_seq` for `S.set_id`, plus any group events the pinned frontier needs, §4.5), **and
+  every membership-action input its pinned `R` consumed** (round 11, finding 31), **are retention
+  roots in their own right, independent of whether they count.** They are `protected` roots passed
+  to the same `prune_behind_cut` contract, not a new mechanism.
+
+  The third term is not covered by the first two, and it is the sharpest case because it is
+  *invisible from the written view*: `R` names a membership-action removal that voids a counted
+  claim's standing grant, the removal is neither counted nor an ancestor of the view's
+  configuration, its selected set version, or the retained claims, so every earlier root rule
+  leaves it `Cold`. Prune it and the snapshot `R` names can no longer be reconstructed, so
+  resolving without it **restores** the claim's applicability — the saved total would now be
+  reproduced wrongly rather than not at all. The rule is therefore stated as **the roots `R`
+  consumed, not the roots that look relevant**: every membership-action event in `R`'s snapshot
+  (§3.4's identifier hashes exactly this set) is `Hot` while any served view names that `R`, plus
+  that event's causal dependencies through the same `prune_behind_cut` contract. The
+  `voiding_scenarios.rs` removal-of-Bob is the worked shape: pin Dave's claim from that scenario,
+  and Alice's removal is protected only by this term.
 
 **There is already a worked precedent for exactly that rule, and it is unwired.**
 `EventStore::prune_behind_cut(cut, protected)` prunes events behind a causal cut while keeping
@@ -1132,7 +1191,7 @@ Each case gets: the mechanism in this spec, or an explicitly accepted residual r
 | # | Case | Mechanism here | Verdict |
 |---|---|---|---|
 | 1 | **Montana stranger** claims they walked my dog | Signed claim is `applied` (content always applies, `resolve.rs:1-20`) and stored; `counted()` is false because no version in the set's applied prefix ever admitted them, so `admitted_at` and `retro` are both false (§4.1) — *not* because they are absent from the current snapshot, which was finding 3. Discovery still shows the claim where its author is otherwise known (§5.1); a view that neither admits nor names them does not retrieve it at all, and that is deliberate (§5.3). Owner may ignore, `view.exception` it, or add the writer (§4.4). | **✅ wholly answered** |
-| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1) — no version admitted those authors, so they are not even candidates. Compute: projection is author-indexed, so cost ∝ writer-set rows, not flood volume (§4.2) — true for keyed/group sets; a `Public` set is the stated exception. Readability: bounded, cursor-paginated discovery with an honest `total_authors`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
+| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1) — no version admitted those authors, so they are not even candidates. Compute: projection is author-indexed, so cost ∝ writer-set rows, not flood volume (§4.2) — true for keyed/group sets; a `Public` set is the stated exception. Discovery is bounded by `MAX_AUTHORS_SCANNED`, not by matching-claim volume, so its cost is a #2032-set constant rather than a function of the flood (§5.1). Readability: bounded, cursor-paginated discovery with a total marked `Exact`/`AtLeast`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
 | 3 | **Storage exhaustion** against a relay | Validity is not a storage entitlement: `Tier::Cold { expires_at }` (§6) plus #2032's per-IP/per-ID/per-topic MB windows. Reference-holding rule (§6) prevents expiry stranding hot dependents. | **⚠️ holds only with #2032 budgets in place — this is the model's real weak point, stated not buried** |
 | 4 | **Confusion attack** — spam crafted to look counted | `Projection.counted` and `.uncounted` are different types (§4.3); counted status is computed from the set, never read from the claim; every uncounted hit renders author + `WhyNotCounted`. | **✅ if the type split and the render rule hold** |
 | 5 | **Writer-set poisoning** — I'm talked into adding an attacker | Set changes are signed `idset.writer` versions (§D1/D2), so the version history is a reviewable list ("your set changed 3× this week"); `rescind` exists (§3.3); per-entry scoping (`Entry::Group{role_min, ..}`, §D3) bounds blast radius. | **⚠️ accepted residual: the model makes an owner decision visible and reversible; it cannot make it wisely** |
@@ -1267,6 +1326,14 @@ Each is independently reviewable and small enough to land alone.
      grants D, A removes B, D's post-grant content — returns `Voided`, not `Forked` (no fork
      in D's chain) and not `Unknown` (the store has resolved it); a genuinely forked event in
      the same store returns `Forked`, so the two not-applied answers stay distinct;
+   - **a forked configuration event makes the projection undefined** (finding 32): a writer-set
+     version stands at owner-chain seq 5, a fork invalidates the `view.exception` published at
+     seq 10, and a stranger's claim named by that exception is **not** counted — `project` is
+     `undefined` because `config_applied(C, R)` fails. The negative control is the same fixture
+     with the `config_applied` conjunct removed: the excepted stranger's claim counts and the test
+     fails, so the config gate is exercised rather than assumed. A second fixture keeps `S` forked
+     and `C` healthy and asserts the same `undefined`, so the two "undefined" causes are one rule
+     with two inputs, not one input checked twice;
    - the **emergency stop takes two acts** (finding 24): `entries=[Public], excludes=[Public]` in v2
      leaves v1-admitted claims counted, and a `target: Public` rescind then erases them — the test
      asserts the intermediate total is *not* zero, because an earlier draft claimed it was;
@@ -1286,8 +1353,10 @@ Each is independently reviewable and small enough to land alone.
      `rescind` erases **no** dog claim.
 5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
    labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
-   **10k distinct keys → 10k clusters, one bounded page, honest `total_authors`** (the one that
-   fails today).
+   **10k distinct keys → 10k clusters, one bounded page** (the one that fails today). Plus the
+   `total_authors` bound: a scan that finishes inside `MAX_AUTHORS_SCANNED` reports `Exact`, one
+   that does not reports `AtLeast` and stops at the cap — the negative control is an implementation
+   that counts all matching distinct authors, which fails the cap assertion on the 10k-key fixture.
 6. **`Tier` decision function** (§D7) with the reference-holding rule (§6), built on
    `prune_behind_cut`'s existing "protect dependencies and active backlinks" contract
    ([`event_store/mod.rs:527-545`](../../pkgs/id/src/event_store/mod.rs)) — give it a
@@ -1300,6 +1369,14 @@ Each is independently reviewable and small enough to land alone.
      would drop it either keeps it or refuses, and `project(view, R)` stays defined afterwards. The
      negative control is the same fixture with the root rule removed — `project` becomes undefined
      and the test fails on that, so the rule is exercised rather than assumed.
+   - **a view's *resolution* inputs outlive the same cut** (finding 31): pin Dave's claim from the
+     `voiding_scenarios.rs` shape, where Alice's concurrent removal voids it; the removal is
+     neither counted nor a config ancestor of anything, so only the resolution-root term keeps it.
+     Prune to a cut that would drop it, then re-derive the saved projection: it must still be
+     reproducible and Dave's claim still `Voided`. The negative control is the same fixture with
+     the resolution-root term removed — reconstructing `R` without the removal **restores** the
+     claim's applicability and the saved total changes, so the test fails on that, not on a missing
+     row.
 7. **The did-it tracker's first view** as the first real consumer, in
    [#2031](https://github.com/developing-today/code/issues/2031)'s PoC — the proof that one
    identity's view excludes a third party's claims while keeping them retrievable.
@@ -1321,7 +1398,7 @@ nothing.
 | 2 | `Excludes(Public)` was described as "everyone except these", but with exclusions winning it produces an **empty** set. | **Fixed.** §D6 now states `entries=[Public], excludes=[Public]` means "count nobody", and the moderated feed is `entries=[Public], excludes=[Key…]` — two configs one entry apart, spelled out. |
 | 3 | Projection tested membership only in the *current* set snapshot, so removing an author un-counted their whole history — contradicting §3.2 and abuse case 7. | **Fixed, and it was the most serious.** §4.1's predicate became admission-history-aware (`∨ admitted(view, claim)` over the set's version prefix, in the round-1 form), with a test for it in slice 4. Rounds 2–4 refined that into `seen_by`/`admitted_at`; the requirement it introduced — retrieval must reach removed authors' claims — was only completed in round 4 (finding 13). |
 | 4 | Group expansion prescribed `Members::members(group)`, a **current-state** query, so a later group change would alter an unchanged set version's expansion. | **Fixed.** New §4.5 requires frontier-aware `is_member_at`/`access_at_position`, states the replay cost honestly, and keeps `members(group)` for current-state questions only. |
-| 5 | Author-grouping was claimed to answer a 10k-**key** flood, but 10k distinct keys yield 10k clusters. | **Fixed by narrowing the claim.** §5.1 now scopes grouping to single-key floods, specifies bounded cursor pagination with an honest `total_authors`, and **retains the multi-key flood as an explicitly unsolved risk** routed to OQ-7 / #2032-#2033. The abuse-case table's row 2 verdict was downgraded accordingly. |
+| 5 | Author-grouping was claimed to answer a 10k-**key** flood, but 10k distinct keys yield 10k clusters. | **Fixed by narrowing the claim.** §5.1 now scopes grouping to single-key floods, specifies bounded cursor pagination with a `total_authors` marked `Exact`/`AtLeast` (round 11 bounded it), and **retains the multi-key flood as an explicitly unsolved risk** routed to OQ-7 / #2032-#2033. The abuse-case table's row 2 verdict was downgraded accordingly. |
 | 6 | `TagIndex` covers tags only, so the did-it tracker's `didit.record` events would project to nothing. | **Fixed.** §4.2 now specifies a kind-generic `AuthorEvents` index built by ranging `events` per author, with `TagIndex` demoted to a tag-specific adapter on top; slice 3's test asserts a `didit.record` comes back. |
 
 **Review round 2** (Codex, on the round-1 fix commit) found three defects **introduced or left by
@@ -1421,8 +1498,8 @@ earlier rounds left open. Accepted.
 
 Round 8 is why "counted" cannot be the only definition of hot: countedness is a property *of the
 view*, and a view's inputs are not claims it counts. The retention model needs `roots = counted ∪
-pinned ∪ excepted ∪ config inputs`, and the fourth term is the one that only appears when you try
-to re-derive a served number after pruning.
+pinned ∪ excepted ∪ config inputs ∪ resolution inputs`, and the fourth and fifth terms are the ones
+that only appear when you try to re-derive a served number after pruning — round 11 found the fifth.
 
 **Round 9** (Codex, on the round-8 fix commit `57e7c331`) found two more P2s. Neither was
 introduced by a fix; both are places the earlier rounds never reached — a bound stated in prose
@@ -1455,7 +1532,21 @@ Three citation errors found in self-review were also corrected (`chain.rs` decod
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what ten rounds actually shows.** Every round found a real defect, and rounds 2–8 each
+**Round 11** (Codex, on the round-10 fix commit `073fff5f`, plus one CodeRabbit minor) found three
+more P2s and one minor. All four accepted and fixed; none dismissed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 31 | §D7's retention roots covered a served view's **configuration and writer-set versions** but not the **membership-action inputs its pinned `R` consumed**. Alice's concurrent removal of Bob voids Dave's claim without any fork, and the removal is neither counted nor an ancestor of the configuration, the selected set version, or the retained claims — so every earlier root rule leaves it `Cold`, pruning deletes it, and reconstructing `R` **restores** Dave's applicability instead of reproducing the saved total. | **Fixed.** §D7's third term now names **every membership-action event in `R`'s snapshot** (§3.4's identifier hashes exactly that set) as a retention root while any served view names that `R`, plus its causal dependencies through the same `prune_behind_cut` contract. The root set is stated as `counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs`, and slice 6 gained the `voiding_scenarios.rs` fixture whose negative control is the saved total changing after the prune. |
+| 32 | §4.1 gated the selected **set** version (`S.set_seq ∈ versions(S)`) but never the selected **configuration** event. A fork at owner-chain seq 10 that invalidates a `view.exception` published there leaves `S` (seq 5) healthy while the exception still counts a stranger's claim — a rejected owner-chain branch continuing to steer the total. | **Fixed.** New `config_applied(C, R) ⇔ applied(R, C.config_event_id)` in §4.1, with `C` re-stated as `(config_event_id, scopes, exceptions)`. A forked configuration event makes `project` **undefined**, for exactly the reason a forked `S` already did — one rule applied to the view's two selected events. §4.4 states that an exception therefore does not fire if its publishing event is invalidated, and slice 4 gained the test with its negative control. |
+| — | **CodeRabbit (minor, §5.1):** `total_authors` was required to be "honest" with no definition, while the only index is `(author, seq)` and `subject` is a stored value — so an exact distinct-author total would require reading every matching claim before the first page. | **Fixed by bounding it.** `total_authors` is now `TotalAuthors { Exact, n } \| { AtLeast, n, scanned }` over a scan capped at `MAX_AUTHORS_SCANNED` (a #2032 value), the row-2 compute bound is restated as `O(MAX_AUTHORS_SCANNED)`, and slice 5's test asserts `AtLeast` on the 10k-key fixture. Exactness would need a subject-keyed author index and is stated as a separate, priced option — not silently assumed. |
+
+Round 11 is the first round where two findings are **the same shape applied to a different input**:
+`S` was gated and `C` was not (finding 32), and the config inputs were rooted and the resolution
+inputs were not (finding 31). Both are the "name *all* of what you name" lesson of rounds 9–10,
+reaching the two halves of the tuple that had only ever been treated as static context.
+
+**A note on what eleven rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
@@ -1485,13 +1576,21 @@ completeness:
 4. **The resolution-state plumbing** (§4.5, §4.6, §D4). `R` has to reach more places than any other
    input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6 each
    found a place it had not reached; round 10 found its identifier naming only the fork-proof
-   half of its inputs. Any remaining input evaluated without `R` is a reproducibility
-   bug of the same shape as findings 16 and 23.
+   half of its inputs, and round 11 found its *inputs* unrooted in the retention model. Any
+   remaining input evaluated without `R` is a reproducibility bug of the same shape as findings
+   16, 23 and 31.
 5. **The retention root set** (§D7, §6). Counting is a property of *this view*, so "hot iff counted"
-   can never protect the inputs a view is defined over; round 8 found that and the fix is stated as
-   an open shape (`counted ∪ pinned ∪ excepted ∪ config inputs`) rather than as an implemented
+   can never protect the inputs a view is defined over; round 8 found that for the configuration
+   inputs and round 11 for the resolution inputs, and the fix is stated as an open shape
+   (`counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs`) rather than as an implemented
    predicate. Where the root set is computed — per server, per served view, or from a durable index
    of served views — is not specified, and a server that loses that index loses the guarantee.
+6. **The `config_applied` gate** (§4.1). It is the newest rule (round 11), and it is the first one
+   that makes the *configuration* half of `C` subject to fork validity rather than only to
+   `config_seq`. Whether a fork that invalidates a config event should make the view `undefined`
+   (as chosen) or fall back to the previous *applied* configuration event is a real alternative:
+   the fallback is more available but silently re-points the view at a configuration nobody
+   selected, which is why it was rejected here. Recorded as the place a reviewer should attack.
 
 ---
 
