@@ -1563,7 +1563,7 @@ mod tests {
             ));
             journal
                 .append(&JournalEntry::ExecutionProfile {
-                    profile: profile.clone(),
+                    profile,
                 })
                 .unwrap();
         }
