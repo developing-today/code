@@ -17,9 +17,19 @@
 #   restart it, running its dependency step first when its dependency
 #   inputs changed (bun install for the aggregator, setup-deps for the
 #   projector).
+# - Redeploys are owed until they succeed (#2391): if a service's
+#   dependency step fails, that service is NOT restarted in that run;
+#   the redeploy is recorded in the state dir and retried on every
+#   subsequent run — including runs where HEAD does not move — until
+#   the dependency step and the restart both succeed. A failed restart
+#   is likewise recorded and retried. While any redeploy is owed, the
+#   run FAILS LOUDLY (non-zero exit) so the state is visible in the
+#   journal instead of a silent WARN with exit 0.
 set -uo pipefail
 REPO="${PM_GIT_SYNC_REPO:-$HOME/git/code}"
 BUN="${PM_GIT_SYNC_BUN:-/run/current-system/sw/bin/bun}"
+SYSTEMCTL="${PM_GIT_SYNC_SYSTEMCTL:-systemctl}"
+STATE_DIR="${PM_GIT_SYNC_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/pm-git-sync}"
 cd "$REPO" || {
   echo "pm-git-sync: FAIL cannot cd $REPO"
   exit 1
@@ -39,11 +49,93 @@ if ! git fetch origin --quiet; then
   echo "pm-git-sync: FAIL git fetch origin in $REPO"
   exit 1
 fi
+
+# --- owed redeploys (#2391) -------------------------------------------------
+# One record per unit: $STATE_DIR/owed-<unit>, line 1 = subtree,
+# line 2 = dependency step (may be empty). Records are written only
+# from the fixed dep-step templates below, never from outside input.
+owed_file() { echo "$STATE_DIR/owed-$1"; }
+
+record_owed() { # <unit> <subtree> <dep-step-or-empty>
+  mkdir -p "$STATE_DIR"
+  printf '%s\n%s\n' "$2" "$3" >"$(owed_file "$1")"
+}
+
+clear_owed() { # <unit>
+  local f
+  f="$(owed_file "$1")"
+  if [ -e "$f" ]; then rm -f "$f"; fi
+}
+
+ATTEMPTED=" "
+
+# attempt_redeploy <subtree> <unit> <dep-step-or-empty>
+# Runs the dependency step (when given) and then the restart. A failed
+# dependency step aborts the restart. Any failure records the redeploy
+# as owed; success clears any owed record.
+attempt_redeploy() {
+  local subtree="$1" unit="$2" dep="$3"
+  ATTEMPTED="$ATTEMPTED$unit "
+  if [ -n "$dep" ]; then
+    if (cd "$subtree" && eval "$dep"); then
+      echo "pm-git-sync: dep step done for $subtree"
+    else
+      echo "pm-git-sync: FAIL dep step failed for $subtree — $unit NOT restarted; redeploy owed"
+      record_owed "$unit" "$subtree" "$dep"
+      return 1
+    fi
+  fi
+  if "$SYSTEMCTL" --user restart "$unit"; then
+    echo "pm-git-sync: $unit restarted ($subtree)"
+    clear_owed "$unit"
+    return 0
+  fi
+  echo "pm-git-sync: FAIL $unit restart failed — redeploy owed"
+  record_owed "$unit" "$subtree" "$dep"
+  return 1
+}
+
+# Retry every owed redeploy not already attempted in this run.
+retry_owed() {
+  local f unit subtree dep
+  for f in "$STATE_DIR"/owed-*; do
+    if [ ! -e "$f" ]; then continue; fi
+    unit="${f##*/owed-}"
+    case "$ATTEMPTED" in
+      *" $unit "*) continue ;;
+    esac
+    subtree="$(sed -n '1p' "$f")"
+    dep="$(sed -n '2p' "$f")"
+    echo "pm-git-sync: retrying owed redeploy for $unit ($subtree)"
+    attempt_redeploy "$subtree" "$unit" "$dep" || true
+  done
+}
+
+owed_summary() { # prints owed unit names, one per line
+  local f
+  for f in "$STATE_DIR"/owed-*; do
+    if [ -e "$f" ]; then echo "${f##*/owed-}"; fi
+  done
+}
+
+# finish <ok-message>: retry owed redeploys, then exit loudly while
+# any redeploy is still owed.
+finish() {
+  retry_owed
+  local owed
+  owed="$(owed_summary)"
+  if [ -n "$owed" ]; then
+    echo "pm-git-sync: FAIL redeploy(s) still owed for: $(echo "$owed" | tr '\n' ' ')"
+    exit 1
+  fi
+  echo "$1"
+  exit 0
+}
+
 old="$(git rev-parse HEAD)"
 new="$(git rev-parse origin/main)"
 if [ "$old" = "$new" ]; then
-  echo "pm-git-sync: ok clean main, up to date at $old"
-  exit 0
+  finish "pm-git-sync: ok clean main, up to date at $old"
 fi
 if ! git pull --ff-only origin main; then
   echo "pm-git-sync: FAIL git pull --ff-only $old -> $new in $REPO"
@@ -54,14 +146,7 @@ echo "pm-git-sync: updated $old -> $new"
 redeploy() { # <subtree> <unit> <dep-step-or-empty>
   local subtree="$1" unit="$2" dep="$3"
   git diff --name-only "$old" "$new" -- "$subtree" | grep -q . || return 0
-  if [ -n "$dep" ]; then
-    (cd "$subtree" && eval "$dep") &&
-      echo "pm-git-sync: dep step done for $subtree" ||
-      echo "pm-git-sync: WARN dep step failed for $subtree"
-  fi
-  systemctl --user restart "$unit" &&
-    echo "pm-git-sync: $unit restarted ($subtree changed)" ||
-    echo "pm-git-sync: WARN $unit restart failed"
+  attempt_redeploy "$subtree" "$unit" "$dep" || true
 }
 
 # The aggregator installs with bun when its dependency inputs change.
@@ -87,3 +172,5 @@ redeploy pm-stack/projector pm-projector.service "$proj_dep"
 # files are rendered by dispatch/install.sh, not on git pulls — a
 # subtree change is a plain restart.
 redeploy pm-stack/dispatch pm-dispatch.service ""
+
+finish "pm-git-sync: updated $old -> $new, redeploys complete"
