@@ -1,12 +1,11 @@
-// Tests for opencode-route-proxy (#2229).
+// Tests for opencode-route-proxy (#2518, routing-only rebuild).
 // Run: node --test bin/opencode-route-proxy.test.mjs
 //
-// Locally-answered paths (health, model list, malformed bodies, unknown
-// routes) never reach an upstream. The completion paths run against a
-// fake OpenCode server (plain HTTP, the v2 shapes the proxy reads):
-// finish:"error" propagation, finish_reason mapping, the request
-// deadline aborting a stalled upstream, and client disconnect
-// interrupting the upstream session.
+// The proxy resolves routes from a fixture opencode.jsonc and calls
+// fake LEAF providers (plain OpenAI-compatible HTTP servers). There is
+// no OpenCode server anywhere in this setup: completions must succeed
+// purely by routing, and every attempt must land in the fixture
+// route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -16,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,317 +29,334 @@ const freePort = () =>
     });
   });
 
-const startProxy = async (opts = {}) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-route-proxy-test-"));
-  const serviceFile = path.join(tmp, "service-prod.json");
-  fs.writeFileSync(serviceFile, JSON.stringify({ password: "test-only" }));
+// A fake leaf provider. Records what it received; behavior switchable.
+const makeLeaf = (name, expectedKey) => {
+  const leaf = {
+    name,
+    mode: "ok", // ok | rate
+    last: null,
+    hits: 0,
+    server: null,
+    port: 0,
+  };
+  leaf.server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => {
+      leaf.hits++;
+      let body = {};
+      try {
+        body = JSON.parse(raw || "{}");
+      } catch {}
+      leaf.last = { headers: req.headers, body, url: req.url };
+      if (req.headers.authorization !== `Bearer ${expectedKey}`) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "bad key" } }));
+      }
+      if (leaf.mode === "rate") {
+        res.writeHead(429, {
+          "content-type": "application/json",
+          "retry-after": "30",
+        });
+        return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (body.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const chunk = (delta, usage) =>
+          `data: ${JSON.stringify({
+            id: "chatcmpl-x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: body.model,
+            choices: [
+              {
+                index: 0,
+                delta,
+                finish_reason: usage ? "stop" : null,
+              },
+            ],
+            ...(usage ? { usage } : {}),
+          })}\n\n`;
+        res.write(chunk({ role: "assistant", content: name }));
+        res.write(
+          chunk({}, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }),
+        );
+        return res.end("data: [DONE]\n\n");
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl-x",
+          object: "chat.completion",
+          created: 1,
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: { role: "assistant", content: name },
+            },
+          ],
+          usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+        }),
+      );
+    });
+  });
+  return new Promise((resolve) => {
+    leaf.server.listen(0, "127.0.0.1", () => {
+      leaf.port = leaf.server.address().port;
+      resolve(leaf);
+    });
+  });
+};
+
+const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
+  id integer PRIMARY KEY AUTOINCREMENT,
+  time_started integer NOT NULL, time_ended integer NOT NULL,
+  session_id text, assistant_message_id text,
+  route_id text NOT NULL, provider_id text NOT NULL, model_id text NOT NULL,
+  variant text, outcome text NOT NULL,
+  error_tag text, error_code text, error_status integer, error_message text,
+  retryable integer, output_started integer NOT NULL,
+  failed_over_to text, first_token_ms real, response_ms real,
+  tokens_per_second real, tokens_input integer, tokens_output integer,
+  tokens_reasoning integer, tokens_cache_read integer, tokens_cache_write integer,
+  quota text, tokens_estimated integer, error_body text, hedged integer,
+  cost_usd real)`;
+
+const startProxy = async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
+  const leafA = await makeLeaf("LEAF-A", "key-a");
+  const leafB = await makeLeaf("LEAF-B", "key-b");
+
+  const dbPath = path.join(tmp, "opencode.db");
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec(
+    `CREATE TABLE credential (id integer PRIMARY KEY, integration_id text, label text, value text, active integer);
+     ${ROUTE_ATTEMPT_SCHEMA}`,
+  );
+  db.prepare(
+    "INSERT INTO credential (integration_id, label, value, active) VALUES (?,?,?,1)",
+  ).run("leafB", "test", JSON.stringify({ key: "key-b", type: "api_key" }));
+  db.close();
+
+  const configPath = path.join(tmp, "opencode.jsonc");
+  fs.writeFileSync(
+    configPath,
+    `{
+  // Fixture config: comments and trailing commas on purpose.
+  "disabled_providers": ["leafOff"],
+  "provider": {
+    "leafA": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
+      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } } },
+    },
+    "leafB": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1" },
+      "models": { "m-b": {} },
+    },
+    "leafOff": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1", "apiKey": "key-b" },
+      "models": { "m-b": {} },
+    },
+  },
+  "experimental": {
+    "model_routes": {
+      "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
+      "t-variant": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "variants": { "medium": "high" } } ] },
+      "t-nested": { "selection": "ordered", "targets": ["opencode-route/t-ordered"] },
+      "t-disabled": { "selection": "ordered", "targets": ["leafOff/m-b", "leafB/m-b"] },
+    },
+  },
+}`,
+  );
+
   const port = await freePort();
   const env = {
     ...process.env,
     HOME: tmp,
     OPENCODE_ROUTE_PROXY_PORT: String(port),
-    OPENCODE_ROUTE_PROXY_SERVER: opts.server || "http://127.0.0.1:1",
-    OPENCODE_SERVICE_FILE: serviceFile,
+    OPENCODE_ROUTE_PROXY_CONFIG: configPath,
+    OPENCODE_ROUTE_PROXY_DB: dbPath,
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
   };
-  if (opts.timeoutMs)
-    env.OPENCODE_ROUTE_PROXY_TIMEOUT_MS = String(opts.timeoutMs);
-  const child = spawn(process.execPath, [path.join(binDir, "opencode-route-proxy.mjs")], {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(
+    process.execPath,
+    [path.join(binDir, "opencode-route-proxy.mjs")],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
   let log = "";
-  child.stdout.on("data", (d) => {
-    log += d;
-  });
-  child.stderr.on("data", (d) => {
-    log += d;
-  });
+  child.stdout.on("data", (d) => (log += d));
+  child.stderr.on("data", (d) => (log += d));
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 50; i++) {
     try {
       const res = await fetch(`${base}/health`);
-      if (res.ok) return { child, base };
-    } catch {
-      /* not up yet */
-    }
+      if (res.ok) break;
+    } catch {}
     await new Promise((r) => setTimeout(r, 100));
+    if (i === 49) throw new Error(`proxy did not start: ${log}`);
   }
-  child.kill("SIGKILL");
-  throw new Error(`proxy did not start: ${log}`);
-};
-
-test("health, models, 404, and bad requests are answered locally", async () => {
-  const { child, base } = await startProxy();
-  try {
-    const health = await fetch(`${base}/health`);
-    assert.equal(health.status, 200);
-    assert.equal((await health.json()).service, "opencode-route-proxy");
-
-    const models = await fetch(`${base}/v1/models`);
-    assert.equal(models.status, 200);
-    const ids = (await models.json()).data.map((m) => m.id);
-    assert.ok(ids.includes("workhorse"), `models should advertise workhorse, got ${ids}`);
-
-    const missing = await fetch(`${base}/nope`);
-    assert.equal(missing.status, 404);
-
-    const badJson = await fetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{not json",
-    });
-    assert.equal(badJson.status, 400);
-
-    const empty = await fetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: "workhorse", messages: [] }),
-    });
-    assert.equal(empty.status, 400);
-  } finally {
-    child.kill("SIGKILL");
-  }
-});
-
-test("unreachable OpenCode server surfaces as 502, not a hang or crash", async () => {
-  const { child, base } = await startProxy();
-  try {
-    const res = await fetch(`${base}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: "opencode-route/workhorse",
-        messages: [{ role: "user", content: "hello" }],
-      }),
-    });
-    assert.equal(res.status, 502);
-    const body = await res.json();
-    assert.ok(body.error?.message, "502 should carry an error message");
-  } finally {
-    child.kill("SIGKILL");
-  }
-});
-
-test("malformed request shapes get a 400 and the proxy survives", async () => {
-  const { child, base } = await startProxy();
-  try {
-    const shapes = [
-      "null",
-      JSON.stringify({ messages: { role: "user", content: "hi" } }),
-      JSON.stringify({ messages: [null] }),
-      JSON.stringify(["not", "an", "object"]),
-    ];
-    for (const body of shapes) {
-      const res = await fetch(`${base}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-      });
-      assert.equal(res.status, 400, `shape ${body} should be a 400`);
-    }
-    const health = await fetch(`${base}/health`);
-    assert.equal(health.status, 200, "proxy must still be alive");
-  } finally {
-    child.kill("SIGKILL");
-  }
-});
-
-// A fake OpenCode server speaking just the v2 shapes the proxy reads.
-// `behavior.wait(res)` / `behavior.messages(res)` shape the turn; the
-// session lifecycle calls are counted for cleanup assertions.
-const startFakeOpenCode = async (behavior) => {
-  const calls = { creates: 0, prompts: 0, interrupts: 0, deletes: 0 };
-  const json = (res, status, obj) => {
-    res.writeHead(status, { "content-type": "application/json" });
-    res.end(JSON.stringify(obj));
+  const attempts = () => {
+    const ro = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = ro
+      .prepare(
+        "SELECT route_id, provider_id, model_id, variant, outcome, error_tag, session_id, failed_over_to, output_started FROM route_attempt ORDER BY id",
+      )
+      .all();
+    ro.close();
+    return rows;
   };
-  const server = createServer((req, res) => {
-    const p = new URL(req.url, "http://127.0.0.1").pathname;
-    if (p === "/api/session" && req.method === "POST") {
-      calls.creates++;
-      return json(res, 200, { data: { id: "ses_fake" } });
-    }
-    if (p === "/api/session/ses_fake/prompt") {
-      calls.prompts++;
-      return json(res, 200, {});
-    }
-    if (p === "/api/session/ses_fake/interrupt") {
-      calls.interrupts++;
-      return json(res, 200, {});
-    }
-    if (p === "/api/session/ses_fake" && req.method === "DELETE") {
-      calls.deletes++;
-      return json(res, 200, {});
-    }
-    if (p === "/api/experimental/session/ses_fake/wait")
-      return behavior.wait(res);
-    if (p === "/api/session/ses_fake/message")
-      return behavior.messages(res);
-    res.writeHead(404);
-    res.end();
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  return { server, calls, base: `http://127.0.0.1:${port}` };
+  const post = (payload) =>
+    fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  const cleanup = async () => {
+    child.kill("SIGKILL");
+    leafA.server.close();
+    leafB.server.close();
+  };
+  return { base, post, attempts, leafA, leafB, cleanup };
 };
 
-const postCompletion = (base, init = {}) =>
-  fetch(`${base}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "opencode-route/workhorse",
-      messages: [{ role: "user", content: "hello" }],
-    }),
-    ...init,
-  });
+const MSGS = [
+  { role: "system", content: "be terse" },
+  { role: "user", content: "hello" },
+];
 
-test("a finish:error turn surfaces as a proxy error with the upstream text", async () => {
-  const fake = await startFakeOpenCode({
-    wait: (res) => {
-      res.writeHead(204);
-      res.end();
-    },
-    // The v2 error shape (aggregator fixture): the failed assistant
-    // message carries finish:"error"; the error text rides on the
-    // accompanying idle message.
-    messages: (res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify([
-          {
-            id: "m3",
-            type: "idle",
-            error: { type: "unknown", message: "429 subscription quota exhausted" },
-          },
-          { id: "m2", type: "assistant", finish: "error", content: [] },
-          { id: "m1", type: "user", text: "go" },
-        ]),
-      );
-    },
-  });
-  const { child, base } = await startProxy({ server: fake.base });
+test("health and model list are served locally", async () => {
+  const p = await startProxy();
   try {
-    const res = await postCompletion(base);
-    assert.equal(res.status, 502, "an errored turn must not be a 200 completion");
-    const body = await res.json();
-    assert.match(body.error?.message || "", /quota exhausted/);
-    assert.equal(fake.calls.deletes, 1, "the errored session is cleaned up");
+    const health = await (await fetch(`${p.base}/health`)).json();
+    assert.equal(health.ok, true);
+    const models = await (await fetch(`${p.base}/v1/models`)).json();
+    const ids = models.data.map((m) => m.id);
+    assert.ok(ids.includes("workhorse"));
+    assert.ok(ids.every((id) => !id.startsWith("opencode-route/")));
   } finally {
-    child.kill("SIGKILL");
-    fake.server.close();
+    await p.cleanup();
   }
 });
 
-test("upstream finish values map to finish_reason (length stays length)", async () => {
-  const fake = await startFakeOpenCode({
-    wait: (res) => {
-      res.writeHead(204);
-      res.end();
-    },
-    messages: (res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify([
-          {
-            id: "m2",
-            type: "assistant",
-            finish: "length",
-            tokens: { input: 3, output: 4 },
-            content: [{ type: "text", text: "truncated ans" }],
-          },
-          { id: "m1", type: "user", text: "go" },
-        ]),
-      );
-    },
-  });
-  const { child, base } = await startProxy({ server: fake.base });
+test("ordered route serves from the first leaf, messages verbatim", async () => {
+  const p = await startProxy();
   try {
-    const res = await postCompletion(base);
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
     assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.choices[0].message.content, "truncated ans");
-    assert.equal(body.choices[0].finish_reason, "length");
-    assert.equal(fake.calls.deletes, 1);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-A");
+    assert.equal(json.model, "opencode-route/t-ordered");
+    assert.deepEqual(p.leafA.last.body.messages, MSGS);
+    assert.equal(p.leafA.last.body.model, "m-a");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].provider_id, "leafA");
+    assert.equal(rows[0].session_id, null);
   } finally {
-    child.kill("SIGKILL");
-    fake.server.close();
+    await p.cleanup();
   }
 });
 
-test("the request deadline aborts a stalled upstream wait", async () => {
-  const fake = await startFakeOpenCode({
-    // The wait never answers: without an abort signal on the fetch the
-    // proxy would hold this request forever.
-    wait: () => {},
-    messages: (res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("[]");
-    },
-  });
-  const { child, base } = await startProxy({
-    server: fake.base,
-    timeoutMs: 300,
-  });
+test("429 on the first leaf fails over; both attempts recorded", async () => {
+  const p = await startProxy();
   try {
-    const started = Date.now();
-    const res = await postCompletion(base);
-    const elapsed = Date.now() - started;
-    assert.equal(res.status, 502);
-    assert.ok(
-      elapsed < 5000,
-      `deadline should cut the request near 300ms, took ${elapsed}ms`,
-    );
-    assert.ok(
-      fake.calls.interrupts >= 1,
-      "the stalled session is interrupted on timeout",
-    );
+    p.leafA.mode = "rate";
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    // leafB has no static key in config: it must be served by the
+    // credential-store key, which the leaf verifies.
+    assert.equal(p.leafB.last.headers.authorization, "Bearer key-b");
+    const rows = p.attempts();
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].outcome, "failure");
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.equal(rows[0].failed_over_to, "leafB/m-b");
+    assert.equal(rows[0].session_id, null);
+    assert.equal(rows[1].outcome, "success");
+    assert.equal(rows[1].session_id, null);
   } finally {
-    child.kill("SIGKILL");
-    fake.server.closeAllConnections();
-    fake.server.close();
+    await p.cleanup();
   }
 });
 
-test("client disconnect interrupts and deletes the upstream session", async () => {
-  const fake = await startFakeOpenCode({
-    // A healthy but slow turn: never settles, no assistant message yet.
-    wait: (res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("{}");
-    },
-    messages: (res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify([{ id: "m1", type: "user", text: "go" }]));
-    },
-  });
-  const { child, base } = await startProxy({ server: fake.base });
+test("variant remap reaches the leaf as reasoning_effort", async () => {
+  const p = await startProxy();
   try {
-    const ctl = new AbortController();
-    const pending = postCompletion(base, { signal: ctl.signal }).catch(
-      () => null,
-    );
-    await new Promise((r) => setTimeout(r, 300));
-    ctl.abort();
-    await pending;
-    // The proxy should interrupt + delete the orphaned session promptly,
-    // not when the upstream turn eventually finishes.
-    const deadline = Date.now() + 5000;
-    while (
-      (fake.calls.interrupts < 1 || fake.calls.deletes < 1) &&
-      Date.now() < deadline
-    )
+    const res = await p.post({
+      model: "opencode-route/t-variant#medium",
+      messages: MSGS,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(p.leafA.last.body.reasoning_effort, "high");
+    const rows = p.attempts();
+    assert.equal(rows[0].variant, "high");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("nested routes resolve and disabled providers are skipped", async () => {
+  const p = await startProxy();
+  try {
+    const nested = await p.post({ model: "opencode-route/t-nested", messages: MSGS });
+    assert.equal(nested.status, 200);
+    assert.equal((await nested.json()).choices[0].message.content, "LEAF-A");
+    const dis = await p.post({ model: "opencode-route/t-disabled", messages: MSGS });
+    assert.equal(dis.status, 200);
+    assert.equal((await dis.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("streaming relays SSE and records a success attempt", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({
+      model: "opencode-route/t-ordered",
+      messages: MSGS,
+      stream: true,
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.ok(text.includes("LEAF-A"));
+    assert.ok(text.includes("[DONE]"));
+    // The stream attempt is recorded just after the relay ends; poll.
+    let rows = [];
+    for (let i = 0; i < 20; i++) {
+      try {
+        rows = p.attempts();
+      } catch {}
+      if (rows.length) break;
       await new Promise((r) => setTimeout(r, 100));
-    assert.ok(
-      fake.calls.interrupts >= 1,
-      "disconnect interrupts the upstream session",
-    );
-    assert.ok(
-      fake.calls.deletes >= 1,
-      "disconnect deletes the upstream session",
-    );
+    }
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].output_started, 1);
+    assert.equal(rows[0].session_id, null);
   } finally {
-    child.kill("SIGKILL");
-    fake.server.close();
+    await p.cleanup();
+  }
+});
+
+test("unknown route and malformed bodies are rejected", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/nope", messages: MSGS });
+    assert.equal(res.status, 502);
+    assert.match((await res.json()).error.message, /unknown route/);
+    const bad = await p.post({ model: "opencode-route/t-ordered", messages: "x" });
+    assert.equal(bad.status, 400);
+  } finally {
+    await p.cleanup();
   }
 });
