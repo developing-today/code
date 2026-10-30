@@ -20,6 +20,7 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
@@ -1566,7 +1567,17 @@ export function renderRoadmap(
   grain: RoadmapGrain = "quarter",
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  reconciliation?: RoadmapReconciliation,
 ): string {
+  // #1144: when the Grist rows and the Project's Kind=Epic pool items
+  // disagree, say so on the page itself — drift the reader can see,
+  // with the full lists published in /api/roadmap.json.
+  const driftFlag =
+    reconciliation?.availability === "unavailable"
+      ? `<div class="flag">Roadmap reconciliation unavailable: ${esc(reconciliation.unavailableReason ?? "a roadmap source could not be read")} — no drift is asserted when a source read failed (#1144).</div>`
+      : reconciliation && reconciliation.drift > 0
+        ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
+        : "";
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
@@ -1594,7 +1605,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
     provenance,
     "/roadmap",
     "",
