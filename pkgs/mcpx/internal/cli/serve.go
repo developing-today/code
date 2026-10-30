@@ -629,7 +629,7 @@ func adapterTools(specs []adapter.Spec, prefixed bool) []mcpserver.Extra {
 	var out []mcpserver.Extra
 	for _, spec := range specs {
 		spec := spec
-		for _, t := range spec.Tools {
+		for _, t := range spec.ExposedTools() {
 			t := t
 			name := t.Name
 			if prefixed {

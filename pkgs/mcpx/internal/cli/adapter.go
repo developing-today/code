@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,11 +72,15 @@ func loadAdapterFiles(paths []string) ([]adapter.Spec, error) {
 // flag would have to guess which.
 func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 	sub := ""
+	rest := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		sub, args = args[0], args[1:]
+		sub, rest = args[0], args[1:]
+	}
+	if sub == "import" {
+		return adapterImport(rest)
 	}
 	fs := newFlagSet("adapter")
-	if err := parseFlags(a, fs, args); err != nil {
+	if err := parseFlags(a, fs, rest); err != nil {
 		return err
 	}
 	specs, err := a.loadAdapters()
@@ -99,8 +104,13 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 			if err := s.Probe(); err != nil {
 				state = "missing"
 			}
-			fmt.Printf("%-16s %-10s %s (%d tools)\n", s.Name, state, s.Command, len(s.Tools))
-			for _, t := range s.Tools {
+			marker := ""
+			if s.Bare {
+				marker = " bare"
+			}
+			tools := s.ExposedTools()
+			fmt.Printf("%-16s %-10s%s %s (%d tools)\n", s.Name, state, marker, s.Command, len(tools))
+			for _, t := range tools {
 				fmt.Printf("    %-14s %s\n", t.Name, firstLine(t.Description))
 			}
 		}
@@ -163,7 +173,7 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		// against what a host will see without starting anything.
 		var out []mcpserver.Tool
 		for _, s := range specs {
-			for _, t := range s.Tools {
+			for _, t := range s.ExposedTools() {
 				out = append(out, mcpserver.Tool{
 					Name:        s.Name + "_" + t.Name,
 					Description: t.Description,
@@ -200,7 +210,130 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("no adapter named %q", fs.Arg(0))
 	}
-	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools or serve", sub)
+	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools, serve or import", sub)
+}
+
+const importUsage = "usage: mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]"
+
+// adapterImport is parsed apart from the adapter command's flags: --bare
+// and friends are import's own, not registry settings, and the registry
+// flag set would refuse them before the switch ever ran.
+func adapterImport(args []string) error {
+	// Only the bare passthrough exists so far. Declaration generation
+	// from --help, completions and man pages is #1962 steps 2-5, held
+	// for the #2118 reconciliation, so anything else is refused loudly
+	// rather than emitted silently.
+	bare, description, outPath, rest, err := splitImportArgs(args)
+	if err == flag.ErrHelp {
+		fmt.Fprintln(os.Stderr, importUsage)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !bare {
+		return fmt.Errorf("mcpx adapter import only implements --bare so far: declaration generation from --help, completions and man pages is #1962 steps 2-5, pending reconciliation with #2118")
+	}
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, importUsage)
+		return fmt.Errorf("mcpx adapter import --bare takes exactly one binary")
+	}
+	spec, err := buildBareImport(rest[0], description)
+	if err != nil {
+		return err
+	}
+	doc, err := json.MarshalIndent(AdapterFile{Adapters: []adapter.Spec{spec}}, "", "  ")
+	if err != nil {
+		return err
+	}
+	doc = append(doc, '\n')
+	if outPath != "" {
+		if err := os.WriteFile(outPath, doc, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", outPath, err)
+		}
+	} else {
+		fmt.Print(string(doc))
+	}
+	fmt.Fprint(os.Stderr, bareImportWarning(spec))
+	return nil
+}
+
+// splitImportArgs partitions import's command line by hand: the standard
+// flag parser stops at the first positional, so `import --bare echo
+// --description ...` would leave --description unparsed. Import takes
+// exactly three flags, so they are lifted wherever they appear and the
+// rest must be the single binary.
+func splitImportArgs(args []string) (bare bool, description, out string, rest []string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			rest = append(rest, args[i+1:]...)
+			i = len(args)
+		case a == "--bare":
+			bare = true
+		case a == "--description" || a == "--out":
+			if i+1 >= len(args) {
+				return false, "", "", nil, fmt.Errorf("%s needs a value: %s", a, importUsage)
+			}
+			i++
+			if a == "--description" {
+				description = args[i]
+			} else {
+				out = args[i]
+			}
+		case strings.HasPrefix(a, "--description="):
+			description = strings.TrimPrefix(a, "--description=")
+		case strings.HasPrefix(a, "--out="):
+			out = strings.TrimPrefix(a, "--out=")
+		case a == "--help" || a == "-h":
+			return false, "", "", nil, flag.ErrHelp
+		case strings.HasPrefix(a, "-") && a != "-":
+			return false, "", "", nil, fmt.Errorf("unknown flag %q: %s", a, importUsage)
+		default:
+			rest = append(rest, a)
+		}
+	}
+	return bare, description, out, rest, nil
+}
+
+// buildBareImport returns the passthrough declaration `import --bare`
+// emits: the binary's basename as the name, bare set, and the caller's
+// description. A bare declaration without one is refused here, and again
+// by Spec.Validate on load, because nothing else constrains what a caller
+// can reach.
+func buildBareImport(binary, description string) (adapter.Spec, error) {
+	if strings.TrimSpace(binary) == "" {
+		return adapter.Spec{}, fmt.Errorf("usage: mcpx adapter import --bare <binary> --description \"what it is for\" [--out FILE]")
+	}
+	if strings.TrimSpace(description) == "" {
+		return adapter.Spec{}, fmt.Errorf("a description is required for --bare: say what %q is for, since bare exposes its whole argv surface", binary)
+	}
+	spec := adapter.Spec{
+		Name:        filepath.Base(binary),
+		Command:     binary,
+		Bare:        true,
+		Description: description,
+	}
+	if err := spec.Validate(); err != nil {
+		return adapter.Spec{}, err
+	}
+	return spec, nil
+}
+
+// bareImportWarning is the loud cost of a passthrough, printed to stderr
+// whenever `import --bare` emits: what the caller gives up by skipping
+// declared subcommands.
+func bareImportWarning(spec adapter.Spec) string {
+	return fmt.Sprintf(`!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING: %s is a BARE passthrough to %s: no per-subcommand validation.
+Any caller can pass ANY arguments straight through, so the binary's whole
+argv surface is exposed exactly as if they ran it themselves. Binaries with
+argv-level execution escapes (for example git -c core.pager=...) hand a
+caller the equivalent of a shell escape. Only declare programs you would let
+every caller run directly.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+`, spec.Name, spec.Command)
 }
 
 // augmentAdapters adds every declared adapter to cfg as a server of its
