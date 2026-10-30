@@ -175,6 +175,7 @@
       "::1"
     ],
     "allowedOrigins": [],
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
     "sshWaitDelay": "3s"
   },
   "consumer": {
