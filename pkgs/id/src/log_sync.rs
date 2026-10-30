@@ -928,15 +928,7 @@ mod tests {
             }
         });
         // The first arrival, however it gets here, starts the batch.
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
+        let first = rx.blocking_recv().expect("the pacer went away");
         let batch = collect_batch(first, &mut rx);
         pacer.join().unwrap();
 
@@ -962,15 +954,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
+        let first = rx.blocking_recv().expect("the pacer went away");
         let batch = collect_batch(first, &mut rx);
         pacer.join().unwrap();
 
@@ -1031,15 +1015,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
-        let first = loop {
-            match rx.try_recv() {
-                Ok(arrival) => break arrival,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("the pacer went away: {error}"),
-            }
-        };
+        let first = rx.blocking_recv().expect("the pacer went away");
         let started = std::time::Instant::now();
         let batch = collect_batch(first, &mut rx);
         let elapsed = started.elapsed();
