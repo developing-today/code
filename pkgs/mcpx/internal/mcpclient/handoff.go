@@ -294,6 +294,7 @@ func Resume(t Transport, s Session, o Options) *Client {
 	if c.probeTimeout <= 0 {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
+	c.setupRequestLimits(o)
 	c.modern.Store(s.Era == EraModern)
 	c.negotiated.Store(s.Negotiated)
 	return c

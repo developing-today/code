@@ -537,8 +537,11 @@ and a switch to turn the report off would have kept it quiet.
 | `proto.askRounds` | int | `8` | daemon | no | `--proto-ask-rounds` | `MCPX_PROTO_ASK_ROUNDS` | how many times one request may come back asking for more |
 | `proto.askTTL` | duration | `15m` | daemon | no | `--proto-ask-ttl` | `MCPX_PROTO_ASK_TTL` | *(plumbing)* how long the daemon keeps a call waiting for an answer |
 | `proto.askTimeout` | duration | `10m` | daemon | no | `--proto-ask-timeout` | `MCPX_PROTO_ASK_TIMEOUT` | how long one request may be held while a question goes unanswered |
+| `proto.elicitationPerMinute` | int | `30` | daemon | no | `--proto-elicitation-per-minute` | `MCPX_PROTO_ELICITATION_PER_MINUTE` | max elicitation requests one upstream server may make per minute, across all its sessions |
 | `proto.mcpPath` | string | `/mcp` | daemon | no | `--proto-mcp-path` | `MCPX_PROTO_MCP_PATH` | where the daemon serves MCP |
 | `proto.native` | bool | `true` | daemon | no | `--proto-native` | `MCPX_PROTO_NATIVE` | put an upstream server's questions to mcpx's own MCP client |
+| `proto.samplingPerMinute` | int | `60` | daemon | no | `--proto-sampling-per-minute` | `MCPX_PROTO_SAMPLING_PER_MINUTE` | max sampling requests one upstream server may make per minute, across all its sessions |
+| `proto.samplingSessionPerMinute` | int | `20` | daemon | no | `--proto-sampling-session-per-minute` | `MCPX_PROTO_SAMPLING_SESSION_PER_MINUTE` | max sampling requests one upstream server may make within a single session per minute |
 | `proto.serveMCP` | bool | `true` | daemon | no | `--proto-serve-mcp` | `MCPX_PROTO_SERVE_MCP` | mount mcpx's own MCP server on the daemon's listeners |
 | `proto.sessionIdle` | duration | `30m` | daemon | no | `--proto-session-idle` | `MCPX_PROTO_SESSION_IDLE` | *(plumbing)* how long an unused Streamable HTTP session is kept |
 | `proto.stateTTL` | duration | `30m` | daemon | no | `--proto-state-ttl` | `MCPX_PROTO_STATE_TTL` | *(plumbing)* how long a client may resume an interrupted request with |

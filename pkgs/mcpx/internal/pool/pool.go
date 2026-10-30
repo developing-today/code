@@ -153,6 +153,14 @@ type Pool struct {
 	// background. See WaitDrained.
 	draining sync.WaitGroup
 
+	// reqLimiter is this pool's one per-server rate-limit budget for
+	// sampling and elicitation (#2192), built lazily from the hooks'
+	// limits and handed to every client this pool creates. reqLimMu
+	// guards it alone: installServerHooks is called with p.mu held on
+	// the handoff path, so this must not take p.mu.
+	reqLimMu   sync.Mutex
+	reqLimiter *mcpclient.ServerRequestLimiter
+
 	mu        sync.Mutex
 	cond      *sync.Cond
 	instances []*Instance
@@ -516,6 +524,27 @@ func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
 	}
 	opts.Roots = h.Roots
 	opts.ProbeTimeout = h.ProbeTimeout
+	opts.ServerName = p.cfg.Name
+	opts.RequestLimits = h.RequestLimits
+	opts.RequestLimitsSet = h.RequestLimitsSet
+	opts.ServerLimiter = p.serverLimiter()
+}
+
+// serverLimiter returns the pool's shared rate-limit budget, building
+// it from the hooks' limits on first use. One pool serves one
+// configured server, so the budget is keyed by that configuration by
+// construction -- never by a name the server claims for itself.
+func (p *Pool) serverLimiter() *mcpclient.ServerRequestLimiter {
+	p.reqLimMu.Lock()
+	defer p.reqLimMu.Unlock()
+	if p.reqLimiter == nil {
+		lim := mcpclient.DefaultRequestLimits()
+		if p.Hooks != nil && (p.Hooks.RequestLimitsSet || p.Hooks.RequestLimits != (mcpclient.RequestLimits{})) {
+			lim = p.Hooks.RequestLimits
+		}
+		p.reqLimiter = mcpclient.NewServerRequestLimiter(lim)
+	}
+	return p.reqLimiter
 }
 
 // subscribeServerEvents routes what a session volunteers to the pool's hooks.
@@ -1113,6 +1142,13 @@ type Hooks struct {
 	// Eras remembers each server configuration's era across starts. Nil
 	// means every start probes.
 	Eras EraStore
+	// RequestLimits bounds each server's sampling and elicitation
+	// requests (#2192). The zero value means mcpclient's defaults,
+	// unless RequestLimitsSet marks it explicitly supplied.
+	RequestLimits mcpclient.RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied,
+	// including all-zero (enforcement disabled).
+	RequestLimitsSet bool
 }
 
 func (h *Hooks) notifications(server string) mcpclient.Notifications {

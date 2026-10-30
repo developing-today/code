@@ -688,4 +688,159 @@ func TestClientFeaturesClient(t *testing.T) {
 			}
 		})
 	}
+
+	// https://modelcontextprotocol.io/specification/2026-07-28/client/sampling#security-considerations
+	// "Clients SHOULD implement rate limiting" (#2192, split of #1957).
+	//
+	// The bound is checked here on the client once per question, in
+	// Client.answer, which both eras converge on -- so a legacy server
+	// asking on the wire and a modern one asking inside an
+	// input_required result meet the same counter. The limits are set
+	// low on purpose: the assertion is that the burst stops mid-burst
+	// and the handler stops being reached, not that some large number
+	// is eventually hit.
+	rateLimits := func(lim mcpclient.RequestLimits) mcpclient.Options {
+		o := clientOpts()
+		o.ServerName = "up"
+		o.RequestLimits = lim
+		o.RequestLimitsSet = true
+		return o
+	}
+	// askingPeer answers a sampling or elicitation question n times,
+	// counting how many reached the handler, and returns the answers.
+	// The modern era asks inside a tools/call result and needs the
+	// client to retry with the answers attached; the legacy era asks
+	// on the wire, one frame each.
+	askingPeer := func(t *testing.T, rev string, o mcpclient.Options, method, params string, n int) []map[string]any {
+		t.Helper()
+		var mu sync.Mutex
+		var reached int
+		o.OnServerRequest = func(_ context.Context, m string, p json.RawMessage) (any, error) {
+			if m != method {
+				return nil, errors.New("unexpected method " + m)
+			}
+			mu.Lock()
+			reached++
+			mu.Unlock()
+			if method == "elicitation/create" {
+				return map[string]any{"action": "decline"}, nil
+			}
+			return map[string]any{"role": "assistant", "model": "test-model",
+				"content": map[string]any{"type": "text", "text": "ok"}}, nil
+		}
+		var replies []map[string]any
+		if isModern(rev) {
+			p := newPeer(t, rev)
+			// One question per tools/call: the peer answers
+			// input_required once, then complete once the client
+			// retries with the answer attached. Asking again on the
+			// retry would loop inside the client's own retry budget
+			// and count one call as many questions.
+			asked := false
+			p.on("tools/call", func(pm map[string]any) (any, *rpcError) {
+				if asked {
+					return map[string]any{"resultType": "complete", "content": []any{}}, nil
+				}
+				asked = true
+				var pp any
+				_ = json.Unmarshal([]byte(params), &pp)
+				return map[string]any{"resultType": "input_required", "requestState": "s",
+					"inputRequests": map[string]any{"q": map[string]any{"method": method, "params": pp}}}, nil
+			})
+			c := dialClient(t, p, o)
+			// One call per question, so a refusal ends that call and
+			// the next one asks again -- the same loop a real server
+			// drives, and what makes the burst observable.
+			for i := 0; i < n; i++ {
+				asked = false
+				_, err := c.CallTool(ctxT(t), "echo", map[string]any{})
+				replies = append(replies, map[string]any{"err": err})
+			}
+		} else {
+			p := newPeer(t, rev)
+			dialClient(t, p, o)
+			var pp any
+			_ = json.Unmarshal([]byte(params), &pp)
+			for i := 0; i < n; i++ {
+				replies = append(replies, p.ask(t, method, pp))
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return append(replies, map[string]any{"reached": reached})
+	}
+
+	cli("sampling-client-rate-limit", func(t *testing.T, rev string) {
+		// Under the limit: passes, and every one reaches the handler.
+		under := askingPeer(t, rev, rateLimits(mcpclient.RequestLimits{
+			SamplingPerServer: 100, SamplingPerSession: 8, ElicitationPerServer: 100,
+		}), "sampling/createMessage", sampleParams, 2)
+		if r := asMap(under[len(under)-1]); r["reached"] != 2 {
+			t.Errorf("under-limit sampling did not reach the handler twice: %v", r["reached"])
+		}
+		// Past the per-session limit: refused, and the refusal does not
+		// reach the handler.
+		over := askingPeer(t, rev, rateLimits(mcpclient.RequestLimits{
+			SamplingPerServer: 100, SamplingPerSession: 2, ElicitationPerServer: 100,
+		}), "sampling/createMessage", sampleParams, 5)
+		if r := asMap(over[len(over)-1]); r["reached"] != 2 {
+			t.Errorf("a sampling burst past the session limit reached the handler %v times, want 2", r["reached"])
+		}
+		// The refusal is a clear error naming the setting, never a
+		// fabricated answer (a made-up sample would be indistinguishable
+		// from a real one to the server).
+		last := over[len(over)-2]
+		refused := false
+		if e := asMap(last["error"]); e != nil {
+			refused = true
+		} else if err, _ := last["err"].(error); err != nil && strings.Contains(err.Error(), "samplingSessionPerMinute") {
+			refused = true
+		}
+		if !refused {
+			t.Errorf("over-limit sampling was not refused with a clear error: %v", last)
+		}
+		// A second server's budget is its own: one server's burst must
+		// not spend another's.
+		lim := mcpclient.RequestLimits{SamplingPerServer: 100, SamplingPerSession: 2, ElicitationPerServer: 100}
+		first := askingPeer(t, rev, rateLimits(lim), "sampling/createMessage", sampleParams, 4)
+		second := askingPeer(t, rev, rateLimits(lim), "sampling/createMessage", sampleParams, 1)
+		if r := asMap(first[len(first)-1]); r["reached"] != 2 {
+			t.Errorf("server A: %v reached, want 2", r["reached"])
+		}
+		if r := asMap(second[len(second)-1]); r["reached"] != 1 {
+			t.Errorf("server B was refused by server A's burst: %v reached, want 1", r["reached"])
+		}
+	})
+
+	cli("elicitation-client-rate-limit", func(t *testing.T, rev string) {
+		// Under the limit: passes, and reaches the handler.
+		under := askingPeer(t, rev, rateLimits(mcpclient.RequestLimits{
+			SamplingPerServer: 100, SamplingPerSession: 100, ElicitationPerServer: 8,
+		}), "elicitation/create", formParams, 2)
+		if r := asMap(under[len(under)-1]); r["reached"] != 2 {
+			t.Errorf("under-limit elicitation did not reach the handler twice: %v", r["reached"])
+		}
+		// Past the per-server limit: refused before any handler, so no
+		// person is asked. A {action: "cancel"} would claim a person
+		// decided; the refusal must be an error instead.
+		over := askingPeer(t, rev, rateLimits(mcpclient.RequestLimits{
+			SamplingPerServer: 100, SamplingPerSession: 100, ElicitationPerServer: 2,
+		}), "elicitation/create", formParams, 5)
+		if r := asMap(over[len(over)-1]); r["reached"] != 2 {
+			t.Errorf("an elicitation burst past the server limit reached the handler %v times, want 2", r["reached"])
+		}
+		last := over[len(over)-2]
+		refused := false
+		if e := asMap(last["error"]); e != nil {
+			refused = true
+		} else if err, _ := last["err"].(error); err != nil && strings.Contains(err.Error(), "elicitationPerMinute") {
+			refused = true
+		}
+		if !refused {
+			t.Errorf("over-limit elicitation was not refused with a clear error: %v", last)
+		}
+		if res := asMap(last["result"]); res != nil && res["action"] == "cancel" {
+			t.Errorf("over-limit elicitation was answered cancel, claiming a person declined: %v", last)
+		}
+	})
 }
