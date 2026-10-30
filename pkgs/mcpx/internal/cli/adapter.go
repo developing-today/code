@@ -86,10 +86,10 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 	// write has to land where the running daemon reads, and the local
 	// declaration files are not the authority for a live change.
 	if sub == "add" {
-		return a.adapterAdd(ctx, args)
+		return a.adapterAdd(ctx, rest)
 	}
 	if sub == "remove" {
-		return a.adapterRemove(ctx, args)
+		return a.adapterRemove(ctx, rest)
 	}
 	fs := newFlagSet("adapter")
 	if err := parseFlags(a, fs, rest); err != nil {
