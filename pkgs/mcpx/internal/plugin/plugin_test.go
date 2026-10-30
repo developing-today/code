@@ -189,3 +189,35 @@ func TestServerEnvManifestValuesKeptBackChannelWins(t *testing.T) {
 		t.Fatalf("env merge wrong: %v", s.Env)
 	}
 }
+
+// Regression (Codex P2 on #2481): a relative paths.plugins entry must
+// yield absolute command and directory, or the transport resolves the
+// command a second time from inside the plugin directory.
+func TestDiscoverRelativeDirectoryYieldsAbsolutePaths(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plugins", "weather", ManifestFile),
+		`{"name":"weather","command":"./weather-server"}`, 0o644)
+	writeFile(t, filepath.Join(root, "plugins", "weather", "weather-server"), "#!/bin/sh\n", 0o755)
+	writeFile(t, filepath.Join(root, "plugins", "bare"), "#!/bin/sh\n", 0o755)
+	t.Chdir(root)
+
+	got, err := Discover([]string{"plugins"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 plugins, got %+v", got)
+	}
+	for _, p := range got {
+		if !filepath.IsAbs(p.Command) {
+			t.Fatalf("plugin %s command not absolute: %q", p.Name, p.Command)
+		}
+		if !filepath.IsAbs(p.Dir) {
+			t.Fatalf("plugin %s dir not absolute: %q", p.Name, p.Dir)
+		}
+		s := p.Server("", "")
+		if s.Cwd != p.Dir || !filepath.IsAbs(s.Cwd) {
+			t.Fatalf("plugin %s server cwd wrong: %q", p.Name, s.Cwd)
+		}
+	}
+}

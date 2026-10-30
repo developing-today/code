@@ -9,7 +9,7 @@ queue task 3068.
 
 ```
 created:      2026-10-29T23:05:00-05:00
-status:       verified facts + implementation map (core rewrite not started)
+status:       verified facts + implementation map (core rewrite landed in PR #2489: first slice + the tools.ts slice)
 scope:        CORE rewrite only (#1858 SET-REMAINDER is out of scope)
 ```
 
@@ -123,7 +123,7 @@ process, but the core rewrite should make rung 4 optional (off unless
 
 ## 6. Implementation map (first slice)
 
-Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/v2/`:
+Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/`:
 
 | file | contents | acceptance it satisfies |
 | --- | --- | --- |
@@ -142,10 +142,13 @@ object: hooks, `storage` map, and a fake `fetch` for the environment route.
 
 ## 7. Open questions for the implementer
 
-- **Namespace spelling** — `tool.transform(e => e.namespace("mcpx"))`: confirm
-  whether the namespace prefixes tool ids in the model's tool list or only
-  groups them, since the v1 tools are named `mcpx_exec` by hand and the
-  remainder work (`mcp.transform`) will care.
+- **Namespace spelling** — RESOLVED by the tools.ts slice, against the pin:
+  `editor.namespace({ name, description })` takes an object, and
+  `packages/core/src/tool/runtime.ts` (`effectiveName`) flattens a
+  namespaced tool to `<namespace>_<name>` in the model's tool list.
+  Registering name `exec` under namespace `mcpx` therefore yields
+  `mcpx_exec` — the v1 hand-named tools survive unchanged, and the
+  `mcp.transform` remainder work inherits the same flattening rule.
 - **Environment route reachability** — with `ctx.serverUrl` undefined (embedded
   SDK host) there is no HTTP route; decide degrade quietly vs. first-tick retry
   when a later hook reveals a URL.

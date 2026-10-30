@@ -91,6 +91,28 @@ func TestToolUseResultNeedsAToolsCarryingRequest(t *testing.T) {
 	}
 }
 
+func TestSamplingBlocksMustCarryTheirFields(t *testing.T) {
+	// A block that decodes is not necessarily a block. Codex review on
+	// PR #2443: {} and {"type":"text","text":42} both passed the result
+	// validator, closing the broker question and forwarding an invalid
+	// CreateMessageResult upstream.
+	if err := res(t, `{"role":"assistant","model":"m","content":{}}`, true, false); err == nil {
+		t.Fatal("a result whose content block has no type was accepted")
+	}
+	if err := res(t, `{"role":"assistant","model":"m","content":{"type":"text","text":42}}`, true, false); err == nil {
+		t.Fatal("a result whose text is a number was accepted")
+	}
+	if err := res(t, `{"role":"assistant","model":"m","content":{"type":"text"}}`, true, false); err == nil {
+		t.Fatal("a result whose text block carries no text was accepted")
+	}
+	if err := req(t, `{"messages":[{"role":"user","content":{"type":"text","text":42}}]}`, true); err == nil {
+		t.Fatal("a request whose text is a number was accepted")
+	}
+	if err := res(t, `{"role":"assistant","model":"m","content":[{"type":"tool_use","id":"t1"}],"stopReason":"toolUse"}`, true, true); err == nil {
+		t.Fatal("a tool_use block with no name or input was accepted")
+	}
+}
+
 func TestModelHintMismatchIsNotAFailure(t *testing.T) {
 	// Hints are expressly ignorable, so the answer's model need not be the
 	// one the request preferred.

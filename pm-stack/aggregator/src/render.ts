@@ -20,7 +20,9 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -76,7 +78,7 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES } from "./pages.ts";
+import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
@@ -105,9 +107,14 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-nav { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-nav a { color: #58a6ff; text-decoration: none; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
+.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
 nav a.active, nav a:hover { background: #21262d; }
+nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
+.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
 main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
 h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
@@ -123,6 +130,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -272,7 +280,10 @@ body.xp-plan .xpl-costcol { display: none; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
-  nav { padding: 8px 10px; }
+  nav { padding: 7px 10px; gap: 2px 8px; }
+  .navgroup + .navgroup { padding-left: 8px; }
+  .navlabel { font-size: 10px; margin-right: 2px; }
+  nav a { padding: 5px 7px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -463,6 +474,31 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
 }
 
+/**
+ * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
+ * bar order, marking the active page's section. /pages itself stays out
+ * of the bar (it is the full manifest) but is in the dropdown.
+ */
+export function navLinks(active: string, activeGroup?: string): string {
+  // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
+  // reaches it, so the bar always shows where you are (#1135).
+  const activeRoute = manifestRouteFor(active) ?? active;
+  const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
+  return groupedPages()
+    .filter((g) => g.pages.some((p) => p.id !== "pages"))
+    .map(({ group, pages }) => {
+      const anchors = pages
+        .filter((p) => p.id !== "pages")
+        .map((p) =>
+          `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
+        )
+        .join("");
+      const current = group.id === groupOfActive ? ' data-current="true"' : "";
+      return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
+    })
+    .join("");
+}
+
 function layout(
   title: string,
   body: string,
@@ -473,10 +509,10 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either.
-  const links = PAGES.filter((p) => p.id !== "pages")
-    .map((p) => `<a href="${p.route}"${p.route === active ? ' class="active"' : ""}>${esc(p.title)}</a>`)
-    .join("");
+  // in either. The bar groups its links by section (#1135) so ten pages
+  // wrap onto a second row at phone width instead of scrolling
+  // sideways, and the page's own section stays marked.
+  const links = navLinks(active);
   const options = PAGES.map(
     (p) =>
       `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
@@ -1334,10 +1370,16 @@ export function coverageHtml(coverage: SourceCoverage[]): string {
 }
 
 function itemBadge(item: GhItem): string {
+  // #1141: fixture-resolved state is invented fallback data — render it
+  // hollow (dashed, transparent) and named "unverified" so it can never
+  // be mistaken for a live badge on board/roadmap/item/program pages.
+  const unverified = item.resolution === "fixture";
   const cls = item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed";
   const kind = item.kind === "pr" ? (item.state === "merged" ? "PR merged" : "PR") : "issue";
   const draft = item.draft ? " · draft" : "";
-  return `<a class="badge ${cls}" href="${esc(item.url)}" title="${esc(item.title)}">${kind} ${esc(item.ref)}${draft}</a>`;
+  const marker = unverified ? " · unverified" : "";
+  const title = unverified ? `${item.title} (unverified — fixture state, not live GitHub data)` : item.title;
+  return `<a class="badge ${cls}${unverified ? " unverified" : ""}" href="${esc(item.url)}" title="${esc(title)}">${kind} ${esc(item.ref)}${draft}${marker}</a>`;
 }
 
 function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): string {
@@ -1373,6 +1415,11 @@ export function renderBoardBody(
     identities?: AuthorIdentity[];
   },
 ): string {
+  // #1146: finished work is not WIP — aged-out done items and the
+  // retired ROADMAP Done-table class never reach the board, whatever
+  // source assembled it (the Kaneo source filters too; see
+  // board-policy.ts). Surviving done renders collapsed, below.
+  board = applyBoardDonePolicy(board);
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
@@ -1420,6 +1467,11 @@ export function renderBoardBody(
         .join("");
       // The in-flight lane is dated by the orchestration section that
       // produced it (stamped on every synthetic entry as updatedAt).
+      if (k === "done") {
+        // Collapsed by default (#1146): a count + the last 7 days
+        // behind an expander, never a full column of finished cards.
+        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)</summary>${cards}</details>`;
+      }
       const heading =
         k === "in-flight"
           ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
@@ -1515,7 +1567,17 @@ export function renderRoadmap(
   grain: RoadmapGrain = "quarter",
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  reconciliation?: RoadmapReconciliation,
 ): string {
+  // #1144: when the Grist rows and the Project's Kind=Epic pool items
+  // disagree, say so on the page itself — drift the reader can see,
+  // with the full lists published in /api/roadmap.json.
+  const driftFlag =
+    reconciliation?.availability === "unavailable"
+      ? `<div class="flag">Roadmap reconciliation unavailable: ${esc(reconciliation.unavailableReason ?? "a roadmap source could not be read")} — no drift is asserted when a source read failed (#1144).</div>`
+      : reconciliation && reconciliation.drift > 0
+        ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
+        : "";
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
@@ -1543,7 +1605,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
     provenance,
     "/roadmap",
     "",
@@ -4661,6 +4723,11 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  const cov = view.itemsCoverage;
+  const coverageLine =
+    cov && cov.total > 0
+      ? `<strong>${cov.resolvedLive} of ${cov.total}</strong> board items resolved from live data (project pool / projector) · <strong>${cov.fixture}</strong> resolved from fixtures (rendered hollow + "unverified") · coverage ratio <strong>${cov.ratio !== null ? cov.ratio.toFixed(2) : "—"}</strong> — measured on the health prime's board resolution pass, the same pass that sets the items facet provenance (#1141).`
+      : `not measured yet — coverage is computed on the health prime's board resolution pass (#1267); a pass that resolved no tagged items reports nothing rather than inventing a ratio.`;
   const facets = view.facets
     ? freshnessChips(view.facets, [
         "board",
@@ -4694,8 +4761,10 @@ ${degraded}${modeNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
+<h2>Item resolution coverage</h2>
+<div class="card">${coverageLine}</div>
 <h2>Dashboard comments</h2>
-<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 \u2014 a pending count that never drains means the triage/poster loop is not running)</div>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
@@ -4747,14 +4816,30 @@ export function renderProjects(
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
-  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
+  // the /program index banner — without it they are silently mixed into
+  // "all" with no count and no way to view them as the gap they are.
+  const UNSET_AREA = "(unset)";
+  const unsetCount = pool.filter((p) => !p.area).length;
+  const area =
+    opts.area === UNSET_AREA && unsetCount > 0
+      ? UNSET_AREA
+      : opts.area && areas.includes(opts.area)
+        ? opts.area
+        : null;
+  const shown =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
     `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
         `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
+    ...(unsetCount > 0
+      ? [
+          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+        ]
+      : []),
   ].join("");
   if (!pool.length) {
     return layout(
@@ -4792,6 +4877,7 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 <p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(

@@ -69,6 +69,10 @@ type Recipe struct {
 	// Tools are the namespace.tool calls the body makes, which is what makes
 	// matching free text to a recipe more than a name comparison.
 	Tools []string `json:"tools,omitempty"`
+	// OptOut is set by a `@tool false` header. Recipe tools are exposed in
+	// tools/list by default -- the schema is already written down, so the
+	// useful question is how to hide one, not how to publish one.
+	OptOut bool `json:"optOut,omitempty"`
 	// Source is the file's contents. Omitted from listings, which would
 	// otherwise be dominated by it.
 	Source string `json:"source,omitempty"`
@@ -90,6 +94,12 @@ var paramDecl = regexp.MustCompile(
 // reads as a placeholder called "param".
 var declLine = regexp.MustCompile(`^\s*(?://|#|\*)\s*@param\b`)
 
+// toolDecl matches the MCP exposure marker, `@tool` on its own (on, the
+// default) or `@tool false` (off). A recipe is a tool unless its author says
+// otherwise: the schema already exists, and a repository with fifty scripts
+// is exactly the case the budget in `mcpx catalog` answers.
+var toolDecl = regexp.MustCompile(`^\s*(?://|#|\*)\s*@tool\b\s*([A-Za-z0-9]*)`)
+
 // Parse reads a script and describes it as a recipe.
 func Parse(name, path, src string) Recipe {
 	r := Recipe{Name: name, Path: path, Source: src}
@@ -99,11 +109,17 @@ func Parse(name, path, src string) Recipe {
 	for _, line := range strings.Split(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if r.Summary == "" && strings.HasPrefix(trimmed, "//") &&
-			!strings.Contains(trimmed, "@param") {
+			!strings.Contains(trimmed, "@param") && !strings.Contains(trimmed, "@tool") {
 			r.Summary = strings.TrimSpace(strings.TrimPrefix(trimmed, "//"))
 		}
 		m := paramDecl.FindStringSubmatch(line)
 		if m == nil {
+			if t := toolDecl.FindStringSubmatch(line); t != nil {
+				switch strings.ToLower(t[1]) {
+				case "false", "off", "no", "0":
+					r.OptOut = true
+				}
+			}
 			continue
 		}
 		p := Placeholder{Name: m[1], Type: normaliseType(m[3]), Required: true}
@@ -239,7 +255,9 @@ func refs(src string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, line := range strings.Split(src, "\n") {
-		if declLine.MatchString(line) {
+		if declLine.MatchString(line) || toolDecl.MatchString(line) {
+			// Declaration and marker lines describe the recipe; the
+			// `@param`/`@tool` words in them are not placeholders.
 			continue
 		}
 		for i := 0; i < len(line); i++ {
@@ -275,6 +293,12 @@ func isWordByte(b byte) bool {
 	return b == '_' || b == '$' ||
 		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
+
+// ExposesTool says whether this recipe belongs in tools/list.
+//
+// Default on: a recipe already carries a typed schema, so hiding it should
+// take a line somebody wrote. `@tool false` is that line.
+func (r Recipe) ExposesTool() bool { return !r.OptOut }
 
 // Missing lists the placeholders a set of values does not supply and that
 // have no default to fall back on.

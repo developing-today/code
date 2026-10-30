@@ -155,6 +155,94 @@ describe("recordsFromEntries", () => {
   });
 });
 
+describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
+  const T1 = "2026-10-28T05:00:00.000Z";
+  const T2 = "2026-10-28T05:15:00.000Z";
+  const T3 = "2026-10-28T05:30:00.000Z";
+  const T4 = "2026-10-28T05:45:00.000Z";
+  const cred = (credentialId: string, pct: number, tickIso: string) =>
+    entryFromResult(
+      {
+        providerId: "claude",
+        providerName: "Claude",
+        ok: true,
+        configured: true,
+        fetchedAt: Date.parse(tickIso),
+        credentialId,
+        usage: { windows: { "5h": { usedPercent: pct, windowSeconds: 18_000, resetAt: 1793452260000 } } },
+      },
+      tickIso,
+    );
+
+  test("two ok credentials, constant 10/20: tick 1 appends one max record, ticks 2+ append none", () => {
+    let state = new Map<string, string>();
+    const ticks = [T1, T2, T3, T4];
+    const counts: number[] = [];
+    for (const tick of ticks) {
+      const { records, appended } = recordsFromEntries([cred("cred_a", 10, tick), cred("cred_b", 20, tick)], state, "quota-gatherer");
+      counts.push(records.length);
+      if (tick === T1) {
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({ serviceId: "anthropic:claude-pro", metricId: "5h", value: 20 });
+      }
+      // Replicate the caller merge (gather-quota.ts): stored stamp
+      // updates only when the tick appended records.
+      if (records.length) for (const [k, v] of appended) state.set(k, v);
+    }
+    expect(counts).toEqual([1, 0, 0, 0]);
+  });
+
+  test("entry order reversal produces the identical tick-1 record", () => {
+    const fwd = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const rev = recordsFromEntries([cred("cred_b", 20, T1), cred("cred_a", 10, T1)], new Map(), "quota-gatherer");
+    expect(fwd.records).toHaveLength(1);
+    expect(rev.records).toEqual(fwd.records);
+  });
+
+  test("equal values tie-break to the lowest credentialId", () => {
+    const fwd = recordsFromEntries([cred("cred_a", 20, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const rev = recordsFromEntries([cred("cred_b", 20, T1), cred("cred_a", 20, T1)], new Map(), "quota-gatherer");
+    expect(fwd.records).toHaveLength(1);
+    expect(fwd.records[0].value).toBe(20);
+    // The max is the same either way; the tie-break only decides
+    // which credential's row backs the record, deterministically.
+    expect(rev.records).toEqual(fwd.records);
+  });
+
+  test("single-credential constant case appends once then zero", () => {
+    const first = recordsFromEntries([cred("cred_a", 10, T1)], new Map(), "quota-gatherer");
+    expect(first.records).toHaveLength(1);
+    const state = new Map(first.appended);
+    for (const tick of [T2, T3]) {
+      expect(recordsFromEntries([cred("cred_a", 10, tick)], state, "quota-gatherer").records).toHaveLength(0);
+    }
+  });
+
+  test("max credential moving 20->25 appends exactly once", () => {
+    const first = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    expect(first.records).toHaveLength(1);
+    const state = new Map(first.appended);
+    const moved = recordsFromEntries([cred("cred_a", 10, T2), cred("cred_b", 25, T2)], state, "quota-gatherer");
+    expect(moved.records).toHaveLength(1);
+    expect(moved.records[0].value).toBe(25);
+    const settled = new Map([...state, ...moved.appended]);
+    expect(recordsFromEntries([cred("cred_a", 10, T3), cred("cred_b", 25, T3)], settled, "quota-gatherer").records).toHaveLength(0);
+  });
+
+  test("non-max credential moving 10->15 with the max unchanged appends zero", () => {
+    const first = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const state = new Map(first.appended);
+    const { records } = recordsFromEntries([cred("cred_a", 15, T2), cred("cred_b", 20, T2)], state, "quota-gatherer");
+    expect(records).toHaveLength(0);
+  });
+
+  test("one recordsFromEntries call never emits two records for the same serviceId|window key", () => {
+    const { records } = recordsFromEntries([cred("cred_a", 10, T1), cred("cred_b", 20, T1)], new Map(), "quota-gatherer");
+    const keys = records.map((r) => `${r.serviceId}|${r.metricId}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
 describe("entryFromFileExport (Meta #1301 convention)", () => {
   const okDoc = {
     service: "meta",

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dezren39/mcpx/internal/nearmiss"
 )
 
 // Placeholder is a name that may appear in a launcher template as @name.
@@ -391,71 +393,19 @@ func checkUnknown(t Template, fill Fill) error {
 
 // looksLikePlaceholder is a near-miss test against the known names. It is
 // deliberately narrow: the cost of a false positive is refusing a valid
-// launcher, which is worse than letting an odd @word through.
+// launcher, which is worse than letting an odd @word through. The test
+// itself is the shared one in internal/nearmiss (#1904): equality after
+// normalisation, the prefix rule, or Damerau-Levenshtein distance at most
+// one -- the transposition case ("entyr" for "entry") is one edit there,
+// where this file used to keep its own pair of helpers to say the same
+// thing.
 func looksLikePlaceholder(name string) bool {
-	lower := strings.ToLower(name)
 	for _, p := range All {
-		known := strings.ToLower(string(p))
-		if lower == known {
-			return true
-		}
-		if len(lower) > 2 && (strings.HasPrefix(known, lower) || strings.HasPrefix(lower, known)) {
-			return true
-		}
-		if editDistanceAtMostOne(lower, known) || isTransposition(lower, known) {
+		if nearmiss.Near(name, string(p)) {
 			return true
 		}
 	}
 	return false
-}
-
-// isTransposition catches a swapped pair, which plain edit distance scores as
-// two changes. Swaps are among the most common typos -- "entyr" for "entry" --
-// so treating them as one is what makes the check useful.
-func isTransposition(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var diff []int
-	for i := range a {
-		if a[i] != b[i] {
-			diff = append(diff, i)
-			if len(diff) > 2 {
-				return false
-			}
-		}
-	}
-	return len(diff) == 2 && diff[1] == diff[0]+1 &&
-		a[diff[0]] == b[diff[1]] && a[diff[1]] == b[diff[0]]
-}
-
-func editDistanceAtMostOne(a, b string) bool {
-	if a == b {
-		return true
-	}
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	if len(b)-len(a) > 1 {
-		return false
-	}
-	i, j, edits := 0, 0, 0
-	for i < len(a) && j < len(b) {
-		if a[i] == b[j] {
-			i++
-			j++
-			continue
-		}
-		edits++
-		if edits > 1 {
-			return false
-		}
-		if len(a) == len(b) {
-			i++
-		}
-		j++
-	}
-	return true
 }
 
 func max(a, b int) int {

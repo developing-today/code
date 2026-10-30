@@ -25,6 +25,11 @@ export type GhKind = "issue" | "pr";
 export type GhState = "open" | "closed" | "merged";
 
 /** Live state of one GitHub issue or PR, as the projector projects it. */
+/** Per-item resolution source (#1141): which tier of Source.items()
+ *  produced a GhItem. "pool" and "projector" are live data; "fixture"
+ *  is invented fallback state and must never render as if it were live. */
+export type ItemResolution = "pool" | "projector" | "fixture";
+
 export interface GhItem {
   ref: RefKey;
   kind: GhKind;
@@ -42,6 +47,10 @@ export interface GhItem {
   projectArea?: string | null;
   projectHorizon?: string | null;
   projectKind?: string | null;
+  /** How this item was resolved (#1141). Absent = the source did not
+   *  say (e.g. whole-source fixtures mode, whose provenance already
+   *  reports fixtures for every facet). */
+  resolution?: ItemResolution;
 }
 
 /**

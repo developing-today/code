@@ -92,7 +92,7 @@ func (a *App) Connect(ctx context.Context, opt ConnectOptions) (*Client, *Ladder
 	if opt.Endpoint != "" {
 		start := time.Now()
 		c := NewClientAt(paths, a.ConfigPath, opt.Endpoint)
-		if c.Ping(ctx) {
+		if c.reachable(ctx) {
 			record("url", opt.Endpoint, start, nil)
 			l.Chosen = "url"
 			return c, l, nil
@@ -238,6 +238,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	}
 	paths := a.Paths
 	paths.Socket = filepath.Join(dir, "d.sock")
+	a.daemonSocket = paths.Socket
 
 	// A discarding logger. A daemon's operational chatter belongs in its
 	// log file; in-process it would land in the middle of the command's own

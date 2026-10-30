@@ -33,7 +33,12 @@ The runtime stage adds `ca-certificates`, copies in `bun` and `mcpx`, drops
 to an unprivileged user, and sets `ENTRYPOINT ["mcpx"]`. It has no git; §3
 says why that is not a loss.
 
+The build context is the module directory, because the Containerfile copies
+`go.mod` and builds `./cmd/mcpx` — both relative to `pkgs/mcpx`, not to the
+repository root:
+
 ```
+cd pkgs/mcpx
 docker build -f Containerfile -t mcpx .
 docker run --rm mcpx --version
 docker run --rm -v "$PWD/.mcpx.json:/work/.mcpx.json:ro" mcpx ls

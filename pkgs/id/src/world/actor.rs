@@ -5,8 +5,45 @@ use std::sync::Arc;
 
 use anyhow::{Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+
+impl WorldCommand {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Issue { .. } => "Issue",
+            Self::Attenuate { .. } => "Attenuate",
+            Self::DelegateToFriend { .. } => "DelegateToFriend",
+            Self::Directory { .. } => "Directory",
+            Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::Revoke { .. } => "Revoke",
+            Self::ParticipantId { .. } => "ParticipantId",
+            Self::Chat { .. } => "Chat",
+            Self::Input { .. } => "Input",
+            Self::Snapshot { .. } => "Snapshot",
+            Self::EventsAfter { .. } => "EventsAfter",
+            Self::ProjectEvent { .. } => "ProjectEvent",
+            Self::View { .. } => "View",
+            Self::ViewAt { .. } => "ViewAt",
+            Self::InstallProgram { .. } => "InstallProgram",
+            Self::Presence { .. } => "Presence",
+            Self::UpdateCaps { .. } => "UpdateCaps",
+            Self::SetCapsCeiling { .. } => "SetCapsCeiling",
+            Self::SetExecutionProfile { .. } => "SetExecutionProfile",
+            Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::CapsInfo { .. } => "CapsInfo",
+            Self::SetIsolation { .. } => "SetIsolation",
+            Self::IsolationInfo { .. } => "IsolationInfo",
+            Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
+            Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
+            Self::SetFileScope { .. } => "SetFileScope",
+            Self::PolicyInfo { .. } => "PolicyInfo",
+            Self::Metrics { .. } => "Metrics",
+            Self::Shutdown { .. } => "Shutdown",
+        }
+    }
+}
 
 pub(crate) enum WorldCommand {
     Issue {
@@ -272,7 +309,12 @@ impl WorldActor {
             }
             self.metrics.record_queue_depth(receiver.len() as u64);
             let started = std::time::Instant::now();
-            self.handle(command).await;
+            let name = command.name();
+            async {
+                self.handle(command).await;
+            }
+            .instrument(tracing::info_span!("command", name))
+            .await;
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
@@ -1164,10 +1206,26 @@ impl WorldActor {
                                 if let Some(text) = &view {
                                     if text.len() > self.core.limits.presentation_bytes {
                                         self.view_failures = self.view_failures.saturating_add(1);
-                                        Err(anyhow::anyhow!(
-                                            "world presentation exceeds {} bytes",
-                                            self.core.limits.presentation_bytes
-                                        ))
+                                        // A trapping layout degrades to an error screen and does not poison the world.
+                                        // Fall back to the default view, and crop to the requested dimensions.
+                                        match self.program.view(&viewer) {
+                                            Ok(fallback_view) => {
+                                                if let Some(fallback_text) = fallback_view {
+                                                    if let Ok(Some(crate::world_presentation::WorldSurface::Screen(surface))) = crate::world_presentation::parse_surface(&fallback_text) {
+                                                        let cropped = surface.fit(usize::from(width), usize::from(height));
+                                                        Ok(Some(serde_json::to_string(&cropped).unwrap_or(fallback_text)))
+                                                    } else {
+                                                        Ok(Some(fallback_text))
+                                                    }
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                            Err(error) => {
+                                                Err(error
+                                                    .context("world program view fallback failed"))
+                                            }
+                                        }
                                     } else {
                                         Ok(view)
                                     }
