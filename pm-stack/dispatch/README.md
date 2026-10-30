@@ -72,13 +72,27 @@ for a session that launched, nor `claimed` without a session id.
   "priority": 40,                       // optional, same mapping as above
   "model": "deepseek/deepseek-chat",    // optional; stored as payload.model_hint only
   "issue": false,                       // optional; default false
-  "dedupe_key": "…"                     // optional; default: canonical key from the
+  "dedupe_key": "…",                    // optional; default: canonical key from the
                                         // created issue, else a unique dispatch key
+  "issue_number": 123                   // optional; attach to this existing issue
+                                        // in repo instead of creating one (see below)
 }
 ```
 Returns `201 {task_id, issue_number|null, queue}`. With `issue: true`
 the issue is created first (labels `queue/queued` + `source/dispatch`)
 and gets an agent-note comment naming the task id.
+
+With `issue_number` set, no issue is created: the task attaches to
+that existing issue in `repo` — the canonical dedupe key is derived
+from it, and after the enqueue the issue gets the same agent-note
+comment naming the task id plus the `queue/queued` and
+`source/dispatch` labels. The response is `201 {task_id,
+issue_number, issue_url, queue}`, where `issue_url` is
+`https://github.com/<repo>/issues/<issue_number>`. `issue_number`
+takes precedence over `issue` when both are sent. For dezren39/nix,
+where the GitHub App is not installed, the attach is skipped with a
+`warnings` entry; the task is still enqueued and `issue_number` is
+still returned.
 
 ### Why assignment is a direct PATCH
 The queue's `claim_repo_task` RPC claims the *next* task in a queue —
@@ -101,15 +115,58 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
 - **GitHub Actions OIDC** (preferred): a JWT from
   `token.actions.githubusercontent.com`, RS256-verified against GitHub's
   JWKS (cached), `aud` = `pm-dispatch` (env `DISPATCH_OIDC_AUDIENCE`).
-  The token's `repository` claim must be in the allowlist **and equal
-  the request body's `repo`** — a workflow can only dispatch for its own
-  repo. See `examples/dispatch-workflow.yml`.
+  The token's `repository` claim must be in the allowlist. **Grants
+  mesh:** every allowlisted repo may target every allowlisted repo —
+  the claim need not equal the request body's `repo`. Repos outside
+  the allowlist can neither call nor be targeted. Bearer callers are
+  bound only by the allowlist on the target.
+  See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a
   repo stores as a GitHub Actions secret.
 
 The caller identity (`{type:"bearer"}` or `{type:"oidc", repository,
 actor, workflow_ref}`) is recorded in the task payload.
+
+## GitHub Actions (reusable)
+
+Two composite actions in this repo wrap the dispatch endpoints so
+call sites do not hand-roll the OIDC + curl plumbing:
+
+- `.github/actions/pm-dispatch-start` ("the starter") — POSTs to
+  `/v1/sessions`; outputs `task_id`, `session_id`, `issue_number`
+  and `issue_url`.
+- `.github/actions/pm-dispatch-queue` ("the queuer") — POSTs to
+  `/v1/tasks`, including the `issue` / `issue_number` inputs;
+  outputs `task_id`, `issue_number` and `issue_url`.
+
+Usage, pinned to `@main` so fleet call sites pick up central updates:
+
+```yaml
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required — the actions mint an OIDC token (aud pm-dispatch)
+      contents: read
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        with:
+          title: "fix(widget): flaky test"
+          prompt: "Fix the flaky widget test"
+      - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: "investigate the red build"
+          prompt: "…"
+          issue_number: "123"   # optional: attach instead of creating
+```
+
+The calling job MUST grant `permissions: id-token: write`; without
+it the OIDC token-request environment is absent and the actions fail
+with a clear error. `repo` defaults to the caller's repository, and
+under the grants mesh any allowlisted repo may target any
+allowlisted repo. See `examples/dispatch-workflow.yml` for a
+complete workflow.
 
 ## Configuration (env)
 | Name | Default | Notes |
