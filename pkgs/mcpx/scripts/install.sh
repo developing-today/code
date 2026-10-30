@@ -9,6 +9,12 @@
 # Per-user by default (~/.local/bin, no sudo). The system-wide variant is
 # documented, not default:
 #
+#   curl -fsSL .../install.sh | sh -s -- --system
+#
+# --system installs into /usr/local/bin and escalates only the copy with
+# sudo when that directory is not writable. MCPX_PREFIX overrides either
+# default:
+#
 #   curl -fsSL .../install.sh | sudo MCPX_PREFIX=/usr/local/bin sh
 #
 # The checksum is verified before anything is installed. An installer that
@@ -31,7 +37,32 @@
 set -eu
 
 repo=developing-today/code
-prefix=${MCPX_PREFIX:-${HOME}/.local/bin}
+
+# Arguments: --system selects the system-wide prefix (/usr/local/bin);
+# --user is the explicit form of the default. Anything else is a mistake
+# worth refusing rather than silently installing somewhere unexpected --
+# an earlier version of this script ignored its arguments entirely, so
+# `sh -s -- --system` quietly did a per-user install (Codex finding on
+# PR #2584).
+system=0
+for arg in "$@"; do
+  case "$arg" in
+  --system) system=1 ;;
+  --user) system=0 ;;
+  *)
+    printf '%s\n' "mcpx installer: unknown argument '$arg' (expected --system or --user)" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [ -n "${MCPX_PREFIX:-}" ]; then
+  prefix=$MCPX_PREFIX
+elif [ "$system" -eq 1 ]; then
+  prefix=/usr/local/bin
+else
+  prefix=${HOME}/.local/bin
+fi
 base_url=${MCPX_BASE_URL:-}
 
 say() { printf '%s\n' "$*" >&2; }
@@ -143,16 +174,21 @@ tar -C "$tmp" -xzf "$tmp/$asset" || die "could not unpack ${asset}"
 
 # ---- install --------------------------------------------------------------
 
-mkdir -p "$prefix"
+if ! mkdir -p "$prefix" 2>/dev/null; then
+  say "  ${prefix} does not exist and cannot be created; trying sudo"
+  sudo mkdir -p "$prefix"
+fi
 if [ -w "$prefix" ]; then
   mv "$tmp/mcpx" "$prefix/mcpx"
+  chmod 0755 "$prefix/mcpx"
 else
-  # Only reachable with MCPX_PREFIX pointing somewhere unwritable; the
-  # per-user default never needs this.
+  # The per-user default never needs this; --system (or an MCPX_PREFIX
+  # pointing somewhere unwritable) escalates only this copy, exactly as
+  # docs/install.md promises.
   say "  ${prefix} is not writable; trying sudo"
   sudo mv "$tmp/mcpx" "$prefix/mcpx"
+  sudo chmod 0755 "$prefix/mcpx"
 fi
-chmod 0755 "$prefix/mcpx"
 
 installed=$("$prefix/mcpx" --version 2>/dev/null || echo "mcpx (unknown version)")
 say "  installed: ${installed} at ${prefix}/mcpx"

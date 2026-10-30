@@ -187,6 +187,34 @@ jobs:
           *) echo "::error::default resolution installed '$got', expected $version"; exit 1 ;;
           esac
 
+      - name: Install system-wide with --system
+        # docs/install.md promises `sh -s -- --system` for /usr/local/bin.
+        # The runner owns /usr/local/bin, so no sudo is needed to prove the
+        # flag selects that prefix; an unknown argument must be refused
+        # before anything is downloaded or installed.
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+        run: |
+          set -euo pipefail
+          if sh pkgs/mcpx/scripts/install.sh --bogus 2>"$RUNNER_TEMP/err"; then
+            echo "::error::the installer accepted an unknown argument"
+            exit 1
+          fi
+          grep -q "unknown argument" "$RUNNER_TEMP/err" || {
+            echo "::error::unknown-argument refusal gave the wrong error:"
+            cat "$RUNNER_TEMP/err"
+            exit 1
+          }
+          rm -f /usr/local/bin/mcpx
+          sh pkgs/mcpx/scripts/install.sh --system
+          got=$(/usr/local/bin/mcpx --version)
+          echo "system-wide install reports: $got"
+          case "$got" in
+          *"$MCPX_VERSION"*) ;;
+          *) echo "::error::system-wide install reports '$got', expected $MCPX_VERSION"; exit 1 ;;
+          esac
+
       - name: Refuse a tampered artifact
         # The installer verifies the checksum; prove it by breaking one. An
         # installer that only *says* it verifies teaches the wrong habit.
