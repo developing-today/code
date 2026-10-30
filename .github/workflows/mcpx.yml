@@ -197,7 +197,7 @@ jobs:
       # optional check; --severity=warning keeps this leg to findings that
       # are wrong rather than merely unidiomatic (the style class is
       # treefmt's shfmt job). actionlint checks these workflow files.
-      - name: go vet, golangci-lint, gofmt, shellcheck, actionlint
+      - name: go vet, gofmt, shellcheck, actionlint
         run: |
           # The cgroups feature is enabled in the installer step's
           # extra-conf above (the daemon enforces it); the flag here
@@ -207,7 +207,6 @@ jobs:
           nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
             cd pkgs/mcpx
             go vet ./...
-            golangci-lint run
             unformatted=$(gofmt -l .)
             if [ -n "$unformatted" ]; then
               echo "gofmt would rewrite:"
@@ -217,6 +216,22 @@ jobs:
             cd ../..
             shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
             actionlint
+          '
+
+      # golangci-lint runs, but is NOT blocking yet — explicitly, per
+      # #1996's acceptance fallback. Its first full run (PR #2718, run
+      # 41131293079) reported 119 pre-existing findings across the
+      # module (errcheck 50, staticcheck 50, unused 17, ineffassign 2),
+      # far beyond this slice's baseline. They are filed as #2836;
+      # when #2836 lands, this step loses `continue-on-error` and the
+      # leg becomes fully blocking. Until then the findings print on
+      # every run, visible but not gating.
+      - name: golangci-lint (non-blocking until #2836)
+        continue-on-error: true
+        run: |
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            golangci-lint run
           '
 
   plugin:
