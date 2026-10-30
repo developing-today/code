@@ -15,6 +15,7 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
+  poolFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
@@ -23,7 +24,7 @@ import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { applyCloudflareExport, applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
-import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
+import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
@@ -740,7 +741,9 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // the Project (whose items carry their linked issue's state).
       const out = new Map<RefKey, GhItem>();
       const feed = await getFeed();
-      const pool = (feed?.projects ?? []).filter(isProjectPoolItem);
+      // #2399: the pool enters through the single feed gate (fail-soft,
+      // edge-aware), shared with projects() below.
+      const pool = poolFromFeed(feed);
       if (pool.length && refs.length) {
         const byRef = new Map(pool.map((p) => [p.ref, p] as const));
         for (const ref of refs) {
@@ -786,7 +789,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     },
     async projects(): Promise<ProjectPoolItem[]> {
       const feed = await getFeed();
-      return (feed?.projects ?? []).filter(isProjectPoolItem);
+      return poolFromFeed(feed);
     },
     async comments(refs) {
       if (cfg.projector.baseUrl) {
