@@ -36,6 +36,11 @@ type Client struct {
 	// endpoint is empty for the local socket, or a base URL for a daemon
 	// somewhere else.
 	endpoint string
+	// ssh, when set, is the ssh:// endpoint this client dials; sshURL is
+	// the endpoint as the user wrote it, which is what errors report (the
+	// http URL the transport uses is an internal placeholder).
+	ssh    *daemon.SSHEndpoint
+	sshURL string
 	// lazySocket, for an in-process (inline) client, opens the daemon's
 	// socket on first use and returns its path. Inline mode creates no
 	// socket for its own calls; only a script — a child process, which
@@ -156,6 +161,36 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 					return d.DialContext(ctx, "unix", sock)
 				},
 				MaxIdleConns: set.Int("http.idleConns"), IdleConnTimeout: idle,
+			},
+		}
+		return c
+	}
+	// An ssh:// endpoint (issue #1880) tunnels the same HTTP API through
+	// the operator's own ssh, so a remote daemon needs no listening port
+	// and no new credential. The system ssh binary is the transport: its
+	// agent, ssh_config, known_hosts and bastion rules already describe
+	// who may reach that host.
+	if ep, isSSH, perr := daemon.ParseSSHEndpoint(c.endpoint); isSSH {
+		c.ssh = &ep
+		c.sshURL = ep.String()
+		dialer := daemon.NewSSHDialer(ep)
+		var dial func(context.Context, string, string) (net.Conn, error)
+		if perr != nil {
+			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }
+		} else {
+			dial = dialer.DialContext
+		}
+		c.endpoint = "http://" + dialer.Address()
+		c.hc = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: dial,
+				// One ssh process per connection, reused while it lives:
+				// starting ssh costs a handshake, so it is worth keeping
+				// an idle one exactly as a VPN endpoint is.
+				MaxIdleConns:        set.Int("http.remoteIdleConns"),
+				MaxIdleConnsPerHost: set.Int("http.remoteIdleConns"),
+				IdleConnTimeout:     idle,
 			},
 		}
 		return c
@@ -392,6 +427,18 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.ssh != nil {
+			// Say what was tried. Over ssh the interesting failure is
+			// usually on the far side -- no daemon on that socket, or no
+			// mcpx on that PATH -- and "unreachable" alone sends the
+			// reader looking at the wrong machine.
+			_, derr := c.do(ctx, http.MethodGet, "/v1/health", nil)
+			if derr == nil {
+				derr = ErrNoDaemon
+			}
+			return fmt.Errorf("no mcpx daemon at %s (remote command: %s): %v; it is not started from here",
+				c.sshURL, strings.Join(c.ssh.RemoteCommand(), " "), derr)
 		}
 		return fmt.Errorf("no mcpx daemon at %s; it is not started from here", c.endpoint)
 	}
