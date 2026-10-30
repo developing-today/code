@@ -270,16 +270,18 @@ describe.skipIf(!live)("DaemonOps against a real daemon", () => {
     const marker = `mark-${process.pid}-${Date.now()}`
 
     const first = await c.exec(
-      `const r = await demo.open({ value: ${JSON.stringify(marker)} }); r`,
+      `const r = await demo.open({ value: ${JSON.stringify(marker)} }); console.log(JSON.stringify(r))`,
       session,
     )
     expect(first).toBeDefined()
     expect(first?.runId).toBeTruthy()
     expect(renderExec(first as NonNullable<typeof first>)).toContain("opened")
 
-    const second = await c.exec("await demo.state({})", session)
+    const second = await c.exec("console.log(JSON.stringify(await demo.state({})))", session)
     expect(renderExec(second as NonNullable<typeof second>)).toContain(marker)
-  })
+    // Two script runs, each paying a runtime start; bun's 5s default covers
+    // one on a warm machine and nothing more.
+  }, 30_000)
 
   test("an artifact round-trips byte for byte", async () => {
     const c = client()
