@@ -5,35 +5,43 @@ laptop **now**, or just enqueue work into the Supabase repo-health queues —
 either way the work is tracked by a queue task and (usually) a GitHub
 issue, so nothing runs untracked and no queue worker double-books it.
 
-Lives in `pm-stack/dispatch/`, deployed on the laptop next to the
-aggregator (`~/pm-stack/dispatch`, user unit `pm-dispatch.service`,
-port 4879, loopback + tailnet bind only).
+Lives in `pm-stack/dispatch/`. On the laptop (`amd`), the
+`pm-dispatch.service` user unit is declared by the NixOS pm-stack
+module (`nixos/services/pm-stack`) and runs from the primary code
+checkout (`~/git/code/pm-stack/dispatch`), like the aggregator;
+`install.sh` (below) is the fallback installer and still renders
+the env files. Port 4879, loopback + tailnet bind only, plus the
+public tunnel hostname (see Public reachability).
 
 ## Endpoints
 
 ### `GET /health`
+
 Unauthenticated. `{ ok: true, status: "ok", version: <build version> }`
 (the source commit of the deployed checkout).
 
 ### `POST /v1/sessions` — launch now
+
 Launches an OpenCode session on the laptop's standing server
 (127.0.0.1:13420) and assigns the tracking queue task immediately.
 
 Body:
+
 ```jsonc
 {
-  "repo": "developing-today/code",        // required, allowlisted fleet repo
-  "prompt": "Fix the flaky widget test",  // required
-  "title": "fix(widget): flaky test",     // optional; default: prompt's first line
-  "model": "opencode-go/gpt-5.6-luna",    // optional "provider/model" or {"providerID","id"}
-  "directory": "/home/user/git/code",     // optional; default: the repo's laptop primary
-  "priority": "high",                     // optional: 10-90 or critical|high|normal|low → 10/20/40/70
-  "issue": true,                          // optional; default true
-  "wait": true                            // optional; default true
+  "repo": "developing-today/code", // required, allowlisted fleet repo
+  "prompt": "Fix the flaky widget test", // required
+  "title": "fix(widget): flaky test", // optional; default: prompt's first line
+  "model": "opencode-go/gpt-5.6-luna", // optional "provider/model" or {"providerID","id"}
+  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary
+  "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
+  "issue": true, // optional; default true
+  "wait": true, // optional; default true
 }
 ```
 
 Flow:
+
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
    dezren39/nix, where the pm-stack GitHub App is not installed.
@@ -44,7 +52,7 @@ Flow:
    the model hint, and the directory.
 3. Create the OpenCode session (directory + model when given) and send
    the prompt, prefixed with `[dispatch] Queue task #<id> · Issue <url> ·
-   Repo <repo>` so the session knows its tracking ids.
+Repo <repo>` so the session knows its tracking ids.
 4. **Assign immediately**: the task row is PATCHed to `status: claimed`,
    `worker_id: dispatch-opencode`, `claimed_at` now, `lease_until` +6h,
    `progress: {lane: "opencode", session_id, issue_number, launched_by}`.
@@ -63,21 +71,23 @@ the response is `502 {task_id, error}` — a task is never left `queued`
 for a session that launched, nor `claimed` without a session id.
 
 ### `POST /v1/tasks` — enqueue only
+
 ```jsonc
 {
-  "repo": "developing-today/opencode",  // required
+  "repo": "developing-today/opencode", // required
   "title": "investigate the red build", // required
-  "prompt": "…",                        // required ("body" accepted as an alias)
-  "kind": "triage",                     // optional: triage|small_fix|pr_shepherd|ci_investigation
-  "priority": 40,                       // optional, same mapping as above
-  "model": "deepseek/deepseek-chat",    // optional; stored as payload.model_hint only
-  "issue": false,                       // optional; default false
-  "dedupe_key": "…",                    // optional; default: canonical key from the
-                                        // created issue, else a unique dispatch key
-  "issue_number": 123                   // optional; attach to this existing issue
-                                        // in repo instead of creating one (see below)
+  "prompt": "…", // required ("body" accepted as an alias)
+  "kind": "triage", // optional: triage|small_fix|pr_shepherd|ci_investigation
+  "priority": 40, // optional, same mapping as above
+  "model": "deepseek/deepseek-chat", // optional; stored as payload.model_hint only
+  "issue": false, // optional; default false
+  "dedupe_key": "…", // optional; default: canonical key from the
+  // created issue, else a unique dispatch key
+  "issue_number": 123, // optional; attach to this existing issue
+  // in repo instead of creating one (see below)
 }
 ```
+
 Returns `201 {task_id, issue_number|null, queue}`. With `issue: true`
 the issue is created first (labels `queue/queued` + `source/dispatch`)
 and gets an agent-note comment naming the task id.
@@ -95,7 +105,8 @@ where the GitHub App is not installed, the attach is skipped with a
 still returned.
 
 ### Why assignment is a direct PATCH
-The queue's `claim_repo_task` RPC claims the *next* task in a queue —
+
+The queue's `claim_repo_task` RPC claims the _next_ task in a queue —
 it cannot claim a specific row. A dispatch launch knows exactly which
 task it created and which session owns it, so it PATCHes that row
 directly (the service-role key can), setting the same fields a claim
@@ -110,6 +121,7 @@ indistinguishable from worker-claimed ones downstream (including
 completion with an execution record).
 
 ## Auth
+
 Every endpoint except `GET /health` requires `Authorization: Bearer …`:
 
 - **GitHub Actions OIDC** (preferred): a JWT from
@@ -179,7 +191,7 @@ jobs:
         with:
           title: "investigate the red build"
           prompt: "…"
-          issue_number: "123"   # optional: attach instead of creating
+          issue_number: "123" # optional: attach instead of creating
 ```
 
 The calling job MUST grant `permissions: id-token: write`; without
@@ -213,12 +225,12 @@ if none of the three yields non-empty text the step fails with a
 clear error. For example, with a prompt kept in the calling repo:
 
 ```yaml
-    steps:
-      - uses: actions/checkout@v4
-      - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
-        with:
-          title: "nightly triage"
-          prompt-file: "prompts/nightly-triage.md"
+steps:
+  - uses: actions/checkout@v4
+  - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+    with:
+      title: "nightly triage"
+      prompt-file: "prompts/nightly-triage.md"
 ```
 
 The primitives keep these overrides unchanged. The task action
@@ -436,19 +448,20 @@ overnight" — can later be added inside the task action without
 touching any caller.
 
 ## Configuration (env)
-| Name | Default | Notes |
-| --- | --- | --- |
-| `DISPATCH_HOSTS` | `127.0.0.1` | install.sh renders loopback + the laptop tailnet IP |
-| `DISPATCH_PORT` | `4879` | |
-| `DISPATCH_BUILD_VERSION` | `dev` | set by install.sh to the deployed commit |
-| `DISPATCH_API_TOKEN` | — | from `~/secrets/dispatch.env` |
-| `DISPATCH_OIDC_AUDIENCE` | `pm-dispatch` | |
-| `DISPATCH_REPO_ALLOWLIST` | the six fleet repos | |
-| `SUPABASE_URL` | `https://nltgxorqwxhgfzseiirt.supabase.co` | |
-| `SUPABASE_SERVICE_ROLE_KEY` | — | from `~/secrets/dispatch.env` (Bitwarden `supabase.service-role-key`) |
-| `OPENCODE_URL` | `http://127.0.0.1:13420` | laptop standing server |
-| `OPENCODE_AUTH_FILE` | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged |
-| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | — | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` |
+
+| Name                                              | Default                                     | Notes                                                                 |
+| ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------- |
+| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                   |
+| `DISPATCH_PORT`                                   | `4879`                                      |                                                                       |
+| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                              |
+| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                         |
+| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                       |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                       |
+| `SUPABASE_URL`                                    | `https://nltgxorqwxhgfzseiirt.supabase.co`  |                                                                       |
+| `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | from `~/secrets/dispatch.env` (Bitwarden `supabase.service-role-key`) |
+| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                |
+| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`            |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on code,
 opencode, openchamber and dezren39/nix — **not** developing-today/zettel
@@ -459,32 +472,45 @@ proceeds without an issue and says so in `warnings` (for `/v1/tasks`
 with `issue: true`, same behavior).
 
 ## Deploy
-On the laptop, from the primary checkout at latest `main`:
+
+On the laptop, the unit lifecycle belongs to the NixOS pm-stack
+module: `nixos-rebuild switch` deploys the module's
+`pm-dispatch.service`, which runs from the primary checkout — so a
+`git pull` in `~/git/code` (kept current by pm-git-sync) plus a
+switch is the whole deploy, and home-manager renames the old
+hand-installed unit to `*.backup`. The module does NOT render env
+files: `~/pm-stack/dispatch/.env` and `~/secrets/dispatch.env`
+are still produced by install.sh, below.
+
+Fallback (no switch): on the laptop, from the primary checkout at
+latest `main`:
+
 ```sh
 cd ~/git/code && git pull
 bash pm-stack/dispatch/install.sh
 ```
+
 install.sh copies the tree to `~/pm-stack/dispatch`, renders `.env`
 from the sops file, ensures `~/secrets/dispatch.env` exists (generating
 `DISPATCH_API_TOKEN` if absent — value never printed), installs
 `pm-stack/systemd/pm-dispatch.service` as a user unit, restarts only on
 change, and fails loudly unless `/health` reports the deployed build
-version.
+version. On `amd` that unit-install step is superseded by the
+NixOS module; the env rendering is not.
 
-## Remaining step — public reachability (Drew's)
-The service is reachable on loopback + tailnet only. For GitHub Actions
-(runners are outside the tailnet) to reach it, add a hostname to the
-existing remotely-managed Cloudflare tunnel **amd-6-pm-stack** in Drew's
-Cloudflare account:
+## Public reachability
 
-- Public hostname: `dispatch.security.cab` → `http://localhost:4879`
-
-That change lives in the tunnel's Cloudflare-side configuration and is
-deliberately not automated here. Until it exists, OIDC dispatch from
-Actions cannot reach the service; tailnet callers (the laptop itself,
-other fleet machines) can use either auth form today.
+Done (2026-10-30): the existing remotely-managed Cloudflare tunnel
+**amd-6-pm-stack** maps `dispatch.security.cab` →
+`http://localhost:4879`, so GitHub Actions (runners are outside the
+tailnet) can reach the service and use either auth form — OIDC is
+verified end to end against that hostname. Tailnet callers (the
+laptop itself, other fleet machines) can also call the loopback /
+tailnet binds directly. The tunnel connector itself is the
+`pm-tunnel` unit, declared by the same NixOS pm-stack module.
 
 ## Tests
+
 ```sh
 bun test        # auth (bearer + stubbed-JWKS OIDC + repo binding),
                 # priority mapping, model parsing, validation, packets
