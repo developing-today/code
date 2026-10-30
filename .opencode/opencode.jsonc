@@ -5281,6 +5281,9 @@
          "muse-spark-1.3": {
            "name": "Muse Spark 1.3 (muse)"
          },
+         "muse-spark-1.3-contributor": {
+           "name": "Muse Spark 1.3 Contributor (muse)"
+         },
          "muse-wonder-1.0": {
            "name": "Muse Wonder 1.0 (muse)"
          },
@@ -6555,13 +6558,16 @@
         // is ours alone and does not expire, so it is spent only
         // when every shared/expiring bucket ahead of it is walled
         // or down. Weights are moot under ordered selection.
+        // 2026-10-30 (Drew): the reserve leaf names the contributor
+        // SKU (muse/muse-spark-1.3-contributor), like every other
+        // leaf in this pool.
         "targets": [
           "opencode-go.personal/muse-spark-1.3-contributor",
           "opencode-go.lab/muse-spark-1.3-contributor",
           "opencode-go/muse-spark-1.3-contributor",
           "commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
-          "muse/muse-spark-1.3"
+          "muse/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -6781,7 +6787,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Argon / Sonnet round-robin",
+        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Flash / Sonnet round-robin",
         // 2026-10-30: the Spark leg now runs through muse-proxy
         // (provider "muse", muse/muse-spark-1.3) — the direct meta
         // door is dead (attestation; see the "muse" provider note).
@@ -6840,18 +6846,32 @@
         // configured since 2026-10-29 but the router has yet to send
         // it route traffic (direct sessions work) — that defect lives
         // in the opencode router, not in this config.
+        // 2026-10-30 (Drew): two leg changes. (1) The Spark leg moves
+        // to the contributor SKU, muse/muse-spark-1.3-contributor --
+        // probe-verified through the muse program 2026-10-30 (usage
+        // recorded against the contributor id), and muse-proxy's
+        // resolver passes the contributor id upstream verbatim since
+        // PR #2762. (2) The Gemini leg switches from Argon to Flash:
+        // Argon's first token lands at 7-9s against the router's 10s
+        // first-token failover budget (6 of 23 attempts timed out and
+        // failed over), so the leg mostly produced stalls; Drew
+        // declined raising the budget. The leg is now
+        // opencode-route/gemini-flash-plan#high
+        // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
+        // door) at the same weight 2. Argon stays seated in
+        // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "muse/muse-spark-1.3",
-          "antigravity-agy/gemini-4-argon#high",
+          "muse/muse-spark-1.3-contributor",
+          "opencode-route/gemini-flash-plan#high",
           "opencode-route/sonnet-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-route/deepseek-flash": 1,
-          "muse/muse-spark-1.3": 1,
-          "antigravity-agy/gemini-4-argon": 2,
+          "muse/muse-spark-1.3-contributor": 1,
+          "opencode-route/gemini-flash-plan": 2,
           "opencode-route/sonnet-plan": 1
         }
       },
