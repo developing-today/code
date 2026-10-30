@@ -18,9 +18,17 @@
   makeBinaryWrapper,
   installShellFiles,
 }:
+let
+  # The mcpx version, written once here (#1895): the derivation attribute
+  # below and the ldflags build stamp both take this binding, because the
+  # argument to buildGo127Module is a non-recursive attribute set and its
+  # own attributes are not in scope for interpolation inside it.
+  # internal/buildcheck keeps cmd/mcpx/main.go default in agreement.
+  version = "0.1.0";
+in
 buildGo127Module {
   pname = "mcpx";
-  version = "0.1.0";
+  inherit version;
 
   src = lib.cleanSourceWith {
     src = ./.;
