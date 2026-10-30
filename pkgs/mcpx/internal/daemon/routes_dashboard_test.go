@@ -215,3 +215,33 @@ func TestDashboardSettingsAreHot(t *testing.T) {
 		}
 	}
 }
+
+// The embedded page must carry the TUI's six views and the elicitation
+// panel (#1882): the settings slice alone left the page metrics-only, so
+// this pins the wiring to the /v1 endpoints each view reads — a view
+// renamed in the TUI or an endpoint dropped from the page fails here
+// instead of silently shipping a page that cannot show it.
+func TestHandleDashboardCarriesOperatorViews(t *testing.T) {
+	s := &Server{version: "1.2.3"}
+	w := httptest.NewRecorder()
+	s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, want := range []string{
+		// The six TUI views, as tabs.
+		`data-view="browse"`, `data-view="log"`, `data-view="stats"`,
+		`data-view="servers"`, `data-view="sessions"`, `data-view="storage"`,
+		// The /v1 endpoints those views read.
+		"/v1/namespaces", "/v1/tools", "/v1/log?limit=50",
+		"/v1/stats?dimension=", "/v1/stats?dimension=sessions",
+		"/v1/servers",
+		// Elicitation: list, answer, and the live event stream.
+		"/v1/elicit", "answerElicit", "/v1/events",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("embedded dashboard is missing %q", want)
+		}
+	}
+}
