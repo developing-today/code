@@ -2,6 +2,9 @@ package cli
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/daemon"
@@ -41,5 +44,47 @@ func TestClientAuthorize(t *testing.T) {
 	build("").authorize(req2)
 	if got := req2.Header.Get("Authorization"); got != "" {
 		t.Errorf("Authorization = %q with no token configured, want no header", got)
+	}
+}
+
+// TestEveryDaemonRequestIsAuthorized pins the Codex P2 on PR #2711:
+// authorizing open()/Stream() was not enough — Client.stream (exec.go),
+// Client.streamOp (opcmd.go) and the direct requests in feedback.go and
+// embeddings.go each built daemon requests that reached Do() without
+// authorize(), so they 401'd whenever transport.bearerToken was set.
+// Every request-construction site in this package must call authorize()
+// before the request is sent; a new unauthenticated path fails here.
+func TestEveryDaemonRequestIsAuthorized(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(data), "\n")
+		for i, ln := range lines {
+			if !strings.Contains(ln, "http.NewRequestWithContext") {
+				continue
+			}
+			found := false
+			for j := i + 1; j < len(lines) && j <= i+20; j++ {
+				if strings.Contains(lines[j], ".Do(") {
+					break
+				}
+				if strings.Contains(lines[j], "authorize(") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s:%d: daemon request created without authorize() before it is sent", file, i+1)
+			}
+		}
 	}
 }
