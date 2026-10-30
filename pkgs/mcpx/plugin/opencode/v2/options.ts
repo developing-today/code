@@ -1,10 +1,15 @@
 /**
- * Plugin options for the v2 tree: the v1 `Options` type ported verbatim from
- * mcpx-session.ts, plus the declared setting variable names.
+ * Plugin options for the v2 tree: the v1 Options type ported from
+ * mcpx-session.ts, resolved the v1 way.
  *
- * Settings guard: TestThePluginReadsNoUndeclaredSetting scans plugin/**, so
- * the v2 tree may read only the MCPX_PLUGIN_* names declared here (the same
- * names v1 reads, which are the names in internal/settings/plugin.go).
+ * Settings guard: TestThePluginReadsNoUndeclaredSetting scans plugin/**,
+ * so the v2 tree reads only the MCPX_PLUGIN_* names declared in
+ * internal/settings/plugin.go — the same names v1 reads. The reads are
+ * property accesses (env.MCPX_PLUGIN_BIN and friends), never quoted
+ * literals: TestTheScriptEnvironmentIsWhatTheCodeSets treats a quoted
+ * MCPX_* name as a variable the plugin SETS into a child's environment,
+ * and these are reads, not sets. (An earlier draft listed the names in
+ * a quoted array and failed that test on all twelve.)
  */
 export type Options = {
   /** A daemon named outright. `unix:///path` or `http://host:port`. */
@@ -32,47 +37,42 @@ export type Options = {
   headless?: boolean;
 };
 
-/** Every environment variable the plugin may read (settings-guard list). */
-export const PLUGIN_SETTING_VARS = [
-  "MCPX_PLUGIN_ANNOTATE",
-  "MCPX_PLUGIN_BACKEND",
-  "MCPX_PLUGIN_BIN",
-  "MCPX_PLUGIN_BIN_ARGS",
-  "MCPX_PLUGIN_DAEMON_TOOLS",
-  "MCPX_PLUGIN_DISCOVERY_RETRY",
-  "MCPX_PLUGIN_ENV",
-  "MCPX_PLUGIN_HEADLESS",
-  "MCPX_PLUGIN_INSTRUCTIONS",
-  "MCPX_PLUGIN_REMEMBER",
-  "MCPX_PLUGIN_TOOLS",
-  "MCPX_PLUGIN_TOOL_TIMING",
-] as const;
-
 const str = (v: unknown): string | undefined =>
   v === undefined || v === null || v === "" ? undefined : String(v);
 
+/** The v1 truthy parse: an unrecognised value is undefined, not false. */
+const truthy = (v: unknown): boolean | undefined => {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (typeof v === "boolean") return v;
+  const s = String(v).toLowerCase();
+  if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
+  return undefined;
+};
+
 /**
- * Resolve raw options the v1 way — plugin option first, then the environment
- * variable, then the caller's default — for the string-valued settings the
- * v2 core needs at setup time. Unset fields stay undefined.
+ * Resolve raw options the v1 way — plugin option first, then the
+ * environment variable, then the caller's default — for the settings
+ * the v2 core needs at setup time. Unset fields stay undefined, except
+ * toolTiming, whose v1 default is false (opt-in): a resolved false is
+ * a decision, and index.ts registers no timing hook for it.
  */
 export function resolveOptions(
   raw: Options | undefined,
   env: Record<string, string | undefined>,
 ): Options {
   const o = raw ?? {};
-  const pick = (
-    option: unknown,
-    varName: (typeof PLUGIN_SETTING_VARS)[number],
-    fallback?: string,
-  ): string | undefined => str(option) ?? str(env[varName]) ?? fallback;
   return {
     endpoint: o.endpoint,
     socket: o.socket,
-    bin: pick(o.bin, "MCPX_PLUGIN_BIN"),
-    backend: (pick(o.backend, "MCPX_PLUGIN_BACKEND", "auto") ?? "auto") as Options["backend"],
-    remember: (pick(o.remember, "MCPX_PLUGIN_REMEMBER", "session") ??
+    bin: str(o.bin) ?? str(env.MCPX_PLUGIN_BIN),
+    backend: (str(o.backend) ??
+      str(env.MCPX_PLUGIN_BACKEND) ??
+      "auto") as Options["backend"],
+    remember: (str(o.remember) ??
+      str(env.MCPX_PLUGIN_REMEMBER) ??
       "session") as Options["remember"],
-    env: (pick(o.env, "MCPX_PLUGIN_ENV") ?? undefined) as Options["env"],
+    env: (str(o.env) ?? str(env.MCPX_PLUGIN_ENV)) as Options["env"],
+    toolTiming: o.toolTiming ?? truthy(env.MCPX_PLUGIN_TOOL_TIMING) ?? false,
   };
 }

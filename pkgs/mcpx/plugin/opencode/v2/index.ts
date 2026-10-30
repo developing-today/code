@@ -17,6 +17,7 @@ import { createTimingLog, type ExecuteAfterInput } from "./timing.ts";
 /** The slice of the v2 setup Context this slice uses (promise/plugin.ts). */
 export type McpxV2Context = {
   storage: StorageLike;
+  options?: Options;
   serverUrl?: string;
   directory?: string;
   session: {
@@ -35,10 +36,11 @@ export function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): void {
     baseEnv: process.env,
   });
   const timing = createTimingLog();
-  const toolTiming = rawOptions?.toolTiming ?? true;
-  // Resolved now so later slices read settings from one place; the first
-  // slice only needs toolTiming and the remember warm read.
-  void options;
+  // toolTiming comes from the resolved options (host option, then the
+  // environment, then the v1 default false) — never a bare ?? true: a
+  // user who turned timing off gets no hook, and no records array
+  // growing for the life of the plugin instance.
+  const toolTiming = options.toolTiming ?? false;
 
   // Best-effort warm read: a remembered daemon for this directory means the
   // first discovery in the session can skip the ladder's cold rungs. The
@@ -67,6 +69,6 @@ export function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): void {
 export default {
   id: "mcpx",
   setup: (ctx: McpxV2Context) => {
-    setupMcpxV2(ctx);
+    setupMcpxV2(ctx, ctx.options);
   },
 };
