@@ -13,8 +13,17 @@ inputs:
     description: "Queue task title."
     required: true
   prompt:
-    description: "The work text (sent as the task prompt/body)."
-    required: true
+    description: "The work text (sent as the task prompt/body). One of prompt, prompt-file, or prompt-url must yield non-empty text (see the resolution order below)."
+    required: false
+    default: ""
+  prompt-file:
+    description: "Optional path to a file containing the prompt, relative to the caller's workspace (the caller must check out its repo first). Takes precedence over prompt-url and prompt; a missing or empty file fails the step."
+    required: false
+    default: ""
+  prompt-url:
+    description: "Optional https URL the prompt is fetched from (curl -fsS). Takes precedence over prompt, but not prompt-file; a fetch error or empty body fails the step."
+    required: false
+    default: ""
   model:
     description: 'Optional model hint, "provider/model" (stored as the payload model hint only).'
     required: false
@@ -55,6 +64,8 @@ runs:
         INPUT_REPO: ${{ inputs.repo }}
         INPUT_TITLE: ${{ inputs.title }}
         INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_PROMPT_FILE: ${{ inputs['prompt-file'] }}
+        INPUT_PROMPT_URL: ${{ inputs['prompt-url'] }}
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_PRIORITY: ${{ inputs.priority }}
         INPUT_KIND: ${{ inputs.kind }}
@@ -62,6 +73,45 @@ runs:
         INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
       run: |
         set -euo pipefail
+        # Resolve the prompt text. Resolution order: (1) prompt-file,
+        # (2) prompt-url, (3) the inline prompt input. A source that is
+        # selected but missing/empty/unfetchable fails loudly rather than
+        # falling through to a lower-priority source.
+        resolved_prompt=""
+        if [ -n "$INPUT_PROMPT_FILE" ]; then
+          case "$INPUT_PROMPT_FILE" in
+            /*) prompt_path="$INPUT_PROMPT_FILE" ;;
+            *) prompt_path="${GITHUB_WORKSPACE:-$PWD}/$INPUT_PROMPT_FILE" ;;
+          esac
+          if [ ! -f "$prompt_path" ]; then
+            echo "::error::pm-dispatch-queue: prompt-file not found: $INPUT_PROMPT_FILE (looked for $prompt_path; prompt-file is relative to the caller's workspace, and the caller must check out first)" >&2
+            exit 1
+          fi
+          resolved_prompt="$(cat "$prompt_path")"
+          if [ -z "$resolved_prompt" ]; then
+            echo "::error::pm-dispatch-queue: prompt-file is empty: $INPUT_PROMPT_FILE" >&2
+            exit 1
+          fi
+        elif [ -n "$INPUT_PROMPT_URL" ]; then
+          case "$INPUT_PROMPT_URL" in
+            https://*) ;;
+            *) echo "::error::pm-dispatch-queue: prompt-url must be an https URL, got: $INPUT_PROMPT_URL" >&2; exit 1 ;;
+          esac
+          if ! resolved_prompt="$(curl -fsS "$INPUT_PROMPT_URL")"; then
+            echo "::error::pm-dispatch-queue: failed to fetch prompt-url: $INPUT_PROMPT_URL" >&2
+            exit 1
+          fi
+          if [ -z "$resolved_prompt" ]; then
+            echo "::error::pm-dispatch-queue: prompt-url returned an empty body: $INPUT_PROMPT_URL" >&2
+            exit 1
+          fi
+        else
+          resolved_prompt="$INPUT_PROMPT"
+        fi
+        if [ -z "$resolved_prompt" ]; then
+          echo "::error::pm-dispatch-queue: no prompt supplied: set one of the prompt, prompt-file, or prompt-url inputs (prompt-file takes precedence over prompt-url, which takes precedence over prompt)." >&2
+          exit 1
+        fi
         if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
           echo "::error::pm-dispatch-queue: ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN are not set. The calling job must grant 'permissions: id-token: write' so this action can mint an OIDC token." >&2
           exit 1
@@ -79,7 +129,7 @@ runs:
         payload="$(jq -n \
           --arg repo "$INPUT_REPO" \
           --arg title "$INPUT_TITLE" \
-          --arg prompt "$INPUT_PROMPT" \
+          --arg prompt "$resolved_prompt" \
           --arg model "$INPUT_MODEL" \
           --arg priority "$INPUT_PRIORITY" \
           --arg kind "$INPUT_KIND" \
