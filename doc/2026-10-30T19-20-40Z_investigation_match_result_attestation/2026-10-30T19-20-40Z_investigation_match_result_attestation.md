@@ -120,8 +120,24 @@ concession, no separate object needed) → **`final`** (agreed results are
 final immediately; witnessed results become final when the window closes
 unobjected) · `witnessed` (decision issued, window open) · **`disputed`**
 (claims conflict, or an in-window objection exists) · **`void`** (a fork
-proof touches either player's match chain — the attestation built on it
-collapses automatically under existing store rules).
+proof touches a chain the result's evidence depends on — see the
+validity rule below for why this is an attestation-layer computation,
+not a store behavior).
+
+**Validity rule (attestation layer, required — not a store
+guarantee):** the store's fork rule voids the *forked author's own*
+events and reaches no other author's events
+(`src/event_store/resolve.rs`: "it reaches no other author's events";
+content naming a voided event can remain applied). A witness decision
+or a counterparty claim that *references* a forked move chain therefore
+does **not** collapse on its own. So before a counting view assigns any
+state beyond `proposed`, it must verify the whole evidence set: every
+object the state depends on (agreement, claims, decision) is itself
+valid, **and** every chain those objects reference (move chains, claim
+chains) has no fork proof at or before the referenced frontiers. If
+any referenced chain is forked, the dependent result is `void` no
+matter who authored the dependent objects. Implementing this check is
+required attestation-layer work (review fix, 2026-10-30).
 
 ```mermaid
 stateDiagram-v2
@@ -291,9 +307,12 @@ at genesis; objection window 48h with the 30-day outer cap.
    witness decides on the winner's log + recorded silence; registries
    may also simply never count a one-claim match. ✅
 3. **Player rewrites their move history after the fact** → fork proof
-   voids their chain from the fork point; result becomes `void`, and
-   the proof is the cheating evidence for #2038. ✅ — the strongest case
-   in this design, and it is free from existing store mechanics.
+   voids their own events from the fork point, and under the validity
+   rule above any result whose evidence references the forked chain is
+   `void`; the proof is the cheating evidence for #2038. ✅ — the
+   strongest case in this design: the fork proof itself is free from
+   existing store mechanics; propagating it to dependent results is
+   the attestation layer's validity check, not the store's.
 4. **Witness colludes with one player** → decision is signed; objection
    triggers audit replay (#2038) over the same logs + logic hash; a
    decision contradicted by replay is permanent signed evidence against
