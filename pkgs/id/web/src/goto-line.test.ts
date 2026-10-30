@@ -4,10 +4,11 @@
  * Tests plugin creation, dialog lifecycle, and command execution.
  */
 
+import type { Node as PMNode, Schema } from "prosemirror-model";
 import { EditorState } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { afterEach, describe, expect, it } from "vitest";
-import { rawSchema } from "./editor";
+import { rawSchema, richSchema } from "./editor";
 import { createGotoLinePlugin, destroyGotoLineDialog } from "./goto-line";
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -134,7 +135,20 @@ describe("go-to-line command", () => {
     expect(handled).toBe(true);
   });
 
-  it("creates a .goto-line-dialog element in the container", () => {
+  it("associates its label with the line input", () => {
+    const { view, container } = createViewWithGotoLine("line1\nline2");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const label = container.querySelector<HTMLLabelElement>(".goto-line-label");
+    const input = container.querySelector<HTMLInputElement>("#goto-line-input");
+    expect(label?.htmlFor).toBe("goto-line-input");
+    expect(input?.labels?.[0]).toBe(label);
+  });
+
+  it("creates a .goto-line-dialog element in the container with dialog accessibility attributes", () => {
     const { view, container } = createViewWithGotoLine("line1\nline2\nline3");
     views.push(view);
     containers.push(container);
@@ -144,6 +158,8 @@ describe("go-to-line command", () => {
 
     const dialog = container.querySelector(".goto-line-dialog");
     expect(dialog).not.toBeNull();
+    expect(dialog?.getAttribute("role")).toBe("dialog");
+    expect(dialog?.getAttribute("aria-label")).toBe("Go to line");
   });
 
   it("dialog contains an input element", () => {
@@ -249,12 +265,41 @@ describe("dialog input interaction", () => {
 
     // After: cursor should have moved (to line 2 start)
     // In rawSchema: doc > code_block > text "first\nsecond\nthird"
-    // Line 2 starts at text offset 6 ("first\n" = 6 chars), doc pos = 6 + 2 = 8
+    // The code_block sits at pos 0 and its text starts at pos 1, so
+    // line 2 (text offset 6, after "first\n") starts at doc pos 7.
+    // (#745: the old textContent + 2 mapping landed one char into the
+    // line, at pos 8.)
     const posAfter = view.state.selection.from;
-    expect(posAfter).toBe(8);
+    expect(posAfter).toBe(7);
   });
 
-  it("Enter with line 1 moves cursor to position 0", () => {
+  it.each([
+    ["0", "zero"],
+    ["-3", "negative"],
+    ["2.9", "fractional"],
+    ["999", "out of range"],
+    ["", "empty"],
+  ])("Enter with %s (%s) does not move the cursor and keeps the dialog open", (value) => {
+    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    input.value = value;
+    const posBefore = view.state.selection.from;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    // #712: invalid input must not be silently reinterpreted (0 -> line 1,
+    // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
+    expect(view.state.selection.from).toBe(posBefore);
+    expect(dialog.style.display).not.toBe("none");
+  });
+
+  it("Enter with line 1 moves cursor to the first line start", () => {
     const { view, container } = createViewWithGotoLine("first\nsecond");
     views.push(view);
     containers.push(container);
@@ -266,14 +311,153 @@ describe("dialog input interaction", () => {
 
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 
-    // Line 1 → getLineStartPos returns 0, doc pos = 0
-    // But the selection needs to be a valid position inside the code_block, which is pos 2
-    // Actually getLineStartPos returns 0 for line <= 1, and the command does: pos + 0 → docPos = 0
-    // Wait, for line 1: getLineStartPos returns 0, then TextSelection.create(doc, 0)
-    // Position 0 is before the code_block. Let's check what ProseMirror does...
-    // TextSelection.create resolves to nearest valid text position
+    // Line 1 starts at the code_block's content start: the block sits
+    // at pos 0, so its text starts at doc pos 1 (#745 doc-walk mapping).
     const posAfter = view.state.selection.from;
-    // Position 0 gets resolved to the nearest valid cursor position (pos 2 inside code_block)
-    expect(posAfter).toBeLessThanOrEqual(2);
+    expect(posAfter).toBe(1);
+  });
+});
+
+// ── Line counting outside a single code_block (#745) ───────────────
+
+describe("go-to-line across textblocks (#745)", () => {
+  /** Create a view from a pre-built doc node (any schema). */
+  function createViewFromDoc(
+    schema: Schema,
+    doc: PMNode,
+  ): {
+    view: EditorView;
+    container: HTMLElement;
+  } {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const state = EditorState.create({
+      schema,
+      doc,
+      plugins: [createGotoLinePlugin()],
+    });
+    const view = new EditorView(container, { state });
+    views.push(view);
+    containers.push(container);
+    return { view, container };
+  }
+
+  function gotoLine(container: HTMLElement, value: string): void {
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    input.value = value;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+
+  it("rich doc of three paragraphs reports 3 lines and jumps to the second paragraph", () => {
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [richSchema.text("alpha")]),
+      richSchema.node("paragraph", null, [richSchema.text("beta")]),
+      richSchema.node("paragraph", null, [richSchema.text("gamma")]),
+    ]);
+    const { view, container } = createViewFromDoc(richSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    // textContent is "alphabetagamma" (no separators) — the old count said 1.
+    expect(input.placeholder).toContain("3");
+    expect(input.max).toBe("3");
+
+    gotoLine(container, "2");
+    // Second paragraph sits at pos 7 (first is 1 + 5 + 1 wide); its text starts at 8.
+    expect(view.state.selection.from).toBe(8);
+  });
+
+  it("raw doc of two code_blocks counts every line and jumps into the second block", () => {
+    const doc = rawSchema.node("doc", null, [
+      rawSchema.node("code_block", null, [rawSchema.text("a\nb")]),
+      rawSchema.node("code_block", null, [rawSchema.text("c\nd")]),
+    ]);
+    const { view, container } = createViewFromDoc(rawSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    expect(input.max).toBe("4");
+
+    gotoLine(container, "3");
+    // Second block sits at pos 5; its text ("c") starts at pos 6.
+    expect(view.state.selection.from).toBe(6);
+
+    triggerGotoLine(view);
+    gotoLine(container, "4");
+    // "d" follows "c\n" inside the second block: pos 8.
+    expect(view.state.selection.from).toBe(8);
+  });
+
+  it("mixed rich doc: paragraph + multi-line code_block + paragraph", () => {
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [richSchema.text("intro")]),
+      richSchema.node("code_block", null, [richSchema.text("x\ny")]),
+      richSchema.node("paragraph", null, [richSchema.text("outro")]),
+    ]);
+    const { view, container } = createViewFromDoc(richSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    expect(input.max).toBe("4");
+
+    gotoLine(container, "3");
+    // code_block sits at pos 7, text starts at 8; line 3 is "y" at pos 10.
+    expect(view.state.selection.from).toBe(10);
+
+    triggerGotoLine(view);
+    gotoLine(container, "4");
+    // Trailing paragraph sits at pos 12; its text starts at pos 13.
+    expect(view.state.selection.from).toBe(13);
+  });
+
+  it("rich doc with hard_break counts as multiple lines and jumps correctly", () => {
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [
+        richSchema.text("foo"),
+        richSchema.node("hard_break"),
+        richSchema.text("bar"),
+      ]),
+      richSchema.node("paragraph", null, [richSchema.text("baz")]),
+    ]);
+    const { view, container } = createViewFromDoc(richSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    // 3 lines total: "foo", "bar", "baz"
+    expect(input.placeholder).toContain("3");
+    expect(input.max).toBe("3");
+
+    gotoLine(container, "2");
+    // First paragraph starts at pos 0, content at pos 1
+    // "foo" text size = 3, so hard_break starts at pos 4
+    // hard_break size = 1, so "bar" starts at pos 5
+    expect(view.state.selection.from).toBe(5);
+
+    triggerGotoLine(view);
+    gotoLine(container, "3");
+    // Second paragraph starts at pos 9, text "baz" at pos 10
+    expect(view.state.selection.from).toBe(10);
+  });
+});
+
+// ── Editor recreation (#718) ───────────────────────────────────────
+
+describe("goto-line dialog across editor recreation", () => {
+  it("Ctrl+G in a recreated editor shows a dialog in the new container without destroyGotoLineDialog()", () => {
+    const first = createViewWithGotoLine("first\nsecond");
+    triggerGotoLine(first.view);
+    expect(first.container.querySelector(".goto-line-dialog")).not.toBeNull();
+
+    // Production teardown (main.ts disconnect) destroys only the view —
+    // it never calls destroyGotoLineDialog(). Mirror that exactly.
+    first.view.destroy();
+    first.container.remove();
+
+    const second = createViewWithGotoLine("first\nsecond");
+    views.push(second.view);
+    containers.push(second.container);
+    triggerGotoLine(second.view);
+    expect(second.container.querySelector(".goto-line-dialog")).not.toBeNull();
+    expect(second.container.querySelector(".goto-line-input")).not.toBeNull();
   });
 });

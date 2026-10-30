@@ -1,9 +1,9 @@
 # Phased plan: from the design to a working identity system
 
 - Date: 2026-10-11 (revised after round 2 research)
-- Status: **Proposed. Awaiting the owner's approval.** Nothing in this plan has been started. Phase 0 starts when the owner signals to commit and merge the design work.
+- Status: **Execution approved by the owner on 2026-10-14.** Phases 0–8 have been implemented and merged through PR #206. Follow-up completion work is being validated in dedicated feature branches; see [`doc/2026-10-14T_platform_completion/acceptance-brief.md`](../2026-10-14T_platform_completion/acceptance-brief.md). P7.2 design is complete (implementation deferred); P7.5/P3.7 require external networks/accounts. Other unresolved implementation and protocol gaps remain listed in that brief.
 - Read with: [index](./2026-10-11T11-08-42Z_design_remaining_work.md) (every decision and open question), [explainers](./explainers.md), [BeeKEM assessment](./beekem-assessment.md), [round 2 results](./research-round2/README.md), and the task docs.
-- Copy for the repo's agent rules: `.opencode/plans/id-phased-plan.md` (the same plan, as `pkgs/id/AGENTS.md` asks).
+- This file in `doc/` is the plan of record. A duplicate copy under `.opencode/plans/id-phased-plan.md` (which `pkgs/id/AGENTS.md` asks for) was planned but never committed; later phase plans live in `.opencode/plans/` (e.g. `phase-9-portable-platform.md`).
 
 ## 1. How to read the plan
 

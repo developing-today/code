@@ -53,6 +53,140 @@ test("validateCrawlUrl percent-encodes C0 controls, space and DEL outside the ho
   }
 });
 
+test("validateCrawlUrl returns dot segments, host case and ports normalized (#633)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG resolves dot segments (literal and %2e spellings),
+  // lowercases the host, and drops the scheme's default port.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/a/../b", "http://example.com/b"],
+    ["http://example.com/%2e%2e/admin", "http://example.com/admin"],
+    ["http://example.com/a/%2e%2e/b", "http://example.com/b"],
+    ["http://example.com/a/.", "http://example.com/a/"],
+    ["http://example.com/a/..", "http://example.com/"],
+    ["http://example.com//%2e", "http://example.com//"],
+    ["HTTP://EXAMPLE.COM/Path", "http://example.com/Path"],
+    ["http://example.com:80/x", "http://example.com/x"],
+    ["https://example.com:443/x", "https://example.com/x"],
+    ["http://example.com:080/x", "http://example.com/x"],
+    ["http://example.com:08080/x", "http://example.com:8080/x"],
+    ["http://user:pass@EXAMPLE.com:80/", "http://user:pass@example.com/"],
+    // Data, not dot segments: double-encoded spellings stay verbatim.
+    ["http://example.com/%252e%252e/admin", "http://example.com/%252e%252e/admin"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
+test("validateCrawlUrl returns the root dot for both dot spellings (#647)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG host parsing decodes "%2e" to "." and serialises
+  // the DNS root dot back, so the literal and percent-encoded spellings
+  // return the same dotted URL. (IP literals serialise without one.)
+  const cases: Array<[string, string]> = [
+    ["http://example.com./", "http://example.com./"],
+    ["http://example.com./path", "http://example.com./path"],
+    ["http://example.com%2e/", "http://example.com./"],
+    ["http://example.com%2E/", "http://example.com./"],
+    ["http://example.com%2e/path", "http://example.com./path"],
+    ["http://sub.example.com%2e/", "http://sub.example.com./"],
+    ["http://8.8.8.8./", "http://8.8.8.8/"],
+    ["http://8.8.8.8%2e/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://localhost%2e/").ok, false);
+  assert.equal(validateCrawlUrl("http://example.com%2e%2e/").ok, false);
+});
+
+test("validateCrawlUrl returns the ASCII dot for literal separator spellings (#660)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG host parsing maps the literal UTS-46 separators
+  // (U+3002, U+FF0E, U+FF61) to ".", so literal spellings return the
+  // same dotted URL as their percent-encoded spellings — root dot and
+  // interior separators alike. (IP literals serialise without a root dot.)
+  const cases: Array<[string, string]> = [
+    ["http://example.com\u3002/", "http://example.com./"],
+    ["http://example.com\uff0e/", "http://example.com./"],
+    ["http://example.com\uff61/", "http://example.com./"],
+    ["http://example.com\u3002:8080/", "http://example.com.:8080/"],
+    ["http://user@example.com\uff61/", "http://user@example.com./"],
+    ["http://example\u3002com/", "http://example.com/"],
+    ["http://example\uff0ecom/path", "http://example.com/path"],
+    ["http://8\u30028\u30028\u30028/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://localhost\u3002/").ok, false);
+  assert.equal(validateCrawlUrl("http://example.com\u3002\u3002/").ok, false);
+});
+
+test("validateCrawlUrl returns the host without UTS-46 ignored codepoints (#652)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG domain-to-ASCII deletes the UTS-46 "ignored"
+  // codepoints (U+00AD, U+034F, U+180E, U+200B, U+FEFF, U+2060-...) from
+  // the host, so a spelling carrying one returns the host with the
+  // codepoint deleted — root dot, port and userinfo preserved.
+  const cases: Array<[string, string]> = [
+    ["http://exa\u200bmple.com/", "http://example.com/"],
+    ["http://exa\u00admple.com/", "http://example.com/"],
+    ["http://exa\u180emple.com/", "http://example.com/"],
+    ["http://exa\u2060mple.com/", "http://example.com/"],
+    ["http://exa\ufeffmple.com/", "http://example.com/"],
+    ["http://example.com\u200b/", "http://example.com/"],
+    ["http://exa\u200bmple.com./", "http://example.com./"],
+    ["http://example.com.\u200b/", "http://example.com./"],
+    ["http://exa\u200bmple.com:8080/path?q=1#frag", "http://example.com:8080/path?q=1#frag"],
+    ["http://user@exa\u200bmple.com/", "http://user@example.com/"],
+    ["http://8\u200b.8.8.8/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://local\u200bhost/").ok, false);
+  assert.equal(validateCrawlUrl("http://127\u200b.0.0.1/").ok, false);
+});
+
+test("validateCrawlUrl returns empty components normalized (#639)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: "/" supplied for an empty path, the empty port's colon and
+  // the empty userinfo's "@" dropped, and empty "?" / "#" markers kept
+  // (the query/fragment is present but empty).
+  const cases: Array<[string, string]> = [
+    ["http://example.com", "http://example.com/"],
+    ["https://example.com", "https://example.com/"],
+    ["http://example.com:8080", "http://example.com:8080/"],
+    ["http://example.com:/path", "http://example.com/path"],
+    ["http://@example.com/", "http://example.com/"],
+    ["http://example.com/path?", "http://example.com/path?"],
+    ["http://example.com/path#", "http://example.com/path#"],
+    ["http://example.com?", "http://example.com/?"],
+    ["http://example.com/path?#", "http://example.com/path?#"],
+    ["http://user@example.com", "http://user@example.com/"],
+    // Empty query in front of a non-empty fragment: the "?" stays
+    // before the "#" (#654 — the container's suffix re-attachment
+    // returned "path#frag?" for these spellings).
+    ["http://example.com/path?#frag", "http://example.com/path?#frag"],
+    ["http://example.com?#frag", "http://example.com/?#frag"],
+    ["http://example.com/a?#b?c", "http://example.com/a?#b?c"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
@@ -458,6 +592,25 @@ function stubFetcher(routes: Record<string, { status: number; location?: string 
   };
   return { fetchFn, seen };
 }
+
+test("fetchFollowingValidatedRedirects fetches userinfo URLs in their validated form (#622)", async () => {
+  // The Worker side of the #622 pair: validateCrawlUrl accepts
+  // userinfo targets and this helper hands the validated form —
+  // userinfo intact, for the platform fetch to turn into an
+  // Authorization: Basic header — to the fetcher, for the start URL
+  // and for redirect targets alike. (The container fetcher used to
+  // 502 every such URL; its side is pinned in the Python suite.)
+  const { fetchFn, seen } = stubFetcher({
+    "https://user:pass@example.com/start": {
+      status: 302,
+      location: "https://caf%C3%A9@example.org/final",
+    },
+    "https://caf%C3%A9@example.org/final": { status: 200 },
+  });
+  const res = await fetchFollowingValidatedRedirects("https://user:pass@example.com/start", fetchFn);
+  assert.equal(res.status, 200);
+  assert.deepEqual(seen, ["https://user:pass@example.com/start", "https://caf%C3%A9@example.org/final"]);
+});
 
 test("fetchFollowingValidatedRedirects follows public redirects, resolving relative Locations (#460)", async () => {
   const { fetchFn, seen } = stubFetcher({

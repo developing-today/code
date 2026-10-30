@@ -38,7 +38,7 @@ Run the marker search in the [templates README](/planning/workflow/templates/REA
 
 ## 3. The bookkeeping PR (step 13)
 
-On `wf/<package-slug>/$CID-s6-books`, or `-2`, `-3` if an earlier bookkeeping PR already merged (collaboration rule 4):
+On `research/<slug>/s6-<concept>-books`, or `-2`, `-3` if an earlier bookkeeping PR already merged (collaboration rule 4):
 
 - `rw item add --package "$PKG" --parent "$CID" --stage S6 --text "S6 · <UTC> — design at <path>; decisions D007–D012; <n> toss-ups in human-review.md; plan issues #<n>, #<n>"`.
 - `rw item set-status --package "$PKG" --id <item> --stage S6 --status clarified|superseded --note "<what S6 found>" --see <item or D id>` for every earlier item the design clarified or replaced. Never remove an earlier finding.

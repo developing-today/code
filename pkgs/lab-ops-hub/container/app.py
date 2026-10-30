@@ -8,6 +8,7 @@ JSON in the same shape the Worker's fallback produces. Runs only on demand
 burns container minutes only while crawling.
 """
 
+import base64
 import glob
 import ipaddress
 import json
@@ -19,7 +20,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -164,7 +165,33 @@ def validate_crawl_url(raw):
         u.port
     except ValueError:
         raise ValueError("url has an invalid port") from None
+    # Capture the host spelling as written in the netloc before
+    # extraction folds it: urlparse's hostname property already
+    # lowercases, and Python's Unicode lowercase mapping folds
+    # U+212A KELVIN SIGN to ASCII "k", so the extracted host is
+    # "k.example.com" from the start and no later step (the NFKC
+    # measurement below included) ever sees the original spelling.
+    # When that extraction fold changed the spelling and the folded
+    # form is ASCII, the return path must rebuild from the judged
+    # host exactly as it does for a mapping fold, or the raw Kelvin
+    # spelling is returned while the Worker returns the folded form
+    # it judged (#667). Scoped to ASCII for the same reason as
+    # host_was_mapped below: a fold landing on a non-ASCII host is
+    # an IDN spelling, whose return form is the separate #659
+    # question. (Plain ASCII case folds are covered too, but the
+    # normalizer already lowercases those, so the rebuild agrees.)
+    _hostport_spelling = u.netloc.rsplit("@", 1)[-1]
+    if _hostport_spelling.startswith("["):
+        _bracket_end = _hostport_spelling.find("]")
+        raw_host_spelling = (
+            _hostport_spelling[1:_bracket_end]
+            if _bracket_end != -1
+            else _hostport_spelling
+        )
+    else:
+        raw_host_spelling = _hostport_spelling.partition(":")[0]
     host = (u.hostname or "").lower()
+    has_extraction_fold = raw_host_spelling != host and host.isascii()
     # WHATWG URL parsing percent-decodes the host before judging it —
     # %65xample.com is example.com, %6cocalhost is localhost — while
     # urlparse hands the spelling through verbatim (#505, #529). Decode
@@ -215,9 +242,42 @@ def validate_crawl_url(raw):
         raise ValueError(
             f"refusing to crawl host with a character that maps to a label separator {host!r}"
         )
+    # Remember whether the (possibly percent-decoded) host carried a
+    # literal UTS-46 label separator: the mapping below translates it
+    # to ".", but the non-percent return path further down returns
+    # `raw` verbatim, so a literal spelling came back with the
+    # fullwidth character still in it while its percent-encoded
+    # spelling (and the Worker) returned the ASCII dotted form
+    # (#660 — the #647 remainder for literal spellings). When it was
+    # there, the return path rebuilds from the mapped host exactly
+    # as it does for a percent-decoded host.
+    has_literal_separator = any(c in "\u3002\uff0e\uff61" for c in host)
+    host_before_mapping = host
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
+    # The NFKC mapping folded the host to a different ASCII spelling
+    # (a fullwidth or other compatibility spelling of an ASCII name):
+    # the return path must then rebuild from the mapped host, exactly
+    # as for a percent-decoded or literal-separator host, or the raw
+    # spelling is returned while the Worker returns the form it
+    # judged (#665). Scoped to folds landing on ASCII, measured
+    # before the ignored-codepoint deletion below: IDN-internal
+    # mappings (e.g. U+0345, #596) are a separate question; the
+    # deletion's own return form is captured just below (#652).
+    host_was_mapped = host != host_before_mapping and host.isascii()
+    host_before_ignored_deletion = host
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
+    # The deletion dropped a UTS-46 "ignored" codepoint (U+00AD,
+    # U+200B, U+180E, ...) from the judged host: the return path must
+    # then rebuild from the judged host, exactly as for a
+    # percent-decoded or literal-separator host, or the raw spelling
+    # is returned while the Worker returns the form it judged — the
+    # host with the codepoint deleted (#652). (One arm is worse than
+    # a spelling divergence: U+180E cannot be IDNA-encoded at fetch
+    # time at all.) The deletion is the only change this trigger
+    # certifies — a host carrying no ignored codepoint is untouched,
+    # so ordinary IDN spellings keep their established return form.
+    has_ignored_codepoint = host != host_before_ignored_deletion
     # NFKC mapping can itself CREATE a host delimiter the earlier
     # checks never saw: _percent_decode_host refuses delimiters in
     # the decoded form, but a percent-encoded compatibility character
@@ -245,8 +305,13 @@ def validate_crawl_url(raw):
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
     # strip it before the checks so the dotted spelling cannot evade
-    # them, matching the Worker's validateCrawlUrl (#466).
-    if host.endswith("."):
+    # them, matching the Worker's validateCrawlUrl (#466). Remember
+    # that it was there: the percent-decoded return path below rebuilds
+    # the URL from this stripped host, and without the dot it returned
+    # a different URL than the literal-dot spelling (and the Worker)
+    # for the same target (#647).
+    has_root_dot = host.endswith(".")
+    if has_root_dot:
         host = host[:-1]
     if not host:
         raise ValueError("url has no host")
@@ -396,8 +461,30 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
+            # The returned form is WHATWG-normalized (#633). The root
+            # dot judging stripped is re-attached, so the percent-
+            # encoded spelling returns the same dotted form as the
+            # literal spelling and the Worker (#647). A host carrying
+            # a literal UTS-46 separator gets the same rebuild, so
+            # its root-dot and interior spellings return the ASCII
+            # dotted form too instead of the fullwidth character
+            # (#660), and a host that carried a UTS-46 ignored
+            # codepoint returns the judged host with the codepoint
+            # deleted, as the Worker returns it (#652). A host whose
+            # spelling was folded at extraction time (the Kelvin
+            # sign, #667) gets the same rebuild. (IP literals
+            # take the canonical-address return below instead, and
+            # WHATWG serializes those without a root dot, as here.)
             return _url_with_encoded_components(
-                _url_with_host(u, host) if percent_decoded else raw
+                _normalize_validated_url(
+                    _url_with_host(u, host + "." if has_root_dot else host, raw)
+                    if percent_decoded
+                    or has_literal_separator
+                    or host_was_mapped
+                    or has_ignored_codepoint
+                    or has_extraction_fold
+                    else raw
+                )
             )
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
@@ -435,9 +522,21 @@ def validate_crawl_url(raw):
         raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
-    # A percent-decoded host is fetched in its decoded form (#529).
+    # Return the judged address in its canonical form (#637): an IP
+    # literal names the same address in many spellings — inet_aton
+    # IPv4 forms (1.2.3, 134744072, 0x8.0x8.0x8.0x8, 010.0.0.010) and
+    # expanded or uppercase IPv6 forms — and the Worker's serializer
+    # returns the canonical one (dotted quad; compressed lowercase
+    # IPv6), so the URL recorded and fetched here names the judged
+    # address in that same single form instead of the caller's
+    # spelling. (A percent-decoded host is likewise fetched in its
+    # decoded form, #529.) _url_with_host re-adds the brackets for
+    # an IPv6 literal.
+    canonical = (
+        _canonical_ipv6(ip) if isinstance(ip, ipaddress.IPv6Address) else str(ip)
+    )
     return _url_with_encoded_components(
-        _url_with_host(u, host) if percent_decoded else raw
+        _normalize_validated_url(_url_with_host(u, canonical, raw))
     )
 
 
@@ -670,24 +769,225 @@ def _percent_decode_host(host):
     return decoded
 
 
-def _url_with_host(u, new_host):
+def _canonical_ipv6(ip):
+    # WHATWG's IPv6 serializer: eight lowercase hex pieces, the longest
+    # run of two or more zero pieces compressed to "::". str() of an
+    # IPv6Address is not a stable spelling of that form — newer CPython
+    # renders an IPv4-mapped address's tail as a dotted quad
+    # (::ffff:8.8.8.8) where the Worker returns hextets
+    # (::ffff:808:808) — and exploded carries the same dotted tail on
+    # those versions — so derive the hextets from the address integer,
+    # which no rendering change can reach (#637).
+    value = int(ip)
+    pieces = [format((value >> (16 * (7 - i))) & 0xFFFF, "x") for i in range(8)]
+    best_start, best_len = -1, 0
+    i = 0
+    while i < 8:
+        if pieces[i] == "0":
+            j = i
+            while j < 8 and pieces[j] == "0":
+                j += 1
+            if j - i > best_len:
+                best_start, best_len = i, j - i
+            i = j
+        else:
+            i += 1
+    if best_len < 2:
+        return ":".join(pieces)
+    head = ":".join(pieces[:best_start])
+    tail = ":".join(pieces[best_start + best_len :])
+    return f"{head}::{tail}"
+
+
+def _url_with_host(u, new_host, source_url=None):
     # Rebuild a parsed URL with new_host in place of the netloc's host,
     # preserving userinfo, port, path, query and fragment. Used for
     # percent-decoded hosts (#529): the fetcher must connect to the
-    # decoded host that was judged, not the raw spelling.
+    # decoded host that was judged, not the raw spelling. The parsed
+    # parts cannot represent an empty "?" / "#" marker (#639), so when
+    # the caller passes the source spelling its markers are re-attached
+    # here — otherwise this geturl() rebuild would drop them before
+    # the normalizer downstream ever sees them.
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
         prefix = userinfo + "@"
     else:
         prefix, hostport = "", netloc
+    # urlparse splits the last segment's ";params" tail off the path and
+    # a bare trailing ";" leaves params empty, so a geturl() rebuild from
+    # the split parts silently drops that ";" (#655). Take the full path
+    # from urlsplit (which never splits params) when the source spelling
+    # is available, as the rebuild sites below do.
+    rebuild = u._replace(path=urlsplit(source_url).path, params="") if source_url else u
     if hostport.startswith("["):
         _, _, suffix = hostport.partition("]")
-        return u._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl()
-    if ":" in hostport:
+        rebuilt = rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl()
+    elif ":" in hostport:
         _, _, port = hostport.partition(":")
-        return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
-    return u._replace(netloc=prefix + new_host).geturl()
+        rebuilt = rebuild._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
+    else:
+        rebuilt = rebuild._replace(netloc=prefix + new_host).geturl()
+    if source_url:
+        rebuilt = _attach_empty_query_fragment_markers(rebuilt, source_url)
+    return rebuilt
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+# WHATWG dot segments (#633): a path segment is a single-dot segment
+# when it is "." or "%2e", and a double-dot segment when it is "..",
+# ".%2e", "%2e." or "%2e%2e" — the percent spellings in any case. A
+# longer spelling ("%2e%2e%2e", "%252e%252e") is ordinary data, not a
+# dot segment: only the exact segment matches count, so a literal
+# "%252e" segment (an encoded "%2e") is never double-decoded into one.
+_SINGLE_DOT_SEGMENTS = (".", "%2e")
+_DOUBLE_DOT_SEGMENTS = ("..", ".%2e", "%2e.", "%2e%2e")
+
+
+def _resolve_dot_segments(path):
+    # Resolve a path's dot segments the way WHATWG URL parsing does
+    # (#633): a single-dot segment is dropped, a double-dot segment
+    # drops the previous segment with it, and neither may climb above
+    # the root — "/a/b/../../../c" is "/c", not an error. A trailing
+    # dot segment becomes an empty final segment ("/a/." is "/a/",
+    # "/a/.." is "/", "//%2e" is "//"). Empty segments are ordinary
+    # segments: "//" survives, and a double-dot segment after one
+    # pops that empty segment ("/a//../b" is "/a/b"), matching the
+    # Worker's serializer.
+    parts = path.split("/")
+    out = []
+    for i, seg in enumerate(parts):
+        low = seg.lower()
+        if low in _DOUBLE_DOT_SEGMENTS:
+            if out and not (len(out) == 1 and out[0] == ""):
+                out.pop()
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        if low in _SINGLE_DOT_SEGMENTS:
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        out.append(seg)
+    return "/".join(out)
+
+
+def _empty_query_fragment_markers(url):
+    # urlparse cannot represent an empty query or fragment: it parses
+    # "http://example.com/path?" and "http://example.com/path" to the
+    # same parts, and geturl() drops the marker. WHATWG keeps it — the
+    # query/fragment is present but empty — and the Worker returns it
+    # (#639), so the markers are computed from the spelling and
+    # re-attached after each geturl() rebuild. A "?" after the "#"
+    # is fragment data, not a query marker, and a marker is only owed
+    # when the parsed component is empty (a non-empty one is rebuilt
+    # by geturl() itself).
+    u = urlparse(url)
+    markers = ""
+    if not u.query and "?" in url.partition("#")[0]:
+        markers += "?"
+    if not u.fragment and "#" in url:
+        markers += "#"
+    return markers
+
+
+def _attach_empty_query_fragment_markers(rebuilt, source_url):
+    # Re-attach the empty "?" / "#" markers (#639) to a geturl()
+    # rebuild in their WHATWG positions, not as a plain suffix: when
+    # the query is empty but the fragment is non-empty, geturl()
+    # already ends the rebuilt URL with "#frag", so suffixing "?"
+    # put it after the fragment — "path?#frag" came back as
+    # "path#frag?", a different URL whose fragment is corrupted and
+    # whose empty query is absent (#654). The empty-query marker
+    # belongs before the "#" that introduces the fragment; the
+    # empty-fragment marker, whose fragment is empty by definition,
+    # is a suffix.
+    u = urlparse(source_url)
+    query_marker = not u.query and "?" in source_url.partition("#")[0]
+    fragment_marker = not u.fragment and "#" in source_url
+    if not query_marker and not fragment_marker:
+        return rebuilt
+    result = rebuilt
+    if query_marker:
+        idx = result.find("#")
+        if idx != -1:
+            result = result[:idx] + "?" + result[idx:]
+        else:
+            result += "?"
+    if fragment_marker:
+        result += "#"
+    return result
+
+
+def _normalize_validated_url(url):
+    # Return a validated URL in the WHATWG-normalized form the Worker
+    # returns (#633), so both crawlers record — and fetch — the same
+    # URL for the same target: dot segments in the path resolved,
+    # the host lowercased, and the port canonicalized (the scheme's
+    # default port dropped, leading zeros on any other port stripped,
+    # an empty port's colon dropped). The empty components are
+    # normalized the same way (#639): an empty path becomes "/", an
+    # empty userinfo's "@" is dropped, and empty "?" / "#" markers
+    # are kept (the decision on those markers: preserve them, matching
+    # the Worker byte for byte). Only ASCII case folds in the
+    # host: the IDN spelling itself is deliberately kept, as before
+    # (judged in mapped form, fetched via IDNA — #615); urlparse has
+    # already lowercased the scheme. The path is taken whole (see
+    # below): urlparse splits the ";params" tail off the last
+    # segment, but WHATWG treats ";..." as part of that segment, so
+    # a trailing "..;foo" — or a bare "..;" — is data, not a
+    # double-dot segment.
+    u = urlparse(url)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        prefix = userinfo + "@" if userinfo else ""
+    else:
+        prefix, hostport = "", netloc
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        host_norm = "[" + hostport[1:end].translate(_ASCII_LOWER) + "]"
+        rest = hostport[end + 1 :]
+        port_span = rest[1:] if rest.startswith(":") else None
+    elif ":" in hostport:
+        host_span, _, port_span = hostport.partition(":")
+        host_norm = host_span.translate(_ASCII_LOWER)
+    else:
+        host_norm = hostport.translate(_ASCII_LOWER)
+        port_span = None
+    port_norm = ""
+    if port_span:
+        if port_span.isdigit():
+            port = int(port_span)
+            is_default = (u.scheme == "http" and port == 80) or (
+                u.scheme == "https" and port == 443
+            )
+            if not is_default:
+                port_norm = f":{port}"
+        else:
+            port_norm = f":{port_span}"
+    # Take the full path from urlsplit, which never splits the
+    # ";params" tail: urlparse hands "..;foo" back as path "/.." +
+    # params "foo" (rejoinable), but a bare trailing ";" ("..;",
+    # "%2e;") leaves params empty and the ";" is unrecoverable from
+    # the split parts — rejoining only non-empty params dropped it and
+    # the segment was then resolved as a dot segment (#655).
+    full_path = urlsplit(url).path
+    resolved_path = _resolve_dot_segments(full_path)
+    if not resolved_path:
+        # A special-scheme URL with an empty path serializes with
+        # the path "/" in WHATWG ("http://example.com" is
+        # "http://example.com/") (#639).
+        resolved_path = "/"
+    return _attach_empty_query_fragment_markers(
+        u._replace(
+            netloc=f"{prefix}{host_norm}{port_norm}",
+            path=resolved_path,
+            params="",
+        ).geturl(),
+        url,
+    )
 
 
 # WHATWG's per-component percent-encode sets for the ASCII punctuation
@@ -724,10 +1024,15 @@ def _encode_url_component(text, extra=""):
 def _encode_userinfo(userinfo):
     # The first ":" is the username/password separator and stays raw;
     # a ":" inside the password is data and WHATWG encodes it (%3A),
-    # as it does the rest of the userinfo set (#618).
+    # as it does the rest of the userinfo set (#618). The separator is
+    # only emitted when the password is non-empty: WHATWG serialises
+    # userinfo from the parsed username/password, so "user:@" comes
+    # back as "user@" and ":@" as no userinfo at all (#651) — #639
+    # dropped the bare "@" but the colon-bearing spellings survived
+    # because ":" and "user:" are non-empty raw strings.
     username, sep, password = userinfo.partition(":")
     encoded = _encode_url_component(username, _USERINFO_EXTRA)
-    if sep:
+    if sep and password:
         encoded += ":" + _encode_url_component(password, _USERINFO_EXTRA + ":")
     return encoded
 
@@ -753,14 +1058,28 @@ def _url_with_encoded_components(url):
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        netloc = f"{_encode_userinfo(userinfo)}@{hostport}"
-    return u._replace(
-        netloc=netloc,
-        path=_encode_url_component(u.path, _PATH_EXTRA),
-        params=_encode_url_component(u.params, _PATH_EXTRA),
-        query=_encode_url_component(u.query, _QUERY_EXTRA),
-        fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
-    ).geturl()
+        # An empty userinfo serializes away in WHATWG — the "@" is
+        # dropped with it (#639); _normalize_validated_url already
+        # drops it on the validate path, this keeps the helper
+        # consistent when called on its own. The decision keys on the
+        # *encoded* userinfo, not the raw one: ":" encodes to ""
+        # (both components empty, #651), so its "@" drops too.
+        encoded_userinfo = _encode_userinfo(userinfo)
+        netloc = f"{encoded_userinfo}@{hostport}" if encoded_userinfo else hostport
+    # Encode the full path (urlsplit never splits the ";params" tail;
+    # urlparse's split parts lose a bare trailing ";" — #655). The
+    # params tail was encoded with the same _PATH_EXTRA set, so one
+    # pass over the whole path is equivalent for non-empty params.
+    return _attach_empty_query_fragment_markers(
+        u._replace(
+            netloc=netloc,
+            path=_encode_url_component(urlsplit(url).path, _PATH_EXTRA),
+            params="",
+            query=_encode_url_component(u.query, _QUERY_EXTRA),
+            fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
+        ).geturl(),
+        url,
+    )
 
 
 # Backwards-compatible alias: the #615 name for the same helper.
@@ -802,6 +1121,62 @@ def _inet_aton_ipv4(host):
         return None
 
 
+def _split_userinfo(url):
+    # Split a validated URL into the URL the fetcher may hand to
+    # urllib and the Authorization header WHATWG fetch derives from
+    # its userinfo (#622). urllib never strips userinfo itself:
+    # Request.host keeps "user@host" / "user:pass@host" whole,
+    # http.client is built with it as the hostname and getaddrinfo
+    # fails on it — so every userinfo target both validators accept
+    # 502'd in the container before any request was sent, while the
+    # Worker fallback fetched it. Strip the userinfo here and send
+    # the credentials the way WHATWG fetch does: an Authorization:
+    # Basic header built from the percent-decoded username/password
+    # (UTF-8). A URL only "includes credentials" when the username
+    # or the password is non-empty, so a bare "@" (or ":@") carries
+    # none and sends no header — which also resolves the returned-form
+    # spellings the Worker serialises away ("user:@" fetches exactly
+    # as "user@", "@" exactly as no userinfo at all).
+    u = urlparse(url)
+    if "@" not in u.netloc:
+        return url, None
+    userinfo, _, hostport = u.netloc.rpartition("@")
+    username, _, password = userinfo.partition(":")
+    username = unquote(username)
+    password = unquote(password)
+    # Keep the full path: a geturl() rebuild from urlparse's split
+    # parts drops a bare trailing ";" in the path (#655). The rebuild
+    # also drops the empty "?" / "#" markers, so re-attach them in
+    # their WHATWG positions (#639, #654).
+    stripped = _attach_empty_query_fragment_markers(
+        u._replace(netloc=hostport, path=urlsplit(url).path, params="").geturl(),
+        url,
+    )
+    if not username and not password:
+        return stripped, None
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
+    return stripped, f"Basic {token.decode('ascii')}"
+
+
+def _apply_userinfo_auth(req):
+    # Point a Request at its userinfo-stripped URL and (re)derive its
+    # Authorization header from that URL's own userinfo (#622).
+    # Redirect handling needs the re-derivation, not just the strip:
+    # urllib's redirect_request copies the previous request's headers
+    # onto the follow-up, so without this a credentialed start URL's
+    # Authorization would leak to a redirect target that carries no
+    # credentials of its own, and a credentialed target would be
+    # fetched with the previous hop's credentials (or none).
+    stripped, auth = _split_userinfo(req.full_url)
+    if stripped != req.full_url:
+        req.full_url = stripped
+    if req.has_header("Authorization"):
+        req.remove_header("Authorization")
+    if auth is not None:
+        req.add_header("Authorization", auth)
+    return req
+
+
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Follow the validated form, not the raw Location: a redirect
@@ -809,7 +1184,12 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         # and a percent-encoded target must be fetched as the decoded
         # host that was judged (#529).
         newurl = validate_crawl_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        followed = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if followed is not None:
+            # A redirect target carrying userinfo fetches the same way
+            # as a start URL with userinfo (#622).
+            _apply_userinfo_auth(followed)
+        return followed
 
 
 _OPENER = None  # built after CTX below (the HTTPS handler carries it)
@@ -842,6 +1222,10 @@ def _fetch_crawl(url):
     req = urllib.request.Request(
         url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
     )
+    # Strip any userinfo and send its credentials as Authorization:
+    # Basic instead — urllib would try to resolve "user@host" as the
+    # hostname and fail before any request is sent (#622).
+    _apply_userinfo_auth(req)
     try:
         response = _OPENER.open(req, timeout=20)
     except urllib.error.HTTPError as e:

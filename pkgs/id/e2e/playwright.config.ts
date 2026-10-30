@@ -26,6 +26,14 @@ import { defineConfig, devices } from "@playwright/test";
 // Each browser project gets its own ephemeral server on a different port
 // to avoid shared state issues (e.g., files created in chromium tests
 // appearing in firefox tests).
+//
+// NOTE (#229): that isolates browsers, not spec files — every spec in a
+// project shares that project's server (and its in-memory store) for the
+// whole invocation. Runners therefore invoke Playwright once per spec
+// file so each file gets a fresh ephemeral server: see the test-e2e
+// check in ../flake.nix and the test-e2e* recipes in ../justfile. A
+// single full-suite invocation (e.g. `bunx playwright test` with no file
+// argument) does NOT have per-spec isolation.
 const CHROMIUM_PORT = Number(process.env.TEST_PORT) || 4173;
 const FIREFOX_PORT = CHROMIUM_PORT + 1;
 

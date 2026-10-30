@@ -1,6 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { terminalBytesForKey } from "./world-keyboard";
+import { parseWorldSeed } from "./world-seed";
 import { renderWorldSurface, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
@@ -118,6 +119,7 @@ function initWorld(): void {
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
+  let recordsRefetch = false;
   let reconnects = 0;
   let intentionalClose = false;
 
@@ -181,6 +183,13 @@ function initWorld(): void {
         if (recordsAfter === null) {
           recordsPending = false;
           recordsView.textContent = JSON.stringify(records, null, 2);
+          // #1458: a re-request arrived while this fetch was in flight
+          // and was coalesced (see requestRecords). Now that a complete
+          // set has rendered, run the refetch it was waiting for.
+          if (recordsRefetch) {
+            recordsRefetch = false;
+            requestRecords();
+          }
         } else {
           socket?.send(
             JSON.stringify({
@@ -211,6 +220,16 @@ function initWorld(): void {
   const requestRecords = () => {
     if (socket?.readyState !== WebSocket.OPEN) {
       setStatus("Join the world before reading records", "error");
+      return;
+    }
+    // #1458: never overlap records fetches. Records pages carry no
+    // fetch identity, so a first-page request sent mid-pagination lets
+    // the stale chain's terminal page close the fresh fetch and render
+    // as the result, while the fresh pages are then dropped by the
+    // recordsPending guard. Coalesce instead: note that a refetch is
+    // due and run it when the in-flight fetch completes.
+    if (recordsPending) {
+      recordsRefetch = true;
       return;
     }
     records = {};
@@ -273,22 +292,46 @@ function initWorld(): void {
       return;
     }
     intentionalClose = false;
+    // A new connection owns no records fetch: one left pending by a
+    // previous connection can never complete and must not coalesce
+    // (block) this connection's first fetch.
+    recordsPending = false;
+    recordsRefetch = false;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    socket = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    // #1461: every handler captures THIS connection's socket (`ws`) and
+    // ignores events once it is no longer the current one. The handlers
+    // used to read the shared mutable `socket`, so a retired socket's
+    // async close event (dispatched after a rejoin had already replaced
+    // it) scheduled a duplicate reconnect, and a stale socket's open
+    // sent its join frame on the newer socket.
+    const ws = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    socket = ws;
     setStatus("Connecting…");
-    socket.addEventListener("open", () => {
+    ws.addEventListener("open", () => {
+      if (ws !== socket) return;
       reconnects = 0;
-      socket?.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
+      ws.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
       sendViewport();
     });
-    socket.addEventListener("message", (event) => receive(String(event.data)));
-    socket.addEventListener("error", () => setStatus("World connection failed", "error"));
-    socket.addEventListener("close", () => {
+    ws.addEventListener("message", (event) => {
+      if (ws !== socket) return;
+      receive(String(event.data));
+    });
+    ws.addEventListener("error", () => {
+      if (ws !== socket) return;
+      setStatus("World connection failed", "error");
+    });
+    ws.addEventListener("close", () => {
+      if (ws !== socket) return;
+      socket = null;
+      // This connection's records fetch, if any, can never complete.
+      recordsPending = false;
+      recordsRefetch = false;
       if (intentionalClose) return;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
       window.setTimeout(() => {
-        if (!intentionalClose && capability.value.trim()) connect();
+        if (!intentionalClose && socket === null && capability.value.trim()) connect();
       }, wait);
     });
   };
@@ -339,8 +382,8 @@ function initWorld(): void {
       setStatus("Wasm module must be between 1 byte and 16 MiB", "error");
       return;
     }
-    const seed = Number(moduleSeed.value);
-    if (!Number.isSafeInteger(seed) || seed < 0) {
+    const seed = parseWorldSeed(moduleSeed.value);
+    if (seed === null) {
       setStatus("Seed must be a non-negative safe integer", "error");
       return;
     }
@@ -461,8 +504,8 @@ function initWorld(): void {
       }
       files.push({ name: file.name, content: await file.text() });
     }
-    const seed = Number(moduleSeed.value);
-    if (!Number.isSafeInteger(seed) || seed < 0) {
+    const seed = parseWorldSeed(moduleSeed.value);
+    if (seed === null) {
       setStatus("Seed must be a non-negative safe integer", "error");
       return;
     }
@@ -512,10 +555,18 @@ function initWorld(): void {
 
   joinButton.addEventListener("click", () => {
     if (socket) {
+      // #1461: retire the old socket BEFORE closing it - clear the
+      // current-socket reference first, so when its close event fires
+      // (asynchronously, after this handler finishes) the identity
+      // guard in connect() treats it as stale: no reconnect, no status
+      // overwrite. The old code set `socket.onclose = null`, which was
+      // a no-op (connect() registers with addEventListener, never
+      // onclose), and reset intentionalClose in the same task, before
+      // the async close event could ever observe it.
       intentionalClose = true;
-      socket.onclose = null;
-      socket.close();
+      const retired = socket;
       socket = null;
+      retired.close();
     }
     intentionalClose = false;
     connect();

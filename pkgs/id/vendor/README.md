@@ -2,7 +2,7 @@
 
 ## p2panda-sync 0.7.1
 
-**Origin.** `https://github.com/p2panda/p2panda`, rev `3e84cac48bba05c6857cce2ec433862b97f8d53c`, crate `p2panda-sync/`. The same rev as the other p2panda crates in `pkgs/id/Cargo.toml`. License `MIT OR Apache-2.0` (`p2panda-sync/LICENSES/`).
+**Origin.** `https://github.com/p2panda/p2panda`, rev `da80c05b95269926bf58121cf6a2d3dd5ca41dfc`, crate `p2panda-sync/`. The same rev as the other p2panda crates in `pkgs/id/Cargo.toml`. License `MIT OR Apache-2.0` (`p2panda-sync/LICENSES/`).
 
 **Why.** p2panda-sync depends on p2panda-store with its default features, and the default includes `sqlite`, which pulls in `sqlx`. The store is redb (explainers section 14), so the copy removes that default. Vendoring was chosen over a fork, so nothing is pushed or published.
 
@@ -10,7 +10,7 @@
 
 ```diff
 -p2panda-store = { workspace = true, default-features = true }
-+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
++p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
 ```
 
 **Mechanical changes**, needed because this copy is outside the p2panda workspace:
@@ -24,10 +24,10 @@
 **Verify.** The copy matches upstream except the files above:
 
 ```sh
-SRC=$(ls -d ~/.cargo/git/checkouts/p2panda-*/3e84cac/p2panda-sync)
+SRC=$(ls -d ~/.cargo/git/checkouts/p2panda-*/da80c05/p2panda-sync)
 diff -rq "$SRC" pkgs/id/vendor/p2panda-sync   # Cargo.toml differs; examples/ and LICENSES/ differ
 diff -u "$SRC/Cargo.toml" pkgs/id/vendor/p2panda-sync/Cargo.toml
-git -C "$SRC/.." rev-parse HEAD                # 3e84cac48bba05c6857cce2ec433862b97f8d53c
+git -C "$SRC/.." rev-parse HEAD                # da80c05b95269926bf58121cf6a2d3dd5ca41dfc
 ```
 
 `sqlx` is absent from the build. `cargo tree -i sqlx` reports no match, and `store_traits`'s `test_the_lock_has_no_sqlite_with_logsync_wired` fails if `Cargo.lock` names `sqlx`, `sqlite`, `rusqlite` or `libsqlite3-sys`, or if the `p2panda-store` line above loses `default-features = false`.
@@ -36,7 +36,7 @@ git -C "$SRC/.." rev-parse HEAD                # 3e84cac48bba05c6857cce2ec433862
 
 ## p2panda-encryption 0.7.1 (DataScheme fork)
 
-**Origin.** `https://github.com/p2panda/p2panda`, rev `3e84cac48bba05c6857cce2ec433862b97f8d53c`, crate `p2panda-encryption/`. The same rev as the other p2panda crates in `pkgs/id/Cargo.toml`. License `MIT OR Apache-2.0` (`p2panda-encryption/LICENSES/`).
+**Origin.** `https://github.com/p2panda/p2panda`, rev `da80c05b95269926bf58121cf6a2d3dd5ca41dfc`, crate `p2panda-encryption/`. The same rev as the other p2panda crates in `pkgs/id/Cargo.toml`. License `MIT OR Apache-2.0` (`p2panda-encryption/LICENSES/`).
 
 **Why.** The crate's `process_welcome` overwrites the joiner's membership with the welcome's copy, and that copy lacks the joiner, so the joiner is never welcomed and reads nothing. The fix, and `add_from_join` (the welcome carries no earlier secret, so the group needs an immediate update after each join), are in our fork and not upstream. Decision (owner): keep the fix in this repo. Source: the spike `doc/2026-10-11T03-44-33Z_design_groups_events_delegation/spikes/shared/s3-history/` (`logs/patch.diff`, `RESULTS.md`).
 
@@ -63,9 +63,9 @@ v1 and the stock layout do not decode each other. The stock layout is not shippe
 **Verify.**
 
 ```sh
-C=$(ls -d ~/.cargo/git/checkouts/p2panda-*/3e84cac)
+C=$(ls -d ~/.cargo/git/checkouts/p2panda-*/da80c05)
 diff -rq "$C/p2panda-encryption" pkgs/id/vendor/p2panda-encryption   # the files above differ, nothing else
-git -C "$C/.." rev-parse HEAD                                         # 3e84cac48bba05c6857cce2ec433862b97f8d53c
+git -C "$C/.." rev-parse HEAD                                         # da80c05b95269926bf58121cf6a2d3dd5ca41dfc
 cd pkgs/id/vendor/p2panda-encryption && cargo test --lib data_scheme  # run standalone; delete the Cargo.lock it writes
 ```
 

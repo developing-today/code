@@ -1,0 +1,17 @@
+{
+  "name": "pm-aggregator-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The PM-stack aggregator UI: cross-repo WIP board, roadmap timeline, quota + throughput, and needs-you views. Read-mostly projection over the projector/link registry, Kaneo, Pad, and Grist.",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "start": "bun run src/server.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  }
+}

@@ -79,3 +79,6 @@ jobs:
               - You are actively encouraged to open small, focused Pull Requests implementing the fix or feature directly.
               - Ensure all added code follows repository standards, includes tests, and passes formatting/linting hooks (`treefmt`, `conform`).
               - Never introduce breaking regressions to existing stable flows.
+              - **One PR per coherent set**: batch every instance of the same problem — and all related dependency updates — into a single PR, or a few PRs split by coherent group. Never one PR per item or per dependency.
+              - **Prefer tracked, higher-impact work**: before inventing a new micro-fix, check the open issues and implement the highest-impact one you can complete and verify, even when it spans several files.
+              - **Merging is permitted, never required**: merge your PR only when checks pass and you are reasonably certain it is correct and low-risk. Otherwise leave it open and state your confidence and what a human should check in the description.

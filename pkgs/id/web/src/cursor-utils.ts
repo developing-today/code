@@ -64,7 +64,18 @@ export function getStrobeDurationMs(opacity: number): number {
  * Uses relative luminance calculation.
  */
 export function isLightColor(color: string): boolean {
-  const hex = color.replace("#", "");
+  let hex = color.replace("#", "");
+  // CSS shorthand hex (#fff) doubles each digit; without expansion the
+  // slices below misalign and the last component parses as NaN (#846).
+  if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+    hex = hex
+      .split("")
+      .map((digit) => digit + digit)
+      .join("");
+  }
+  // Anything that is not exactly six hex digits is not a color we can
+  // judge; treat it as dark rather than letting a NaN luminance decide.
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return false;
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
   const b = parseInt(hex.slice(4, 6), 16);
@@ -103,11 +114,12 @@ export const CURSOR_COLORS = [
  * Uses a hash function to map client IDs to colors.
  */
 export function getColorForClient(clientID: string | number): string {
-  const hash = String(clientID)
-    .split("")
-    .reduce((a, b) => {
-      return ((a << 5) - a + b.charCodeAt(0)) | 0;
-    }, 0);
+  // A plain loop: no intermediate array of characters per call.
+  const str = String(clientID);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
   return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
 }
 
@@ -162,9 +174,12 @@ export function groupCursorsByPosition(cursors: CursorForMerge[]): PositionGroup
 
   // Group by exact position
   cursors.forEach((cursor) => {
-    const existing = positionMap.get(cursor.head) || [];
+    let existing = positionMap.get(cursor.head);
+    if (!existing) {
+      existing = [];
+      positionMap.set(cursor.head, existing);
+    }
     existing.push(cursor);
-    positionMap.set(cursor.head, existing);
   });
 
   // Convert to PositionGroup[], sort each group by activity

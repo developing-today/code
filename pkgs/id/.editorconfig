@@ -1,0 +1,44 @@
+# pkgs/id is a standalone flake: its checks build from a source copy of
+# this directory alone, so the repository-root .editorconfig is not
+# visible inside the Nix sandbox. Tools that read editorconfig
+# (prettier, shfmt) therefore formatted differently in CI than in a
+# working tree — e.g. prettier's markdown print width comes from the
+# [*.md] max_line_length rule below (#702). Keep this file in sync
+# with the root .editorconfig rules that cover files under pkgs/id.
+root = true
+
+[*]
+charset=utf-8
+end_of_line=lf
+indent_size=2
+indent_style=space
+insert_final_newline=true
+trim_trailing_whitespace=true
+
+[*.{bzl, py}]
+indent_size = 4
+
+[*.{nix}]
+indent_size = 2
+
+[*.md]
+max_line_length=off
+trim_trailing_whitespace=false
+
+[doc/**/transcript.txt]
+trim_trailing_whitespace = false
+insert_final_newline = false
+end_of_line = unset
+
+[*.{diff,patch}]
+end_of_line=unset
+indent_size=unset
+insert_final_newline=unset
+trim_trailing_whitespace=unset
+
+[{LICENSES/**,LICENSE*}]
+charset=unset
+end_of_line=unset
+indent_size=unset
+insert_final_newline=unset
+trim_trailing_whitespace=unset

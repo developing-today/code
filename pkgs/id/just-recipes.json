@@ -343,7 +343,9 @@
             ["#!/usr/bin/env bash"],
             ["set -euo pipefail"],
             ["git grep -rl '[[:space:]]$' -- \\"],
-            ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+            [
+              "  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \\"
+            ],
             ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
             [
               "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
@@ -354,6 +356,7 @@
             ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
             ["  2>/dev/null | while IFS= read -r f; do"],
             ["  case \"$f\" in"],
+            ["    */transcript.txt) continue ;;"],
             ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
             ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
             ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
@@ -662,7 +665,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/code/root.just",
+      "source": "/home/hatch/git/worktrees/queue-1283-551/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -743,6 +746,35 @@
       "private": false,
       "quiet": false,
       "namepath": "audit",
+      "shebang": false
+    },
+    "bench": {
+      "attributes": [],
+      "body": [["cargo bench --bench world_bench -- ", ["variable", "args"]]],
+      "dependencies": [],
+      "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
+      "name": "bench",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "bench",
       "shebang": false
     },
     "build": {
@@ -1379,6 +1411,72 @@
       "private": false,
       "quiet": false,
       "namepath": "crash-gate",
+      "shebang": false
+    },
+    "crash-gate-control": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        [
+          "cargo test --release --features web --test crash -- --include-ignored full_lying_sync_control_produces_failures"
+        ],
+        ["@echo \"✓ Crash gate (full lying-sync controls) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-control",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-control",
+      "shebang": false
+    },
+    "crash-gate-ingest": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored ingest_survives_every_crash_point"],
+        ["@echo \"✓ Crash gate (full ingest sweep) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-ingest",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-ingest",
+      "shebang": false
+    },
+    "crash-gate-sampled": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --skip write_corpus"],
+        ["@echo \"✓ Crash gate (sampled + corpus replay) passed\""]
+      ],
+      "dependencies": [],
+      "doc": "excluded everywhere (they rewrite the checked-in corpus files).",
+      "name": "crash-gate-sampled",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sampled",
+      "shebang": false
+    },
+    "crash-gate-sweep": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored full_sweep_has_no_failures"],
+        ["@echo \"✓ Crash gate (full sweeps) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-sweep",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sweep",
       "shebang": false
     },
     "default": {
@@ -2166,7 +2264,11 @@
     },
     "test-e2e": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (both chromium and firefox)",
       "name": "test-e2e",
@@ -2179,7 +2281,11 @@
     },
     "test-e2e-chromium": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=chromium \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (chromium only)",
       "name": "test-e2e-chromium",
@@ -2192,7 +2298,11 @@
     },
     "test-e2e-firefox": {
       "attributes": [{ "group": "e2e" }],
-      "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox"]],
+      "body": [
+        [
+          "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=firefox \"$spec\" || exit 1; done"
+        ]
+      ],
       "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
       "doc": "[bun] Run Playwright E2E tests (firefox only)",
       "name": "test-e2e-firefox",
@@ -2398,6 +2508,50 @@
       "private": false,
       "quiet": false,
       "namepath": "test-sandbox",
+      "shebang": false
+    },
+    "test-shard-sandbox": {
+      "attributes": [{ "group": "test" }],
+      "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
+      "dependencies": [],
+      "doc": "pair (#869; 3 → 4 shards in #551 to rebalance the ~12.5 min shards).",
+      "name": "test-shard-sandbox",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "SHARD",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "COUNT",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-shard-sandbox",
       "shebang": false
     },
     "test-unit": {
@@ -2942,7 +3096,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/code/pkgs/id/justfile",
+  "source": "/home/hatch/git/worktrees/queue-1283-551/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

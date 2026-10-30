@@ -22,7 +22,7 @@ interface Env {
   CACHE: KVNamespace;
   JOBS: Queue<Job>;
   LIVE: DurableObjectNamespace<LiveRoom>;
-  CRAWLER: DurableObjectNamespace<CrawlerContainer>;
+  CRAWLER: DurableObjectNamespace<CrawlerContainerV2>;
   AI: Ai;
   ASSETS: Fetcher;
   // Worker secret (`wrangler secret put API_TOKEN`). Every /api/* route
@@ -139,8 +139,29 @@ export class CrawlerContainer extends Container<Env> {
   }
 }
 
+// The original CrawlerContainer's container application (created
+// 2026-10-20, during Cloudflare's platform incident window) never starts
+// again — every start returns "internal error". CrawlerContainerV2 exists
+// so deploys create a FRESH container application; the legacy class stays
+// exported because existing Durable Objects depend on it (API error 10064
+// if it disappears). Diagnosed 2026-10-25 against Cloudflare's official
+// hello-world image; see README "Containers: FIXED (2026-10-25)".
+export class CrawlerContainerV2 extends Container<Env> {
+  defaultPort = 8080;
+  sleepAfter = "2m"; // die quickly; container minutes are the scarce resource
+  override onStart() {
+    console.log("crawler container started");
+  }
+  override onStop() {
+    console.log("crawler container stopped");
+  }
+  override onError(err: unknown) {
+    console.log("crawler container error:", err);
+  }
+}
+
 async function crawlWithContainer(env: Env, url: string) {
-  const container = getContainer(env.CRAWLER, "crawler-4");
+  const container = getContainer(env.CRAWLER, "crawler-5");
   const res = await container.fetch(
     new Request("http://container/crawl", {
       method: "POST",

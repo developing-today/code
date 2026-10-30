@@ -4,8 +4,37 @@
 //! password is the join capability. Keystrokes become `input` frames and each
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
+//!
+//! ## Input modes
+//!
+//! Raw keystrokes are the default. Prefixing the username with `cmd:` enters
+//! command (line) mode, where each line is parsed as a command instead of
+//! forwarded as an input keystroke: `/help`, `/quit`, `/input <hex>`,
+//! `/records [prefix]`, `/documents [prefix]` and `/document <name>` (see
+//! [`world_command`]). Prefixing the username with `explore:` enters a
+//! read-only explore session, the only mode that supports public-key login.
+//! See the SSH input-modes decision record.
+//!
+//! ## Frame transport (F13.2)
+//!
+//! An `exec` request for [`WORLD_EXEC_COMMAND`] turns the channel into a
+//! transport for the shell contract itself: the same length-prefixed JSON
+//! frames as the iroh `/id-world/1` stream, byte for byte, so
+//! `id world join --via ssh` reaches a world through jump hosts and networks
+//! that only pass SSH. The SSH login grants nothing on this channel: as on
+//! iroh, the capability or admin secret inside the frames is the only
+//! authority, and the frames route themselves with their `world` field.
 
-use std::{collections::VecDeque, fmt::Write as _, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fmt::Write as _,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_lite::StreamExt;
 use russh::{
@@ -23,6 +52,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{
     DirectoryAction, DirectoryOutcome, HELP, Line, parse_line, render_text,
 };
+use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
@@ -44,6 +74,92 @@ const REFUSED_SHELL_DELAY: Duration = Duration::from_secs(1);
 const PROMPT: &str = "id> ";
 /// Longest line the explorer keeps; the rest of a longer line is dropped.
 const MAX_LINE: usize = 1024;
+/// Enter the alternate screen buffer, so a game's repaints stay out of scrollback.
+const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
+/// Leave the alternate screen buffer and restore the screen the user came from.
+const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
+/// Input bytes dropped before the session tells the viewer about it.
+const INPUT_DROP_NOTICE_BYTES: usize = 1024;
+/// ALPN for SSH-over-iroh tunnels (F13.3): each bidirectional stream is one
+/// raw SSH connection forwarded to the host's own SSH server. The tunnel
+/// carries bytes only; SSH authentication happens inside it, unchanged.
+pub const SSH_TUNNEL_ALPN: &[u8] = b"/id-ssh-tunnel/1";
+/// Concurrent tunnelled connections one iroh connection may open.
+const MAX_TUNNEL_STREAMS: usize = 16;
+
+/// Host side of SSH-over-iroh: forwards each tunnel stream to the world SSH
+/// server on loopback. Iroh peer identity grants nothing here; the peer
+/// still has to authenticate to SSH inside the tunnel.
+#[derive(Clone, Debug)]
+pub struct SshTunnelProtocol {
+    port: Arc<std::sync::OnceLock<u16>>,
+}
+
+impl SshTunnelProtocol {
+    /// Tunnel to an SSH server already listening on `port`.
+    #[must_use]
+    pub fn with_port(port: u16) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(port);
+        Self {
+            port: Arc::new(cell),
+        }
+    }
+
+    /// Tunnel whose SSH port is bound after the router starts; the returned
+    /// cell must be set once the SSH listener exists.
+    #[must_use]
+    pub fn deferred() -> (Self, Arc<std::sync::OnceLock<u16>>) {
+        let cell = Arc::new(std::sync::OnceLock::new());
+        (
+            Self {
+                port: Arc::clone(&cell),
+            },
+            cell,
+        )
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for SshTunnelProtocol {
+    async fn accept(
+        &self,
+        conn: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        let permits = Arc::new(Semaphore::new(MAX_TUNNEL_STREAMS));
+        while let Ok((send, recv)) = conn.accept_bi().await {
+            let Some(port) = self.port.get().copied() else {
+                continue;
+            };
+            let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let _permit = permit;
+                let Ok(mut tcp) =
+                    tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await
+                else {
+                    return;
+                };
+                let mut stream = tokio::io::join(recv, send);
+                let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The exec command that carries the frame protocol (shell contract
+/// transport `ssh-exec`).
+pub const WORLD_EXEC_COMMAND: &str = "id-world/1";
+/// Unread frame bytes one exec channel may queue before the host ends its
+/// session. The handler must never wait for space (it shares the loop that
+/// flushes output), and dropping bytes would corrupt the framing, so a flood
+/// ends the session instead.
+const MAX_EXEC_BACKLOG: usize = 8 * crate::frames::MAX_FRAME_BYTES;
+/// Widest viewport a `resize` frame may name (shell contract v1).
+const MAX_VIEWPORT_WIDTH: u32 = 500;
+/// Tallest viewport a `resize` frame may name (shell contract v1).
+const MAX_VIEWPORT_HEIGHT: u32 = 200;
 
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
@@ -114,6 +230,9 @@ impl Server for SshServer {
             login: None,
             input: None,
             viewport: None,
+            dropped_input: Arc::new(AtomicUsize::new(0)),
+            exec: None,
+            exec_backlog: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -140,6 +259,15 @@ struct SshClient {
     login: Option<Login>,
     input: Option<mpsc::Sender<SshInputFrame>>,
     viewport: Option<(u32, u32)>,
+    /// Bytes the input queue refused, shared with the shell so the drop is
+    /// visible. The handler counts drops for the life of the connection,
+    /// including after the shell opens, so the counter must be shared, not
+    /// copied, when the shell is constructed.
+    dropped_input: Arc<AtomicUsize>,
+    /// Bytes for the frame session on an exec channel, if one runs.
+    exec: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Bytes queued on `exec` and not yet read by the session.
+    exec_backlog: Arc<AtomicUsize>,
 }
 
 enum SshInputFrame {
@@ -231,10 +359,35 @@ impl Handler for SshClient {
     async fn exec_request(
         &mut self,
         channel: ChannelId,
-        _data: &[u8],
+        data: &[u8],
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        session.channel_failure(channel)
+        // The frame protocol is the only command, and one session (shell or
+        // frames) runs per connection.
+        if data != WORLD_EXEC_COMMAND.as_bytes()
+            || self.login.is_none()
+            || self.input.is_some()
+            || self.exec.is_some()
+        {
+            return session.channel_failure(channel);
+        }
+        let (exec, bytes) = mpsc::unbounded_channel();
+        self.exec = Some(exec);
+        session.channel_success(channel)?;
+        let mut io = SshFrameIo {
+            handle: session.handle(),
+            channel,
+            bytes,
+            buffer: FrameBuffer::default(),
+            backlog: Arc::clone(&self.exec_backlog),
+        };
+        let hub = self.hub.clone();
+        tokio::spawn(async move {
+            run_session(&hub, &mut io).await;
+            let _ = io.handle.eof(channel).await;
+            let _ = io.handle.close(channel).await;
+        });
+        Ok(())
     }
 
     async fn subsystem_request(
@@ -292,7 +445,11 @@ impl Handler for SshClient {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        let Some(login) = self.login.as_ref().filter(|_| self.input.is_none()) else {
+        let Some(login) = self
+            .login
+            .as_ref()
+            .filter(|_| self.input.is_none() && self.exec.is_none())
+        else {
             return session.channel_failure(channel);
         };
         if login.explore {
@@ -301,11 +458,19 @@ impl Handler for SshClient {
             self.input = Some(input);
             let handle = session.handle();
             session.channel_success(channel)?;
-            tokio::spawn(run_explorer(explorer, handle, channel, bytes));
+            let dropped_input = Arc::clone(&self.dropped_input);
+            tokio::spawn(run_explorer(
+                explorer,
+                handle,
+                channel,
+                bytes,
+                dropped_input,
+            ));
             return Ok(());
         }
         let first = join_frame(login);
         session.channel_success(channel)?;
+        let alt_screen = !login.command_mode;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
@@ -324,17 +489,24 @@ impl Handler for SshClient {
             first_resize,
             capability: login.capability.clone(),
             mode,
+            alt_screen,
+            alt_screen_entered: false,
+            last_error: None,
+            dropped_input: Arc::clone(&self.dropped_input),
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
+            records_drained: 0,
             errored: false,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
+            io.enter_alt_screen().await;
             run_session(&hub, &mut io).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
+            io.leave_alt_screen().await;
             let _ = io.handle.close(channel).await;
         });
         Ok(())
@@ -346,6 +518,16 @@ impl Handler for SshClient {
         data: &[u8],
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
+        if let Some(exec) = &self.exec {
+            let queued = self.exec_backlog.fetch_add(data.len(), Ordering::Relaxed) + data.len();
+            if queued > MAX_EXEC_BACKLOG || exec.send(data.to_vec()).is_err() {
+                tracing::warn!(
+                    "world ssh exec backlog over {MAX_EXEC_BACKLOG} bytes; ending session"
+                );
+                self.exec = None;
+            }
+            return Ok(());
+        }
         let Some(input) = &self.input else {
             return Ok(());
         };
@@ -354,7 +536,16 @@ impl Handler for SshClient {
         if let Err(error) = input.try_send(SshInputFrame::Bytes(data.to_vec())) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
-                    tracing::debug!("world ssh input queue full; dropping input");
+                    // The handler shares the loop that flushes output, so it must
+                    // not wait for queue space. Count the loss on the counter
+                    // shared with the shell instead, and let the shell tell the
+                    // viewer once, instead of dropping silently.
+                    let total = record_dropped_input(&self.dropped_input, data.len());
+                    tracing::warn!(
+                        "world ssh input queue full; dropped {} bytes ({} total)",
+                        data.len(),
+                        total
+                    );
                 }
                 mpsc::error::TrySendError::Closed(_) => self.input = None,
             }
@@ -368,6 +559,7 @@ impl Handler for SshClient {
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
         self.input = None;
+        self.exec = None;
         Ok(())
     }
 
@@ -377,8 +569,51 @@ impl Handler for SshClient {
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
         self.input = None;
+        self.exec = None;
         Ok(())
     }
+}
+
+/// The session frame one raw terminal event becomes: keystrokes are
+/// `input`, a window change is `resize` (shell contract, joined phase).
+fn raw_frame(input: &SshInputFrame) -> String {
+    match input {
+        SshInputFrame::Bytes(bytes) => {
+            json!({ "type": "input", "data_hex": encode_hex(bytes) }).to_string()
+        }
+        // A terminal outside the contract's viewport bounds still gets a
+        // view: it is clamped instead of refused.
+        SshInputFrame::Resize(width, height) => json!({
+            "type": "resize",
+            "width": (*width).clamp(1, MAX_VIEWPORT_WIDTH),
+            "height": (*height).clamp(1, MAX_VIEWPORT_HEIGHT),
+        })
+        .to_string(),
+    }
+}
+
+/// The session frame a command-mode line sends, or `None` for the commands
+/// the shell answers itself (`/help`, `/logs`, `/documents`, ...).
+fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
+    let frame = match command {
+        WorldCommand::Chat(text) => json!({ "type": "chat", "text": text }),
+        WorldCommand::Input(data_hex) => json!({ "type": "input", "data_hex": data_hex }),
+        WorldCommand::Records { prefix } => json!({
+            "type": "records", "capability": capability, "prefix": prefix, "after": null
+        }),
+        WorldCommand::RecordsContinue { prefix, after } => json!({
+            "type": "records", "capability": capability, "prefix": prefix, "after": after
+        }),
+        WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
+        WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
+        WorldCommand::Documents { .. }
+        | WorldCommand::Document(_)
+        | WorldCommand::Logs { .. }
+        | WorldCommand::Help
+        | WorldCommand::Message(_)
+        | WorldCommand::Quit => return None,
+    };
+    Some(frame.to_string())
 }
 
 fn join_frame(login: &Login) -> String {
@@ -387,6 +622,44 @@ fn join_frame(login: &Login) -> String {
         join["world"] = json!(world);
     }
     join.to_string()
+}
+
+/// [`SessionIo`] for the frame protocol on an exec channel: the same
+/// envelope as the iroh stream, reassembled from the channel's data packets.
+struct SshFrameIo {
+    handle: Handle,
+    channel: ChannelId,
+    bytes: mpsc::UnboundedReceiver<Vec<u8>>,
+    buffer: FrameBuffer,
+    backlog: Arc<AtomicUsize>,
+}
+
+impl SessionIo for SshFrameIo {
+    // Cancel-safe: state changes only after a chunk has been received.
+    async fn recv(&mut self) -> Inbound {
+        loop {
+            match self.buffer.next_frame() {
+                Some(Decoded::Frame(body)) => {
+                    return String::from_utf8(body).map_or(Inbound::Unsupported, Inbound::Text);
+                }
+                // As on iroh, an oversized length ends the stream unread.
+                Some(Decoded::Oversized) => return Inbound::Closed,
+                None => {}
+            }
+            let Some(chunk) = self.bytes.recv().await else {
+                return Inbound::Closed;
+            };
+            self.backlog.fetch_sub(chunk.len(), Ordering::Relaxed);
+            self.buffer.push(&chunk);
+        }
+    }
+
+    async fn send(&mut self, frame: String) -> bool {
+        match encode_frame(frame.as_bytes()) {
+            Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
+            Err(_) => false,
+        }
+    }
 }
 
 /// [`SessionIo`] for one SSH shell: the join frame first, then terminal lines
@@ -400,11 +673,99 @@ struct SshIo {
     first_resize: Option<(u32, u32)>,
     capability: String,
     mode: ShellMode,
+    /// Whether this session uses the alternate screen buffer (raw sessions only;
+    /// command mode never emits either sequence).
+    alt_screen: bool,
+    /// Whether the enter sequence has actually been written to the channel.
+    alt_screen_entered: bool,
+    /// The last error message, re-sent after leaving the alternate screen.
+    last_error: Option<String>,
+    /// Bytes the input queue refused, shared with the russh handler: drops
+    /// counted after the shell opens are exactly the ones this session must
+    /// report, so the shell reads the live counter, not a snapshot.
+    dropped_input: Arc<AtomicUsize>,
     lines: WorldLineBuffer,
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
     records_prefix: Option<Option<String>>,
+    /// Cumulative bytes already rendered for the current `/records` drain, so a
+    /// large world's records are bounded across pages, not just per page.
+    records_drained: usize,
     errored: bool,
+}
+
+/// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
+/// were refused. Empty below that threshold, so a drop here and there stays
+/// quiet and only a sustained loss is reported.
+fn dropped_input_notice(bytes: usize) -> Option<String> {
+    (bytes >= INPUT_DROP_NOTICE_BYTES).then(|| {
+        format!("\r\n[-- input dropped: {bytes} bytes refused by the SSH input queue --]\r\n")
+    })
+}
+
+/// Count bytes the input queue refused on the counter shared between the
+/// russh handler and the session I/O; returns the new total.
+fn record_dropped_input(counter: &AtomicUsize, bytes: usize) -> usize {
+    counter.fetch_add(bytes, Ordering::Relaxed) + bytes
+}
+
+/// Claim the pending dropped-input notice, if the shared counter has reached
+/// [`INPUT_DROP_NOTICE_BYTES`]. Claiming subtracts only the observed bytes,
+/// so drops counted while the notice is being handed to the viewer stay
+/// counted for the next one. If the notice cannot be delivered, the caller
+/// adds the claimed bytes back with `fetch_add`, so claimed drops are reset
+/// only once the notice has actually reached the viewer: they are neither
+/// double-counted nor lost between frames.
+fn claim_dropped_input_notice(counter: &AtomicUsize) -> Option<(usize, String)> {
+    let bytes = counter.load(Ordering::Relaxed);
+    let notice = dropped_input_notice(bytes)?;
+    counter.fetch_sub(bytes, Ordering::Relaxed);
+    Some((bytes, notice))
+}
+
+/// Prepend the pending dropped-input notice to the explorer's next output,
+/// claiming it from the shared counter. Returns the claimed byte count so
+/// the caller can restore it with `fetch_add` if the output write fails —
+/// the same reset-only-on-delivery rule as [`SshIo::send`]. Below the
+/// threshold the output is left untouched and the drops stay counted.
+fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Option<usize> {
+    let (bytes, notice) = claim_dropped_input_notice(counter)?;
+    let mut combined = notice.into_bytes();
+    combined.append(out);
+    *out = combined;
+    Some(bytes)
+}
+
+impl SshIo {
+    /// Enter the alternate screen before the first session frame, so a raw
+    /// session's repaints never land in the viewer's scrollback.
+    async fn enter_alt_screen(&mut self) {
+        if !self.alt_screen || self.alt_screen_entered {
+            return;
+        }
+        if self
+            .handle
+            .data(self.channel, ALT_SCREEN_ENTER)
+            .await
+            .is_ok()
+        {
+            self.alt_screen_entered = true;
+        }
+    }
+
+    /// Leave the alternate screen and re-send the last error after the leave
+    /// sequence, so a refused join stays readable in the restored scrollback.
+    async fn leave_alt_screen(&mut self) {
+        if !self.alt_screen_entered {
+            return;
+        }
+        self.alt_screen_entered = false;
+        let text = match self.last_error.take() {
+            Some(error) => format!("{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
+            None => ALT_SCREEN_LEAVE.to_owned(),
+        };
+        let _ = self.handle.data(self.channel, text).await;
+    }
 }
 
 impl SessionIo for SshIo {
@@ -413,43 +774,25 @@ impl SessionIo for SshIo {
             return Inbound::Text(join);
         }
         if let Some((width, height)) = self.first_resize.take() {
-            return Inbound::Text(
-                json!({ "type": "resize", "width": width, "height": height }).to_string(),
-            );
+            return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         match self.mode {
-            ShellMode::Raw => match self.frames.recv().await {
-                Some(SshInputFrame::Bytes(bytes)) => Inbound::Text(
-                    json!({ "type": "input", "data_hex": encode_hex(&bytes) }).to_string(),
-                ),
-                Some(SshInputFrame::Resize(width, height)) => Inbound::Text(
-                    json!({ "type": "resize", "width": width, "height": height }).to_string(),
-                ),
-                None => Inbound::Closed,
-            },
+            ShellMode::Raw => self
+                .frames
+                .recv()
+                .await
+                .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input))),
             ShellMode::Command => loop {
                 if let Some(command) = self.commands.pop_front() {
-                    match command {
-                        WorldCommand::Chat(text) => {
-                            return Inbound::Text(
-                                json!({ "type": "chat", "text": text }).to_string(),
-                            );
-                        }
-                        WorldCommand::Input(data_hex) => {
-                            return Inbound::Text(
-                                json!({ "type": "input", "data_hex": data_hex }).to_string(),
-                            );
-                        }
-                        WorldCommand::Records { prefix } => {
+                    if let Some(frame) = command_frame(&command, &self.capability) {
+                        if let WorldCommand::Records { prefix } = &command {
                             self.records_prefix = Some(prefix.clone());
-                            return Inbound::Text(
-                                json!({
-                                    "type": "records", "capability": self.capability,
-                                    "prefix": prefix, "after": null
-                                })
-                                .to_string(),
-                            );
+                            self.records_drained = 0;
                         }
+                        return Inbound::Text(frame);
+                    }
+                    // Everything else is answered by the shell itself.
+                    match command {
                         WorldCommand::Documents { prefix } => {
                             let text =
                                 match list_public_documents(&self.blobs, prefix.as_deref()).await {
@@ -482,18 +825,29 @@ impl SessionIo for SshIo {
                                 return Inbound::Closed;
                             }
                         }
-                        WorldCommand::RecordsContinue { prefix, after } => {
-                            return Inbound::Text(
-                                json!({
-                                    "type": "records", "capability": self.capability,
-                                    "prefix": prefix, "after": after
-                                })
-                                .to_string(),
-                            );
-                        }
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Logs { seconds } => {
+                            let window = match seconds {
+                                Some(seconds) => {
+                                    format!(" (the requested {seconds}s window is ignored here)")
+                                }
+                                None => String::new(),
+                            };
+                            let text = format!(
+                                "event tailing is not available in command mode{window}; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> "
+                            );
+                            let text = text.as_str();
+                            if self
+                                .handle
+                                .data(self.channel, terminal_text(text))
+                                .await
+                                .is_err()
+                            {
                                 return Inbound::Closed;
                             }
                         }
@@ -504,17 +858,20 @@ impl SessionIo for SshIo {
                             }
                         }
                         WorldCommand::Quit => return Inbound::Closed,
+                        WorldCommand::Chat(_)
+                        | WorldCommand::Input(_)
+                        | WorldCommand::Records { .. }
+                        | WorldCommand::RecordsContinue { .. }
+                        | WorldCommand::Stats
+                        | WorldCommand::Caps => {}
                     }
                 }
                 match self.frames.recv().await {
                     Some(SshInputFrame::Bytes(bytes)) => {
                         self.commands.extend(self.lines.push(&bytes));
                     }
-                    Some(SshInputFrame::Resize(width, height)) => {
-                        return Inbound::Text(
-                            json!({ "type": "resize", "width": width, "height": height })
-                                .to_string(),
-                        );
+                    Some(resize @ SshInputFrame::Resize(..)) => {
+                        return Inbound::Text(raw_frame(&resize));
                     }
                     None => return Inbound::Closed,
                 }
@@ -523,6 +880,16 @@ impl SessionIo for SshIo {
     }
 
     async fn send(&mut self, frame: String) -> bool {
+        // Tell the viewer about dropped input before the frame it delayed.
+        // The count is claimed from the shared counter first; if the notice
+        // itself cannot be written, the claim is restored so the drops stay
+        // counted instead of vanishing with the undelivered notice.
+        if let Some((bytes, notice)) = claim_dropped_input_notice(&self.dropped_input) {
+            if self.handle.data(self.channel, notice).await.is_err() {
+                self.dropped_input.fetch_add(bytes, Ordering::Relaxed);
+                return false;
+            }
+        }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
             return true;
         };
@@ -570,20 +937,54 @@ impl SessionIo for SshIo {
                 self.errored = true;
                 self.records_prefix = None;
                 let message = value["message"].as_str().unwrap_or("error");
-                format!("\r\n{}\r\n", terminal_text(message))
+                self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
+                self.last_error.clone().unwrap_or_default()
             }
             Some("records") => {
                 let records = value["records"].as_object();
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
                 let after = value["next_after"].as_str().map(str::to_owned);
                 let text = render_records_value(records, sequence, after.as_deref());
-                if let (Some(prefix), Some(after)) = (self.records_prefix.clone(), after) {
+                // Bound the whole drain, not just each page: a world with many
+                // records would otherwise keep fetching pages without limit.
+                self.records_drained = self.records_drained.saturating_add(text.len());
+                let next = match (&self.records_prefix, &after) {
+                    (Some(prefix), Some(after))
+                        if self.records_drained < MAX_RECORDS_TOTAL_BYTES =>
+                    {
+                        Some((prefix.clone(), after.clone()))
+                    }
+                    _ => None,
+                };
+                let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
+                if let Some((prefix, after)) = next {
                     self.commands
                         .push_back(WorldCommand::RecordsContinue { prefix, after });
                 } else {
                     self.records_prefix = None;
                 }
-                format!("\r\n{}", terminal_text(&text))
+                if truncated {
+                    format!(
+                        "\r\n{}\r\n{}",
+                        terminal_text(&text),
+                        terminal_text("[records truncated: too much output]\n")
+                    )
+                } else {
+                    format!("\r\n{}", terminal_text(&text))
+                }
+            }
+            Some("caps") => {
+                let report = value
+                    .get("report")
+                    .map(serde_json::to_string_pretty)
+                    .transpose()
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "caps report unavailable".to_owned());
+                format!("\r\n{report}\r\nworld> ")
+            }
+            Some("module_info") => {
+                let info = serde_json::to_string_pretty(&value).unwrap_or_default();
+                format!("\r\n{info}\r\nworld> ")
             }
             _ => return true,
         };
@@ -591,8 +992,190 @@ impl SessionIo for SshIo {
     }
 }
 
+/// Where `id world join --via ssh` connects: `[user@]host[:port]` (port 22
+/// by default; an IPv6 address goes in brackets). The user is only the SSH
+/// login: on the frame channel it names no world and grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshTarget {
+    /// SSH login name (`id` when absent).
+    pub user: String,
+    /// Host name or address.
+    pub host: String,
+    /// TCP port.
+    pub port: u16,
+}
+
+impl std::str::FromStr for SshTarget {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> anyhow::Result<Self> {
+        let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
+        let port = |digits: &str| {
+            digits
+                .parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+        };
+        let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
+            let Some((host, tail)) = inner.split_once(']') else {
+                anyhow::bail!("`{text}`: missing `]` after the IPv6 address");
+            };
+            match tail.strip_prefix(':') {
+                Some(digits) => (host, port(digits)?),
+                None if tail.is_empty() => (host, 22),
+                None => anyhow::bail!("`{text}`: expected `:port` after `]`"),
+            }
+        } else {
+            match rest.split_once(':') {
+                Some((host, digits)) if !digits.contains(':') => (host, port(digits)?),
+                Some(_) => anyhow::bail!("`{text}`: put an IPv6 address in brackets"),
+                None => (rest, 22),
+            }
+        };
+        anyhow::ensure!(
+            !host.is_empty() && !user.is_empty(),
+            "`{text}` is not [user@]host[:port]"
+        );
+        Ok(Self {
+            user: user.to_owned(),
+            host: host.to_owned(),
+            port,
+        })
+    }
+}
+
+/// How the SSH client decides to trust the host key. There is no
+/// trust-on-first-use: an unknown key is refused with its fingerprint.
+#[derive(Clone, Debug)]
+pub enum HostKeyCheck {
+    /// The SHA256 fingerprint `id serve` prints (`SHA256:...`).
+    Fingerprint(String),
+    /// An OpenSSH `known_hosts` file.
+    KnownHosts(std::path::PathBuf),
+}
+
+/// The client half of the host-key decision.
+#[derive(Debug)]
+pub struct HostKeyTrust {
+    host: String,
+    port: u16,
+    check: HostKeyCheck,
+    refused: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl russh::client::Handler for HostKeyTrust {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, russh::Error> {
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
+            self.refuse("a certificate (not supported)".to_owned());
+            return Ok(false);
+        };
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        let trusted = match &self.check {
+            HostKeyCheck::Fingerprint(expected) => *expected == fingerprint,
+            HostKeyCheck::KnownHosts(path) => {
+                russh::keys::check_known_hosts_path(&self.host, self.port, key, path)
+                    .unwrap_or(false)
+            }
+        };
+        if !trusted {
+            self.refuse(fingerprint);
+        }
+        Ok(trusted)
+    }
+}
+
+impl HostKeyTrust {
+    fn refuse(&self, fingerprint: String) {
+        if let Ok(mut refused) = self.refused.lock() {
+            *refused = Some(fingerprint);
+        }
+    }
+}
+
+/// Keeps the SSH connection of a frame session open; dropping it disconnects.
+pub struct SshConnection {
+    _session: russh::client::Handle<HostKeyTrust>,
+}
+
+impl std::fmt::Debug for SshConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConnection").finish_non_exhaustive()
+    }
+}
+
+/// Open a frame session over an SSH exec channel. The returned stream
+/// carries exactly the bytes an iroh `/id-world/1` stream would: use
+/// [`crate::frames::write_frame_to`] and [`crate::frames::read_frame_from`].
+///
+/// # Errors
+///
+/// Fails if the host is unreachable, its key is not trusted, or it does not
+/// offer the frame transport.
+pub async fn connect_frames(
+    target: &SshTarget,
+    check: HostKeyCheck,
+) -> anyhow::Result<(SshConnection, russh::ChannelStream<russh::client::Msg>)> {
+    use anyhow::Context as _;
+
+    let refused = Arc::new(std::sync::Mutex::new(None));
+    let trust = HostKeyTrust {
+        host: target.host.clone(),
+        port: target.port,
+        check,
+        refused: Arc::clone(&refused),
+    };
+    let config = Arc::new(russh::client::Config::default());
+    let mut session =
+        match russh::client::connect(config, (target.host.as_str(), target.port), trust).await {
+            Ok(session) => session,
+            Err(error) => {
+                if let Some(key) = refused.lock().ok().and_then(|mut refused| refused.take()) {
+                    anyhow::bail!(
+                        "the host key of {}:{} ({key}) is not trusted; compare it with the \
+                         `world ssh host key` line `id serve` prints, then pass \
+                         --ssh-host-key {key} or add the key to known_hosts",
+                        target.host,
+                        target.port
+                    );
+                }
+                return Err(error).context("connect over ssh");
+            }
+        };
+    // The login grants nothing here: the frames carry their own capability.
+    let auth = session
+        .authenticate_password(target.user.as_str(), "")
+        .await
+        .context("ssh login")?;
+    anyhow::ensure!(auth.success(), "the ssh server refused the login");
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .context("open ssh channel")?;
+    channel
+        .exec(true, WORLD_EXEC_COMMAND)
+        .await
+        .context("start the frame transport")?;
+    loop {
+        match channel.wait().await {
+            Some(russh::ChannelMsg::Success) => break,
+            Some(russh::ChannelMsg::Failure) | None => anyhow::bail!(
+                "the ssh server does not offer the id world frame transport (exec {WORLD_EXEC_COMMAND})"
+            ),
+            Some(_) => {}
+        }
+    }
+    Ok((SshConnection { _session: session }, channel.into_stream()))
+}
+
 const MAX_WORLD_TERMINAL_LINE: usize = 1024;
 const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
+/// Total rendered bytes a single `/records` drain may produce across all its
+/// pages. Each page is additionally bounded by [`MAX_RECORDS_TERMINAL_BYTES`].
+const MAX_RECORDS_TOTAL_BYTES: usize = 1024 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
@@ -612,59 +1195,31 @@ enum WorldCommand {
         prefix: Option<String>,
     },
     Document(String),
+    Stats,
+    Logs {
+        seconds: Option<u64>,
+    },
+    Caps,
     Help,
     Message(String),
     Quit,
 }
 
 fn world_command(line: &str) -> Option<WorldCommand> {
-    if line.is_empty() {
-        return None;
-    }
-    if line == "/help" {
-        return Some(WorldCommand::Help);
-    }
-    if line == "/quit" {
-        return Some(WorldCommand::Quit);
-    }
-    if line == "/records" || line.starts_with("/records ") {
-        let Some(prefix) = line.strip_prefix("/records") else {
-            return Some(WorldCommand::Message("usage: /records [prefix]".to_owned()));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Records {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if line == "/documents" || line.starts_with("/documents ") {
-        let Some(prefix) = line.strip_prefix("/documents") else {
-            return Some(WorldCommand::Message(
-                "usage: /documents [prefix]".to_owned(),
-            ));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Documents {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if let Some(name) = line.strip_prefix("/document ") {
-        if !name.is_empty() && name == name.trim() {
-            return Some(WorldCommand::Document(name.to_owned()));
-        }
-        return Some(WorldCommand::Message("usage: /document <name>".to_owned()));
-    }
-    if let Some(hex) = line.strip_prefix("/input ") {
-        if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Some(WorldCommand::Input(hex.to_ascii_lowercase()));
-        }
-        return Some(WorldCommand::Message("usage: /input <hex>".to_owned()));
-    }
-    if line.starts_with('/') {
-        return Some(WorldCommand::Message(
-            "unknown command; type /help".to_owned(),
-        ));
-    }
-    Some(WorldCommand::Chat(line.to_owned()))
+    use crate::world_line::{WorldLine, parse_line};
+    Some(match parse_line(line)? {
+        WorldLine::Chat(text) => WorldCommand::Chat(text),
+        WorldLine::Input(hex) => WorldCommand::Input(hex),
+        WorldLine::Records { prefix } => WorldCommand::Records { prefix },
+        WorldLine::Documents { prefix } => WorldCommand::Documents { prefix },
+        WorldLine::Document(name) => WorldCommand::Document(name),
+        WorldLine::Stats => WorldCommand::Stats,
+        WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
+        WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Help => WorldCommand::Help,
+        WorldLine::Quit => WorldCommand::Quit,
+        WorldLine::Message(message) => WorldCommand::Message(message),
+    })
 }
 
 #[derive(Default)]
@@ -1030,6 +1585,7 @@ async fn run_explorer(
     handle: Handle,
     channel: ChannelId,
     mut bytes: mpsc::Receiver<SshInputFrame>,
+    dropped_input: Arc<AtomicUsize>,
 ) {
     let greeting = match explorer.act(DirectoryAction::View).await {
         Ok(outcome) => format!(
@@ -1080,12 +1636,20 @@ async fn run_explorer(
                 }
             }
         }
+        // Tell the explorer viewer about dropped input before the output
+        // it delayed, claiming the notice from the counter shared with the
+        // handler. If the write fails, restore the claim so the drops stay
+        // counted instead of vanishing with the undelivered notice.
+        let claimed = prepend_dropped_input_notice(&dropped_input, &mut out);
         if !out.is_empty()
             && handle
                 .data(channel, String::from_utf8_lossy(&out).into_owned())
                 .await
                 .is_err()
         {
+            if let Some(bytes) = claimed {
+                dropped_input.fetch_add(bytes, Ordering::Relaxed);
+            }
             break 'input;
         }
         if done {
@@ -1515,6 +2079,234 @@ mod tests {
         WorldHub::single(WorldService::new(world, Some("admin".to_owned())))
     }
 
+    fn sequence_count(bytes: &[u8], sequence: &str) -> usize {
+        bytes
+            .windows(sequence.len())
+            .filter(|window| *window == sequence.as_bytes())
+            .count()
+    }
+
+    fn sequence_position(bytes: &[u8], sequence: &str) -> Option<usize> {
+        bytes
+            .windows(sequence.len())
+            .position(|window| window == sequence.as_bytes())
+    }
+
+    #[tokio::test]
+    async fn a_raw_shell_enters_and_leaves_the_alternate_screen() {
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-raw-alt".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+
+        // The enter sequence must be the very first bytes on the channel:
+        // a live, accepted session enters the alternate screen before its
+        // first frame, not at teardown.
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while sequence_count(&bytes, ALT_SCREEN_ENTER) == 0 {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the alternate screen to open");
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_LEAVE), 0);
+
+        drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_refused_raw_shell_leaves_the_alternate_screen_and_repeats_its_error() {
+        let (port, server) = start(lobby_hub()).await;
+        let session = connect(port, &"0".repeat(64)).await;
+        let mut channel = shell(&session).await;
+
+        // A refused join ends the session server-side: the server writes the
+        // leave sequence and closes the channel, so read until the close.
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refused shell to close");
+
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_ENTER),
+            1,
+            "enter sequence must be written exactly once: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_LEAVE),
+            1,
+            "leave sequence must be written exactly once: {bytes:?}"
+        );
+        let leave_at = sequence_position(&bytes, ALT_SCREEN_LEAVE).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let error_after_leave = text.rfind("join denied").expect("join error missing");
+        assert!(
+            error_after_leave > leave_at,
+            "the last error must be re-sent after the leave sequence: {text:?}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_command_shell_stays_on_the_primary_screen() {
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-cmd-alt".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect_as(port, "cmd:", &capability).await;
+        let mut channel = shell(&session).await;
+        let mut text = String::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while text.len() < 32 {
+                if let Some(ChannelMsg::Data { data }) = channel.wait().await {
+                    text.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the command prompt");
+        assert!(
+            !text
+                .as_bytes()
+                .windows(ALT_SCREEN_ENTER.len())
+                .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
+        );
+        assert!(
+            !text
+                .as_bytes()
+                .windows(ALT_SCREEN_LEAVE.len())
+                .any(|window| window == ALT_SCREEN_LEAVE.as_bytes())
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn dropped_input_notice_counts_and_quiet_zero() {
+        assert_eq!(dropped_input_notice(0), None);
+        // Below the threshold the viewer is not told yet: the drops stay
+        // counted until they add up to a sustained loss.
+        assert_eq!(dropped_input_notice(INPUT_DROP_NOTICE_BYTES - 1), None);
+        let notice = dropped_input_notice(INPUT_DROP_NOTICE_BYTES).unwrap();
+        assert!(notice.contains("1024"));
+        assert!(notice.contains("dropped"));
+    }
+
+    #[test]
+    fn dropped_input_notice_follows_the_shared_counter() {
+        // Drive the counter exactly the way the russh handler does when the
+        // queue refuses input mid-session: the shell must see those drops,
+        // not the zero snapshot a copy taken at shell-open would hold.
+        let counter = AtomicUsize::new(0);
+        record_dropped_input(&counter, 600);
+        assert_eq!(claim_dropped_input_notice(&counter), None);
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            600,
+            "a below-threshold claim must leave the drops counted"
+        );
+        record_dropped_input(&counter, 600);
+        let (bytes, notice) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(bytes, 1200);
+        assert!(notice.contains("1200"));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        // The claim was the reset: nothing is reported twice.
+        assert_eq!(claim_dropped_input_notice(&counter), None);
+        // Drops counted after a claim are reported on their own.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let (bytes, _) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(bytes, INPUT_DROP_NOTICE_BYTES);
+        // A notice that cannot be handed to the viewer restores its claim
+        // (the send path adds the bytes back), so the same drops are
+        // reported by the next successful claim instead of being lost.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let (bytes, _) = claim_dropped_input_notice(&counter).unwrap();
+        counter.fetch_add(bytes, Ordering::Relaxed);
+        let (restored, _) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(restored, INPUT_DROP_NOTICE_BYTES);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn explorer_notice_prepends_to_next_output_and_stays_quiet_below_threshold() {
+        // Drive the shared counter exactly the way the russh handler does
+        // for an explorer session whose input queue is full (#723).
+        let counter = AtomicUsize::new(0);
+        record_dropped_input(&counter, 600);
+        let mut out = b"id> ".to_vec();
+        assert_eq!(prepend_dropped_input_notice(&counter, &mut out), None);
+        assert_eq!(out, b"id> ", "below-threshold drops stay quiet");
+        assert_eq!(counter.load(Ordering::Relaxed), 600);
+
+        record_dropped_input(&counter, 600);
+        let mut out = b"id> ".to_vec();
+        let claimed = prepend_dropped_input_notice(&counter, &mut out).unwrap();
+        assert_eq!(claimed, 1200);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("[-- input dropped: 1200 bytes"), "{text}");
+        assert!(text.ends_with("id> "), "notice precedes the next output");
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        // A failed write restores the claim (run_explorer adds it back),
+        // so the same drops are prepended again rather than lost.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let mut out = Vec::new();
+        let claimed = prepend_dropped_input_notice(&counter, &mut out).unwrap();
+        counter.fetch_add(claimed, Ordering::Relaxed);
+        let mut out = Vec::new();
+        assert_eq!(
+            prepend_dropped_input_notice(&counter, &mut out),
+            Some(INPUT_DROP_NOTICE_BYTES)
+        );
+        assert!(!out.is_empty(), "notice alone is output worth sending");
+    }
+
     #[tokio::test]
     async fn a_wrong_password_is_refused_inside_the_shell() {
         let (port, server) = start(lobby_hub()).await;
@@ -1592,6 +2384,471 @@ mod tests {
     }
 
     #[test]
+    fn ssh_targets_parse_user_host_and_port() {
+        let parse = |text: &str| text.parse::<SshTarget>();
+        let target = |user: &str, host: &str, port| SshTarget {
+            user: user.to_owned(),
+            host: host.to_owned(),
+            port,
+        };
+        assert_eq!(
+            parse("example.org").unwrap(),
+            target("id", "example.org", 22)
+        );
+        assert_eq!(
+            parse("ada@example.org:2222").unwrap(),
+            target("ada", "example.org", 2222)
+        );
+        assert_eq!(parse("[::1]:2022").unwrap(), target("id", "::1", 2022));
+        assert_eq!(parse("me@[::1]").unwrap(), target("me", "::1", 22));
+        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_exec_command_is_the_contracts_ssh_transport() {
+        let contract = crate::shell_contract::ShellContract::embedded().unwrap();
+        assert_eq!(
+            contract.transports["ssh-exec"]["command"],
+            WORLD_EXEC_COMMAND
+        );
+        assert_eq!(
+            contract.transports["ssh-exec"]["envelope"],
+            contract.transports["iroh"]["envelope"]
+        );
+    }
+
+    /// A program whose view is the same for every viewer and every connection.
+    struct Shown;
+
+    impl crate::world::WorldProgram for Shown {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some("shown".to_owned()))
+        }
+    }
+
+    /// One world served over iroh and SSH at once.
+    struct TwoTransports {
+        world: WorldHandle,
+        capability: String,
+        port: u16,
+        fingerprint: String,
+        endpoint: iroh::Endpoint,
+        addr: iroh::EndpointAddr,
+        _router: iroh::protocol::Router,
+        ssh: tokio::task::JoinHandle<std::io::Result<()>>,
+    }
+
+    async fn two_transports() -> TwoTransports {
+        use iroh::endpoint::{RelayMode, presets};
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        world
+            .install_program("ab".repeat(32), 5, Box::new(Shown))
+            .await
+            .unwrap();
+        let (_, token) = world
+            .issue("ada", crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world.clone(), Some("admin".to_owned())));
+
+        let bind = || async {
+            iroh::Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .bind()
+                .await
+                .unwrap()
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let fingerprint = host_key_fingerprint(&host_key);
+        let host = bind().await;
+        let router = iroh::protocol::Router::builder(host.clone())
+            .accept(
+                crate::world_net::WORLD_ALPN,
+                crate::world_net::WorldProtocol::new(hub.clone()),
+            )
+            .accept(SSH_TUNNEL_ALPN, SshTunnelProtocol::with_port(port))
+            .spawn();
+        let addr = iroh::EndpointAddr::from_parts(
+            host.id(),
+            host.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(SocketAddr::new(ip, a.port()))
+            }),
+        );
+
+        let ssh = tokio::spawn(serve_limited(
+            listener,
+            hub,
+            host_key,
+            test_store(),
+            MAX_CONNECTIONS,
+        ));
+        TwoTransports {
+            world,
+            capability: token.expose().to_owned(),
+            port,
+            fingerprint,
+            endpoint: bind().await,
+            addr,
+            _router: router,
+            ssh,
+        }
+    }
+
+    impl TwoTransports {
+        fn target(&self) -> SshTarget {
+            SshTarget {
+                user: "id".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: self.port,
+            }
+        }
+
+        fn trust(&self) -> HostKeyCheck {
+            HostKeyCheck::Fingerprint(self.fingerprint.clone())
+        }
+    }
+
+    /// The raw frame bodies a transport delivers, read in their own task so
+    /// a test can wait for quiet without cancelling a read.
+    struct RawFrames {
+        frames: mpsc::UnboundedReceiver<Vec<u8>>,
+    }
+
+    impl RawFrames {
+        fn read<R: tokio::io::AsyncRead + Unpin + Send + 'static>(mut recv: R) -> Self {
+            let (tx, frames) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Ok(Some(body)) = crate::frames::read_frame_from(&mut recv).await {
+                    if tx.send(body).is_err() {
+                        break;
+                    }
+                }
+            });
+            Self { frames }
+        }
+
+        /// Every frame until the host has been quiet for a moment.
+        async fn drain(&mut self) -> Vec<Vec<u8>> {
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_millis(400), self.frames.recv()).await
+            {
+                frames.push(frame);
+            }
+            frames
+        }
+    }
+
+    fn texts(frames: &[Vec<u8>]) -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| String::from_utf8_lossy(frame).into_owned())
+            .collect()
+    }
+
+    /// F13.2's exit test: one scripted session over iroh and over an SSH exec
+    /// channel, in lockstep on one world, unwraps to the same frame bytes.
+    #[tokio::test]
+    async fn an_exec_channel_carries_the_same_frames_as_the_iroh_stream() {
+        use crate::frames::{write_frame, write_frame_to};
+
+        let host = two_transports().await;
+        let iroh_client = crate::world_net::WorldClient::connect(&host.endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        let (conn, mut iroh_send, iroh_recv) = iroh_client.into_parts();
+        let mut iroh_frames = RawFrames::read(iroh_recv);
+        let (_connection, stream) = connect_frames(&host.target(), host.trust()).await.unwrap();
+        let (ssh_recv, mut ssh_send) = tokio::io::split(stream);
+        let mut ssh_frames = RawFrames::read(ssh_recv);
+
+        let cap = &host.capability;
+        let join = crate::world_net::route_frame(
+            &serde_json::json!({"type": "join", "capability": cap, "after": null}),
+            Some("lobby"),
+        );
+        write_frame(&mut iroh_send, join.as_bytes()).await.unwrap();
+        let iroh_joined = iroh_frames.drain().await;
+        write_frame_to(&mut ssh_send, join.as_bytes())
+            .await
+            .unwrap();
+        let ssh_joined = ssh_frames.drain().await;
+        assert_eq!(texts(&iroh_joined), texts(&ssh_joined));
+        assert!(
+            iroh_frames.drain().await.is_empty(),
+            "a second join is invisible"
+        );
+
+        // (who sends, frame): broadcasts reach both; replies go to whoever asked.
+        let script = [
+            (
+                Some(true),
+                serde_json::json!({"type": "chat", "text": "over iroh"}),
+            ),
+            (
+                Some(false),
+                serde_json::json!({"type": "input", "data_hex": "6869"}),
+            ),
+            (None, serde_json::json!({"type": "info", "capability": cap})),
+            (
+                None,
+                serde_json::json!({"type": "records", "capability": cap}),
+            ),
+            (None, serde_json::json!({"type": "caps", "capability": cap})),
+            (
+                None,
+                serde_json::json!({"type": "resize", "width": 40, "height": 10}),
+            ),
+            (
+                None,
+                serde_json::json!({"type": "chat", "text": "\u{1}bad"}),
+            ),
+            (None, serde_json::json!({"type": "teleport"})),
+        ];
+        let mut checked = 0;
+        for (sender, frame) in script {
+            let text = frame.to_string();
+            if sender != Some(false) {
+                write_frame(&mut iroh_send, text.as_bytes()).await.unwrap();
+            }
+            if sender != Some(true) {
+                write_frame_to(&mut ssh_send, text.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let over_iroh = iroh_frames.drain().await;
+            let over_ssh = ssh_frames.drain().await;
+            assert!(!over_iroh.is_empty(), "{text}");
+            assert_eq!(over_iroh, over_ssh, "{text}: {:?}", texts(&over_iroh));
+            checked += over_iroh.len();
+        }
+        assert!(checked >= 10, "{checked}");
+        // Only the chat and the input were journaled: the frames themselves
+        // never touch it.
+        let token = crate::world::JoinCapability::from_wire(cap.clone());
+        let snapshot = host.world.snapshot(token.clone()).await.unwrap();
+        // The install, the chat, the input, and each side's sanitized chat.
+        assert_eq!(snapshot.current_sequence, 5);
+        drop(ssh_send);
+        drop(ssh_frames);
+        conn.close(0_u32.into(), b"done");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let after = host.world.snapshot(token).await.unwrap();
+        assert_eq!(after.current_sequence, snapshot.current_sequence);
+        host.ssh.abort();
+    }
+
+    #[tokio::test]
+    async fn the_exec_transport_refuses_other_commands_untrusted_keys_and_oversized_frames() {
+        let host = two_transports().await;
+
+        // An unknown key is refused, and the error names its fingerprint.
+        let Err(error) = connect_frames(
+            &host.target(),
+            HostKeyCheck::Fingerprint("SHA256:not-the-key".to_owned()),
+        )
+        .await
+        else {
+            panic!("an untrusted key was accepted");
+        };
+        let error = error.to_string();
+        assert!(error.contains(&host.fingerprint), "{error}");
+        let empty = tempfile::NamedTempFile::new().unwrap();
+        assert!(
+            connect_frames(
+                &host.target(),
+                HostKeyCheck::KnownHosts(empty.path().to_owned())
+            )
+            .await
+            .is_err()
+        );
+
+        // Any other exec command, and a second session on one connection, fail.
+        let session = connect(host.port, "").await;
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, "sh -c id").await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Failure)
+        ));
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Success)
+        ));
+        let mut second = session.channel_open_session().await.unwrap();
+        second.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            second.wait().await,
+            Some(russh::ChannelMsg::Failure)
+        ));
+
+        // A length over the frame limit ends the session unread, as on iroh.
+        let too_long = u32::try_from(crate::frames::MAX_FRAME_BYTES + 1)
+            .unwrap()
+            .to_be_bytes();
+        channel.data(&too_long[..]).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match channel.wait().await {
+                    Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) | None => break,
+                    Some(_) => {}
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "the session did not end");
+
+        // A login grants nothing on the frame channel: a bad capability is refused.
+        let (_connection, stream) = connect_frames(&host.target(), host.trust()).await.unwrap();
+        let (recv, mut send) = tokio::io::split(stream);
+        let mut frames = RawFrames::read(recv);
+        crate::frames::write_frame_to(&mut send, br#"{"type":"join","capability":"1.forged"}"#)
+            .await
+            .unwrap();
+        let reply = frames.drain().await;
+        assert_eq!(
+            texts(&reply),
+            [r#"{"type":"error","message":"join denied"}"#]
+        );
+        host.ssh.abort();
+    }
+
+    /// F13.3: an SSH client reaches the world SSH server through iroh only —
+    /// no TCP route to it is used after the tunnel connects.
+    #[tokio::test]
+    async fn ssh_reaches_the_world_through_the_iroh_tunnel() {
+        let host = two_transports().await;
+        let conn = crate::connectivity::connect(&host.endpoint, host.addr.clone(), SSH_TUNNEL_ALPN)
+            .await
+            .unwrap();
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let stream = tokio::io::join(recv, send);
+        let config = Arc::new(client::Config::default());
+        let mut session = client::connect_stream(config, stream, TrustAll)
+            .await
+            .unwrap();
+        assert!(
+            session
+                .authenticate_password("", host.capability.as_str())
+                .await
+                .unwrap()
+                .success()
+        );
+        // Inside the tunnel the frame transport works as usual.
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Success)
+        ));
+        let join = crate::world_net::route_frame(
+            &serde_json::json!({"type": "join", "capability": host.capability, "after": null}),
+            Some("lobby"),
+        );
+        channel
+            .data(
+                crate::frames::encode_frame(join.as_bytes())
+                    .unwrap()
+                    .as_slice(),
+            )
+            .await
+            .unwrap();
+        let mut buffer = crate::frames::FrameBuffer::default();
+        let frame = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(russh::ChannelMsg::Data { data }) => {
+                        buffer.push(&data);
+                        if let Some(crate::frames::Decoded::Frame(body)) = buffer.next_frame() {
+                            break String::from_utf8(body).unwrap();
+                        }
+                    }
+                    other => panic!("tunnel closed early: {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(frame.contains("\"type\":\"snapshot\""), "{frame}");
+        conn.close(0_u32.into(), b"done");
+        host.ssh.abort();
+    }
+
+    #[test]
+    fn terminal_shell_frames_conform_to_the_shell_contract() {
+        use crate::shell_contract::{Phase, ShellContract};
+        let contract = ShellContract::embedded().unwrap();
+        let check = |frame: &str, phase| {
+            let value: serde_json::Value = serde_json::from_str(frame).unwrap();
+            contract
+                .check_client_frame(&value, phase)
+                .map(str::to_owned)
+                .unwrap_or_else(|error| panic!("{frame}: {error}"))
+        };
+        for (world, command_mode) in [(None, false), (Some("arena"), true)] {
+            let login = Login {
+                world: world.map(str::to_owned),
+                capability: "cap".to_owned(),
+                explore: false,
+                command_mode,
+                key: None,
+            };
+            assert_eq!(check(&join_frame(&login), Phase::Opening), "join");
+        }
+        for input in [
+            SshInputFrame::Bytes(b"\x1b[A".to_vec()),
+            SshInputFrame::Resize(80, 24),
+            SshInputFrame::Resize(0, 0),
+            SshInputFrame::Resize(4000, 1000),
+        ] {
+            check(&raw_frame(&input), Phase::Joined);
+        }
+        let mut sent = Vec::new();
+        for line in [
+            "hello",
+            "/input 00ff",
+            "/records",
+            "/records key-",
+            "/stats",
+            "/caps",
+            "/logs",
+            "/help",
+            "/documents",
+            "/document a.md",
+            "/nope",
+            "/quit",
+        ] {
+            let command = world_command(line).unwrap();
+            if let Some(frame) = command_frame(&command, "cap") {
+                sent.push(check(&frame, Phase::Joined));
+            }
+        }
+        let more = WorldCommand::RecordsContinue {
+            prefix: None,
+            after: "k".to_owned(),
+        };
+        sent.push(check(&command_frame(&more, "cap").unwrap(), Phase::Joined));
+        assert_eq!(
+            sent,
+            [
+                "chat", "input", "records", "records", "info", "caps", "records"
+            ]
+        );
+    }
+
+    #[test]
     fn terminal_text_drops_control_characters_but_keeps_lines() {
         assert_eq!(
             terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
@@ -1643,6 +2900,16 @@ mod tests {
         );
         assert_eq!(world_command("/help"), Some(WorldCommand::Help));
         assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
+        assert_eq!(world_command("/stats"), Some(WorldCommand::Stats));
+        assert_eq!(world_command("/caps"), Some(WorldCommand::Caps));
+        assert_eq!(
+            world_command("/logs"),
+            Some(WorldCommand::Logs { seconds: None })
+        );
+        assert_eq!(
+            world_command("/logs 5"),
+            Some(WorldCommand::Logs { seconds: Some(5) })
+        );
         assert_eq!(
             world_command("/input nope"),
             Some(WorldCommand::Message("usage: /input <hex>".into()))
@@ -1679,6 +2946,38 @@ mod tests {
         assert!(text.contains("\"b\" = \"line\\nvalue\""));
         assert!(text.contains("more records; fetching next page"));
         assert!(text.len() <= MAX_RECORDS_TERMINAL_BYTES);
+    }
+
+    /// The `/records` drain is bounded in total, not just per page: the per-page
+    /// cap is [`MAX_RECORDS_TERMINAL_BYTES`], but a world with many records must
+    /// also stop after [`MAX_RECORDS_TOTAL_BYTES`] across pages.
+    #[test]
+    fn the_records_drain_is_bounded_in_total_as_well_as_per_page() {
+        // A single page is truncated at the per-page cap, so a page never
+        // exceeds it...
+        let one_page = render_records(&records_of(4096), 1, None);
+        assert!(
+            one_page.len() <= MAX_RECORDS_TERMINAL_BYTES + 64,
+            "one page stays under the per-page cap: {}",
+            one_page.len()
+        );
+        // ...and the whole drain has a larger, but still finite, total cap, so
+        // a many-page world stops instead of streaming without bound.
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
+            "the total cap must exceed the per-page cap"
+        );
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
+            "the total cap must be finite"
+        );
+    }
+
+    #[cfg(test)]
+    fn records_of(count: usize) -> crate::world::Records {
+        (0..count)
+            .map(|i| (format!("key-{i:04}"), serde_json::json!({"n": i})))
+            .collect()
     }
 
     async fn put_document(store: &iroh_blobs::api::Store, name: &str, bytes: Vec<u8>) {
@@ -1850,6 +3149,15 @@ mod tests {
         read_until(&mut channel, &mut terminal, "count=0").await;
         channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;
+        // `/stats` sends `info` from the joined session; the host answers it
+        // (it used to refuse it as "already joined").
+        channel.data(&b"/stats\r"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "current_sequence").await;
+        assert!(
+            !terminal.screen().contents().contains("already joined"),
+            "{}",
+            terminal.screen().contents()
+        );
         server.abort();
     }
 }

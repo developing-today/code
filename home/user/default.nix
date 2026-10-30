@@ -18,5 +18,14 @@
         system
         ;
     })
+    # OpenClaw gateway (peer intelligence source) — home/openclaw.
+    (import (lib.from-root "home/openclaw") {
+      inherit
+        lib
+        inputs
+        pkgs
+        system
+        ;
+    })
   ];
 }

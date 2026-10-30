@@ -517,23 +517,6 @@ impl MetaProtocol {
         })
     }
 
-    /// Determines the match quality of a needle in a haystack.
-    ///
-    /// Returns the best applicable [`MatchKind`], or `None` if no match.
-    /// Matching is case-sensitive; callers lowercase both for case-insensitive
-    /// matching. Priority: exact, then prefix, then contains.
-    fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-        if haystack == needle {
-            Some(MatchKind::Exact)
-        } else if haystack.starts_with(needle) {
-            Some(MatchKind::Prefix)
-        } else if haystack.contains(needle) {
-            Some(MatchKind::Contains)
-        } else {
-            None
-        }
-    }
-
     /// Handle one request on behalf of `remote` and produce the response.
     ///
     /// This is the whole server-side behaviour of the protocol, independent of
@@ -682,14 +665,14 @@ impl MetaProtocol {
             while let Some(Ok(item)) = list.next().await {
                 let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
                 let hash_str = item.hash.to_string();
-                if let Some(kind) = Self::match_kind(&name.to_lowercase(), &query_lower) {
+                if let Some(kind) = crate::match_kind(&name.to_lowercase(), &query_lower) {
                     matches.push(FindMatch {
                         hash: item.hash,
                         name,
                         kind,
                         is_hash_match: false,
                     });
-                } else if let Some(kind) = Self::match_kind(&hash_str, &query_lower) {
+                } else if let Some(kind) = crate::match_kind(&hash_str, &query_lower) {
                     matches.push(FindMatch {
                         hash: item.hash,
                         name,
@@ -747,73 +730,6 @@ impl ProtocolHandler for MetaProtocol {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_match_kind_exact() {
-        assert_eq!(
-            MetaProtocol::match_kind("hello", "hello"),
-            Some(MatchKind::Exact)
-        );
-    }
-
-    #[test]
-    fn test_match_kind_prefix() {
-        assert_eq!(
-            MetaProtocol::match_kind("hello world", "hello"),
-            Some(MatchKind::Prefix)
-        );
-    }
-
-    #[test]
-    fn test_match_kind_contains() {
-        assert_eq!(
-            MetaProtocol::match_kind("say hello", "hello"),
-            Some(MatchKind::Contains)
-        );
-    }
-
-    #[test]
-    fn test_match_kind_none() {
-        assert_eq!(MetaProtocol::match_kind("goodbye", "hello"), None);
-    }
-
-    #[test]
-    fn test_match_kind_ordering() {
-        // Exact < Prefix < Contains
-        assert!(MatchKind::Exact < MatchKind::Prefix);
-        assert!(MatchKind::Prefix < MatchKind::Contains);
-    }
-
-    #[test]
-    fn test_match_kind_empty_string() {
-        // Empty string matches as exact with empty
-        assert_eq!(MetaProtocol::match_kind("", ""), Some(MatchKind::Exact));
-        // Empty needle: starts_with("") is true, so returns Prefix
-        assert_eq!(
-            MetaProtocol::match_kind("hello", ""),
-            Some(MatchKind::Prefix)
-        );
-        // Empty haystack with non-empty needle
-        assert_eq!(MetaProtocol::match_kind("", "hello"), None);
-    }
-
-    #[test]
-    fn test_match_kind_case_sensitive() {
-        assert_eq!(MetaProtocol::match_kind("Hello", "hello"), None);
-        assert_eq!(MetaProtocol::match_kind("HELLO", "hello"), None);
-    }
-
-    #[test]
-    fn test_match_kind_special_chars() {
-        assert_eq!(
-            MetaProtocol::match_kind("test.file.txt", "test.file"),
-            Some(MatchKind::Prefix)
-        );
-        assert_eq!(
-            MetaProtocol::match_kind("path/to/file", "to"),
-            Some(MatchKind::Contains)
-        );
-    }
 
     #[test]
     fn test_find_match_struct() {

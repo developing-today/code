@@ -1,0 +1,28 @@
+# Cloudflare Tunnel for the pm-stack (Kaneo) — systemd USER unit.
+#
+# Install (on the host, from the pm-stack deployment directory):
+#   install -Dm644 systemd/pm-tunnel.service ~/.config/systemd/user/pm-tunnel.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pm-tunnel.service
+# (Adjust the two paths below if the deployment directory differs.)
+#
+# The tunnel itself is remotely managed in Cloudflare (tunnel name
+# "amd-6-pm-stack"): its ingress — kaneo.security.cab ->
+# http://localhost:5173 — lives in the tunnel configuration in
+# Cloudflare, not here. This unit only runs the connector with the
+# tunnel token that deploy.sh renders into tunnel.env.
+[Unit]
+Description=Cloudflare Tunnel connector for pm-stack (Kaneo)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/pm-stack
+EnvironmentFile=%h/pm-stack/tunnel.env
+ExecStart=/usr/bin/env cloudflared tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

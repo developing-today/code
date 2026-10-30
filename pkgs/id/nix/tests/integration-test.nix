@@ -24,7 +24,13 @@
     virtualisation.cores = 2;
   };
 
-  globalTimeout = 300; # 5 minutes
+  # The complete cli_integration binary runs roughly 134 tests with two
+  # workers, and individual child processes may wait up to three minutes.
+  # World tests exercise multiple long-lived server processes and can run
+  # serially behind the two-worker harness (see #190), so 20 minutes still
+  # terminated the suite before it completed in CI. Keep enough headroom for
+  # the full suite while preserving per-process deadlines in the test binary.
+  globalTimeout = 3600; # 60 minutes for the full integration suite
 
   testScript = ''
     ID_BIN = "${idPackage}/bin/id"
@@ -45,7 +51,7 @@
         f"ID_BINARY={ID_BIN} "
         f"ID_TEST_EXAMPLES_DIR={EXAMPLES_DIR} "
         f"{TEST_BIN} "
-        f"--test-threads=2 2>&1"
+         f"--test-threads=2 --nocapture --format=terse 2>&1"
     )
   '';
 }

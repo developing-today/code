@@ -1,0 +1,23 @@
+{
+  "action": "opened",
+  "number": 763,
+  "pull_request": {
+    "number": 763,
+    "title": "Add the PM-stack design record to doc/README.md",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "html_url": "https://github.com/developing-today/code/pull/763",
+    "url": "https://api.github.com/repos/developing-today/code/pulls/763",
+    "user": { "login": "developing-today[bot]" },
+    "labels": [],
+    "created_at": "2026-10-25T08:10:00Z",
+    "updated_at": "2026-10-25T08:10:00Z",
+    "closed_at": null,
+    "merged_at": null,
+    "base": { "ref": "main" },
+    "head": { "ref": "id/phase-14-docs" }
+  },
+  "repository": { "full_name": "developing-today/code", "name": "code" },
+  "sender": { "login": "developing-today[bot]" }
+}

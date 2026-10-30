@@ -11,7 +11,7 @@ import (
 // the _describe commands array must be single-quoted; an unquoted '\” escape
 // is only valid inside quotes.
 func TestZshCompletionCommandsAreQuoted(t *testing.T) {
-	out, err := Completion("zsh")
+	out, err := Completion("zsh", "0.0.0-test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,8 +40,6 @@ const RECONNECT_CLEANUP_DELAY_MS = 3_000; // Wait 3s after Init before cleanup (
 const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
 const PENDING_REMOVAL_MS = 5_000; // Show fading cursor for 5s after disconnect
 
-
-
 export interface CursorInfo {
   clientID: string | number;
   head: number;
@@ -305,14 +303,23 @@ function performReconnectCleanup(view: EditorView): void {
 // Same-Line Detection
 // ============================================================================
 
+type CoordsGetter = (pos: number) => { left: number; top: number; right: number; bottom: number } | null;
+
 /**
  * Check if a remote cursor position is on the same rendered line as the local selection.
- * Uses EditorView.coordsAtPos() for accurate DOM-based line detection.
+ * Uses EditorView.coordsAtPos() or cached CoordsGetter for accurate DOM-based line detection.
  */
-function isOnSameLineAsLocal(remoteCursorPos: number, localSelectionHead: number, view: EditorView): boolean {
+function isOnSameLineAsLocal(
+  remoteCursorPos: number,
+  localSelectionHead: number,
+  view: EditorView,
+  getCoords?: CoordsGetter,
+): boolean {
   try {
-    const localCoords = view.coordsAtPos(localSelectionHead);
-    const remoteCoords = view.coordsAtPos(remoteCursorPos);
+    const localCoords = getCoords ? getCoords(localSelectionHead) : view.coordsAtPos(localSelectionHead);
+    const remoteCoords = getCoords ? getCoords(remoteCursorPos) : view.coordsAtPos(remoteCursorPos);
+
+    if (!localCoords || !remoteCoords) return false;
 
     // Compare Y positions (top of the line)
     return Math.abs(localCoords.top - remoteCoords.top) < LINE_THRESHOLD_PX;
@@ -456,14 +463,31 @@ function createCursorDecorations(
   const now = Date.now();
   const localHead = state.selection.head;
 
-
-
   // Normalize myClientID to number for comparison (handles string/number mismatch)
   const myClientIDNum = myClientID !== null ? Number(myClientID) : null;
 
   // Get view state for strobe tracking (if view available)
   const viewState = view ? getViewState(view) : null;
   const connectionState = pluginState.connectionState;
+
+  // ⚡ Bolt optimization: Cache view.coordsAtPos calls per decoration calculation pass to avoid
+  // expensive layout reflows/recomputations when multiple cursors or lines are queried.
+  const coordsCache = new Map<number, { left: number; top: number; right: number; bottom: number } | null>();
+  const getCachedCoords: CoordsGetter = view
+    ? (pos: number) => {
+        if (coordsCache.has(pos)) {
+          return coordsCache.get(pos)!;
+        }
+        try {
+          const coords = view.coordsAtPos(pos);
+          coordsCache.set(pos, coords);
+          return coords;
+        } catch {
+          coordsCache.set(pos, null);
+          return null;
+        }
+      }
+    : () => null;
 
   // Create hover handlers bound to this view's state
   const handleMouseEnter = viewState
@@ -498,7 +522,7 @@ function createCursorDecorations(
       const name = cursor.name || `${String(clientID).slice(-4)}`;
       const head = Math.max(0, Math.min(cursor.head, docSize));
       const anchor = Math.max(0, Math.min(cursor.anchor, docSize));
-      const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view);
+      const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view, getCachedCoords);
 
       visibleCursors.push({
         clientID,
@@ -535,7 +559,8 @@ function createCursorDecorations(
     const anchor = isOwnCursor ? state.selection.anchor : Math.max(0, Math.min(cursor.anchor, docSize));
 
     // Check if this cursor is on the same line as the local cursor (for CSS styling)
-    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view);
+    // Pass getCachedCoords to avoid uncached view.coordsAtPos layout queries
+    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view, getCachedCoords);
     // Remote cursor opacity is based solely on age, not affected by local cursor position
     const opacity = baseOpacity;
 
@@ -574,15 +599,15 @@ function createCursorDecorations(
 
   if (view) {
     visibleCursors.forEach((cursor) => {
-      try {
-        const coords = view.coordsAtPos(cursor.head);
+      const coords = getCachedCoords(cursor.head);
+      if (coords) {
         // Round Y to group cursors on same visual line
         const lineY = Math.round(coords.top / LINE_THRESHOLD_PX) * LINE_THRESHOLD_PX;
 
         const existing = lineGroups.get(lineY) || [];
         existing.push(cursor);
         lineGroups.set(lineY, existing);
-      } catch {
+      } else {
         // If coordsAtPos fails, put in a separate group
         const existing = lineGroups.get(-1) || [];
         existing.push(cursor);
@@ -596,8 +621,20 @@ function createCursorDecorations(
     });
   }
 
-  // Helper to get left coordinate
-  const getLeftCoord = view ? (pos: number): number => view.coordsAtPos(pos).left : null;
+  // Helper to get left coordinate using cached lookup.
+  // #831: a failed lookup must THROW, not return a fictitious left of
+  // 0 — clusterOverlappingGroups is built around the throw contract
+  // (on failure it puts every group in its own cluster). Returning 0
+  // merged unrelated cursor groups into one bar at the left edge.
+  const getLeftCoord = view
+    ? (pos: number): number => {
+        const coords = getCachedCoords(pos);
+        if (!coords) {
+          throw new Error(`coordsAtPos failed for position ${pos}`);
+        }
+        return coords.left;
+      }
+    : null;
 
   // Process each line group
   lineGroups.forEach((lineCursors) => {
@@ -606,22 +643,6 @@ function createCursorDecorations(
 
     // Cluster overlapping groups - only merge those that actually overlap
     const clusters = clusterOverlappingGroups(positionGroups, getLeftCoord);
-
-    // DEBUG: Log clustering results
-    if (positionGroups.length > 1) {
-      console.log("[cursor-debug] positionGroups:", positionGroups.length, "clusters:", clusters.length);
-      positionGroups.forEach((g, i) => {
-        const left = getLeftCoord ? getLeftCoord(g.position) : "no-view";
-        console.log(
-          `  group[${i}]: pos=${g.position}, left=${left}, cursors=${g.cursors.map((c) => c.clientID).join(",")}`,
-        );
-      });
-      clusters.forEach((c, i) => {
-        console.log(
-          `  cluster[${i}]: groups=${c.groups.length}, cursors=${c.groups.flatMap((g) => g.cursors.map((cur) => cur.clientID)).join(",")}`,
-        );
-      });
-    }
 
     clusters.forEach((cluster) => {
       // Check if own cursor is in this cluster
@@ -645,6 +666,7 @@ function createCursorDecorations(
       // Create own cursor decoration if present in cluster
       if (clusterHasOwnCursor && ownCursor) {
         decorations.push(
+<<<<<<< HEAD
           Decoration.widget(ownCursor.head, () => {
             const ownCursorLine = document.createElement("span");
             ownCursorLine.className = "collab-cursor collab-cursor-own";
@@ -655,6 +677,22 @@ function createCursorDecorations(
             side: 1,
             key: `cursor-own-${ownCursor.clientID}-${ownCursor.color}`,
           }),
+=======
+          Decoration.widget(
+            ownCursor.head,
+            () => {
+              const ownCursorLine = document.createElement("span");
+              ownCursorLine.className = "collab-cursor collab-cursor-own";
+              ownCursorLine.style.borderColor = ownCursor.color;
+              ownCursorLine.setAttribute("data-client-id", String(ownCursor.clientID));
+              return ownCursorLine;
+            },
+            {
+              side: 1,
+              key: `cursor-own-${ownCursor.clientID}-${ownCursor.color}`,
+            },
+          ),
+>>>>>>> origin/main
         );
       }
 
@@ -671,6 +709,7 @@ function createCursorDecorations(
         // Create merged bar for all remote cursors
         const leftmostPos = Math.min(...groupsForBar.map((g) => g.position));
 
+<<<<<<< HEAD
         // Find the leftmost group (we'll attach the bar to its cursor line)
         const leftmostGroup = groupsForBar.find((g) => g.position === leftmostPos);
 
@@ -678,12 +717,23 @@ function createCursorDecorations(
         // This ensures widgets are recreated when cluster membership OR positions change
         const clusterKey = groupsForBar
           .flatMap((g) => g.cursors.map((c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}`))
+=======
+        // Create a cluster-wide key that includes ALL client IDs, positions, opacities, and connection state in the cluster
+        // This ensures widgets are recreated when cluster membership, positions, or dynamic states change
+        const clusterKey = groupsForBar
+          .flatMap((g) =>
+            g.cursors.map(
+              (c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}-${encodeURIComponent(c.name)}`,
+            ),
+          )
+>>>>>>> origin/main
           .sort()
           .join("-");
 
         // Create cursor lines for each position group (no attached labels)
         groupsForBar.forEach((group) => {
           decorations.push(
+<<<<<<< HEAD
             Decoration.widget(group.position, () => {
               const firstCursor = group.cursors[0];
               const allClientIDs = group.cursors.map((c) => c.clientID);
@@ -718,12 +768,54 @@ function createCursorDecorations(
               side: 1,
               key: `cursor-cluster-${group.position}-${clusterKey}-${connectionState}`,
             }),
+=======
+            Decoration.widget(
+              group.position,
+              () => {
+                const firstCursor = group.cursors[0];
+                const allClientIDs = group.cursors.map((c) => c.clientID);
+                const cursorLine = createCursorLine(firstCursor, true, connectionState, allClientIDs);
+                cursorLine.style.borderColor = group.mostRecentColor;
+
+                // For merged cursor lines with bars, use full opacity on the line
+                // (the bar segments handle their own individual opacities)
+                if (group.position === leftmostPos) {
+                  cursorLine.style.opacity = "1";
+                  cursorLine.style.setProperty("--base-opacity", "1");
+                  cursorLine.style.animation = "none"; // No strobe on bar container
+
+                  // Create merged tooltip bar and attach to leftmost cursor line
+                  // (appending to cursor line ensures proper positioning via position: relative)
+                  const mergedBar = createMergedBar(groupsForBar, handleMouseEnter, handleMouseLeave, connectionState);
+                  cursorLine.appendChild(mergedBar);
+                }
+
+                // Register all cursors in this group for strobe tracking
+                if (viewState) {
+                  group.cursors.forEach((cursor) => {
+                    viewState.strobeInfos.set(cursor.clientID, {
+                      element: cursorLine,
+                      baseOpacity: cursor.opacity,
+                      paused: false,
+                    });
+                  });
+                }
+
+                return cursorLine;
+              },
+              {
+                side: 1,
+                key: `cursor-cluster-${group.position}-${clusterKey}`,
+              },
+            ),
+>>>>>>> origin/main
           );
         });
       } else {
         // Single remote cursor, no overlap - simple standalone cursor
         const group = groupsForBar[0];
         const cursor = group.cursors[0];
+<<<<<<< HEAD
         decorations.push(
           Decoration.widget(cursor.head, () => {
             return viewState
@@ -733,6 +825,21 @@ function createCursorDecorations(
             side: 1,
             key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}`,
           }),
+=======
+
+        decorations.push(
+          Decoration.widget(
+            cursor.head,
+            () =>
+              viewState
+                ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
+                : createCursorLine(cursor, false, connectionState),
+            {
+              side: 1,
+              key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}-${encodeURIComponent(cursor.name)}`,
+            },
+          ),
+>>>>>>> origin/main
         );
       }
     });
@@ -754,7 +861,11 @@ function createCursorDecorations(
               style: `background-color: ${cursor.color}${selectionOpacity};`,
             },
             {
+<<<<<<< HEAD
               key: `selection-${cursor.clientID}-${selectionOpacity}-${cursor.color}`,
+=======
+              key: `selection-${cursor.clientID}-${cursor.opacity}-${cursor.color}`,
+>>>>>>> origin/main
             },
           ),
         );
@@ -797,7 +908,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
         if (cursorUpdate) {
           switch (cursorUpdate.type) {
             case "update": {
-              console.log("[cursor-debug] apply() UPDATE for", cursorUpdate.clientID, "at", cursorUpdate.head);
               const newCursors = new Map(pluginState.cursors);
               // If idleSecs is provided (initial load), backdate lastUpdate
               const lastUpdate = cursorUpdate.idleSecs ? Date.now() - cursorUpdate.idleSecs * 1000 : Date.now();
@@ -908,14 +1018,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
       decorations(state: EditorState): DecorationSet {
         const pluginState = cursorPluginKey.getState(state);
         if (!pluginState) return DecorationSet.empty;
-
-        // DEBUG: Log cursor count
-        console.log(
-          "[cursor-debug] decorations() called, cursor count:",
-          pluginState.cursors.size,
-          "cursors:",
-          Array.from(pluginState.cursors.keys()).join(","),
-        );
 
         return createCursorDecorations(state, pluginState, myClientID, currentView);
       },

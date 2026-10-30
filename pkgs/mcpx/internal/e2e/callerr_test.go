@@ -126,10 +126,14 @@ func TestARefusedCallCarriesTheSchemaChangeOverV1(t *testing.T) {
 	if !hasRepoChange(doc.Diagnostics) {
 		t.Errorf("/v1/call should name the tool, the field and what changed:\n%s", b)
 	}
-	// Added to, never replaced.
-	if !strings.HasPrefix(doc.Error, "mcp error -32602: Invalid params\n") ||
+	// Added to, never replaced. Phase 2 of #1481: the refusal is now
+	// detected by mcpx's own argument validation before the call
+	// reaches the server, so the headline is the validator's -32602
+	// naming the tool and the path-qualified reason, not the server's
+	// answer — still first and whole, the diagnostic after it.
+	if !strings.HasPrefix(doc.Error, "Invalid params: tool \"create_issue\": ") ||
 		!strings.Contains(doc.Error, "repo is required") {
-		t.Errorf("the error text should be the server's, then the rendered diagnostic:\n%s", doc.Error)
+		t.Errorf("the error text should be the refusal's, then the rendered diagnostic:\n%s", doc.Error)
 	}
 
 	// The same call collected later, as a task.

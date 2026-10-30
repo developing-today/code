@@ -1,6 +1,6 @@
 module github.com/developing-today/code/sources/import
 
-go 1.21.3
+go 1.25.0
 
 require (
 	github.com/charmbracelet/log v0.3.1
@@ -20,7 +20,9 @@ require (
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/sethvargo/go-retry v0.2.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
-	golang.org/x/sync v0.5.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )

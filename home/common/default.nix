@@ -19,6 +19,10 @@ let
   codexProxyPort = 18744;
   antigravityLsProxyPort = 18745;
   designCodeProxyPort = 18746;
+  museProxyPort = 18747;
+  commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
+  claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -32,6 +36,16 @@ let
   # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
   # claudeAgent driver and the shell CLI are the same build.
   claude-code = pkgs.callPackage ../../pkgs/claude-code { };
+  # Muse Code, Meta's coding agent. A first-class T3 Code provider: the
+  # 0.1.2 driver id is literally "muse" and it drives this `muse` binary.
+  muse-code = pkgs.callPackage ../../pkgs/muse-code { };
+  # Pi coding agent harness. Also a T3 Code provider (driver "pi") in 0.1.2.
+  pi-coding-agent = pkgs.callPackage ../../pkgs/pi-coding-agent { };
+  # T3 Code desktop GUI, packaged from the upstream AppImage and
+  # version-locked to the latestCli.t3 server (0.1.2): a V1 app refuses a
+  # V2 server and vice versa. This shadows pkgs.t3code (nixpkgs), which the
+  # home.packages runCommand block below wraps for the desktop entry.
+  t3code = pkgs.callPackage ../../pkgs/t3code-desktop { };
   # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
@@ -72,6 +86,75 @@ let
     mcpxStart
   ];
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    # Single-instance guard (dezren39/nix#1117). The unit below is
+    # socket-activated with KillMode=process: a stop terminates only the
+    # tracked main process, so a server that is no longer the tracked
+    # main -- a self-handoff predecessor systemd has lost track of --
+    # survives in the cgroup still holding the listen socket systemd
+    # handed it. The next start passes the same socket to a new server
+    # and both accept() on it, so /api/version answers alternate between
+    # instances. Reap any leftover server before taking the socket over.
+    # Only the web server is matched (its managed OpenCode serves a
+    # different port and must stay up for adoption), and this script's
+    # own pid is excluded -- it execs into the new server below.
+    leftovers=""
+    for proc in /proc/[0-9]*; do
+      pid="''${proc#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # The pattern text itself rides in the argv of anything inspecting
+      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
+      # is not proof: the process must actually be the node server.
+      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+      case "$exe" in
+        */node | */openchamber) ;;
+        *) continue ;;
+      esac
+      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
+      case "$cmd" in
+        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
+        *) continue ;;
+      esac
+      case "$cmd" in
+        # Argument boundary required: "--port 3000" must not match the
+        # 30001..30009 of an unrelated instance (cmdline words are
+        # space-separated here, trailing word included).
+        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
+        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
+      esac
+    done
+    if [ -n "$leftovers" ]; then
+      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
+      for pid in $leftovers; do
+        kill -TERM "$pid" 2>/dev/null || true
+      done
+      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
+      for _ in $(seq 1 100); do
+        alive=0
+        for pid in $leftovers; do
+          kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = 0 ] && break
+        sleep 0.1
+      done
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+      done
+      # Verify synchronously, before taking the socket over: a leftover
+      # that could not be reaped fails this start loudly instead of
+      # silently sharing the listener with the new server. (An
+      # ExecStartPost assertion cannot do this: with Type=simple it
+      # races the guard's drain window.)
+      sleep 0.2
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
+          exit 1
+        fi
+      done
+    fi
     pw="$HOME/.config/openchamber/ui-password"
     if [ -r "$pw" ]; then
       export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
@@ -414,7 +497,9 @@ in
         "%h/.claude.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
+        "%h/.pi/agent/auth.json"
         "%h/.config/cloudflare/ai-inference-token"
+        "%h/.config/muse/auth.json"
         "%h/.config/openchamber/classifier-endpoint.json"
         "%h/.config/openchamber/classification.json"
       ];
@@ -447,6 +532,8 @@ in
         "T3CODE_HOME=%h/.local/share/t3code"
         "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
+        "MUSE_BIN=${muse-code}/bin/muse"
+        "PI_BIN=${pi-coding-agent}/bin/pi"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -484,7 +571,8 @@ in
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: the proxy-supervisor (below) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
   };
 
   # Antigravity CLI (agy) Local Proxy Bridge
@@ -529,7 +617,7 @@ in
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
   };
 
   systemd.user.services.antigravity-ls-proxy = {
@@ -553,7 +641,7 @@ in
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
   };
 
   systemd.user.services.design-code-proxy = {
@@ -584,7 +672,302 @@ in
         "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
+  };
+
+  # Fleet proxy supervisor (bin/proxy-supervise.mjs): hash-keyed A/B
+  # rolls for the proxies above. Drew's rule (2026-10-24): a rebuild +
+  # switch must not kill a running proxy unless the artifact that
+  # would run actually changed — and then the roll is graceful (new
+  # build on the alternate port, health-checked, endpoint record
+  # flips, old instance drained). The supervisor therefore owns the
+  # proxy processes; this unit only runs the reconcile, and it invokes
+  # the supervisor from the CHECKOUT path so this unit's definition
+  # does not change when proxy code does.
+  systemd.user.services.proxy-supervisor = {
+    Unit = {
+      Description = "Fleet proxy supervisor (hash-keyed A/B reconcile)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "proxy-supervisor-run" ''
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/proxy-supervise.mjs" --config "$HOME/.config/proxy-supervisor/config.json"
+        ''
+      );
+      Environment = [
+        # Interpolated into the supervisor config ($ANTIGRAVITY_LS_BIN);
+        # it is part of the LS proxy's artifact hash, so a hub rebuild
+        # rolls that proxy gracefully instead of stranding it.
+        "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
+      ];
+    };
+  };
+
+  systemd.user.timers.proxy-supervisor = {
+    Unit = {
+      Description = "Reconcile fleet proxies every 2 minutes";
+    };
+    Timer = {
+      OnBootSec = "1min";
+      OnUnitActiveSec = "2min";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  # The supervisor's machine config. "~" and "$VAR" in paths/values are
+  # expanded by the supervisor itself.
+  xdg.configFile."proxy-supervisor/config.json".text = builtins.toJSON {
+    stateDir = "~/.local/state/proxy-supervisor";
+    endpointDir = "~/.local/state";
+    systemdRun = "user";
+    drainSeconds = 5;
+    healthTimeoutSeconds = 60;
+    proxies = [
+      {
+        name = "clef-proxy";
+        canonicalPort = clefProxyPort;
+        portEnv = "CLEF_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/clef-proxy.mjs"
+        ];
+        env = {
+          CLEF_PROXY_HOST = "127.0.0.1";
+        };
+        hashFiles = [
+          "~/code/bin/clef-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
+      {
+        name = "agy-proxy";
+        canonicalPort = agyProxyPort;
+        portEnv = "AGY_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/agy-proxy.mjs"
+        ];
+        env = {
+          AGY_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/agy-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
+      {
+        name = "codex-proxy";
+        canonicalPort = codexProxyPort;
+        portEnv = "CODEX_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/codex-proxy.mjs"
+        ];
+        env = {
+          CODEX_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/codex-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          # Build stamp: a content change here stands in for "the
+          # artifact changed" (used by the A/B demo; harmless in
+          # production — a missing file hashes as a constant).
+          "~/.local/state/proxy-supervisor/codex-proxy.build-stamp"
+        ];
+      }
+      {
+        name = "antigravity-ls-proxy";
+        canonicalPort = antigravityLsProxyPort;
+        portEnv = "ANTIGRAVITY_LS_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/antigravity-ls-proxy.mjs"
+        ];
+        env = {
+          ANTIGRAVITY_LS_PROXY_HOST = "127.0.0.1";
+          ANTIGRAVITY_LS_BIN = "$ANTIGRAVITY_LS_BIN";
+          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashEnv = [ "ANTIGRAVITY_LS_BIN" ];
+        hashFiles = [
+          "~/code/bin/antigravity-ls-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
+      {
+        name = "design-code-proxy";
+        canonicalPort = designCodeProxyPort;
+        portEnv = "DESIGN_CODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/design-code-proxy.mjs"
+        ];
+        env = {
+          DESIGN_CODE_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/design-code-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+        backends = [
+          {
+            name = "codex-proxy";
+            env = "CODEX_PROXY_PORT";
+          }
+          {
+            name = "antigravity-ls-proxy";
+            env = "ANTIGRAVITY_LS_PROXY_PORT";
+          }
+        ];
+      }
+      # The two entries below were added to the LIVE supervisor config by
+      # hand on 2026-10-24 but never made it back into this file -- the drift
+      # surfaced on 2026-10-26, when home-manager activation failed on the
+      # hand-placed (unmanaged) supervisor unit/config files and the live
+      # config turned out to supervise two more proxies than the repo knew
+      # about. Transcribed verbatim from the live config: unlike the node
+      # proxies above these run their repo start scripts (which own their
+      # environment, cf. the commandcode-proxy unit below), so they carry
+      # no `env` block.
+      {
+        name = "commandcode-proxy";
+        canonicalPort = commandcodeProxyPort;
+        portEnv = "COMMANDCODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/commandcode-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/commandcode-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/commandcode-proxy.build-stamp"
+        ];
+      }
+      {
+        name = "muse-proxy";
+        canonicalPort = museProxyPort;
+        portEnv = "MUSE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/muse-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/muse-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
+        ];
+      }
+      {
+        name = "opencode-route-proxy";
+        # swap, not the supervisor default "ab": OpenClaw's provider
+        # base URL is the literal canonical port (18750) and nothing
+        # consumes the endpoint record to follow an ab roll to 19750,
+        # so the door would strand. swap validates the new build on
+        # the alternate port, then restarts it on the canonical port.
+        strategy = "swap";
+        canonicalPort = opencodeRouteProxyPort;
+        portEnv = "OPENCODE_ROUTE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/opencode-route-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/opencode-route-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/opencode-route-proxy.build-stamp"
+        ];
+      }
+      # Enrolled 2026-10-27. The let block reserved claudeCodeProxyPort
+      # and the session variables already export CLAUDE_CODE_PROXY_PORT
+      # (opencode.jsonc dials it), but the proxy was never added to this
+      # list, so nothing supervised port 18749 and it sat dark until
+      # started by hand -- the same drift class as the hand-added pair
+      # transcribed above. Entry mirrors codex-proxy (the other node
+      # CLI bridge): host + PATH env, entrypoint + proxy-port.mjs as
+      # the artifact hash.
+      {
+        name = "claude-code-proxy";
+        canonicalPort = claudeCodeProxyPort;
+        portEnv = "CLAUDE_CODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/claude-code-proxy.mjs"
+        ];
+        env = {
+          CLAUDE_CODE_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/claude-code-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
+    ];
+  };
+
+  # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
+  # Provider API rejects the Go plan, so OpenCode talks to the CLI via
+  # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
+  # Runs the repo's start script (shared with the fleet proxy-supervisor's
+  # transient fps-commandcode-proxy unit) so laptop/sandbox env handling
+  # and the MAX_TURNS pins live in exactly one place:
+  # bin/commandcode-proxy-start.sh.
+  #
+  # This unit originally landed (169d594e) WITH an Install.WantedBy and a
+  # "not yet deployed" note, breaking the fleet pattern below: the first
+  # home-manager activation that included it (2026-10-26, the T3 switch)
+  # started it against the supervisor's already-running transient unit,
+  # and it crash-looped on the taken port (44 restarts in an evening).
+  # The supervisor has served this port continuously since 2026-10-24;
+  # the unit is the manual fallback, like every other proxy here.
+  systemd.user.services.commandcode-proxy = {
+    Unit = {
+      Description = "Command Code CLI Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${../../bin}/commandcode-proxy-start.sh";
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
+        "COMMANDCODE_PROXY_HOST=127.0.0.1"
+        "COMMANDCODE_PROXY_MAX_TURNS=1"
+        "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
+      ];
+    };
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
+  };
+
+  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
+  # opencode-route pool models (workhorse et al.) in the chat-completions
+  # shape OpenClaw providers use (code#2229). Runs the repo start script,
+  # shared with the proxy-supervisor's transient unit. Manual fallback
+  # only, like every other proxy unit here.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${../../bin}/opencode-route-proxy-start.sh";
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
+      ];
+    };
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
   };
 
   systemd.user.services.sync-models = {
@@ -732,6 +1115,14 @@ in
     Install.WantedBy = [ "sockets.target" ];
   };
 
+  # The provider proxies are owned by the proxy-supervisor (transient
+  # fps-* units on the canonical ports), so OpenChamber must not Want
+  # the manual per-proxy units: a restart would re-pull them, and the
+  # manual design-code-proxy unit fights the supervisor's instance for
+  # its already-taken port (#883). OpenChamber reaches the proxies by
+  # port, not by unit; only mcpx is a real unit dependency. The manual
+  # units stay declared in this file as one-off fallbacks, and the
+  # After ordering entries stay (ordering only, harmless).
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
@@ -748,10 +1139,6 @@ in
       Wants = [
         "network-online.target"
         "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-ls-proxy.service"
-        "design-code-proxy.service"
       ];
       Requires = [ "openchamber.socket" ];
     };
@@ -759,7 +1146,9 @@ in
       ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart.
+      # OpenChamber adopts it, so sessions survive a restart. The same
+      # KillMode lets an untracked server survive a stop with the socket
+      # attached -- the start script reaps leftovers (dezren39/nix#1117).
       KillMode = "process";
       # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
       # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
@@ -772,6 +1161,10 @@ in
             mcpx
             pkgs.git
             pkgs.openssh
+            # The start script's single-instance guard scans /proc with
+            # coreutils (readlink, cat, tr, seq, sleep); without it the
+            # guard silently matches nothing.
+            pkgs.coreutils
           ]
         }"
       ];
@@ -808,16 +1201,29 @@ in
 
   # T3 Code's backend, run headless over the tailnet.
   #
-  # The nixpkgs package advertises mainProgram = "t3code-desktop", but it also
-  # ships a `t3` binary whose whole purpose is "Run the T3 Code server":
+  # The server package (latestCli.t3) ships a `t3` binary whose whole purpose
+  # is "Run the T3 Code server":
   #   t3 serve   -- server, no browser, prints headless pairing details
   #   t3 pair    -- mints a pairing token and renders it as a QR code
   #   t3 auth    -- auth control plane for headless deployments
+  #   t3 thread / t3 project -- drive this server from other agents' shells
+  #
+  # 0.1.2 is Orchestrator V2: delegate_task spawns child threads on any
+  # provider, the T3 Code MCP lets agents create/message/wait on threads, and
+  # Muse Code is a native provider (driver "muse", below). T3 is a second
+  # control surface over the same provider CLIs OpenChamber drives -- it owns
+  # no provider credentials of its own. See
+  # doc/2026-10-26T21-18-21Z_feature_t3code-v2-integration/ for the
+  # coexistence line with OpenChamber.
   #
   # --tailscale-serve is a first-class upstream flag ("Configure Tailscale Serve
   # to expose this backend over HTTPS on the Tailnet"), so no tunnel, no
   # reverse proxy and no public exposure: the listener stays on loopback and
-  # Tailscale terminates HTTPS on the tailnet only.
+  # Tailscale terminates HTTPS on the tailnet only. NOTE: `tailscale` MUST be
+  # on this unit's PATH (below) or --tailscale-serve fails -- silently from
+  # the user's side, with only a TailscaleCommandExitError in the journal and
+  # no HTTPS entry in `tailscale serve status`. That was the live state of
+  # the 0.0.45 install.
   #
   # Defined here rather than via `t3 service install`, which would create the
   # same unit imperatively as untracked state outside the flake.
@@ -838,21 +1244,38 @@ in
       # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).
       #
       # PATH matters here. t3 is an orchestrator: it drives other coding agents
-      # through provider drivers (opencode, codex, claudeAgent, antigravity,
-      # cursor, grok) and discovers them on PATH. A systemd user unit does NOT
-      # inherit the login shell's PATH, so without this it would find none of
-      # them and every provider would show as unavailable.
+      # through provider drivers (opencode, codex, claudeAgent, muse, pi,
+      # antigravity, cursor, grok) and discovers them on PATH. A systemd user
+      # unit does NOT inherit the login shell's PATH, so without this it would
+      # find none of them and every provider would show as unavailable.
+      #
+      # Provider minimums for t3 0.1.2 are noted next to each entry; the
+      # fleet builds all satisfy them.
       #
       # t3 drives the same opencode build as the system `opencode`; its binary
-      # is the one noted in OPENCODE_V2_BIN below.
+      # is the one noted in OPENCODE_V2_BIN below. Only OpenCode 2.x binaries
+      # may touch the shared session DB -- never a 1.x build.
+      #
+      # `muse` is a first-class t3 driver in 0.1.2 (driver id "muse"): t3
+      # checks for the `muse` CLI and its channel manifest, drives sessions
+      # through it, and can inject session MCP servers into muse sessions.
+      # Muse is signed in on this host under its own login; t3 owns no Muse
+      # credentials.
       Environment = [
         "T3CODE_HOME=%h/.local/share/t3code"
+        # No upstream telemetry from a fleet service.
+        "T3CODE_TELEMETRY_ENABLED=false"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode.packages.${system}.opencode # driver "opencode"
-            latestCli.codex # 0.160.0   -- t3 driver "codex"
-            claude-code # 2.1.293 -- t3 driver "claudeAgent"
+            inputs.opencode.packages.${system}.opencode # 2.0.30, >= 2.0.18 -- driver "opencode"
+            latestCli.codex # 0.160.0, >= 0.159   -- driver "codex"
+            claude-code # 2.1.293, >= 2.1.280 -- driver "claudeAgent"
+            muse-code # 1.4.13            -- driver "muse"
+            pi-coding-agent # 0.84.3, >= 0.80.5   -- driver "pi"
+            mcpx # fleet MCP gateway binary, for shells and agents t3 spawns
+            latestCli.gh # `gh` for threads that shell out to GitHub
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
+            pkgs.tailscale # MUST be here or --tailscale-serve fails (see above)
             pkgs.git
             pkgs.openssh
           ]
@@ -867,6 +1290,8 @@ in
         "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
         "CLAUDE_BIN=${claude-code}/bin/claude"
+        "MUSE_BIN=${muse-code}/bin/muse"
+        "PI_BIN=${pi-coding-agent}/bin/pi"
         "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
         # The ACP route: t3 ships an AcpRegistryDriver, and this is Google's
         # official Agent Client Protocol server for Antigravity. Preferred over
@@ -1226,19 +1651,17 @@ in
       # PATH = "$HOME/bin:$PATH";
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
-      # OpenCode feature flags (Drew, 2026-10-20): both web-search backends
-      # (Exa + Parallel) so the websearch tool works with any provider, and
-      # the interesting experimental features. OPENCODE_EXPERIMENTAL is the
-      # umbrella (code mode keys off it). NATIVE_LLM deliberately not set.
-      OPENCODE_ENABLE_EXA = "1";
-      OPENCODE_ENABLE_PARALLEL = "1";
+      # OpenCode feature flags (Drew, 2026-10-20): the interesting
+      # experimental features. OPENCODE_EXPERIMENTAL is the umbrella
+      # (code mode keys off it). NATIVE_LLM deliberately not set.
+      # (OPENCODE_ENABLE_EXA / OPENCODE_ENABLE_PARALLEL removed 2026-10-23:
+      # nothing in opencode reads them — see opencode #105.)
       OPENCODE_ENABLE_EXPERIMENTAL_MODELS = "1";
       OPENCODE_EXPERIMENTAL = "1";
       OPENCODE_EXPERIMENTAL_PARALLEL = "1";
       OPENCODE_EXPERIMENTAL_PLAN_MODE = "1";
       OPENCODE_EXPERIMENTAL_SCOUT = "1";
       OPENCODE_EXPERIMENTAL_WORKSPACES = "1";
-      OPENCODE_EXPERIMENTAL_LSP_TOOL = "1";
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
@@ -1249,12 +1672,21 @@ in
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
       DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
-      OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
+      # The three below were missing: their {env:...} templates in
+      # opencode.jsonc resolved to an empty port in the OpenChamber serve
+      # (2026-10-25 audit) because the variables never reached its
+      # environment. The session list must cover every let-block port.
+      MUSE_PROXY_PORT = toString museProxyPort;
+      COMMANDCODE_PROXY_PORT = toString commandcodeProxyPort;
+      CLAUDE_CODE_PROXY_PORT = toString claudeCodeProxyPort;
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
       # awareness it buys. Diffs are git-computed on demand either way.
-      OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1";
+      # (Name corrected 2026-10-25 per #698: opencode's server-process.ts
+      # reads OPENCODE_DISABLE_FILEWATCHER; the EXPERIMENTAL_ name was
+      # read nowhere, so the watcher was silently still on.)
+      OPENCODE_DISABLE_FILEWATCHER = "1";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";
@@ -1892,14 +2324,17 @@ in
         # t3code splits across two sources on purpose.
         #
         # latestCli.t3 is the server/CLI from upstream's release tarball at
-        # 0.0.45; nixpkgs is on 0.0.33, twelve releases back on a 0.0.x project
-        # whose headless/Tailscale path is exactly what systemd.user.services
-        # .t3code uses below.
+        # 0.1.2 (Orchestrator V2), whose headless/Tailscale path is exactly
+        # what systemd.user.services.t3code uses below.
         latestCli.t3
-        # nixpkgs still provides the Electron desktop GUI (a separate .deb /
-        # AppImage asset upstream, not in that tarball). It also ships its own
-        # older `t3` binary, which would collide with the above, so only
-        # t3code-desktop and its desktop entry are taken from it.
+        # The Electron desktop GUI is a separate AppImage asset upstream,
+        # not in that tarball. It used to be taken from nixpkgs (which was
+        # on 0.0.45, the V1 line); it is now the local pkgs/t3code-desktop
+        # package at the same 0.1.2 as the server -- bound as `t3code` in
+        # the let block above, shadowing pkgs.t3code -- because a V1 app
+        # refuses a V2 server and vice versa. The desktop package also
+        # ships its own `t3` binary, which would collide with the above,
+        # so only t3code-desktop and its desktop entry are taken from it.
         (runCommand "t3code-desktop-${t3code.version}"
           {
             meta = t3code.meta // {

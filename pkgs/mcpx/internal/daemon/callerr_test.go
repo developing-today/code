@@ -154,9 +154,9 @@ func schemaRegistry(t *testing.T) *Registry {
 		b, _ := json.Marshal(map[string]any{"type": "object", "properties": props, "required": required})
 		return b
 	}
-	p.SetSchemas([]mcpclient.Tool{{Name: "create_issue", InputSchema: schema("title")}}, nil, nil, "", time.Now())
+	p.SetSchemas([]mcpclient.Tool{{Name: "create_issue", InputSchema: schema("title")}}, nil, nil, "", time.Now(), time.Time{}, false)
 	r.ObserveCatalog()
-	p.SetSchemas([]mcpclient.Tool{{Name: "create_issue", InputSchema: schema("title", "repo")}}, nil, nil, "", time.Now())
+	p.SetSchemas([]mcpclient.Tool{{Name: "create_issue", InputSchema: schema("title", "repo")}}, nil, nil, "", time.Now(), time.Time{}, false)
 	r.ObserveCatalog()
 	return r
 }

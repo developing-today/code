@@ -311,9 +311,14 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for url in (
             "https://[64:ff9b::808:808]/",  # NAT64 embedding 8.8.8.8
             "https://[2002:808:808::]/",  # 6to4 embedding 8.8.8.8
-            "https://[::ffff:8.8.8.8]/",  # IPv4-mapped public
         ):
             self.assertAccepted(url)
+        # IPv4-mapped public, dotted spelling: accepted, and returned
+        # in the canonical hex form the Worker serializes (#637).
+        self.assertEqual(
+            validate_crawl_url("https://[::ffff:8.8.8.8]/"),
+            "https://[::ffff:808:808]/",
+        )
 
     def test_agrees_with_worker_validator_on_ipv4_ranges(self):
         # Verdicts must match the TypeScript validator's suite case for
@@ -622,9 +627,16 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://localhost。/",  # -> localhost.
         ):
             self.assertRefused(url)
-        # Controls: mapped spellings of public names stay crawlable.
-        self.assertAccepted("http://ｅｘａｍｐｌｅ.com/")
-        self.assertAccepted("http://münchen。de/")
+        # Controls: mapped spellings of public names stay crawlable,
+        # and return in the mapped form the Worker returns (#665).
+        self.assertEqual(
+            validate_crawl_url("http://ｅｘａｍｐｌｅ.com/"), "http://example.com/"
+        )
+        # The U-label spelling is kept, but its literal separator
+        # now returns as "." (#660), not the fullwidth character.
+        self.assertEqual(
+            validate_crawl_url("http://münchen。de/"), "http://münchen.de/"
+        )
 
     def test_refuses_idna_disallowed_unicode_hosts(self):
         # UTS-46/IDNA disallows these codepoints in a host label, and
@@ -660,9 +672,13 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertRefused("http://exam" + ch + "ple.com/")
         # Controls: the UTS-46 "ignored" codepoints are deleted by
         # IDNA processing, not disallowed — the Worker accepts these
-        # hosts (as example.com) and so must the container.
+        # hosts (as example.com) and so must the container, which
+        # returns the host with the codepoint deleted (#652).
         for ch in ("\u00ad", "\u180e", "\u200b", "\u2060", "\u2064", "\ufeff"):
-            self.assertAccepted("http://exam" + ch + "ple.com/")
+            self.assertEqual(
+                validate_crawl_url("http://exam" + ch + "ple.com/"),
+                "http://example.com/",
+            )
 
     def test_refuses_arabic_indic_digit_hosts(self):
         # WHATWG's domain-to-ASCII rejects an Arabic-Indic digit
@@ -876,7 +892,11 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # and the blocked-host check must see through them (#526):
         # 60 "a"s plus ten soft hyphens is a 60-character label to the
         # Worker, but 77 characters of raw punycode to the old check.
-        self.assertAccepted("http://" + "a" * 60 + "\u00ad" * 10 + ".com/")
+        # The returned form carries the judged (deleted) host (#652).
+        self.assertEqual(
+            validate_crawl_url("http://" + "a" * 60 + "\u00ad" * 10 + ".com/"),
+            "http://" + "a" * 60 + ".com/",
+        )
         # NFKC expansion runs the other way: four U+FDFA ligatures
         # expand to a long Arabic phrase whose A-label is overlong.
         self.assertRefused("http://" + "\ufdfa" * 4 + ".com/")
@@ -890,7 +910,6 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for url in (
             "https://example.com/page",
             "http://8.8.8.8/",
-            "http://134744072/",  # 8.8.8.8 in integer spelling: public, allowed
             "https://[2606:4700:4700::1111]/",
             "http://example.com./",  # FQDN root-dot spelling of a public name
             "http://dead.beef/",  # hex-looking labels, non-numeric final label
@@ -899,6 +918,531 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://example.com:8080/",  # an ordinary explicit port
         ):
             self.assertAccepted(url)
+
+    def test_returns_ip_literals_in_canonical_form(self):
+        # An IP literal names the same address in many spellings; the
+        # returned URL carries the canonical form of the address that
+        # was judged — dotted quad for inet_aton IPv4 spellings,
+        # compressed lowercase for IPv6 — matching the Worker's
+        # serializer (#637). (assertAccepted pins verbatim returns, so
+        # these spellings cannot live in test_accepts_public_targets.)
+        cases = {
+            "http://134744072/": "http://8.8.8.8/",  # integer spelling
+            "http://0x8080808/": "http://8.8.8.8/",  # hex integer
+            "http://0x8.0x8.0x8.0x8/": "http://8.8.8.8/",  # hex parts
+            "http://010.0.0.010/": "http://8.0.0.8/",  # octal parts
+            "http://1.2.3/": "http://1.2.0.3/",  # short form
+            "http://1.2.256/": "http://1.2.1.0/",  # last part overflows a byte
+            "http://8.8.2056/": "http://8.8.8.8/",
+            "http://8.16777215/": "http://8.255.255.255/",
+            "http://1.2.3.04/": "http://1.2.3.4/",  # leading-zero part
+            "http://[2001:4860:4860:0000:0000:0000:0000:8888]/": (
+                "http://[2001:4860:4860::8888]/"
+            ),
+            # Userinfo and port survive the host substitution.
+            "http://user:pass@134744072:8080/x": "http://user:pass@8.8.8.8:8080/x",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_dot_segments_host_case_and_ports_normalized(self):
+        # The container returned dot segments, host case and default
+        # ports verbatim while the Worker returns the WHATWG-normalized
+        # form, so the two crawlers recorded — and fetched — different
+        # URLs for the same target (#633). The returned URL now
+        # resolves dot segments (literal and %2e spellings, any case),
+        # lowercases the host, and canonicalizes the port (the scheme's
+        # default dropped, leading zeros stripped). Verdicts are
+        # unchanged; query and fragment dot spellings are data.
+        cases = {
+            "http://example.com/a/../b": "http://example.com/b",
+            "http://example.com/a/./b": "http://example.com/a/b",
+            "http://example.com/%2e%2e/admin": "http://example.com/admin",
+            "http://example.com/a/%2e%2e/b": "http://example.com/b",
+            "http://example.com/%2e/%2e/x": "http://example.com/x",
+            "http://example.com/a/%2E/b": "http://example.com/a/b",
+            "http://example.com/a/b/../../../c": "http://example.com/c",
+            "http://example.com/a/.": "http://example.com/a/",
+            "http://example.com/a/..": "http://example.com/",
+            "http://example.com/a/%2e%2e": "http://example.com/",
+            "http://example.com//../x": "http://example.com/x",
+            "http://example.com//./x": "http://example.com//x",
+            "http://example.com/a//../b": "http://example.com/a/b",
+            "http://example.com//%2e": "http://example.com//",
+            "HTTP://EXAMPLE.COM/Path": "http://example.com/Path",
+            "http://example.com:80/x": "http://example.com/x",
+            "https://example.com:443/x": "https://example.com/x",
+            "http://example.com:080/x": "http://example.com/x",
+            "https://example.com:0443/x": "https://example.com/x",
+            "http://example.com:08080/x": "http://example.com:8080/x",
+            "http://user:pass@EXAMPLE.com:80/": "http://user:pass@example.com/",
+            "http://8.8.8.8:80/a/../b": "http://8.8.8.8/b",
+            "https://[2001:4860:4860::8888]:443/a/./b": (
+                "https://[2001:4860:4860::8888]/a/b"
+            ),
+            "http://example.com/a/../b?x=/../y#/../z": (
+                "http://example.com/b?x=/../y#/../z"
+            ),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Data, not dot segments: longer or double-encoded spellings,
+        # ";" tails and empty segments pass through byte-identical.
+        for url in (
+            "http://example.com/foo/%2e%2e%2e/bar",
+            "http://example.com/%252e%252e/admin",
+            "http://example.com/a/..;foo",
+            "http://example.com/..;/x",
+            "http://example.com//a//b",
+            "http://example.com:443/x",  # non-default for http
+            "https://example.com:80/x",  # non-default for https
+        ):
+            self.assertAccepted(url)
+        # Blocked targets in these spellings are refused by the
+        # ordinary checks, for the right reason.
+        self.assertRefused("http://127.0.0.1/a/../b")
+        self.assertRefused("http://LOCALHOST/a/../b")
+        self.assertRefused("http://127.0.0.1:80/x")
+
+    def test_returns_bare_semicolon_dot_spelled_segments_verbatim(self):
+        # A trailing segment that is a dot spelling plus a bare ";"
+        # ("..;", ".;", "%2e;") is an ordinary segment to WHATWG —
+        # the ";" is data — and the Worker returns it unchanged.
+        # urlparse splits the last segment's ";params" tail off the
+        # path and a bare ";" leaves params empty, so the split parts
+        # lost the ";" and the segment was resolved as a dot segment:
+        # "..;" collapsed the path (popping its parent), ".;" was
+        # dropped (#655). The non-empty-params spellings ("..;foo")
+        # were already pinned above; these are their empty-params
+        # counterparts, including before "?" / "#" and on the
+        # userinfo and percent-decoded-host return paths.
+        for url in (
+            "http://example.com/..;",
+            "http://example.com/.;",
+            "http://example.com/foo/..;",
+            "http://example.com/a/.;",
+            "http://example.com/a/b/..;",
+            "http://example.com/%2e;",
+            "http://example.com/%2e%2e;",
+            "http://example.com/a/%2E;",
+            "http://example.com/..;?q",
+            "http://example.com/..;#f",
+            "http://example.com/..;?",
+            "http://user@example.com/..;",
+            "http://8.8.8.8/..;",
+        ):
+            self.assertAccepted(url)
+        # The percent-decoded-host return path rebuilds the URL with
+        # the decoded host (#529): the bare-";" segment survives that
+        # rebuild too.
+        self.assertEqual(
+            validate_crawl_url("http://%65xample.com/..;"),
+            "http://example.com/..;",
+        )
+        # The fetcher's userinfo strip rebuilds the URL too: the
+        # stripped form keeps the bare-";" segment.
+        stripped, _ = app._split_userinfo("http://user@example.com/foo/..;")
+        self.assertEqual(stripped, "http://example.com/foo/..;")
+
+    def test_redirect_handler_follows_the_normalized_target(self):
+        # Redirect targets inherit the normalization (#633): the
+        # handler validates the raw Location and fetches the form
+        # validate_crawl_url returns.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://EXAMPLE.org:80/a/../b"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/b")
+
+    def test_returns_empty_components_normalized(self):
+        # The container returned an empty path, an empty port and an
+        # empty userinfo verbatim while the Worker returns the
+        # WHATWG-normalized form, so the two crawlers recorded
+        # different URLs for the same target (#639). The returned URL
+        # now supplies "/" for an empty path and drops the empty
+        # userinfo's "@" (the empty port's colon is dropped by the
+        # #633 port canonicalization). Decision on the empty "?" / "#"
+        # markers urlparse cannot represent: preserve them, matching
+        # the Worker byte for byte — the query/fragment is present
+        # but empty. Verdicts are unchanged.
+        cases = {
+            "http://example.com": "http://example.com/",
+            "https://example.com": "https://example.com/",
+            "http://example.com:8080": "http://example.com:8080/",
+            "http://example.com:80": "http://example.com/",
+            "http://example.com:/path": "http://example.com/path",
+            "http://@example.com/": "http://example.com/",
+            "http://@example.com": "http://example.com/",
+            "http://@example.com/path?x#": "http://example.com/path?x#",
+            "http://example.com/path?": "http://example.com/path?",
+            "http://example.com/path#": "http://example.com/path#",
+            "http://example.com?": "http://example.com/?",
+            "http://example.com/path?#": "http://example.com/path?#",
+            "http://example.com#frag?notquery": ("http://example.com/#frag?notquery"),
+            "http://8.8.8.8": "http://8.8.8.8/",
+            "http://134744072": "http://8.8.8.8/",
+            "http://[2001:4860:4860::8888]": "http://[2001:4860:4860::8888]/",
+            "http://user@example.com": "http://user@example.com/",
+            "http://example.com/a/../b": "http://example.com/b",
+            # The markers survive the host-substitution rebuilds too:
+            # percent-decoded hosts and canonical IP literals are
+            # rebuilt with geturl() before normalization (#639).
+            "http://%65xample.com/path?": "http://example.com/path?",
+            "http://%65xample.com?": "http://example.com/?",
+            "http://8%2e8%2e8%2e8/path#": "http://8.8.8.8/path#",
+            "http://8%2e8%2e8%2e8?#": "http://8.8.8.8/?#",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Non-empty userinfo, query and fragment pass through
+        # byte-identical; a "?" inside the query or fragment is data.
+        self.assertAccepted("http://user:pass@example.com/path?q=1#frag")
+        self.assertAccepted("http://example.com/pa?th#fr?ag")
+        # Blocked targets in these spellings are refused by the
+        # ordinary checks, for the right reason.
+        self.assertRefused("http://@127.0.0.1/")
+        self.assertRefused("http://127.0.0.1")
+        self.assertRefused("http://@localhost/")
+        # Redirect targets inherit the normalization (#639): the
+        # handler validates the raw Location and fetches the form
+        # validate_crawl_url returns.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://EXAMPLE.org"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/")
+
+    def test_returns_empty_query_marker_before_a_nonempty_fragment(self):
+        # #639's marker re-attachment appended the markers as a suffix
+        # after geturl(), so an empty query in front of a non-empty
+        # fragment came back after it: "path?#frag" returned as
+        # "path#frag?" — a different URL (fragment corrupted, empty
+        # query absent) than the Worker returns (#654). The "?"
+        # belongs before the "#", at every rebuild site.
+        cases = {
+            "http://example.com/path?#frag": "http://example.com/path?#frag",
+            "http://example.com?#frag": "http://example.com/?#frag",
+            "http://example.com/a?#b?c": "http://example.com/a?#b?c",
+            "http://example.com/path?#frag?x": "http://example.com/path?#frag?x",
+            # Through the percent-decoded-host and canonical-IP
+            # rebuilds (_url_with_host), and with userinfo / a
+            # non-empty fragment that itself needs encoding.
+            "http://%65xample.com/path?#frag": "http://example.com/path?#frag",
+            "http://8%2e8%2e8%2e8/path?#frag": "http://8.8.8.8/path?#frag",
+            "http://user@example.com/path?#frag": (
+                "http://user@example.com/path?#frag"
+            ),
+            "http://example.com/path?#café": "http://example.com/path?#caf%C3%A9",
+            # Controls: the #639 cases stay correct — both markers
+            # empty, empty fragment only, non-empty query, and a "?"
+            # inside the fragment staying data.
+            "http://example.com/path?#": "http://example.com/path?#",
+            "http://example.com/path#": "http://example.com/path#",
+            "http://example.com/path?x#": "http://example.com/path?x#",
+            "http://example.com/path#frag?notquery": (
+                "http://example.com/path#frag?notquery"
+            ),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # The fetcher's userinfo strip rebuilds the URL too: it must
+        # keep the marker in front of the fragment (#654).
+        stripped, _ = app._split_userinfo("http://user@example.com/path?#frag")
+        self.assertEqual(stripped, "http://example.com/path?#frag")
+        # Verdicts are unchanged: blocked targets stay refused.
+        self.assertRefused("http://127.0.0.1/path?#frag")
+        self.assertRefused("http://localhost/path?#frag")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated form of a raw Location carrying "?#frag".
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org/path?#frag"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/path?#frag")
+
+    def test_returns_the_root_dot_for_percent_encoded_spellings(self):
+        # The container stripped the DNS root dot before judging and
+        # rebuilt the returned URL from the stripped host, so the
+        # percent-encoded spelling came back without the dot while the
+        # literal spelling (returned raw) and the Worker kept it —
+        # the same target was recorded under two different URLs
+        # depending on the spelling (#647). The judged host is still
+        # the stripped one; only the returned form re-attaches the dot.
+        cases = {
+            # Literal spellings (controls: unchanged).
+            "http://example.com./": "http://example.com./",
+            "http://example.com./path": "http://example.com./path",
+            # Percent-encoded spellings now match them, and the Worker.
+            "http://example.com%2e/": "http://example.com./",
+            "http://example.com%2E/": "http://example.com./",
+            "http://example.com%2e": "http://example.com./",
+            "http://example.com%2e/path": "http://example.com./path",
+            "http://sub.example.com%2e/": "http://sub.example.com./",
+            "http://example.com%2e:8080/path": "http://example.com.:8080/path",
+            "http://user@example.com%2e/": "http://user@example.com./",
+            "http://example.com%2e?#": "http://example.com./?#",
+            # A percent-encoded U+3002 maps to the same root dot.
+            "http://example.com%E3%80%82/": "http://example.com./",
+            # IP literals serialize without a root dot in WHATWG, and
+            # both validators already agreed there — unchanged.
+            "http://8.8.8.8./": "http://8.8.8.8/",
+            "http://8.8.8.8%2e/": "http://8.8.8.8/",
+            "http://8%2e8%2e8%2e8%2e/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: the dotted spellings of blocked
+        # targets stay refused, and a second dot is still an empty
+        # label, in either spelling.
+        self.assertRefused("http://localhost%2e/")
+        self.assertRefused("http://localhost./")
+        self.assertRefused("http://example.com../")
+        self.assertRefused("http://example.com%2e%2e/")
+
+    def test_returns_the_ascii_dot_for_literal_separator_spellings(self):
+        # PR #657 fixed the percent-encoded root-dot spellings, but
+        # the literal UTS-46 separator spellings (U+3002, U+FF0E,
+        # U+FF61) still came back with the fullwidth character in
+        # them: judging translated them to "." but the non-percent
+        # return path returned the raw spelling verbatim, so the
+        # literal and percent spellings of the same host character
+        # recorded two different URLs and the literal form disagreed
+        # with the Worker (#660). The return now rebuilds from the
+        # mapped host whenever the raw host carried a literal
+        # separator, for interior separators as well as the root dot.
+        cases = {
+            # Root dot, one per separator character.
+            "http://example.com\u3002/": "http://example.com./",
+            "http://example.com\uff0e/": "http://example.com./",
+            "http://example.com\uff61/": "http://example.com./",
+            "http://example.com\u3002": "http://example.com./",
+            "http://example.com\u3002/path": "http://example.com./path",
+            "http://sub.example.com\uff61/": "http://sub.example.com./",
+            "http://example.com\u3002:8080/path": "http://example.com.:8080/path",
+            "http://example.com\u3002:80/": "http://example.com./",
+            "http://user@example.com\uff61/": "http://user@example.com./",
+            "http://example.com\u3002?#": "http://example.com./?#",
+            "http://example.com\u3002/path?#frag": ("http://example.com./path?#frag"),
+            # Interior separators map to "." too.
+            "http://example\u3002com/": "http://example.com/",
+            "http://example\uff0ecom/path": "http://example.com/path",
+            "http://sub\u3002example\u3002com/": "http://sub.example.com/",
+            # An IDN host keeps its U-label spelling; only the
+            # separator changes (#659 covers the A-label form).
+            "http://m\u00fcnchen\u3002de/": "http://m\u00fcnchen.de/",
+            # IP literals serialize without a root dot in WHATWG,
+            # as before — separator spellings agree there already.
+            "http://8.8.8.8\u3002/": "http://8.8.8.8/",
+            "http://8\u30028\u30028\u30028/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_the_mapped_host_for_compatibility_spellings(self):
+        # Judging NFKC-maps the host (app.py: fullwidth/compatibility
+        # characters fold to their ordinary forms), but the return
+        # path rebuilt from the mapped host only for percent-decoded
+        # and literal-separator spellings, so a fullwidth spelling
+        # came back verbatim while the Worker returns the mapped
+        # form it judged (#665). The return now rebuilds whenever
+        # the mapping changed the host spelling.
+        cases = {
+            "http://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/": "http://example.com/",
+            "http://\uff25\uff38\uff21\uff2d\uff30\uff2c\uff25.com/": "http://example.com/",
+            "http://\uff47\uff50\uff54\uff12.example.com/": "http://gpt2.example.com/",
+            "http://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/path": "http://example.com/path",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: dotted spellings of blocked
+        # targets stay refused, and a second separator is still an
+        # empty label, in every separator spelling.
+        self.assertRefused("http://localhost\u3002/")
+        self.assertRefused("http://localhost\uff61/")
+        self.assertRefused("http://127.0.0.1\u3002/")
+        self.assertRefused("http://example.com\u3002\u3002/")
+        self.assertRefused("http://example.com\uff0e\uff0e/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (dotted) form of a raw Location carrying one.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org\u3002/path"
+        )
+        self.assertEqual(followed.full_url, "http://example.org./path")
+
+    def test_returns_the_host_without_uts46_ignored_codepoints(self):
+        # Judging deletes the UTS-46 "ignored" codepoints from the
+        # host before every check (#526), but the non-percent return
+        # path returned the raw spelling verbatim, so the recorded
+        # URL kept codepoints the Worker deletes in its returned
+        # host — and U+180E cannot be IDNA-encoded at fetch time at
+        # all (#652). The return now rebuilds from the judged host
+        # whenever the deletion changed it (the issue's option (a):
+        # exactly the ignored codepoints are dropped; every other
+        # spelling, IDN included, keeps its established form).
+        # Every codepoint in the ignored set, interior to a label:
+        for cp in app._UTS46_IGNORED:
+            ch = chr(cp)
+            self.assertEqual(
+                validate_crawl_url("http://exa" + ch + "mple.com/"),
+                "http://example.com/",
+                hex(cp),
+            )
+        cases = {
+            # Leading, trailing and repeated positions, and more
+            # than one label carrying a codepoint.
+            "http://\u200bexample.com/": "http://example.com/",
+            "http://example.com\u200b/": "http://example.com/",
+            "http://ex\u200ba\u200bmple.com/": "http://example.com/",
+            "http://exa\u00admple.co\ufeffm/": "http://example.com/",
+            # The root dot survives the rebuild, in either order.
+            "http://exa\u200bmple.com./": "http://example.com./",
+            "http://example.com.\u200b/": "http://example.com./",
+            # Port, userinfo, path and the empty ?/# markers are
+            # preserved around the rebuilt host.
+            "http://exa\u200bmple.com:8080/path?q=1#frag": (
+                "http://example.com:8080/path?q=1#frag"
+            ),
+            "http://user@exa\u2060mple.com/": "http://user@example.com/",
+            "http://example.com\u200b/path?#frag": "http://example.com/path?#frag",
+            "http://example.com\u200b?#": "http://example.com/?#",
+            # The percent-encoded spelling of an ignored codepoint
+            # decodes to the same judged host and returns it too.
+            "http://exa%e2%80%8bmple.com/": "http://example.com/",
+            "http://exa%C2%ADmple.com/": "http://example.com/",
+            # An IDN host keeps its U-label spelling (#659 covers
+            # the A-label form); only the codepoint is deleted.
+            "http://m\u00fc\u200bnchen.de/": "http://m\u00fcnchen.de/",
+            # An IP literal carrying one returns the canonical
+            # address, as IP literals always do.
+            "http://8\u200b.8.8.8/": "http://8.8.8.8/",
+            # Controls: hosts with no ignored codepoint are
+            # untouched, including the #596 U+0345 spelling (judged
+            # by its mapping, not deleted) and ordinary IDN.
+            "http://example.com/": "http://example.com/",
+            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
+            "http://ex\u0345ample.com/": "http://ex\u0345ample.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: blocked names spelled with an
+        # ignored codepoint inside them stay refused, and a label
+        # consisting only of ignored codepoints is still an empty
+        # label / a hostless URL once they are deleted.
+        self.assertRefused("http://local\u200bhost/")
+        self.assertRefused("http://local\u00adhost/")
+        self.assertRefused("http://127\u200b.0.0.1/")
+        self.assertRefused("http://\u200b.com/")
+        self.assertRefused("http://\u200b/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (deleted) form of a raw Location carrying one —
+        # including U+180E, which the fetcher could not have
+        # IDNA-encoded in its raw form.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org\u200b/path"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/path")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://exa\u180emple.org/"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/")
+
+    def test_returns_the_extraction_folded_host_for_kelvin_sign_spellings(self):
+        # urlparse's hostname extraction folds U+212A KELVIN SIGN to
+        # ASCII "k" before the NFKC step runs, so #666's mapped-host
+        # measurement never saw the original spelling and the raw
+        # Kelvin host came back verbatim while the Worker returns
+        # the folded form it judged (#667). The return now rebuilds
+        # from the judged host whenever extraction itself folded the
+        # spelling to a different ASCII form.
+        cases = {
+            # Kelvin sign as a full label and inside a label.
+            "http://\u212a.example.com/": "http://k.example.com/",
+            "http://\u212a.com/": "http://k.com/",
+            "http://\u212aexample.com/": "http://kexample.com/",
+            "http://exa\u212aple.com/": "http://exakple.com/",
+            # Port, userinfo, path and the empty ?/# markers are
+            # preserved around the rebuilt host; default ports drop.
+            "http://\u212aexample.com:8080/p": "http://kexample.com:8080/p",
+            "http://\u212a.example.com:80/": "http://k.example.com/",
+            "https://\u212a.example.com:443/": "https://k.example.com/",
+            "http://user@\u212a.example.com/": "http://user@k.example.com/",
+            "http://\u212aexample.com/path?#frag": ("http://kexample.com/path?#frag"),
+            "http://\u212aexample.com?#": "http://kexample.com/?#",
+            # The root dot survives the rebuild.
+            "http://\u212a.example.com./": "http://k.example.com./",
+            # Controls: the percent-encoded and mixed spellings keep
+            # the returns they already had, and spellings the
+            # pipeline does not change are untouched — ordinary
+            # hosts, ASCII case folds (already normalized) and IDN
+            # U-label spellings (#659 covers the A-label form).
+            "http://%e2%84%aa.example.com/": "http://k.example.com/",
+            "http://\u212a\uff45.com/": "http://ke.com/",
+            "http://example.com/": "http://example.com/",
+            "http://EXAMPLE.COM/": "http://example.com/",
+            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: a blocked name spelled with the
+        # Kelvin sign as its first label stays refused.
+        self.assertRefused("http://\u212a.localhost/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (folded) form of a raw Location carrying one.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://\u212a.example.org/path"
+        )
+        self.assertEqual(followed.full_url, "http://k.example.org/path")
+
+    def test_returns_empty_password_userinfo_without_the_colon(self):
+        # WHATWG serialises userinfo from the parsed username/password:
+        # the ":" separator appears only when the password is non-empty,
+        # and the whole "@" drops when both are empty. The container
+        # round-tripped the raw userinfo string, so "user:@" came back
+        # as "user:@" and ":@" as ":@" while the Worker returns "user@"
+        # and no userinfo at all (#651) — #639 dropped the bare "@" but
+        # missed the colon-bearing spellings, which are non-empty raw
+        # strings. Fetch behaviour already agreed (_split_userinfo
+        # treats ":@" as carrying no credentials); only the recorded
+        # URL diverged.
+        cases = {
+            "http://user:@example.com/": "http://user@example.com/",
+            "http://:@example.com/": "http://example.com/",
+            "http://:@example.com:80/": "http://example.com/",
+            "http://user:@example.com:8080/a": "http://user@example.com:8080/a",
+            "http://:@8.8.8.8/": "http://8.8.8.8/",
+            # Controls: a non-empty password keeps its separator, and
+            # a ":" inside the password is data, encoded as %3A.
+            "http://:pass@example.com/": "http://:pass@example.com/",
+            "http://::@example.com/": "http://:%3A@example.com/",
+            "http://user::@example.com/": "http://user:%3A@example.com/",
+            "http://user:pass@example.com/": "http://user:pass@example.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked targets in these spellings stay refused.
+        self.assertRefused("http://:@127.0.0.1/")
+        self.assertRefused("http://user:@localhost/")
 
     def test_percent_encodes_non_ascii_outside_the_host(self):
         # WHATWG percent-encodes non-ASCII characters in the userinfo,
@@ -983,6 +1527,35 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/pa%20th")
 
+    def test_redirect_handler_derives_auth_from_the_targets_userinfo(self):
+        # #622: a redirect target carrying userinfo is fetched with
+        # the userinfo stripped and its own credentials as the
+        # Authorization header; a target without userinfo inherits
+        # nothing from the credentialed request that led to it.
+        import base64
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://first:secret@example.com/start")
+        app._apply_userinfo_auth(req)
+        self.assertEqual(req.full_url, "http://example.com/start")
+        self.assertEqual(
+            req.get_header("Authorization"),
+            "Basic " + base64.b64encode(b"first:secret").decode("ascii"),
+        )
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://user:pass@example.org/land"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/land")
+        self.assertEqual(
+            followed.get_header("Authorization"),
+            "Basic " + base64.b64encode(b"user:pass").decode("ascii"),
+        )
+        for target in ("http://example.org/plain", "http://@example.org/plain"):
+            followed = handler.redirect_request(req, None, 302, "Found", {}, target)
+            self.assertEqual(followed.full_url, "http://example.org/plain", target)
+            self.assertIsNone(followed.get_header("Authorization"), target)
+
 
 class TestFetchCrawl(unittest.TestCase):
     # _fetch_crawl fetches an already-validated URL (validation is
@@ -1003,12 +1576,30 @@ class TestFetchCrawl(unittest.TestCase):
             b"<html><head><title>Missing Thing</title></head>"
             b"<body><a href='/x'>x</a> not here</body></html>"
         )
+        seen = []
+        cls.seen = seen
 
         class Target(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
             def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/to-userinfo":
+                    port = self.server.server_address[1]
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", f"http://user:pass@127.0.0.1:{port}/landing"
+                    )
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
+                if self.path == "/to-plain":
+                    self.send_response(302)
+                    self.send_header("Location", "/landing")
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
                 if self.path == "/loop":
                     self.send_response(302)
                     self.send_header("Location", "/loop")
@@ -1112,6 +1703,102 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = app._fetch_crawl(url)
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_the_resolved_path_for_dot_segment_targets(self):
+        # #633: do_POST fetches the URL validate_crawl_url returns, so
+        # a dot-segment target must reach the server in its resolved
+        # form — the same path the Worker's WHATWG fetch requests —
+        # not the verbatim spelling urllib used to send. (Validation
+        # refuses loopback targets by design, so the validated public
+        # URL's origin is swapped for the local server's, keeping the
+        # exact validated path the container would fetch.)
+        validated = app.validate_crawl_url("http://example.com/a/../b")
+        self.assertEqual(validated, "http://example.com/b")
+        local = validated.replace("http://example.com", f"http://127.0.0.1:{self.port}")
+        self.seen.clear()
+        status, raw = app._fetch_crawl(local)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+        self.assertEqual(self.seen, [("/b", None)])
+        validated = app.validate_crawl_url("http://example.com/%2e%2e/admin")
+        self.assertEqual(validated, "http://example.com/admin")
+        local = validated.replace("http://example.com", f"http://127.0.0.1:{self.port}")
+        self.seen.clear()
+        status, _ = app._fetch_crawl(local)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.seen, [("/admin", None)])
+
+    def test_fetches_userinfo_targets_with_basic_auth(self):
+        # #622: every userinfo spelling both validators accept 502'd
+        # in the container — urllib kept "user@host" as the hostname
+        # and getaddrinfo failed before any request was sent (the
+        # #615/#618 fetcher tests only ever fetched path/query forms).
+        # The fetcher now strips the userinfo and sends the
+        # percent-decoded credentials as Authorization: Basic, the way
+        # WHATWG fetch does; a userinfo with empty username AND empty
+        # password ("@", ":@") carries no credentials and sends none.
+        import base64
+
+        def basic(credentials):
+            return "Basic " + base64.b64encode(credentials).decode("ascii")
+
+        cases = (
+            ("user@", basic(b"user:")),
+            ("user:pass@", basic(b"user:pass")),
+            # The #619 returned form: the password colon is data.
+            ("user:pa%3Ass@", basic(b"user:pa:ss")),
+            # The #615 returned form: credentials decode as UTF-8.
+            ("caf%C3%A9@", basic("café:".encode("utf-8"))),
+            ("caf%C3%A9:p%C3%A4ss@", basic("café:päss".encode("utf-8"))),
+            (":pass@", basic(b":pass")),
+            ("user:@", basic(b"user:")),
+            ("@", None),
+            (":@", None),
+            ("", None),
+        )
+        for userinfo, expected_auth in cases:
+            self.seen.clear()
+            status, raw = app._fetch_crawl(f"http://{userinfo}127.0.0.1:{self.port}/x")
+            self.assertEqual(status, 200, userinfo)
+            self.assertIn(b"Missing Thing", raw, userinfo)
+            self.assertEqual(self.seen, [("/x", expected_auth)], userinfo)
+
+    def test_redirect_to_userinfo_target_fetches_with_its_auth(self):
+        # #622: redirect targets carrying userinfo fetch the same way
+        # as userinfo start URLs, and a credentialed start URL's
+        # Authorization is not carried onto a plain redirect target.
+        # The validating handler refuses 127.0.0.1 targets by design,
+        # so validation is stubbed to isolate the redirect/auth
+        # mechanics (the same reason the #576 test uses a plain
+        # opener); per-hop validation itself is pinned elsewhere.
+        import base64
+        import urllib.request
+        from unittest import mock
+
+        def basic(credentials):
+            return "Basic " + base64.b64encode(credentials).decode("ascii")
+
+        opener = urllib.request.build_opener(app._ValidatingRedirectHandler)
+        with (
+            mock.patch.object(app, "_OPENER", opener),
+            mock.patch.object(app, "validate_crawl_url", lambda url: url),
+        ):
+            self.seen.clear()
+            status, _ = app._fetch_crawl(f"http://127.0.0.1:{self.port}/to-userinfo")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                self.seen,
+                [("/to-userinfo", None), ("/landing", basic(b"user:pass"))],
+            )
+            self.seen.clear()
+            status, _ = app._fetch_crawl(
+                f"http://first:secret@127.0.0.1:{self.port}/to-plain"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                self.seen,
+                [("/to-plain", basic(b"first:secret")), ("/landing", None)],
+            )
 
     def test_ascii_punctuation_percent_encoded_per_component(self):
         # #618: WHATWG's per-component percent-encode sets for ASCII

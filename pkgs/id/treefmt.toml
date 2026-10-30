@@ -21,6 +21,8 @@ excludes = [
   "web/bun.nix",
   "e2e/bun.nix",
   "flake.lock",
+  # Vendored upstream crates: do not reformat code we do not own (#702).
+  "vendor/**",
 ]
 
 [formatter.rustfmt]

@@ -23,7 +23,7 @@ import type { Plugin } from "prosemirror-state";
  * Maps file extensions to Shiki language identifiers.
  * Covers all extensions from content_mode.rs that map to Raw mode.
  */
-const EXT_TO_LANG: Record<string, string> = {
+export const EXT_TO_LANG: Record<string, string> = {
   // JavaScript / TypeScript
   js: "javascript",
   mjs: "javascript",
@@ -103,7 +103,7 @@ const EXT_TO_LANG: Record<string, string> = {
 /**
  * Special filenames that map to specific languages regardless of extension.
  */
-const FILENAME_TO_LANG: Record<string, string> = {
+export const FILENAME_TO_LANG: Record<string, string> = {
   dockerfile: "dockerfile",
   makefile: "makefile",
   justfile: "just",
@@ -117,9 +117,12 @@ const FILENAME_TO_LANG: Record<string, string> = {
  * Detect the Shiki language identifier from a filename.
  *
  * Priority:
- * 1. Special filename match (case-insensitive, ignoring extension)
- * 2. Extension match from EXT_TO_LANG map
- * 3. undefined (no highlighting)
+ * 1. Dotfile match (.gitignore, .env, .editorconfig, ...)
+ * 2. Extension match from EXT_TO_LANG map — a known extension wins over a
+ *    special-name stem ("justfile.rs" is Rust, not a Justfile)
+ * 3. Special filename match (case-insensitive), only when the extension is
+ *    absent or unknown ("Dockerfile", "Dockerfile.dev", "CMakeLists.txt")
+ * 4. undefined (no highlighting)
  *
  * @param filename - The filename (may include path components)
  * @returns Shiki language identifier, or undefined if unknown
@@ -127,21 +130,7 @@ const FILENAME_TO_LANG: Record<string, string> = {
 export function detectLanguage(filename: string): string | undefined {
   // Extract basename (handle paths)
   const basename = filename.split("/").pop() ?? filename;
-
-  // Check special filenames (case-insensitive, without extension)
   const basenameLower = basename.toLowerCase();
-  const nameWithoutExt = basenameLower.includes(".")
-    ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
-    : basenameLower;
-
-  // Try full basename first (e.g., "Dockerfile.dev" → still a Dockerfile)
-  if (FILENAME_TO_LANG[nameWithoutExt]) {
-    return FILENAME_TO_LANG[nameWithoutExt];
-  }
-  // Try full basename without extension check (e.g., "Dockerfile" with no ext)
-  if (FILENAME_TO_LANG[basenameLower]) {
-    return FILENAME_TO_LANG[basenameLower];
-  }
 
   // Dotfiles: .gitignore, .env, .editorconfig, .prettierrc, .eslintrc
   if (basenameLower.startsWith(".")) {
@@ -153,11 +142,29 @@ export function detectLanguage(filename: string): string | undefined {
     if (dotName === "prettierrc" || dotName === "eslintrc") return "json";
   }
 
-  // Extract extension
+  // A known extension wins over a special-name stem:
+  // "makefile.md" is Markdown documentation, not a Makefile.
   const ext = basename.includes(".") ? basename.split(".").pop()?.toLowerCase() : undefined;
-  if (!ext) return undefined;
+  if (ext && EXT_TO_LANG[ext]) {
+    return EXT_TO_LANG[ext];
+  }
 
-  return EXT_TO_LANG[ext];
+  // Check special filenames (case-insensitive, without extension).
+  // Only reached when the extension is absent or unknown, so
+  // "Dockerfile.dev" is still a Dockerfile and "CMakeLists.txt" is CMake.
+  const nameWithoutExt = basenameLower.includes(".")
+    ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
+    : basenameLower;
+
+  if (FILENAME_TO_LANG[nameWithoutExt]) {
+    return FILENAME_TO_LANG[nameWithoutExt];
+  }
+  // Full basename (e.g., "Dockerfile" with no ext)
+  if (FILENAME_TO_LANG[basenameLower]) {
+    return FILENAME_TO_LANG[basenameLower];
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,8 +181,15 @@ type ShikiHighlighter = any;
  * embedded app (assets are bundled into the Rust binary). Instead, we import
  * the most common language grammars statically via explicit import() calls
  * that Bun can resolve and bundle at build time.
+ *
+ * Every language detectLanguage() can return must have an entry here —
+ * otherwise ensureLanguage() marks it loaded without a grammar and it
+ * renders as plain text forever (guarded by a test in highlight.test.ts).
+ * Sole exception: "gitignore" — @shikijs/langs in shiki 4.5.0 ships no
+ * gitignore grammar, so .gitignore/.dockerignore stay unhighlighted
+ * until one exists upstream (tracked in the issue that added this note).
  */
-const LANG_IMPORTS: Record<string, () => Promise<any>> = {
+export const LANG_IMPORTS: Record<string, () => Promise<any>> = {
   javascript: () => import("@shikijs/langs/javascript"),
   typescript: () => import("@shikijs/langs/typescript"),
   jsx: () => import("@shikijs/langs/jsx"),
@@ -194,15 +208,19 @@ const LANG_IMPORTS: Record<string, () => Promise<any>> = {
   bash: () => import("@shikijs/langs/bash"),
   fish: () => import("@shikijs/langs/fish"),
   powershell: () => import("@shikijs/langs/powershell"),
+  bat: () => import("@shikijs/langs/bat"),
   html: () => import("@shikijs/langs/html"),
   css: () => import("@shikijs/langs/css"),
   scss: () => import("@shikijs/langs/scss"),
+  sass: () => import("@shikijs/langs/sass"),
+  less: () => import("@shikijs/langs/less"),
   json: () => import("@shikijs/langs/json"),
   yaml: () => import("@shikijs/langs/yaml"),
   toml: () => import("@shikijs/langs/toml"),
   xml: () => import("@shikijs/langs/xml"),
   sql: () => import("@shikijs/langs/sql"),
   graphql: () => import("@shikijs/langs/graphql"),
+  protobuf: () => import("@shikijs/langs/protobuf"),
   markdown: () => import("@shikijs/langs/markdown"),
   dockerfile: () => import("@shikijs/langs/dockerfile"),
   makefile: () => import("@shikijs/langs/makefile"),
@@ -217,6 +235,14 @@ const LANG_IMPORTS: Record<string, () => Promise<any>> = {
   groovy: () => import("@shikijs/langs/groovy"),
   cmake: () => import("@shikijs/langs/cmake"),
   r: () => import("@shikijs/langs/r"),
+  zig: () => import("@shikijs/langs/zig"),
+  erlang: () => import("@shikijs/langs/erlang"),
+  ocaml: () => import("@shikijs/langs/ocaml"),
+  viml: () => import("@shikijs/langs/viml"),
+  hcl: () => import("@shikijs/langs/hcl"),
+  just: () => import("@shikijs/langs/just"),
+  dotenv: () => import("@shikijs/langs/dotenv"),
+  properties: () => import("@shikijs/langs/properties"),
 };
 
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;

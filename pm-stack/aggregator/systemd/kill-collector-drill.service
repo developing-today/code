@@ -1,0 +1,15 @@
+[Unit]
+Description=Chaos drill: kill the fleet-feed collector and verify the PM stack notices (#1283, epic #1184)
+After=network.target
+
+[Service]
+Type=oneshot
+# Runs on the sandbox host, like the collector it kills. HOME is pinned
+# for the same reason as fleet-feed-collector.service: the drill reads
+# the aggregator health over the laptop ssh channel (~/tools) and keeps
+# its state under ~/.local/state/pm-drills.
+Environment=HOME=/home/hatch
+ExecStart=/home/hatch/git/pm-feed/pm-stack/aggregator/scripts/kill-collector-drill.sh
+# A drill that outlives its own max wait plus restore margin is stuck;
+# the script's trap restores the collector on TERM.
+TimeoutStartSec=45min

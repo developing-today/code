@@ -1,7 +1,9 @@
 name: Jules Daily Flake Sync & Config Optimization
 
-# Daily automated flake input maintenance, NixOS configuration optimization,
-# and dependency auditing for developing-today/code using Google Jules.
+# Daily NixOS configuration optimization and dependency auditing for
+# developing-today/code using Google Jules. The `opencode` and `openchamber`
+# flake inputs are NOT maintained here: they are owned by the deterministic
+# flake-inputs-update workflow (.github/workflows/flake-inputs-update.yml).
 
 on:
   schedule:
@@ -10,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       update_forks_only:
-        description: "Only update opencode and openchamber fork pins"
+        description: "Legacy flag, ignored: the opencode/openchamber pins are owned by the flake-inputs-update workflow"
         type: boolean
         default: false
       auto_merge:
@@ -44,16 +46,16 @@ jobs:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           include_commit_log: true
           prompt: >-
-            Perform the daily flake inputs update and configuration review for developing-today/code.
+            Perform the daily configuration review for developing-today/code. Do NOT update the `opencode` or `openchamber` flake inputs — the flake-inputs-update workflow owns them.
 
             Follow these instructions and rules:
 
-            ### 1. FLAKE INPUTS MAINTENANCE
-            - Check and update the fork inputs for `opencode` and `openchamber`:
-              `nix --tarball-ttl 0 flake update opencode openchamber`
-            - Ensure inputs resolve to the latest commits on their respective `main` branches on GitHub:
-              - `github:developing-today/opencode`
-              - `github:developing-today/openchamber`
+            ### 1. FLAKE INPUTS — OWNED ELSEWHERE, DO NOT BUMP
+            - The `opencode` and `openchamber` flake inputs are owned by the deterministic
+              `flake-inputs-update` workflow, which bumps, validates, and merges them daily.
+              Do NOT run `nix flake update` for them, do NOT change their pins in `flake.lock`,
+              and do NOT open PRs that bump them. If their pins look stale, leave them — the
+              owning workflow handles them the same day.
             - Do NOT casually bump root `nixpkgs` (root nixpkgs is pinned deliberately per system stability policies).
             - Clean up any stale input overrides or unused flake dependencies in `flake.nix` (e.g. warnings about non-existent input overrides like gitignore or devshell).
 
@@ -73,5 +75,5 @@ jobs:
 
             ### 4. PULL REQUEST & MERGE
             - If updates or improvements are present:
-              - Open a clear Pull Request documenting the bumped input hashes, commit logs, and any configuration enhancements made.
-              - If all Nix evaluations and checks succeed and the PR is conflict-free, proceed to merge into `main`.
+              - Open a clear Pull Request documenting any configuration enhancements made. Keep every related change in this one PR — never split changes into one PR per item.
+              - Merge into `main` only when you are reasonably certain it is correct: all Nix evaluations and checks succeed, the PR is conflict-free, and the changes are limited to the intended bumps and fixes. Merging is permitted, never required — when any of that is uncertain, leave the PR open and explain what a human should check.

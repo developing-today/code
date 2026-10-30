@@ -150,6 +150,35 @@ describe("indentCommand with selection", () => {
     expect(result).toContain("  line2");
     expect(result.endsWith("line3")).toBe(true);
   });
+
+  it("indents exactly the selected line, not its neighbours (#714)", () => {
+    const text = "line1\nline2\nline3";
+    const state = createCodeStateWithSelection(text, 7, 12);
+    const newState = runCommand(state, indentCommand);
+    expect(getCodeText(newState!)).toBe("line1\n  line2\nline3");
+  });
+
+  it("indents the line the selection starts in, even mid-line (#714)", () => {
+    const text = "line1\nline2\nline3";
+    const state = createCodeStateWithSelection(text, 9, 15);
+    const newState = runCommand(state, indentCommand);
+    expect(getCodeText(newState!)).toBe("line1\n  line2\n  line3");
+  });
+
+  it("does not drift into following lines as indents accumulate (#714)", () => {
+    const text = "a\nb\nc\nd\ne";
+    const state = createCodeStateWithSelection(text, 1, 2);
+    const newState = runCommand(state, indentCommand);
+    expect(getCodeText(newState!)).toBe("  a\nb\nc\nd\ne");
+  });
+
+  it("does not indent a line the selection only touches at its start (#714)", () => {
+    const text = "line1\nline2\nline3";
+    // Selection from the start of line1 to the start of line2 (pos 7)
+    const state = createCodeStateWithSelection(text, 1, 7);
+    const newState = runCommand(state, indentCommand);
+    expect(getCodeText(newState!)).toBe("  line1\nline2\nline3");
+  });
 });
 
 // ── dedentCommand ──────────────────────────────────────────────────
@@ -209,6 +238,14 @@ describe("dedentCommand with selection", () => {
     const newState = runCommand(state, dedentCommand);
     expect(newState).not.toBeNull();
     expect(getCodeText(newState!)).toBe("line1\nline2\nline3");
+  });
+
+  it("dedents exactly the selected line, not earlier lines (#714)", () => {
+    // line3 starts at pos 17 in "  line1\n  line2\n  line3"
+    const text = "  line1\n  line2\n  line3";
+    const state = createCodeStateWithSelection(text, 17, 23);
+    const newState = runCommand(state, dedentCommand);
+    expect(getCodeText(newState!)).toBe("  line1\n  line2\nline3");
   });
 
   it("handles mixed indentation across lines", () => {

@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "prettier-plugin-toml": "^2.0.1"
+    "prettier-plugin-toml": "^4.1.0"
   }
 }

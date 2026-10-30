@@ -149,7 +149,9 @@ pub fn detect_mode(filename: &str) -> ContentMode {
 
     match extension.as_deref() {
         // ProseMirror JSON - check for .pm.json compound extension
-        Some("json") if filename.ends_with(".pm.json") => ContentMode::Rich,
+        // (case-insensitive, like every other extension check here: the
+        // extension above is lowercased, so the compound suffix must be too)
+        Some("json") if filename.to_lowercase().ends_with(".pm.json") => ContentMode::Rich,
 
         // Markdown
         Some("md" | "markdown") => ContentMode::Markdown,
@@ -240,9 +242,14 @@ mod tests {
     #[test]
     fn test_detect_prosemirror_json() {
         assert_eq!(detect_mode("document.pm.json"), ContentMode::Rich);
+        // The compound extension is case-insensitive, like every other
+        // extension check here (#770)
+        assert_eq!(detect_mode("document.PM.JSON"), ContentMode::Rich);
+        assert_eq!(detect_mode("Document.Pm.Json"), ContentMode::Rich);
         // Regular JSON should be raw
         assert_eq!(detect_mode("config.json"), ContentMode::Raw);
         assert_eq!(detect_mode("package.json"), ContentMode::Raw);
+        assert_eq!(detect_mode("config.JSON"), ContentMode::Raw);
     }
 
     #[test]

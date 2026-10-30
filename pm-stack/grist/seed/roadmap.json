@@ -1,0 +1,217 @@
+{
+  "columns": [
+    {
+      "id": "Title",
+      "type": "Text"
+    },
+    {
+      "choices": ["PM stack", "Basement cluster", "Cloud program", "Repo fleet", "id"],
+      "id": "Area",
+      "type": "Choice"
+    },
+    {
+      "choices": ["Idea", "Planned", "In progress", "Blocked", "Done"],
+      "id": "Status",
+      "type": "Choice"
+    },
+    {
+      "id": "Horizon",
+      "type": "Text"
+    },
+    {
+      "id": "Source",
+      "type": "Text"
+    },
+    {
+      "id": "Notes",
+      "type": "Text"
+    }
+  ],
+  "rows": [
+    {
+      "Area": "PM stack",
+      "Horizon": "2026-10-24",
+      "Notes": "Kaneo 2.47.0 on the laptop, GitHub App developing.today installed on developing-today/code only, 105 issues imported, two-way sync verified end-to-end.",
+      "Source": "https://github.com/developing-today/code/pull/752",
+      "Status": "Done",
+      "Title": "PM stack Phase 1 — Kaneo execution board (code repo)"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q4 2026",
+      "Notes": "Dispatch layer trial on developing-today/code with manual merge only; Pad planning layer seeded; Grist chosen over Baserow and seeded with this table.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "In progress",
+      "Title": "PM stack Phase 2 — ready-for-agent, Pad, roadmap table layer"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q4 2026",
+      "Notes": "One Kaneo project per repo (upstream one-repo-per-project limit); install the developing.today app per repo.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — connect opencode, openchamber, nix as Kaneo projects"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q1 2027",
+      "Notes": "Webhook-fed projector joining GitHub issue ↔ Kaneo task ↔ Pad item ↔ roadmap row by ID. Never a source of truth.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — projector + link registry (Turso)"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q1 2027",
+      "Notes": "Scoped at the end of Phase 2, built next phase. Read-mostly and disposable: if it rots, every layer underneath still works standalone.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — aggregator UI (cross-repo WIP board + roadmap view)"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Start with the best/most-identical Threadripper machines; everything declarative and bootstrappable. No HashiCorp.",
+      "Source": "https://github.com/dezren39/nix/issues/501",
+      "Status": "Planned",
+      "Title": "Basement cluster — 3–5 node Talos + Cozystack via TALM"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Q4 2026",
+      "Notes": "Every machine's BIOS/BMC versions and settings verified identical on core machines; SMART/firmware baseline exists for NVMe, not yet for the 8 boxed HDDs.",
+      "Source": "https://github.com/dezren39/nix/issues/502",
+      "Status": "In progress",
+      "Title": "Hardware inventory + firmware/BMC audit"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "3 hosts × 4 × 16 TB RAID 10 for RustFS cold buckets; NVMe stripe×mirror (RAID 100); 3-machine DRBD replication so data loss needs the same failure on 2 machines.",
+      "Source": "Cluster idea register, 2026-10-20",
+      "Status": "Planned",
+      "Title": "Storage tiers — HDD RAID 10, NVMe RAID 100, DRBD/LINSTOR replication"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Declared in the cluster config from first boot; FluxCD runs the ID app first.",
+      "Source": "Cluster idea register, 2026-10-20",
+      "Status": "Planned",
+      "Title": "Cluster day-one services — CNPG Postgres, cloudflared, Tailscale, NATS, RustFS, FluxCD"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Shelf PCs as CI offload and as LINSTOR/DRBD tie-breaker witnesses (a Raspberry Pi is the alternative witness).",
+      "Source": "Cluster idea register, addendum 2026-10-21",
+      "Status": "Idea",
+      "Title": "Spare PCs — compile/test runners and quorum witnesses"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Explicitly a side project of a side project for now; noted so it is not lost.",
+      "Source": "Cluster idea register, addendum 2026-10-20",
+      "Status": "Idea",
+      "Title": "ESP32 wing — sensors + LoRa for the ID project"
+    },
+    {
+      "Area": "Cloud program",
+      "Horizon": "Q4 2026",
+      "Notes": "Account provisioning stuck (Oracle ticket CPCOE-29381; home region US East/Ashburn confirmed). Then: Ampere A1 + 2× E2.1.Micro, PAYG upgrade with quota + budget guardrails first.",
+      "Source": "https://github.com/dezren39/nix/issues/507",
+      "Status": "Blocked",
+      "Title": "OCI Always Free — run the technical maximum"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "109 open issues+PRs at 2026-10-24. Hosts the id project and this PM stack's definitions; sweep fleet keeps it healthy.",
+      "Source": "https://github.com/developing-today/code",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/code"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "27 open issues+PRs at 2026-10-24. The fleet's OpenCode 2 fork; Actions outage tracked in its issue #365.",
+      "Source": "https://github.com/developing-today/opencode",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/opencode"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "66 open issues+PRs at 2026-10-24. Embeds the fork's OpenCode 2.",
+      "Source": "https://github.com/developing-today/openchamber",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/openchamber"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "201 open issues+PRs at 2026-10-24. Fleet configuration; cluster design issues #501–#508 live here.",
+      "Source": "https://github.com/dezren39/nix",
+      "Status": "In progress",
+      "Title": "Repo fleet — dezren39/nix"
+    },
+    {
+      "Title": "id — Path to Phase 12: trusted CI, validation, journal, cost visibility",
+      "Area": "id",
+      "Status": "In progress",
+      "Horizon": "Now",
+      "Source": "https://github.com/developing-today/code/issues/534",
+      "Notes": "Phase 12 is the goal; this is the work that gates it. Validation tasks #1075 #1076 #1077 #1078 (umbrella #796), CI trust #229 #241 #551, journal format F11.12 #227, cost visibility #553 #539 #542, projection remainder #242, remaining F11 #544 #555 #541. Full roadmap: planning/roadmaps/id.md in developing-today/code."
+    },
+    {
+      "Title": "id — Phase 12: worlds as data + provider registry (F12.1–F12.6)",
+      "Area": "id",
+      "Status": "Planned",
+      "Horizon": "Next",
+      "Source": "https://github.com/developing-today/code/issues/1061",
+      "Notes": "world.toml apply #807 (+#818), forking/templates #556, builder/moderator remainder #835, provider registry #1061 (gate #838), first providers kv/blob/http.fetch/notify #1062, audit log + OpenTelemetry #1063."
+    },
+    {
+      "Title": "id — Phase 12: guest languages, ABI conformance, program upgrades (F12.7–F12.9)",
+      "Area": "id",
+      "Status": "Planned",
+      "Horizon": "Next",
+      "Source": "https://github.com/developing-today/code/issues/1064",
+      "Notes": "ABI spec + conformance suite #1064, Rust + Zig/AssemblyScript guest SDKs #1065, program upgrade with state migration + rollback #1066."
+    },
+    {
+      "Title": "id — Phase 12: scale and cross-node (F12.10–F12.14)",
+      "Area": "id",
+      "Status": "Planned",
+      "Horizon": "Next",
+      "Source": "https://github.com/developing-today/code/issues/1067",
+      "Notes": "Fair scheduling + quotas #1067, delta/binary frames #805, many worlds per node #557, journal replication #806, portals #1068."
+    },
+    {
+      "Title": "id — Phase 12: authoring + security hardening (F12.15–F12.18)",
+      "Area": "id",
+      "Status": "Planned",
+      "Horizon": "Next",
+      "Source": "https://github.com/developing-today/code/issues/558",
+      "Notes": "id world dev #558, trust + provenance #1069, denial-of-service test suite #560. (F12.16 id world doctor is done, #559.)"
+    },
+    {
+      "Title": "id — Phase 13: client shells and capability providers",
+      "Area": "id",
+      "Status": "Planned",
+      "Horizon": "Later",
+      "Source": "https://github.com/developing-today/code/issues/785",
+      "Notes": "Shell contract #783 and SSH frame transport #784 are done. Remaining: SSH-over-iroh #785, presentation tiers #786, kitty keyboard #787, native shells #788, client capability providers #789, multi-server topology #790, session-identity prerequisite #840. Priority low — behind Phase 12."
+    },
+    {
+      "Title": "id — Long-term ideas: group encryption, TUI/GUI clients, Workers, Datastar",
+      "Area": "id",
+      "Status": "Idea",
+      "Horizon": "Unscheduled",
+      "Source": "https://github.com/developing-today/code/issues/1070",
+      "Notes": "Group encryption #1070, native TUI client #1071, native GUI client #1072, Datastar web UI #1073, worlds on Cloudflare Workers #793, world directory #812. Every idea has its own issue, priority/low."
+    }
+  ],
+  "table": "Roadmap"
+}

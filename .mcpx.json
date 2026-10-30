@@ -1,11 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
   "mcpServers": {
-    "codedb": {
-      "command": "/home/user/bin/codedb",
-      "args": ["mcp"],
+    "codex-connectors": {
+      "command": "npx",
+      "args": ["-y", "@wileai/codex-connectors-mcp@0.1.1"],
       "env": {
-        "CODEDB_NO_TELEMETRY": "1"
+        "CODEX_CONNECTORS_ALLOW": "Airtable, ChatGPT Space, Codex Document Control, Context.dev, Context7, DigitalOcean, Dropbox, Engram, Exa, Firecrawl, GitHub, Gmail, Google Calendar, Google Drive, HAPI MCP Registry, Hotline, Lovable, Neon, OpenAI Platform, Parallel Search, Pets, Plugin Management, Railway, Remote Desktop Commander, Replit, Safety Settings, Search Service, Sites, Slack, Sprites, Stack Overflow For Agents, Supabase, tldraw, Todoist: To Do List & Calendar, Vercel, Walmart, Wolfram",
+        "CODEX_CONNECTORS_MODE": "compact"
       }
     },
     "fff": {
@@ -65,6 +66,31 @@
     "gopls-mcp-server": {
       "command": "go",
       "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
+    },
+    "codebase-memory": {
+      "command": "npx",
+      "args": ["-y", "codebase-memory-mcp"]
+    },
+    "deepwiki": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.deepwiki.com/mcp"]
+    },
+    "fff-nix": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": ["/home/user/code"]
+    },
+    "fff-worktree": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": ["/home/user/.local/share/opencode/worktree"]
+    }
+  },
+  "disabledMcpServers": {
+    "codedb": {
+      "command": "/home/user/bin/codedb",
+      "args": ["mcp"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1"
+      }
     }
   },
   "repair": {

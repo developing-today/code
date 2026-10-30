@@ -164,7 +164,11 @@ describe("wrapPluginKey", () => {
 // These tests run in real browsers (e.g., Playwright E2E).
 const hasCanvas = (() => {
   try {
-    if (typeof OffscreenCanvas !== "undefined") return true;
+    // Mirror pretext's lookup order: newer happy-dom defines OffscreenCanvas
+    // but its getContext("2d") returns null, so check the context itself.
+    if (typeof OffscreenCanvas !== "undefined") {
+      return new OffscreenCanvas(1, 1).getContext("2d") !== null;
+    }
     if (typeof document !== "undefined") {
       const ctx = document.createElement("canvas").getContext("2d");
       return ctx !== null;

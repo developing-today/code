@@ -53,7 +53,129 @@ function xtermColor(index: number): string | null {
   return `#${gray.toString(16).padStart(2, "0").repeat(3)}`;
 }
 
-/** Render a validated cell grid as text-only DOM nodes; return false on invalid wire data. */
+// Wide code-point ranges matching Rust unicode-width 0.2's wide table,
+// including the astral planes the previous BMP-only regex missed (#761):
+// emoji blocks (U+1F300–U+1FAF8 ranges) and CJK Ext. B and above
+// (U+20000–U+2FFFD, U+30000–U+3FFFD).
+const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3040, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff01, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x16fe0, 0x16fe4],
+  [0x16ff0, 0x16ff1],
+  [0x17000, 0x187f7],
+  [0x18800, 0x18cd5],
+  [0x1f004, 0x1f004],
+  [0x1f0cf, 0x1f0cf],
+  [0x1f18e, 0x1f18e],
+  [0x1f191, 0x1f19a],
+  [0x1f200, 0x1f202],
+  [0x1f210, 0x1f23b],
+  [0x1f240, 0x1f248],
+  [0x1f250, 0x1f251],
+  [0x1f260, 0x1f265],
+  [0x1f300, 0x1f320],
+  [0x1f32d, 0x1f335],
+  [0x1f337, 0x1f37c],
+  [0x1f37e, 0x1f393],
+  [0x1f3a0, 0x1f3ca],
+  [0x1f3cf, 0x1f3d3],
+  [0x1f3e0, 0x1f3f0],
+  [0x1f3f4, 0x1f3f4],
+  [0x1f3f8, 0x1f43e],
+  [0x1f440, 0x1f440],
+  [0x1f442, 0x1f4fc],
+  [0x1f4ff, 0x1f53d],
+  [0x1f54b, 0x1f54e],
+  [0x1f550, 0x1f567],
+  [0x1f57a, 0x1f57a],
+  [0x1f595, 0x1f596],
+  [0x1f5a4, 0x1f5a4],
+  [0x1f5fb, 0x1f64f],
+  [0x1f680, 0x1f6c5],
+  [0x1f6cc, 0x1f6cc],
+  [0x1f6d0, 0x1f6d2],
+  [0x1f6d5, 0x1f6d7],
+  [0x1f6dc, 0x1f6df],
+  [0x1f6eb, 0x1f6ec],
+  [0x1f6f4, 0x1f6fc],
+  [0x1f7e0, 0x1f7eb],
+  [0x1f7f0, 0x1f7f0],
+  [0x1f90c, 0x1f93a],
+  [0x1f93c, 0x1f945],
+  [0x1f947, 0x1f9ff],
+  [0x1fa70, 0x1fa74],
+  [0x1fa78, 0x1fa7c],
+  [0x1fa80, 0x1fa88],
+  [0x1fa90, 0x1fabd],
+  [0x1fabf, 0x1fac5],
+  [0x1face, 0x1fadb],
+  [0x1fae0, 0x1fae8],
+  [0x1faf0, 0x1faf8],
+  [0x20000, 0x2fffd],
+  [0x30000, 0x3fffd],
+];
+
+function isWideCodePoint(codePoint: number): boolean {
+  return WIDE_RANGES.some(([low, high]) => codePoint >= low && codePoint <= high);
+}
+
+const COMBINING_MARK = /^\p{M}$/u;
+
+/** Width of one code point under unicode-width 0.2: wide = 2, combining/zero-width = 0, else 1. */
+function codePointWidth(character: string, codePoint: number): number {
+  if (codePoint === 0x200d || codePoint === 0x200c || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)) return 0;
+  // Tag characters (U+E0020..U+E007F) contribute 0: a tag sequence (e.g. the
+  // England flag) measures as its base alone under unicode-width 0.2 (#1431).
+  if (codePoint >= 0xe0020 && codePoint <= 0xe007f) return 0;
+  if (isWideCodePoint(codePoint)) return 2;
+  if (COMBINING_MARK.test(character)) return 0;
+  return 1;
+}
+
+/**
+ * Width of a single grapheme cluster under unicode-width 0.2 (#761):
+ * a ZWJ sequence containing a wide/emoji code point measures 2 in total
+ * (not per component), and U+FE0F (emoji presentation) forces width 2 —
+ * e.g. 😀, 𠮷, 👨‍👩‍👧 and ⚠️ are all width 2, matching the Rust validator.
+ * An emoji modifier (U+1F3FB..U+1F3FF) contributes 0, so a modified emoji
+ * measures as its base alone, and tag characters contribute 0 via
+ * codePointWidth, so a tag sequence measures as its base (#1431).
+ */
+function graphemeWidth(symbol: string): number {
+  const characters = Array.from(symbol);
+  const codePoints = characters.map((character) => character.codePointAt(0) ?? 0);
+  if (codePoints.includes(0x200d)) {
+    return codePoints.some((codePoint) => isWideCodePoint(codePoint)) ? 2 : 1;
+  }
+  if (codePoints.includes(0xfe0f)) return 2;
+  const isModifier = (codePoint: number) => codePoint >= 0x1f3fb && codePoint <= 0x1f3ff;
+  if (codePoints.some(isModifier)) {
+    const base = characters.filter((_, i) => !isModifier(codePoints[i]));
+    // A cluster of only modifiers falls through to the plain sum.
+    if (base.length > 0) return graphemeWidth(base.join(""));
+  }
+  return characters.reduce((total, character, i) => total + codePointWidth(character, codePoints[i]), 0);
+}
+
+const segmenter =
+  typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
+
+/**
+ * Render a validated cell grid as text-only DOM nodes; return false on invalid wire data.
+ * Width measurement matches Rust's unicode-width 0.2 semantics (see graphemeWidth)
+ * and grapheme boundaries come from Intl.Segmenter.
+ */
 export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): boolean {
   if (
     surface?.kind !== "screen" ||
@@ -104,6 +226,7 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
     const x = index % surface.width;
     const y = Math.floor(index / surface.width);
     if (cell.columns === 0) {
+      if (x === 0 || cell.symbol !== "") return false;
       const previous = surface.cells[index - 1];
       if (
         previous?.columns !== 2 ||
@@ -116,6 +239,13 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
       continue;
     }
     if (cell.columns !== 1 && cell.columns !== 2) return false;
+
+    const graphemes = segmenter ? Array.from(segmenter.segment(cell.symbol)) : Array.from(cell.symbol);
+    if (graphemes.length !== 1) return false;
+
+    const terminalWidth = graphemeWidth(cell.symbol);
+    if (terminalWidth !== cell.columns) return false;
+
     if (cell.columns === 2) {
       const continuation = surface.cells[index + 1];
       if (
@@ -124,7 +254,8 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
         continuation.columns !== 0 ||
         continuation.fg !== cell.fg ||
         continuation.bg !== cell.bg ||
-        continuation.bold !== cell.bold
+        continuation.bold !== cell.bold ||
+        continuation.symbol !== ""
       ) {
         return false;
       }
