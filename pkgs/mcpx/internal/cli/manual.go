@@ -558,6 +558,24 @@ func handCommands() []Command {
 			},
 		},
 		{
+			Name: "stdio-proxy", Group: "daemon",
+			Local:   "It is a byte pipe: it dials the daemon's unix socket on this host and copies stdin/stdout to it, which no /v1 operation can express.",
+			Usage:   "[--sock <path>]",
+			Summary: "serve the daemon's API on stdin/stdout, for an ssh tunnel",
+			Detail: "The remote half of an ssh:// daemon endpoint: `ssh host mcpx " +
+				"stdio-proxy` turns that ssh session's pipes into an HTTP connection " +
+				"to the daemon on the host. The socket is resolved here, by this " +
+				"process, from mcpx's own paths and configuration file, so the client " +
+				"needs no knowledge of the remote filesystem; --sock names a socket " +
+				"explicitly, for a host running more than one daemon. Public rather " +
+				"than hidden because the ssh command line a client runs names it. " +
+				"See docs/protocol.md for the MCP-over-ssh form.",
+			Examples: []string{
+				"ssh buildbox mcpx stdio-proxy",
+				"ssh buildbox mcpx stdio-proxy --sock /run/user/1000/mcpx/daemon.sock",
+			},
+		},
+		{
 			Name: "openapi", Group: "discovery",
 			Usage:   "[-o file]",
 			Summary: "print an OpenAPI document for mcpx",
