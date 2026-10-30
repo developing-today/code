@@ -223,15 +223,47 @@ func (a *Auth) Describe() string {
 // A reference is safe and useful to print: it tells the reader which variable
 // to set. A literal is the secret itself, and the whole point of printing
 // anything is that somebody will paste it somewhere.
+//
+// Only a value made up ENTIRELY of variable references is shown. A mixed
+// value such as ${TOKEN_PREFIX}.private-secret-suffix expands (os.Expand)
+// to a string whose literal half is secret, so showing any part of the raw
+// text would print that half; it is redacted whole.
 func redactRef(v string) string {
 	v = strings.TrimSpace(v)
-	switch {
-	case v == "":
+	if v == "" {
 		return "(unset)"
-	case strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}"):
-		return v
-	case strings.HasPrefix(v, "$"):
+	}
+	if isPureRef(v) {
 		return v
 	}
 	return "(literal, redacted)"
+}
+
+// isPureRef reports whether v consists solely of $VAR / ${VAR} references
+// (the two forms os.Expand resolves), with no literal characters.
+func isPureRef(v string) bool {
+	for i := 0; i < len(v); {
+		if v[i] != '$' {
+			return false
+		}
+		i++
+		braced := i < len(v) && v[i] == '{'
+		if braced {
+			i++
+		}
+		start := i
+		for i < len(v) && (v[i] == '_' || '0' <= v[i] && v[i] <= '9' || 'a' <= v[i] && v[i] <= 'z' || 'A' <= v[i] && v[i] <= 'Z') {
+			i++
+		}
+		if i == start {
+			return false
+		}
+		if braced {
+			if i >= len(v) || v[i] != '}' {
+				return false
+			}
+			i++
+		}
+	}
+	return len(v) > 0
 }

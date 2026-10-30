@@ -115,6 +115,28 @@ func TestDescribeNeverRevealsALiteral(t *testing.T) {
 	}
 }
 
+func TestDescribeRedactsAMixedReferenceAndLiteral(t *testing.T) {
+	// Codex finding on PR #2593: a credential that MIXES a reference with a
+	// literal suffix used to be printed whole, because redactRef trusted
+	// anything starting with $. The literal half is secret.
+	got := (&mcpauth.Auth{Type: "bearer", Token: "${TOKEN_PREFIX}.private-secret-suffix"}).Describe()
+	if strings.Contains(got, "private-secret-suffix") || strings.Contains(got, "TOKEN_PREFIX") {
+		t.Errorf("a mixed reference/literal must be redacted whole: %q", got)
+	}
+	got = (&mcpauth.Auth{Type: "bearer", Token: "$TOKEN-suffix"}).Describe()
+	if strings.Contains(got, "suffix") || strings.Contains(got, "TOKEN") {
+		t.Errorf("a $-reference with a literal tail must be redacted whole: %q", got)
+	}
+	// Pure references, singly or concatenated, are still shown: they name
+	// variables, not values.
+	for _, ref := range []string{"$TOKEN", "${TOKEN}", "${A}${B}", "$A$B"} {
+		got = (&mcpauth.Auth{Type: "bearer", Token: ref}).Describe()
+		if !strings.Contains(got, ref) {
+			t.Errorf("a pure reference should be shown: %q -> %q", ref, got)
+		}
+	}
+}
+
 func TestNilAuthIsNone(t *testing.T) {
 	var a *mcpauth.Auth
 	got, err := a.Resolve()
