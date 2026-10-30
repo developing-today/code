@@ -135,6 +135,25 @@ const check = (name, ok, detail = "") => {
   );
 }
 
+// --- 1d2. strip-types: literals inside a construct do not split it ----------
+{
+  const greet =
+    'function greet(name: string = "world"): string { return name; }\n' +
+    "console.log(greet());";
+  check(
+    "strip: a string default does not split the parameter list",
+    stripTypes(greet) ===
+      'function greet(name = "world") { return name; }\nconsole.log(greet());',
+    stripTypes(greet),
+  );
+  check(
+    "strip: a comment inside a parameter list does not split it either",
+    stripTypes("function f(a: number, /* units */ b: string): void {}") ===
+      "function f(a, /* units */ b) {}",
+    stripTypes("function f(a: number, /* units */ b: string): void {}"),
+  );
+}
+
 // --- 1e. run-example: script globals + client record lines ------------------
 {
   const fakeClient = { log: () => {}, emit: () => {}, describe: () => "" };
@@ -257,6 +276,16 @@ async function runSource(source) {
       "stage2: a default-export edit is invoked like the real runner",
       defLines.join("\n") === "ran via default export",
       defLines.join("\n"),
+    );
+
+    const greetLines = await runSource(
+      'function greet(name: string = "world"): string { return name; }\n' +
+        "console.log(greet());",
+    );
+    check(
+      "stage2: an edit with a string default parameter runs",
+      greetLines.join("\n") === "world",
+      greetLines.join("\n"),
     );
 
     const defRetLines = await runSource(`export default () => "returned";`);

@@ -39,25 +39,22 @@ function removeBalanced(src, start) {
   throw new Error("strip-types: unbalanced braces in type declaration");
 }
 
-function removeInterfaces(src) {
+function interfaceSpans(src) {
   const re = /(?:^|\n)[ \t]*(?:export\s+)?interface\s+[A-Za-z_$][\w$]*[^{]*\{/g;
-  let out = "";
-  let last = 0;
+  const spans = [];
   let m;
   while ((m = re.exec(src)) !== null) {
     const brace = m.index + m[0].length - 1;
     const end = removeBalanced(src, brace);
-    out += src.slice(last, m.index);
-    last = end;
+    spans.push([m.index, end]);
     re.lastIndex = end;
   }
-  return out + src.slice(last);
+  return spans;
 }
 
-function removeTypeAliases(src) {
+function typeAliasSpans(src) {
   const re = /(?:^|\n)[ \t]*(?:export\s+)?type\s+[A-Za-z_$][\w$]*(?:\s*<[^>]*>)?\s*=\s*/g;
-  let out = "";
-  let last = 0;
+  const spans = [];
   let m;
   while ((m = re.exec(src)) !== null) {
     // Scan to the terminating ';' at depth 0 (object types contain braces).
@@ -69,21 +66,39 @@ function removeTypeAliases(src) {
       else if (c === "}" || c === ")" || c === "]") depth--;
       else if (c === ";" && depth === 0) break;
     }
-    out += src.slice(last, m.index);
-    last = i + 1;
-    re.lastIndex = last;
+    spans.push([m.index, i + 1]);
+    re.lastIndex = i + 1;
   }
-  return out + src.slice(last);
+  return spans;
+}
+
+/**
+ * Deletion spans for a regex pass whose replacement keeps a prefix of
+ * each match: kept(m) is how many leading characters survive (the
+ * parenthesised group for annotation passes, 1 for the return pass's
+ * ')', 0 for `as` casts, whose whole match is deleted).
+ */
+function passSpans(src, re, kept) {
+  const spans = [];
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const k = typeof kept === "function" ? kept(m) : kept;
+    if (m[0].length > k) spans.push([m.index + k, m.index + m[0].length]);
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  return spans;
 }
 
 // --- Syntax-aware segmentation -------------------------------------------
 // The regex passes below must never rewrite text inside string literals,
 // template-literal text, or comments: a reader's edit such as
 // console.log("copy as script") is data, not an `as` cast. segmentize()
-// splits the source into code and protected segments; the passes run on
-// code segments only and the result is reassembled in order. Template
-// ${...} interpolations are code and are segmented recursively. Regex
-// literals are protected too (see regexAllowedHere).
+// splits the source into code and protected segments; the structural
+// passes then run on the whole source with protected segments masked
+// to spaces (lengths preserved), so a construct split by a literal —
+// a parameter list with a string default — is still seen whole.
+// Template ${...} interpolations are code and are segmented
+// recursively. Regex literals are protected too (see regexAllowedHere).
 
 function skipQuoted(src, i, quote) {
   // i is at the opening quote; return the index just past the closer.
@@ -319,83 +334,106 @@ function maskNested(text) {
   return out;
 }
 
-function applyParamPass(text, re) {
-  const masked = maskNested(text);
-  let out = "";
-  let last = 0;
-  let m;
-  while ((m = re.exec(masked)) !== null) {
-    out += text.slice(last, m.index) + text.slice(m.index, m.index + m[1].length);
-    last = m.index + m[0].length;
-  }
-  return out + text.slice(last);
-}
+const PARAM_PASSES = [
+  new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\?\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
+  new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
+];
 
-function stripGroupParams(inner) {
+function groupParamSpans(inner, base, spans) {
   // The passes anchor on the '(' or ',' before a parameter and look
   // ahead to the ',', ')' or '=' after its type; the group's own parens
-  // are not part of `inner`, so lend the text a synthetic comma before
-  // and a synthetic ')' after, and take both back off at the end. (The
-  // ')' is only ever a lookahead, never part of a match.)
-  let text = applyParamPass(
-    "," + inner + ")",
-    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\?\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
-  );
-  text = applyParamPass(
-    text,
-    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
-  );
-  return text.slice(1, -1);
+  // are not part of `inner`, so matches are found in a copy lent a
+  // synthetic comma before and a synthetic ')' after. maskNested keeps
+  // nested spans (object literals in defaults) from matching, at the
+  // same offsets. Span coordinates are converted back by dropping the
+  // one synthetic leading character.
+  const masked = maskNested("," + inner + ")");
+  for (const re of PARAM_PASSES) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(masked)) !== null) {
+      spans.push([base + m.index + m[1].length - 1, base + m.index + m[0].length - 1]);
+    }
+  }
 }
 
-function stripParamAnnotations(src) {
-  let out = "";
+function collectParamSpans(src, base, spans) {
   let i = 0;
   while (i < src.length) {
     const open = src.indexOf("(", i);
-    if (open < 0) return out + src.slice(i);
+    if (open < 0) return;
     const close = findMatchingParen(src, open);
-    if (close < 0) return out + src.slice(i);
-    out += src.slice(i, open + 1);
+    if (close < 0) return;
     // Nested groups first: an arrow in a default value or an argument
-    // has its own parameter list, stripped on its own merits.
-    const inner = stripParamAnnotations(src.slice(open + 1, close));
-    out += isParamList(src, open, close) ? stripGroupParams(inner) : inner;
-    out += ")";
+    // has its own parameter list, judged on its own merits.
+    collectParamSpans(src.slice(open + 1, close), base + open + 1, spans);
+    if (isParamList(src, open, close)) {
+      groupParamSpans(src.slice(open + 1, close), base + open + 1, spans);
+    }
     i = close + 1;
   }
-  return out;
 }
 
-function stripCode(source) {
-  if (/^\s*(?:export\s+)?(?:enum|namespace)\s/m.test(source) || /constructor\s*\([^)]*\b(?:private|public|protected|readonly)\b/.test(source)) {
+// The structural passes run on the WHOLE source with protected
+// segments masked to spaces (newlines kept, lengths preserved), never
+// on isolated segments: a parameter list split by a string default —
+// function greet(name: string = "world") — is one list, and only the
+// whole-source view can see it. Masking is length-preserving, so a
+// deletion span found in the masked text is a span of the original;
+// every pass below only ever deletes (annotations, casts, type
+// declarations), so the transform is: collect spans, merge, cut.
+function maskProtected(source) {
+  return segmentize(source)
+    .map((s) => (s.code ? s.text : s.text.replace(/[^\n]/g, " ")))
+    .join("");
+}
+
+export function stripTypes(source) {
+  const masked = maskProtected(source);
+  if (
+    /^\s*(?:export\s+)?(?:enum|namespace)\s/m.test(masked) ||
+    /constructor\s*\([^)]*\b(?:private|public|protected|readonly)\b/.test(masked)
+  ) {
     throw new Error(
       "strip-types: enums, namespaces and parameter properties are not " +
         "erasable and are not supported in the browser demo — remove them and run again",
     );
   }
-  let src = removeInterfaces(source);
-  src = removeTypeAliases(src);
-  // `as T` casts.
-  src = src.replace(new RegExp(String.raw`\s+as\s+` + TYPE, "g"), "");
-  // Variable annotations: const/let/var name: T (=|;)
-  src = src.replace(
-    new RegExp(String.raw`(\b(?:const|let|var)\s+[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[=;])`, "g"),
-    "$1",
-  );
-  // Parameter annotations and optional markers — only inside paren
-  // groups that are really parameter lists (see stripParamAnnotations).
-  src = stripParamAnnotations(src);
-  // Return annotations: ): T {  and  ): T =>
-  src = src.replace(
-    new RegExp(String.raw`\)\s*:\s*` + TYPE + String.raw`(?=\s*(?:\{|=>))`, "g"),
-    ")",
-  );
-  return src;
-}
+  const spans = [
+    ...interfaceSpans(masked),
+    ...typeAliasSpans(masked),
+    // `as T` casts.
+    ...passSpans(masked, new RegExp(String.raw`\s+as\s+` + TYPE, "g"), 0),
+    // Variable annotations: const/let/var name: T (=|;)
+    ...passSpans(
+      masked,
+      new RegExp(
+        String.raw`(\b(?:const|let|var)\s+[A-Za-z_$][\w$]*)\s*:\s*` +
+          TYPE +
+          String.raw`(?=\s*[=;])`,
+        "g",
+      ),
+      (m) => m[1].length,
+    ),
+    // Return annotations: ): T {  and  ): T =>
+    ...passSpans(
+      masked,
+      new RegExp(String.raw`\)\s*:\s*` + TYPE + String.raw`(?=\s*(?:\{|=>))`, "g"),
+      1,
+    ),
+  ];
+  collectParamSpans(masked, 0, spans);
 
-export function stripTypes(source) {
-  return segmentize(source)
-    .map((s) => (s.code ? stripCode(s.text) : s.text))
-    .join("");
+  spans.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let last = 0;
+  for (const [a, b] of spans) {
+    if (a >= last) {
+      out += source.slice(last, a);
+      last = b;
+    } else if (b > last) {
+      last = b;
+    }
+  }
+  return out + source.slice(last);
 }
