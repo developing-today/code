@@ -109,25 +109,50 @@ describe("OIDC verification", () => {
   });
 });
 
-describe("OIDC repo binding", () => {
-  const oidcCaller = {
+describe("cross-repo grants (assertCallerRepo)", () => {
+  const allowlist = [
+    "developing-today/code",
+    "developing-today/opencode",
+    "developing-today/openchamber",
+    "dezren39/nix",
+    "developing-today/zettel",
+    "dezren39/dezren39",
+  ];
+  const openchamberCaller = {
     type: "oidc" as const,
-    repository: "developing-today/code",
+    repository: "developing-today/openchamber",
     actor: "dezren39",
   };
 
-  test("claim equal to the request repo passes", () => {
-    expect(() => assertCallerRepo(oidcCaller, "developing-today/code", ["developing-today/code"])).not.toThrow();
+  test("cross-repo allowed: an openchamber token may target opencode", () => {
+    expect(() => assertCallerRepo(openchamberCaller, "developing-today/opencode", allowlist)).not.toThrow();
   });
 
-  test("claim different from the request repo is rejected — a workflow only dispatches for its own repo", () => {
-    expect(() =>
-      assertCallerRepo(oidcCaller, "developing-today/opencode", ["developing-today/code", "developing-today/opencode"]),
-    ).toThrow(/does not match/);
+  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/nix", () => {
+    const zettelCaller = { type: "oidc" as const, repository: "developing-today/zettel", actor: "dezren39" };
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/dezren39", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/nix", allowlist)).not.toThrow();
   });
 
-  test("bearer callers are bound only by the allowlist", () => {
-    expect(() => assertCallerRepo({ type: "bearer" }, "developing-today/opencode", ["developing-today/opencode"])).not.toThrow();
-    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/nix", ["developing-today/code"])).toThrow(/allowlist/);
+  test("same-repo still allowed", () => {
+    expect(() => assertCallerRepo(openchamberCaller, "developing-today/openchamber", allowlist)).not.toThrow();
+  });
+
+  test("an OIDC caller outside the allowlist is rejected", () => {
+    const outsider = { type: "oidc" as const, repository: "someone/else", actor: "mallory" };
+    expect(() => assertCallerRepo(outsider, "developing-today/opencode", allowlist)).toThrow(/allowlist/);
+  });
+
+  test("a target outside the allowlist is rejected for OIDC callers", () => {
+    expect(() => assertCallerRepo(openchamberCaller, "someone/else", allowlist)).toThrow(/allowlist/);
+  });
+
+  test("bearer callers are unaffected by caller/target repo pairing: an allowlisted target passes", () => {
+    expect(() => assertCallerRepo({ type: "bearer" }, "developing-today/opencode", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo({ type: "bearer" }, "dezren39/nix", allowlist)).not.toThrow();
+  });
+
+  test("bearer callers are rejected for a non-allowlisted target", () => {
+    expect(() => assertCallerRepo({ type: "bearer" }, "someone/else", allowlist)).toThrow(/allowlist/);
   });
 });

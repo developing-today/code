@@ -179,12 +179,14 @@ func (s *Server) ExecService() *execsvc.Service {
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
 	lim.Typecheck = set.String("script.typecheck")
+	lim.Imports = set.String("script.imports")
+	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
-	return &execsvc.Service{
+	svc := &execsvc.Service{
 		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
 		Store:    store,
 		Endpoint: s.endpoint,
@@ -203,6 +205,18 @@ func (s *Server) ExecService() *execsvc.Service {
 			return nil
 		},
 	}
+	// Config-declared hooks apply to every run this daemon performs; a
+	// caller's own hooks append to them. Configured code is code the
+	// caller did not send, so it is gated by hooks.autonomy exactly as
+	// the CLI's hookGate gates it: below `run` it does not execute.
+	// Caller-supplied hooks (Options.Hooks) are the caller's own code
+	// and are not governed by the gate.
+	if s.cfg != nil && settings.AutonomyAtLeast(set.String("hooks.autonomy"), "run") {
+		for _, h := range s.cfg.ScriptHooks() {
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+		}
+	}
+	return svc
 }
 
 // ---- POST /v1/exec ----

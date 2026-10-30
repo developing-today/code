@@ -25,6 +25,10 @@ on:
     branches: [main]
     paths:
       - "pkgs/mcpx/**"
+      # The seed store is data the collector bot files (#1953): its
+      # commits must never re-trigger this workflow (the collector
+      # also marks its commits [skip ci] — both addendum fixes).
+      - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
@@ -136,6 +140,14 @@ jobs:
             fi
           fi
           exit "$rc"
+
+      # The opencode plugin's bun tests are the one suite `go test` never
+      # sees. Bun is already installed above (the Go e2e tests shell out to
+      # it); this step runs the plugin suite itself, so a broken plugin
+      # test fails CI instead of never running (#1978).
+      - name: Plugin tests (bun)
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
 
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)

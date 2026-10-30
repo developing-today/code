@@ -83,12 +83,26 @@ for a session that launched, nor `claimed` without a session id.
   "issue": false, // optional; default false
   "dedupe_key": "…", // optional; default: canonical key from the
   // created issue, else a unique dispatch key
+  "issue_number": 123, // optional; attach to this existing issue
+  // in repo instead of creating one (see below)
 }
 ```
 
 Returns `201 {task_id, issue_number|null, queue}`. With `issue: true`
 the issue is created first (labels `queue/queued` + `source/dispatch`)
 and gets an agent-note comment naming the task id.
+
+With `issue_number` set, no issue is created: the task attaches to
+that existing issue in `repo` — the canonical dedupe key is derived
+from it, and after the enqueue the issue gets the same agent-note
+comment naming the task id plus the `queue/queued` and
+`source/dispatch` labels. The response is `201 {task_id,
+issue_number, issue_url, queue}`, where `issue_url` is
+`https://github.com/<repo>/issues/<issue_number>`. `issue_number`
+takes precedence over `issue` when both are sent. For dezren39/nix,
+where the GitHub App is not installed, the attach is skipped with a
+`warnings` entry; the task is still enqueued and `issue_number` is
+still returned.
 
 ### Why assignment is a direct PATCH
 
@@ -113,15 +127,228 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
 - **GitHub Actions OIDC** (preferred): a JWT from
   `token.actions.githubusercontent.com`, RS256-verified against GitHub's
   JWKS (cached), `aud` = `pm-dispatch` (env `DISPATCH_OIDC_AUDIENCE`).
-  The token's `repository` claim must be in the allowlist **and equal
-  the request body's `repo`** — a workflow can only dispatch for its own
-  repo. See `examples/dispatch-workflow.yml`.
+  The token's `repository` claim must be in the allowlist. **Grants
+  mesh:** every allowlisted repo may target every allowlisted repo —
+  the claim need not equal the request body's `repo`. Repos outside
+  the allowlist can neither call nor be targeted. Bearer callers are
+  bound only by the allowlist on the target.
+  See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a
   repo stores as a GitHub Actions secret.
 
 The caller identity (`{type:"bearer"}` or `{type:"oidc", repository,
 actor, workflow_ref}`) is recorded in the task payload.
+
+## GitHub Actions (reusable)
+
+Three composite actions in this repo wrap dispatch so call sites do
+not hand-roll the OIDC + curl plumbing. Two are low-level primitives
+that wrap the dispatch endpoints directly; the third is the
+task-level entry point built on top of them:
+
+- `.github/actions/pm-dispatch-start` ("the starter") — POSTs to
+  `/v1/sessions`; outputs `task_id`, `session_id`, `issue_number`
+  and `issue_url`.
+- `.github/actions/pm-dispatch-queue` ("the queuer") — POSTs to
+  `/v1/tasks`, including the `issue` / `issue_number` inputs;
+  outputs `task_id`, `issue_number` and `issue_url`.
+- `.github/actions/pm-dispatch-task` ("the task action") — dispatches
+  a named, recurring task (`bolt`, `palette`, `suggestions`,
+  `ci-fix`, …) through the starter/queuer as `uses:` steps, using the
+  prompt library bundled with the action. It contains no OIDC or HTTP
+  plumbing of its own. Outputs `task_id`, `session_id`,
+  `issue_number` and `issue_url`, whichever apply to the path taken.
+
+Usage, pinned to `@main` so fleet call sites pick up central updates:
+
+```yaml
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        with:
+          title: "fix(widget): flaky test"
+          prompt: "Fix the flaky widget test"
+      - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: "investigate the red build"
+          prompt: "…"
+          issue_number: "123" # optional: attach instead of creating
+```
+
+The calling job MUST grant `permissions: id-token: write`; without
+it the OIDC token-request environment is absent and the actions fail
+with a clear error. `repo` defaults to the caller's repository, and
+under the grants mesh any allowlisted repo may target any
+allowlisted repo. See `examples/dispatch-workflow.yml` for a
+complete workflow.
+
+### Prompt sources (the primitives)
+
+Both primitives take the prompt from one of three inputs. `prompt`
+is not required at the YAML level (a composite action cannot express
+one-of); the action's step enforces that one source yields text.
+The sources are resolved in this order:
+
+1. `prompt-file` — a path to a file containing the prompt, relative
+   to the caller's workspace. The action reads it at runtime, so the
+   calling job must check out its repo first (e.g.
+   `actions/checkout`). A missing or empty file fails the step. This
+   is the form scheduled workflows use to keep prompts in repo files
+   instead of inline YAML strings.
+2. `prompt-url` — an https URL the prompt is fetched from at
+   runtime (`curl -fsS`). A fetch error or an empty body fails the
+   step.
+3. `prompt` — the inline prompt text.
+
+A selected source that is missing, empty or unfetchable fails
+loudly rather than falling through to a lower-priority source, and
+if none of the three yields non-empty text the step fails with a
+clear error. For example, with a prompt kept in the calling repo:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+  - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+    with:
+      title: "nightly triage"
+      prompt-file: "prompts/nightly-triage.md"
+```
+
+The primitives keep these overrides unchanged. The task action
+below uses the same three overrides and adds its prompt library as
+a fourth, final source.
+
+### pm-dispatch-task — the task-level entry point
+
+`.github/actions/pm-dispatch-task` is the entry point callers
+should normally use. A call names a task and a target repo, and the
+action supplies the prompt from its bundled library:
+
+```yaml
+jobs:
+  bolt:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: bolt
+          repo: developing-today/code
+```
+
+Inputs: `task` (required), `repo` (default: the caller's
+repository), `title`, `model`, `priority`, the prompt overrides
+`prompt` / `prompt-file` / `prompt-url`, the ci-fix context inputs
+below, and `default-branch` (default: the caller's repository's
+default branch). `task` accepts ANY string: the name selects the
+library prompt, so a future library entry works with no change to
+the action. For non-ci-fix tasks an empty `title` defaults to
+`Scheduled <Task> — <repo>`, and the task is dispatched through the
+starter with `wait: "true"`.
+
+#### The prompt library
+
+The library lives in `.github/actions/pm-dispatch-task/prompts/`,
+one Markdown file per task:
+
+- `bolt.md` — one small, measurable performance improvement, with
+  before/after evidence.
+- `palette.md` — one micro-UX / accessibility improvement.
+- `suggestions.md` — a verified code-review pass (Cleanup /
+  Performance / Security / Code Health / Testing) that files at
+  most 5 issues with file/line evidence.
+- `ci-fix.md` — the ci-fix prompt template (see "ci-fix mode"
+  below); it carries `{{workflow}}`, `{{run_id}}`, `{{run_url}}`,
+  `{{branch}}`, `{{sha}}` and `{{pr}}` placeholders that the action
+  substitutes from the ci-fix context inputs before dispatching.
+
+Prompt resolution in the task action follows the primitives' order
+and adds the library as the final fallback:
+
+1. `prompt-file` (relative to the caller's workspace),
+2. `prompt-url` (`curl -fsS`),
+3. `prompt` (inline),
+4. the library file `prompts/<task>.md`.
+
+The first non-empty source wins. If none yields text — an unknown
+task with no override — the step fails with
+`no library prompt for task '<task>'`.
+
+To add a common task: drop a `prompts/<task>.md` file into the
+library in this repo, and add one step/call for it in the caller.
+No change to the action itself is needed.
+
+#### ci-fix mode (`task: ci-fix`)
+
+`task: ci-fix` replaces the old standalone `pm-dispatch-ci-fix`
+action (removed; no caller ever used it). Give the task action the
+failed run's context — `workflow`, `run-id`, `run-url`, `branch`,
+`sha`, and optionally `pr` — and it:
+
+1. Resolves the prompt (normally the `ci-fix.md` library template)
+   and substitutes the run-context placeholders.
+2. Dedupes on the conventional tracking-issue title
+   `ci-fix: <workflow> failing on <branch>`: it searches the target
+   repo's open issues for that exact title.
+3. Dispatches by case, with priority `high` when the failed branch
+   is the repo's default branch and `normal` otherwise (unless the
+   caller passes an explicit `priority`):
+   - an open issue with the conventional title already exists — the
+     queuer attaches a new `ci_investigation` task to that issue
+     (`issue_number`), so repeat failures of the same workflow on
+     the same branch do not pile up duplicate issues;
+   - no such issue and the failed branch is the default branch —
+     the starter runs with `wait: "true"`, creating the tracking
+     issue (titled with the conventional title) and launching a
+     session immediately;
+   - no such issue and the failed branch is any other branch — the
+     queuer runs with `issue: "true"`, queueing a
+     `ci_investigation` task and creating the tracking issue.
+
+```yaml
+jobs:
+  ci-fix:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      issues: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: ci-fix
+          workflow: ${{ github.event.workflow_run.name }}
+          run-id: ${{ github.event.workflow_run.id }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          branch: ${{ github.event.workflow_run.head_branch }}
+          sha: ${{ github.event.workflow_run.head_sha }}
+```
+
+On top of the starter/queuer requirement (`permissions: id-token:
+write`), a ci-fix calling job MUST also provide `GH_TOKEN` in the
+job environment (as above) with issues read permission in the
+target repo; the dedupe search fails loudly without it. The step
+summary records the task, the path taken, and the dispatched task /
+session / issue ids.
+
+#### Design note
+
+Every call carries `repo` and `task` explicitly, and the prompt
+library is central (it lives with the action in this repo, not in
+the callers). Because of that, repo- or time-based filtering — for
+example "only run `suggestions` on repos X and Y", or "skip `bolt`
+overnight" — can later be added inside the task action without
+touching any caller.
 
 ## Configuration (env)
 
@@ -132,7 +359,7 @@ actor, workflow_ref}`) is recorded in the task payload.
 | `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                              |
 | `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                         |
 | `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                       |
-| `DISPATCH_REPO_ALLOWLIST`                         | the four fleet repos                        |                                                                       |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                       |
 | `SUPABASE_URL`                                    | `https://nltgxorqwxhgfzseiirt.supabase.co`  |                                                                       |
 | `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | from `~/secrets/dispatch.env` (Bitwarden `supabase.service-role-key`) |
 | `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                |
@@ -140,8 +367,9 @@ actor, workflow_ref}`) is recorded in the task payload.
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`            |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on code,
-opencode, openchamber — **not** dezren39/nix, where issue creation is
-skipped with a warning). If the app route is unusable, the laptop's
+opencode, openchamber and dezren39/nix — **not** developing-today/zettel
+or dezren39/dezren39, where issue creation is skipped with a warning).
+If the app route is unusable, the laptop's
 authenticated `gh` CLI is the fallback; if both fail, the request
 proceeds without an issue and says so in `warnings` (for `/v1/tasks`
 with `issue: true`, same behavior).

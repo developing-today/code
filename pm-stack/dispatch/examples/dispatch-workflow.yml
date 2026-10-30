@@ -1,16 +1,32 @@
 # EXAMPLE — not installed in any live repo. Copy into a fleet repo's
-# .github/workflows/ and adjust the dispatch URL to the laptop's tailnet
-# address (or the dispatch.security.cab hostname once the pm-stack
-# Cloudflare tunnel carries it).
+# .github/workflows/ and adjust as needed.
 #
-# Two auth styles are shown:
-#  A) GitHub Actions OIDC (preferred): the workflow mints a short-lived
-#     token with audience "pm-dispatch"; pm-dispatch verifies it against
-#     GitHub's JWKS and requires the token's repository claim to equal
-#     the repo in the request body — a workflow can only dispatch for
-#     its own repo.
-#  B) Static bearer secret: the DISPATCH_TOKEN repo secret holds the
-#     DISPATCH_API_TOKEN from the laptop's ~/secrets/dispatch.env.
+# Canonical form: the reusable composite actions in developing-today/code
+# wrap the pm-dispatch plumbing (OIDC fetch with audience "pm-dispatch",
+# POST, outputs). Pin them @main so call sites pick up central updates:
+#
+#   - pm-dispatch-start ("the starter"): POST /v1/sessions — launch a
+#     tracked OpenCode session now.
+#   - pm-dispatch-queue ("the queuer"): POST /v1/tasks — enqueue only,
+#     optionally creating a tracking issue or attaching to an existing
+#     one via issue_number.
+#
+# The prompt for either action can come from three inputs, resolved
+# in this order: prompt-file (a path in the caller's checked-out
+# workspace), then prompt-url (an https URL fetched at runtime),
+# then the inline prompt input. The dispatch-queue job below
+# demonstrates prompt-file, which is how scheduled workflows keep
+# prompts in repo files instead of inline YAML strings.
+#
+# OIDC requires the calling job to grant `permissions: id-token: write`.
+# Under the grants mesh, any allowlisted repo may target any allowlisted
+# repo (the actions' `repo` input defaults to the caller's repo).
+#
+# Note: the raw-curl form still works — mint a token from
+# $ACTIONS_ID_TOKEN_REQUEST_URL with `&audience=pm-dispatch` and POST to
+# https://dispatch.security.cab/v1/sessions or /v1/tasks with it as the
+# bearer token; a static DISPATCH_TOKEN secret also still works for the
+# raw form.
 
 name: dispatch-example
 
@@ -18,43 +34,58 @@ on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Work for the OpenCode session"
+        description: "Work for the dispatch"
         required: true
         type: string
 
 jobs:
-  dispatch-oidc:
+  dispatch-session:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # required to mint the OIDC token
+      id-token: write
       contents: read
     steps:
-      - name: Launch a tracked OpenCode session (OIDC)
-        env:
-          DISPATCH_URL: http://100.99.113.103:4879
-          PROMPT: ${{ inputs.prompt }}
+      - name: Launch a tracked OpenCode session
+        id: start
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        with:
+          title: "dispatch example session"
+          prompt: ${{ inputs.prompt }}
+          priority: "high"
+          wait: "true"
+      - name: Show the dispatch result
         run: |
-          set -euo pipefail
-          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pm-dispatch" | jq -r .value)
-          curl -s -X POST "$DISPATCH_URL/v1/sessions" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg repo "$GITHUB_REPOSITORY" --arg prompt "$PROMPT" \
-                  '{repo: $repo, prompt: $prompt, priority: "high"}')"
+          echo "task:    ${{ steps.start.outputs.task_id }}"
+          echo "session: ${{ steps.start.outputs.session_id }}"
+          echo "issue:   ${{ steps.start.outputs.issue_url }}"
 
-  dispatch-secret:
+  dispatch-queue:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: Enqueue work only (bearer secret)
-        env:
-          DISPATCH_URL: http://100.99.113.103:4879
-          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
-          PROMPT: ${{ inputs.prompt }}
+      # prompt-file is read from the caller's workspace, so check out first.
+      - uses: actions/checkout@v4
+      - name: Enqueue work only
+        id: queue
+        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: "queued from Actions"
+          # The prompt lives in a file committed in the caller's repo
+          # (here: prompts/queued-triage.md in the calling repo), instead
+          # of an inline YAML string. prompt-file takes precedence over
+          # prompt-url and over the inline prompt input; a missing or
+          # empty file fails the step.
+          prompt-file: "prompts/queued-triage.md"
+          # Alternatives, in resolution order after prompt-file:
+          # prompt-url: "https://example.com/prompts/queued-triage.md"
+          # prompt: "inline work text"
+          kind: "triage"
+          issue: "true"
+          # issue_number: "123"  # optional: attach to this existing issue
+          # instead of creating one (takes precedence over issue)
+      - name: Show the dispatch result
         run: |
-          set -euo pipefail
-          curl -s -X POST "$DISPATCH_URL/v1/tasks" \
-            -H "Authorization: Bearer $DISPATCH_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -n --arg repo "$GITHUB_REPOSITORY" --arg prompt "$PROMPT" \
-                  '{repo: $repo, title: "queued from Actions", prompt: $prompt, kind: "triage", issue: true}')"
+          echo "task:  ${{ steps.queue.outputs.task_id }}"
+          echo "issue: ${{ steps.queue.outputs.issue_url }}"

@@ -4,8 +4,8 @@
 //  1. GitHub Actions OIDC — a JWT issued by
 //     https://token.actions.githubusercontent.com (RS256, verified against
 //     its JWKS), audience = cfg.oidcAudience. The token's `repository`
-//     claim must be in the allowlist AND equal the request body's repo:
-//     a workflow can only dispatch for its own repo.
+//     claim must be in the allowlist. Grants mesh: any allowlisted
+//     repo may dispatch for any allowlisted repo (see assertCallerRepo).
 //  2. A static bearer secret (DISPATCH_API_TOKEN), compared in constant
 //     time — the shape a repo stores as a GitHub Actions secret.
 //
@@ -186,17 +186,25 @@ export async function authenticate(req: Request, deps: AuthDeps): Promise<Caller
 }
 
 /**
- * Repo authorization: the target repo must be allowlisted for every caller,
- * and an OIDC caller's repository claim must equal it exactly — a workflow
- * can only dispatch for its own repo.
+ * Repo authorization — the grants mesh.
+ *
+ * Grants: every allowlisted repo may target every allowlisted repo.
+ * Repos outside the allowlist can neither call nor be targeted.
+ *
+ * The target repo must be in the allowlist for every caller. An OIDC
+ * caller's repository claim must also be in the allowlist
+ * (verifyOidcToken already enforces this; it is re-checked here so the
+ * grant rule is complete at this layer), but it need NOT equal the
+ * target: any allowlisted caller may dispatch for any allowlisted
+ * target. Bearer callers are bound only by the allowlist on the target.
  */
 export function assertCallerRepo(caller: CallerIdentity, repo: string, allowlist: string[]): void {
   if (!allowlist.includes(repo)) {
     throw new AuthError(`repo ${repo} is not in the dispatch allowlist`);
   }
-  if (caller.type === "oidc" && caller.repository !== repo) {
+  if (caller.type === "oidc" && !allowlist.includes(caller.repository)) {
     throw new AuthError(
-      `oidc: token repository ${caller.repository} does not match request repo ${repo}`,
+      `oidc: token repository ${caller.repository} is not in the dispatch allowlist`,
     );
   }
 }
