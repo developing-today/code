@@ -1,4 +1,4 @@
-//! Range reconciliation: the set-difference protocol that `/id-sync/1` runs.
+//! Range reconciliation: the set-difference protocol that `/id-range-sync/1` runs.
 //!
 //! The set is the store's sync set (see [`super::sync`]): one key per stored event and per
 //! fork proof header, `author || seq || id`, sorted. A range is `[lower, upper)` over those
@@ -23,7 +23,7 @@
 //! the prefix), a mode byte (0 skip, 1 fingerprint, 2 IDs, 3 IDs with reply), and the payload.
 //!
 //! Changing K or T needs no version bump. The mode bytes, the fingerprint, the key layout, the
-//! framing, and the frame cap are wire-visible, and would need `/id-sync/2`.
+//! framing, and the frame cap are wire-visible, and would need `/id-range-sync/2`.
 
 use std::collections::HashSet;
 

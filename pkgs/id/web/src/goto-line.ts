@@ -35,10 +35,23 @@ function getLineStarts(view: EditorView): number[] {
     if (!node.isTextblock) return true; // descend into block containers (lists, quotes, cells…)
     const contentStart = pos + 1;
     starts.push(contentStart);
-    const text = node.textContent;
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === "\n") starts.push(contentStart + i + 1);
-    }
+
+    let currentPos = contentStart;
+    node.forEach((child) => {
+      if (child.type.name === "hard_break") {
+        starts.push(currentPos + child.nodeSize);
+      } else if (child.isText) {
+        const text = child.text;
+        if (text) {
+          for (let i = 0; i < text.length; i++) {
+            if (text[i] === "\n") {
+              starts.push(currentPos + i + 1);
+            }
+          }
+        }
+      }
+      currentPos += child.nodeSize;
+    });
     return false; // inline content cannot contain another textblock
   });
   return starts;
@@ -59,6 +72,8 @@ function getLineStartPos(view: EditorView, targetLine: number): number | null {
 function createDialog(container: HTMLElement): HTMLElement {
   const dialog = document.createElement("div");
   dialog.className = "goto-line-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-label", "Go to line");
   dialog.innerHTML = `
     <label class="goto-line-label" for="goto-line-input">Go to Line:</label>
     <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" />
@@ -97,14 +112,12 @@ function openGotoLine(view: EditorView): void {
           // the user can correct it; the cursor does not move.
           const raw = (dialogInput?.value ?? "").trim();
           const line = Number(raw);
-          const lineCount = activeView ? getLineCount(activeView) : 0;
+          // ⚡ Bolt optimization: compute line starts once instead of traversing doc twice
+          const lineStarts = activeView ? getLineStarts(activeView) : [];
+          const lineCount = Math.max(1, lineStarts.length);
           const pos =
-            activeView &&
-            raw !== "" &&
-            Number.isInteger(line) &&
-            line >= 1 &&
-            line <= lineCount
-              ? getLineStartPos(activeView, line)
+            activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
+              ? (lineStarts[line - 1] ?? null)
               : null;
           if (pos === null || !activeView) {
             dialogInput?.select();

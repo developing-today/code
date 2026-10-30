@@ -132,20 +132,9 @@ rec {
       url = "github:edolstra/flake-compat"; # ?shallow=1
       flake = false;
     };
-    gitignore = {
-      # TODO: use this?
-      url = "github:hercules-ci/gitignore.nix"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
-    };
     waybar = {
       # TODO: use this?
       url = "github:Alexays/Waybar"; # ?shallow=1";
-    };
-    neovim-src = {
-      url = "github:neovim/neovim"; # ?shallow=1";
-      flake = false;
     };
     flake-parts = {
       # TODO: use this?
@@ -167,14 +156,12 @@ rec {
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-parts.follows = "flake-parts";
-      inputs.neovim-src.follows = "neovim-src";
     };
     git-hooks = {
       url = "github:cachix/git-hooks.nix"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.gitignore.follows = "gitignore";
       inputs.flake-compat.follows = "flake-compat";
     };
     zig-overlay = {
@@ -214,15 +201,7 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-utils.follows = "flake-utils";
-      inputs.devshell.follows = "devshell";
       inputs.pre-commit-hooks.follows = "pre-commit-hooks";
-    };
-    devshell = {
-      # TODO: use this?
-      url = "github:numtide/devshell"; # ?shallow=1";
-      # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
-      #inputs.nixpkgs.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -231,7 +210,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.gitignore.follows = "gitignore";
     };
     # hyprlang = {
     #   url = "github:hyprwm/hyprlang";

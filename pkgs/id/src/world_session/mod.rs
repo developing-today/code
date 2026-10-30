@@ -216,6 +216,41 @@ impl WorldService {
         self.world.set_caps_ceiling(ceiling).await
     }
 
+    /// Pend one schedule for this world, admin only, journaled before the
+    /// reply. Replaces any pending schedule with the same id. Returns the
+    /// full pending map (id to fire time, unix ms).
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for an invalid or unstorable schedule.
+    pub async fn set_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+        at_ms: u64,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_schedule_at(id, at_ms).await
+    }
+
+    /// Cancel a pending schedule for this world, admin only, journaled
+    /// before the reply. A no-op when the id is not pending. Returns the
+    /// full pending map.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for a malformed id or storage failure.
+    pub async fn cancel_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_cancel_schedule(id).await
+    }
+
     /// Persist a per-world resource profile. The running program keeps its
     /// existing limits; the request applies on the next install or restart.
     pub async fn set_execution_profile(
@@ -644,6 +679,42 @@ impl WorldService {
             return Err(InstallError::Unavailable);
         }
         Ok(bytes.to_vec())
+    }
+
+    /// Read a stored module's bytes by hash, active or not: from the blob
+    /// store Wasm installs pin into, or from the module directory native
+    /// installs are saved to. The caller must already have
+    /// authenticated as an admin. A hash the host never installed is
+    /// unavailable: the bytes of a module it does not hold cannot be
+    /// conjured, and the error says so by kind.
+    pub async fn stored_module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
+        let hash: iroh_blobs::Hash = expected_hash
+            .parse()
+            .map_err(|_| InstallError::InvalidUpload)?;
+        // Wasm installs are pinned in the blob store; native installs are
+        // saved only in the module directory (they are never offered for
+        // peer download), so a stored native module is read from there.
+        if let Some(blobs) = self.blobs.as_ref()
+            && let Ok(bytes) = blobs.blobs().get_bytes(hash).await
+            && bytes.len() <= MAX_WORLD_MODULE_BYTES
+            && module_hash(&bytes) == expected_hash
+        {
+            return Ok(bytes.to_vec());
+        }
+        if let Some(modules) = self.module_dir.clone() {
+            let requested = expected_hash.to_owned();
+            let loaded = tokio::task::spawn_blocking(move || modules.load(&requested))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if loaded.len() <= MAX_WORLD_MODULE_BYTES {
+                return Ok(loaded);
+            }
+        }
+        if self.blobs.is_none() && self.module_dir.is_none() {
+            return Err(InstallError::Disabled);
+        }
+        Err(InstallError::Unavailable)
     }
 
     /// Hash of the currently active module, if the world runs one.
@@ -1158,6 +1229,84 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => match service.set_schedule(Some(&admin_token), id, at_ms).await {
+            Ok(schedules) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::Schedules { schedules },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+        }
+        ClientFrame::DownloadModuleAdmin {
+            admin_token,
+            module_hash,
+        } => {
+            if let Err(message) =
+                download_module_admin_session(service, io, &admin_token, &module_hash).await
+            {
+                let _ = send_error(service.frame_meter(), io, message).await;
+            }
+        }
+        ClientFrame::WorldState {
+            admin_token,
+            capability,
+        } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            let cap_ok = if admin_ok {
+                true
+            } else if let Some(cap) = capability.as_deref() {
+                let token = JoinCapability::from_wire(cap.to_string());
+                service.world().participant_id(token).await.is_ok()
+            } else {
+                false
+            };
+            if !admin_ok && !cap_ok {
+                let _ = send_error(service.frame_meter(), io, "access denied").await;
+            } else {
+                match service.world().manifest_state().await {
+                    Ok((seed, schedules)) => {
+                        let _ = send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::WorldState {
+                                seed: admin_ok.then_some(seed),
+                                schedules,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                    }
+                }
+            }
+        }
         ClientFrame::ExecutionProfileInfo {
             admin_token,
             capability,
@@ -1509,11 +1658,42 @@ async fn download_module_session<I: SessionIo>(
         .module_bytes(&active_hash)
         .await
         .map_err(|_| "module bytes are unavailable")?;
+    send_module_bytes(service, io, active_hash, &bytes).await
+}
+
+/// The admin module download (#807): any module the host holds in its blob
+/// store, by hash, active or not - so `id world apply` can install the
+/// module a manifest names when another module is currently active.
+async fn download_module_admin_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+    requested_hash: &str,
+) -> Result<(), &'static str> {
+    if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
+        || service.authorize_admin(Some(admin_token)).is_err()
+    {
+        return Err("admin denied");
+    }
+    let bytes = service
+        .stored_module_bytes(requested_hash)
+        .await
+        .map_err(|_| "the host does not hold a module with that hash")?;
+    send_module_bytes(service, io, requested_hash.to_owned(), &bytes).await
+}
+
+/// Stream one module's bytes as a begin/chunk/end transfer naming `module_hash`.
+async fn send_module_bytes<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    module_hash: String,
+    bytes: &[u8],
+) -> Result<(), &'static str> {
     if !send_json(
         service.frame_meter(),
         io,
         &ServerFrame::ModuleBegin {
-            module_hash: active_hash.clone(),
+            module_hash: module_hash.clone(),
             total_bytes: bytes.len(),
         },
     )
@@ -1538,9 +1718,7 @@ async fn download_module_session<I: SessionIo>(
     if !send_json(
         service.frame_meter(),
         io,
-        &ServerFrame::ModuleEnd {
-            module_hash: active_hash,
-        },
+        &ServerFrame::ModuleEnd { module_hash },
     )
     .await
     {
@@ -2188,6 +2366,65 @@ async fn handle_client_frame<I: SessionIo>(
             }
             return true;
         }
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => {
+            match service.set_schedule(Some(&admin_token), id, at_ms).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::WorldState { admin_token, .. } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            // The session's own capability authorizes the read, like `info`;
+            // only a valid admin token in the frame unlocks the seed (#240).
+            match world.manifest_state().await {
+                Ok((seed, schedules)) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::WorldState {
+                            seed: admin_ok.then_some(seed),
+                            schedules,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+        }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::ListWorlds { .. }
@@ -2198,6 +2435,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::SetFileScope { .. }
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
+        | ClientFrame::DownloadModuleAdmin { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {

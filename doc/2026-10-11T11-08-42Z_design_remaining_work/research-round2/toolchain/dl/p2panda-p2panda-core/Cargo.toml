@@ -39,7 +39,7 @@ cbor-core = { version = "0.10.1", features = ["serde"] }
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 hex = { workspace = true, features = ["serde"] }
 mock_instant = { workspace = true, optional = true }
-rand = "0.8.5"
+rand = "0.8.6"
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 thiserror = { workspace = true }

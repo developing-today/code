@@ -56,6 +56,13 @@ this exporter defines it; #1151 should adopt it as-is:
 }
 ```
 
+A window with no usage in it has not started yet and has no reset:
+the console returns its `*_resets_at` as null or omits the field, and
+the exporter emits that window with `"resetAt": null` instead of
+failing the whole export (#1301, the 2026-10-29 regression). A missing
+reset on a window WITH recorded usage — and any malformed reset
+value — still fails closed as `unparseable`.
+
 ## Failure states (fail-closed)
 
 A failed tick writes a failure document to `latest.json` (and

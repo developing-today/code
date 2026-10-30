@@ -584,6 +584,11 @@ impl ServeWorlds {
             namespace = %records.namespace(),
             "world: records document ready"
         );
+        info!(
+            world = name,
+            ephemeral = self.ephemeral,
+            "serve startup: records ready, building world service (#190 breadcrumb)"
+        );
         let service = if self.ephemeral {
             make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
         } else {
@@ -600,6 +605,10 @@ impl ServeWorlds {
             }
             service.with_records_store(records)
         };
+        info!(
+            world = name,
+            "serve startup: world service built (#190 breadcrumb)"
+        );
 
         let service = if self.native {
             service.with_native_enabled()
@@ -615,6 +624,10 @@ impl ServeWorlds {
         {
             self.install_default_module(&service, path).await?;
         }
+        info!(
+            world = name,
+            "serve startup: world open complete (#190 breadcrumb)"
+        );
         Ok(service)
     }
 
@@ -831,6 +844,28 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(crate::access::blobs_events(access.clone())),
     );
 
+    // The node's own event store, shared between the web layer and /id-range-sync/1
+    // range sync (#792). Serve opens it once, on the same directory the web
+    // state would open (the `events` sibling of the identity database), and
+    // hands the one instance to both: the store admits a single opener, and a
+    // second store over the same directory would diverge from the one the web
+    // layer publishes ProseMirror save revisions into. Only opened when the
+    // web UI is on — that is the store whose revisions replicate, and opening
+    // it unconditionally would change the local CLI's access to the directory
+    // while serve runs.
+    #[cfg(feature = "web")]
+    let event_events: Option<Arc<tokio::sync::Mutex<crate::local_events::LocalEvents>>> = if web {
+        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
+        let events_dir = identity_db_path.with_file_name(crate::local_events::DIR_NAME);
+        let events = crate::local_events::LocalEvents::open(
+            &events_dir,
+            p2panda_core::SigningKey::from_bytes(&key.to_bytes()),
+        )?;
+        Some(Arc::new(tokio::sync::Mutex::new(events)))
+    } else {
+        None
+    };
+
     // Every world lives in one hub, shared by the Iroh protocol and the web
     // bridge. The default world opens now so a bad journal fails startup.
     #[cfg(feature = "world")]
@@ -874,7 +909,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
             },
         );
+        info!("serve startup: opening default world via hub (#190 breadcrumb)");
         let default_service = hub.open_default().await?;
+        info!("serve startup: default world open, building router (#190 breadcrumb)");
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
                 if !server_caps.contains(cap) {
@@ -920,6 +957,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .accept(iroh_docs::net::ALPN, docs.clone());
+    #[cfg(feature = "web")]
+    let router_builder = match &event_events {
+        Some(events) => router_builder.accept(
+            crate::event_store::sync::ALPN,
+            crate::event_sync::EventSyncProtocol::new(Arc::clone(events)),
+        ),
+        None => router_builder,
+    };
     #[cfg(feature = "world")]
     let router_builder = match &world_hub {
         Some(hub) => router_builder
@@ -944,6 +989,44 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
     let router = router_builder.spawn();
+    info!("serve startup: router spawned (#190 breadcrumb)");
+
+    // Offer a sync session to every discovered peer, on an interval: a save on
+    // either node is discoverable on the other after the next session (#792).
+    // Peers that do not serve /id-range-sync/1 fail the dial, which is logged at debug
+    // and otherwise ignored — accepting sessions above is what serves the rest.
+    #[cfg(feature = "web")]
+    let _event_sync_handle = event_events.clone().map(|events| {
+        status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        let endpoint = router.endpoint().clone();
+        let discovery = peer_discovery.clone();
+        let gate = crate::event_sync::open_gate();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(crate::event_sync::SYNC_INTERVAL).await;
+                for peer in discovery.peers() {
+                    let peer_id = peer.announcement.node_id;
+                    if peer_id == endpoint.id() {
+                        continue;
+                    }
+                    match crate::event_sync::sync_with_peer(&endpoint, peer_id, &events, &gate)
+                        .await
+                    {
+                        Ok(outcome) if outcome.sent + outcome.received > 0 => {
+                            info!(
+                                "event sync: {peer_id}: sent {} received {}",
+                                outcome.sent, outcome.received
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            debug!("event sync: session with {peer_id} failed: {error:#}");
+                        }
+                    }
+                }
+            }
+        })
+    });
 
     if !no_gossip {
         // Resolve effective config from defaults + CLI flags
@@ -1032,9 +1115,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let mut web_port: Option<u16> = None;
     #[cfg(feature = "web")]
     let web_listener = if web {
+        info!("serve startup: binding web listener (#190 breadcrumb)");
         let addr = SocketAddr::new(bind, port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_port = listener.local_addr()?.port();
+        info!(
+            port = actual_port,
+            "serve startup: web listener bound (#190 breadcrumb)"
+        );
         web_port = Some(actual_port);
         Some(listener)
     } else {
@@ -1069,7 +1157,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
+    info!("serve startup: writing serve lock (#190 breadcrumb)");
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
+    info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
     if ephemeral {
@@ -1112,18 +1202,37 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let _web_handle = if let Some(listener) = web_listener {
         let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
-        let web_router = crate::web::web_router(
-            store_handle.clone(),
-            Some(peer_discovery.clone()),
-            node_id.to_string(),
-            Arc::clone(&tag_store),
-            key.to_bytes(),
-            identity_db_path,
-            crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-            world_hub.clone(),
-            web_cookie_secure,
-        )
-        .await?;
+        let web_router = match &event_events {
+            Some(events) => {
+                crate::web::web_router_with_local_events(
+                    store_handle.clone(),
+                    Some(peer_discovery.clone()),
+                    node_id.to_string(),
+                    Arc::clone(&tag_store),
+                    key.to_bytes(),
+                    identity_db_path,
+                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+                    world_hub.clone(),
+                    web_cookie_secure,
+                    Arc::clone(events),
+                )
+                .await?
+            }
+            None => {
+                crate::web::web_router(
+                    store_handle.clone(),
+                    Some(peer_discovery.clone()),
+                    node_id.to_string(),
+                    Arc::clone(&tag_store),
+                    key.to_bytes(),
+                    identity_db_path,
+                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+                    world_hub.clone(),
+                    web_cookie_secure,
+                )
+                .await?
+            }
+        };
         let actual_port = web_port.unwrap_or(port);
         let shown_host = if bind.is_unspecified() || bind.is_loopback() {
             "localhost".to_owned()
@@ -1199,6 +1308,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
+    #[cfg(feature = "web")]
+    if let Some(sync_task) = _event_sync_handle {
+        sync_task.abort();
+        let _ = sync_task.await;
+    }
     #[cfg(feature = "web")]
     if let Some(web_task) = _web_handle {
         web_task.abort();

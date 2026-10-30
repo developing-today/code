@@ -5,9 +5,11 @@
 //! [`EventStore::ingest`], the path sync uses. The store checks the signature and applies the event.
 //! So these events are signed, unlike the group log's (P6.7a), which trusts the caller's name.
 //!
-//! The store stands in for sync. The CLI opens one store directory, named by `--event-store`, and
-//! nodes on one machine that share the directory see each other's events, as they share the group
-//! log. Nothing here moves events between machines.
+//! The CLI opens one store directory, named by `--event-store`, and nodes on one machine that
+//! share the directory see each other's events, as they share the group log. Between machines,
+//! `id serve` moves the events: it shares this store with the `/id-range-sync/1` range-sync sessions
+//! in [`crate::event_sync`], so a revision one node signs into its store is in the sync set the
+//! next session carries to a peer (#792).
 //!
 //! The reads walk every applied event, which is fine for the CLI and is not an index. The document
 //! and tag rules are the ones in [`crate::documents`] and [`crate::tag_claims`].
@@ -155,6 +157,34 @@ impl LocalEvents {
         Ok(Self { store, key })
     }
 
+    /// Runs one range-sync session over `conn` against this node's store: the session
+    /// [`crate::event_store::sync::sync_over`] drives, with this store as its sync set.
+    /// `initiator` is the side that dialed. Every event that arrives is decided by the
+    /// store's own ingest, so a tampered or unsigned event is refused, never applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer breaks the protocol, the session passes `deadline`,
+    /// `gate` refuses the peer, or the store fails.
+    pub async fn sync_session(
+        &mut self,
+        conn: &iroh::endpoint::Connection,
+        initiator: bool,
+        deadline: std::time::Duration,
+        gate: &crate::pull_policy::PullGate,
+    ) -> Result<crate::event_store::sync::Outcome> {
+        crate::event_store::sync::sync_over(
+            &mut self.store,
+            conn,
+            initiator,
+            crate::event_store::range::Params::default(),
+            now_ms(),
+            deadline,
+            gate,
+        )
+        .await
+    }
+
     /// The account the node's events are signed as.
     #[must_use]
     pub fn author(&self) -> AuthorKey {
@@ -204,8 +234,16 @@ impl LocalEvents {
         self.record(SET_KIND, Some(op), None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. It returns how many it
-    /// cleared, and the clear's event ID. Nothing to clear is an error.
+    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
+    /// error.
+    ///
+    /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
+    /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
+    /// returns the claims. The returned count is the total cleared across all of those events,
+    /// and the returned ID is the final event's — the one whose recording completes the clear.
+    ///
+    /// The events are append-only: if recording one of them fails, the ones already recorded
+    /// stay, the error is returned, and calling this again clears what is left.
     ///
     /// A claim is removed only when it sits in the clear's causal past, so each sub-clear
     /// names the current head of every author whose claims it names as a required head of
@@ -218,7 +256,7 @@ impl LocalEvents {
     ///
     /// # Errors
     ///
-    /// Fails if no live claim matches, or the store cannot record the event.
+    /// Fails if no live claim matches, or the store cannot record an event.
     pub fn clear_tag(&mut self, subject: Hash, name: &str) -> Result<(usize, Hash)> {
         let claims: Vec<Claim> = self
             .store
@@ -248,14 +286,19 @@ impl LocalEvents {
         let mut group_authors = 0usize;
         for author in authors {
             let authored = by_author.remove(&author).unwrap_or_default();
-            if !group.is_empty()
-                && (group_authors == MAX_AFTER || group.len() + authored.len() > MAX_CLEAR_CLAIMS)
-            {
-                groups.push(std::mem::take(&mut group));
-                group_authors = 0;
+            // One author alone can hold more claims than a single clear may
+            // name (#1720), so pack each author's claims in cap-sized segments.
+            for segment in authored.chunks(MAX_CLEAR_CLAIMS) {
+                if !group.is_empty()
+                    && (group_authors == MAX_AFTER
+                        || group.len() + segment.len() > MAX_CLEAR_CLAIMS)
+                {
+                    groups.push(std::mem::take(&mut group));
+                    group_authors = 0;
+                }
+                group_authors += 1;
+                group.extend(segment.iter().cloned());
             }
-            group_authors += 1;
-            group.extend(authored);
         }
         if !group.is_empty() {
             groups.push(group);
@@ -668,5 +711,102 @@ mod tests {
         assert!(check_tag("topic", Some("plans")).is_ok());
         assert!(check_tag("", None).is_err());
         assert!(check_tag("e\u{301}", None).is_err());
+    }
+
+    fn open_events() -> (tempfile::TempDir, LocalEvents) {
+        let dir = tempfile::tempdir().unwrap();
+        let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
+        (dir, events)
+    }
+
+    fn publish_subject(events: &mut LocalEvents) -> Hash {
+        events.publish("text/plain", b"hello", &[]).unwrap().id
+    }
+
+    fn set_claims(events: &mut LocalEvents, subject: Hash, name: &str, count: usize) {
+        for i in 0..count {
+            events.set_tag(subject, name, Some(&i.to_string())).unwrap();
+        }
+    }
+
+    fn clear_chunks(events: &LocalEvents, subject: Hash) -> Vec<(Hash, usize)> {
+        events
+            .events_on(subject)
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Clear { id, claims, .. } => Some((id, claims.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_a_clear_over_the_claim_cap() {
+        // Regression for #1720: a name with more live claims than one tag.clear
+        // may name (MAX_CLEAR_CLAIMS) could never be cleared at all.
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let other_subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", MAX_CLEAR_CLAIMS + 1);
+        events.set_tag(subject, "keep", None).unwrap();
+        events.set_tag(other_subject, "topic", None).unwrap();
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, MAX_CLEAR_CLAIMS + 1);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![MAX_CLEAR_CLAIMS, 1]
+        );
+        // The returned ID is the final chunk's, the one that completes the clear.
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
+        // Other names, and the same name on other subjects, are untouched.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 1);
+        assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_600_claims_into_three_events() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 600);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 600);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![
+                MAX_CLEAR_CLAIMS,
+                MAX_CLEAR_CLAIMS,
+                600 - 2 * MAX_CLEAR_CLAIMS
+            ]
+        );
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(events.tags_on(subject).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_clear_tag_at_or_under_the_cap_records_one_event() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 3);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(clear_chunks(&events, subject), vec![(event, 3)]);
+        // Nothing left to clear is still an error.
+        assert!(events.clear_tag(subject, "topic").is_err());
     }
 }

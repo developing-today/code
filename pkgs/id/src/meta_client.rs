@@ -248,7 +248,10 @@ mod tests {
     fn over_cap_error_names_the_limit() {
         let err = capped_response_error(ReadToEndError::TooLong);
         let msg = format!("{err}");
-        assert!(msg.contains("response too large"), "{msg}");
-        assert!(msg.contains(&MAX_RESPONSE_BYTES.to_string()), "{msg}");
+        assert_eq!(
+            msg,
+            format!("response too large: exceeds the {MAX_RESPONSE_BYTES}-byte limit"),
+            "the message must be exactly the named limit, with no leftover placeholder text"
+        );
     }
 }

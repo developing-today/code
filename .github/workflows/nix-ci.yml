@@ -1,9 +1,20 @@
 name: nix ci
 
+# CI tier policy: see .github/ci-policy.md
 on:
   push:
     branches: [main]
   pull_request:
+  # Merge queue pilot (see .github/ci-policy.md): the queue validates
+  # the combined merge-group head, and this workflow's PR-tier job
+  # (basic: proxy port fallbacks) is main's required status check —
+  # it must run on merge groups too, or the queue can never see its
+  # required context and stalls.
+  merge_group:
+  schedule:
+    # Nightly backstop: the full flake check runs on main + nightly, not PRs.
+    - cron: "17 8 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,43 +32,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  treefmt:
-    name: treefmt check
+  # Basic tier: the proxy ports' fallback copies (bin/*.mjs script
+  # defaults and the {env:VAR:-port} defaults in
+  # .opencode/opencode.jsonc) must match the single definitions in
+  # home/common/default.nix, or a non-shell launch silently dials
+  # the wrong — or an empty — port (#434, #435). Pure bash/grep: no
+  # Nix needed, runs on every PR. This job used to also run the
+  # treefmt format check; formatting is no longer a merge gate —
+  # it is auto-fixed on main by .github/workflows/auto-format.yml
+  # (see .github/ci-policy.md).
+  proxy-port-fallbacks:
+    name: "basic: proxy port fallbacks"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      # The proxy ports' fallback copies (bin/*.mjs script defaults and
-      # the {env:VAR:-port} defaults in .opencode/opencode.jsonc) must
-      # match the single definitions in home/common/default.nix, or a
-      # non-shell launch silently dials the wrong — or an empty — port
-      # (#434, #435). Pure bash/grep: no Nix needed.
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
-      - name: Check formatting for changed files
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          set -euo pipefail
-          base_sha="$BASE_SHA"
-          if [[ "$base_sha" =~ ^0+$ ]]; then
-            base_sha="$(git rev-parse HEAD^)"
-          fi
-          changed_files_file="$(mktemp)"
-          trap 'rm -f "$changed_files_file"' EXIT
-          git diff --name-only --diff-filter=ACMR -z "$base_sha...$GITHUB_SHA" > "$changed_files_file"
-          mapfile -d '' changed_files < "$changed_files_file"
-          if ((${#changed_files[@]} == 0)); then
-            echo "No changed files to format-check."
-            exit 0
-          fi
-          nix run .#format-check -- "${changed_files[@]}"
 
   flake-check:
-    name: Nix flake evaluation
+    name: "full (main tier): Nix flake evaluation"
+    # Main tier only (Phase 2, #1781): PRs keep the basic proxy-port
+    # fallback check above; formatting is auto-fixed on main, never a gate.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

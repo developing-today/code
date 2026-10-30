@@ -24,6 +24,10 @@
 //! [[groups.members]]
 //! user = "bo"
 //! role = "write"                 # pull, read, write, manage, or admin
+//!
+//! [policy]                       # absent: the code defaults apply
+//! freshness_window_seconds = 300 # the server-level freshness window (N23)
+//! pull_policy = "open"           # who may pull a world's events: "open" or "members" (P6.5)
 //! ```
 //!
 //! [`ServerConfig::parse`] checks the whole file and translates every key to its ID, so a bad file
@@ -35,10 +39,13 @@ pub mod provision;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::Duration;
 
 use p2panda_core::Hash;
 
 use crate::groups::{Key, Projection, Role};
+use crate::pull_policy::PullPolicy;
+use crate::seitan::Freshness;
 
 /// Re-exported so `crate::server_config::Object` keeps working: the type now lives in
 /// [`crate::aliases`] so alias display builds without the `world` feature.
@@ -52,6 +59,7 @@ pub struct ServerConfig {
     users: Vec<UserSpec>,
     groups: Vec<GroupSpec>,
     create: CreateRule,
+    policy: PolicySpec,
     /// Every local key, for users and groups alike. Keys are unique within the config.
     names: BTreeMap<String, Object>,
     /// The primary alias of each object that has one.
@@ -80,6 +88,17 @@ pub struct GroupSpec {
     pub creator: Key,
     /// The other members, in the order the config lists them, with their roles.
     pub members: Vec<(Key, Role)>,
+}
+
+/// The server's serving policy: the operator-set knobs of the freshness window (N23) and the
+/// pull policy (P6.5). Both have code defaults, so a config that sets neither behaves exactly
+/// as before: a five-minute window and open pull.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PolicySpec {
+    /// The server-level freshness window. `None` keeps [`crate::seitan::DEFAULT_WINDOW`].
+    pub freshness_window: Option<Duration>,
+    /// Who may pull a world's events from this server.
+    pub pull_policy: PullPolicy,
 }
 
 /// Who may create a group. Anyone may by default. A config may list who may.
@@ -162,6 +181,30 @@ impl ServerConfig {
     #[must_use]
     pub const fn create_rule(&self) -> &CreateRule {
         &self.create
+    }
+
+    /// The server's serving policy, as the `[policy]` table set it (or the code defaults).
+    #[must_use]
+    pub const fn policy(&self) -> PolicySpec {
+        self.policy
+    }
+
+    /// The freshness settings this server applies: the configured window at the server
+    /// level, with the world and inviter levels unset, so a more specific setting made
+    /// elsewhere still wins and the code default still applies when nothing is set.
+    #[must_use]
+    pub fn freshness(&self) -> Freshness {
+        Freshness {
+            server: self.policy.freshness_window,
+            world: None,
+            inviter: None,
+        }
+    }
+
+    /// Who may pull a world's events from this server, as configured.
+    #[must_use]
+    pub const fn pull_policy(&self) -> PullPolicy {
+        self.policy.pull_policy
     }
 
     /// The public key a user key names.

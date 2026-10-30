@@ -45,6 +45,13 @@ type App struct {
 	machineOutput bool
 	// inlineStop shuts down an in-process daemon when the command ends.
 	inlineStop func()
+	// daemonSocket is the socket the daemon built by this process
+	// actually listens on, recorded where it is resolved: CmdDaemon
+	// keys it to the config (root.go), an inline daemon uses a private
+	// one (connect.go). It differs from Paths.Socket, which is the
+	// un-keyed default; augmentPlugins hands daemonSocket to plugin
+	// servers as their MCPX_SOCKET back-channel (#1870, Codex P1).
+	daemonSocket string
 	// daemonStore is the in-process daemon's task store, set only on
 	// the daemon-run path (root.go) so MCPServer can inject it into
 	// the daemon-served MCP server (issue #1555). Nil everywhere
@@ -663,7 +670,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if sessionKey == "" {
 			sessionKey = os.Getenv("MCPX_SESSION_ID")
 		}
-		res, err := c.Intent(ctx, *promptFlag, "run", nil, sessionKey)
+		res, err := c.Intent(ctx, *promptFlag, "run", nil, sessionKey, "", "")
 		if err != nil {
 			return err
 		}
@@ -2044,6 +2051,10 @@ func (a *App) CmdCatalog(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Print(text)
+	// Recipe tools are not namespaces, so the catalog above cannot show
+	// them; report their own budget and anything the cap or a collision
+	// kept out.
+	a.printRecipeToolState(ctx, c)
 	return nil
 }
 

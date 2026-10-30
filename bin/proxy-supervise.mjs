@@ -60,6 +60,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ---------- small utilities ----------
 
@@ -639,6 +640,20 @@ const main = async () => {
   process.exit(failures > 0 ? 1 : 0);
 };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Entry-point check: compare realpaths, not the raw strings.
+// process.argv[1] keeps the path exactly as invoked (e.g. through the
+// ~/code -> ~/git/code symlink) while import.meta.url is the resolved
+// module URL, so a string compare silently never matches and main()
+// never runs -- the supervisor timer no-oped that way (#2083).
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   main();
 }

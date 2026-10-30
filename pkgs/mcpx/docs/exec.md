@@ -207,6 +207,10 @@ loopback TCP can be a container with its own filesystem; neither transport
 tells you whether the caller can see the daemon's disk. So the *caller* says
 so, with `capabilities: ["artifacts"]` and optionally `sharedFs`.
 
+An `ssh://` endpoint is the clearest case of `sharedFs: false`: the bytes
+cross a process boundary on another machine, so a `{path}` is never
+hardlinked there and an artifact is uploaded instead.
+
 ### The store
 
 Content-addressed by sha256 under `<state>/artifacts/blobs/ab/cdef...`, with a
