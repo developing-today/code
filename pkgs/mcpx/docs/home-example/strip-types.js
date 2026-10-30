@@ -446,9 +446,15 @@ export function stripTypes(source) {
         "erasable and are not supported in the browser demo — remove them and run again",
     );
   }
-  const spans = [
+  // Type and interface declarations are removed whole — including any
+  // literals inside them (`type Mode = "fast" | "slow";` must not leave
+  // `"fast""slow"` behind). Operand protection below applies only to
+  // the annotation/cast passes, never to a declaration span.
+  const declSpans = [
     ...interfaceSpans(masked),
     ...typeAliasSpans(masked),
+  ];
+  const spans = [
     // `as T` casts.
     ...passSpans(masked, new RegExp(String.raw`\s+as\s+` + TYPE, "g"), 0),
     // Variable annotations: const/let/var name: T (=|;)
@@ -471,8 +477,12 @@ export function stripTypes(source) {
   ];
   collectParamSpans(masked, 0, spans);
 
-  // No deletion may cut into a protected literal or comment.
-  const cut = subtractRanges(spans, protectedRanges(source), source);
+  // No annotation/cast deletion may cut into a protected literal or
+  // comment; declaration spans are exempt (see declSpans above).
+  const cut = [
+    ...declSpans,
+    ...subtractRanges(spans, protectedRanges(source), source),
+  ];
   cut.sort((a, b) => a[0] - b[0]);
   spans.length = 0;
   spans.push(...cut);

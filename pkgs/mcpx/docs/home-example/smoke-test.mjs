@@ -170,6 +170,22 @@ const check = (name, ok, detail = "") => {
   );
 }
 
+// --- 1d4. strip-types: declarations are removed whole, literals included ---
+{
+  check(
+    "strip: a string-literal union type alias leaves nothing behind",
+    stripTypes('type Mode = "fast" | "slow";\nconsole.log("fast");') ===
+      '\nconsole.log("fast");',
+    stripTypes('type Mode = "fast" | "slow";\nconsole.log("fast");'),
+  );
+  check(
+    "strip: an interface with a literal union member is removed whole",
+    stripTypes('interface Cfg { mode: "fast" | "slow" }\nconst x = 1;') ===
+      "\nconst x = 1;",
+    stripTypes('interface Cfg { mode: "fast" | "slow" }\nconst x = 1;'),
+  );
+}
+
 // --- 1e. run-example: script globals + client record lines ------------------
 {
   const fakeClient = { log: () => {}, emit: () => {}, describe: () => "" };
