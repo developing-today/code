@@ -12,24 +12,52 @@ import (
 //
 // Nil is the default and it is load-bearing: the dependency chain costs a
 // manifest search and a config read, and a run that never mentioned packages
-// should behave exactly as it did before #1913.
+// should behave exactly as it did before #1913. The fast path therefore
+// requires EVERY dependency setting at its default: an explicitly configured
+// autoInstall policy or paths.deps search path is a request even when the
+// source stays host and no package was named.
 //
 // The wire carries the manifest's TEXT rather than its path, because a daemon
 // on another machine can only open its own filesystem -- the same reason
 // phase lines travel as source.
-func (a *App) depsOptions(cwd string) *execsvc.DepsOptions {
+//
+// Discovery starts at the script's directory when the script is a file: the
+// deps.manifest setting promises discovery from the script's directory, and a
+// caller running /repoB/scripts/report.ts from /repoA means repoB's project.
+// Inline scripts have no directory of their own, so cwd is used for them.
+//
+// A resolution failure is an error, not an absent set: a manifest that cannot
+// be read or parsed means explicitly requested packages and policies would
+// otherwise be discarded silently.
+func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, error) {
 	cfg := deps.From(a.Settings())
-	if cfg.Source == deps.SourceHost && cfg.Manifest == "" && len(cfg.Packages) == 0 {
-		return nil
+	if cfg.Source == deps.SourceHost && cfg.Manifest == "" && len(cfg.Packages) == 0 &&
+		cfg.AutoInstall == deps.AutoInstallOff && len(cfg.Paths.Entries) == 0 {
+		return nil, nil
 	}
-	set, err := deps.Resolve(cfg, cwd)
+	startDir := cwd
+	if scriptFile != "" {
+		startDir = filepath.Dir(scriptFile)
+	}
+	set, err := deps.Resolve(cfg, startDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := &execsvc.DepsOptions{
-		Packages:    cfg.Packages,
 		Source:      string(cfg.Source),
 		AutoInstall: string(cfg.AutoInstall),
+	}
+	// The payload carries the RESOLVED set, not just the explicit layer:
+	// with deps.source=config the configuration directory's packages live in
+	// set.Packages, and the manifest text serialized below is the project's,
+	// so copying only cfg.Packages would discard them -- a remote daemon
+	// cannot reconstruct them from the caller's filesystem.
+	for _, p := range set.Packages {
+		if p.Version != "" {
+			out.Packages = append(out.Packages, p.Name+"@"+p.Version)
+		} else {
+			out.Packages = append(out.Packages, p.Name)
+		}
 	}
 	if m := set.Manifest; m != nil {
 		if text, err := m.JSON(); err == nil {
@@ -42,8 +70,8 @@ func (a *App) depsOptions(cwd string) *execsvc.DepsOptions {
 			}
 		}
 		if name, text := m.LockfileText(); name != "" {
-			out.LockfileName, out.Lockfile = name, string(text)
+			out.LockfileName, out.Lockfile = name, text
 		}
 	}
-	return out
+	return out, nil
 }

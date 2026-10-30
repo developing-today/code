@@ -1071,12 +1071,16 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		// Only worth failing for when the caller actually asked for files.
 		return serr
 	}
+	depsOpts, derr := a.depsOptions(mustGetwd(), opts.File)
+	if derr != nil {
+		return derr
+	}
 	svc := a.localService(store, c.Socket())
 	wire := execsvc.Options{
 		Session:   sessionKey,
 		Output:    eo.Output,
 		Artifacts: eo.artifactOptions(mustGetwd()),
-		Deps:      a.depsOptions(mustGetwd()),
+		Deps:      depsOpts,
 	}
 	if wire.Artifacts != nil {
 		wire.Capabilities = []string{execsvc.CapabilityArtifacts}

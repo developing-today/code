@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -14,7 +15,11 @@ import (
 // dependency set, so the runtime discovers its own the way it always has.
 func TestDepsOptionsAreNilWithoutARequest(t *testing.T) {
 	a := &App{}
-	if got := a.depsOptions(t.TempDir()); got != nil {
+	got, err := a.depsOptions(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
 		t.Fatalf("no request should carry no deps, got %+v", got)
 	}
 }
@@ -37,7 +42,10 @@ func TestDepsOptionsCarryManifestText(t *testing.T) {
 	if err := a.Settings().SetRuntime("deps.packages", "left-pad@1.3.0"); err != nil {
 		t.Fatal(err)
 	}
-	got := a.depsOptions(dir)
+	got, err := a.depsOptions(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got == nil {
 		t.Fatal("a package request should carry a dependency set")
 	}
@@ -50,7 +58,7 @@ func TestDepsOptionsCarryManifestText(t *testing.T) {
 	if got.ManifestName != "package.json" {
 		t.Fatalf("manifest name: %q", got.ManifestName)
 	}
-	if got.LockfileName != "bun.lock" || got.Lockfile != "{}" {
+	if got.LockfileName != "bun.lock" || string(got.Lockfile) != "{}" {
 		t.Fatalf("lockfile: %q %q", got.LockfileName, got.Lockfile)
 	}
 	if got.AutoInstall != "off" {
@@ -71,7 +79,10 @@ func TestDepsOptionsStripJSONC(t *testing.T) {
 	if err := a.Settings().SetRuntime("deps.source", "cwd"); err != nil {
 		t.Fatal(err)
 	}
-	got := a.depsOptions(dir)
+	got, err := a.depsOptions(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got == nil {
 		t.Fatal("deps.source=cwd should carry the project's set")
 	}
@@ -104,5 +115,148 @@ func TestDepsOptionsAreOnTheWire(t *testing.T) {
 	}
 	if out.Deps.Source != "cwd" {
 		t.Fatalf("source did not survive the wire: %s", b)
+	}
+}
+
+// TestDepsOptionsAutoInstallOnlyIsARequest: an explicit autoInstall policy is
+// a request even when the source stays host and no package was named -- the
+// fast path must not discard it (Codex finding on PR 2589).
+func TestDepsOptionsAutoInstallOnlyIsARequest(t *testing.T) {
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.autoInstall", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("an explicit autoInstall policy should carry a dependency set")
+	}
+	if got.AutoInstall != "fallback" {
+		t.Fatalf("autoInstall: %q", got.AutoInstall)
+	}
+}
+
+// TestDepsOptionsConfigLayerPackagesReachPayload: with deps.source=config the
+// resolved set includes the configuration directory's packages, and the wire
+// payload must carry them -- the serialized manifest is the project's, so a
+// payload built from only the explicit layer would drop them (Codex finding
+// on PR 2589).
+func TestDepsOptionsConfigLayerPackagesReachPayload(t *testing.T) {
+	xdg := t.TempDir()
+	cfgDir := filepath.Join(xdg, "mcpx")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"dependencies":{"conf-pkg":"2.0.0"}}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "package.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.source", "config"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("deps.source=config should carry a dependency set")
+	}
+	found := false
+	for _, p := range got.Packages {
+		if p == "conf-pkg@2.0.0" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("config-layer package missing from payload: %v", got.Packages)
+	}
+}
+
+// TestDepsOptionsBinaryLockfileSurvivesWire: bun.lockb is binary; carried as
+// bytes it survives JSON transport byte-for-byte, where a string would
+// corrupt invalid UTF-8 (Codex finding on PR 2589).
+func TestDepsOptionsBinaryLockfileSurvivesWire(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{"left-pad":"1.3.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte{0x00, 0x80, 0xff, 0x42}
+	if err := os.WriteFile(filepath.Join(dir, "bun.lockb"), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.packages", "left-pad@1.3.0"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.LockfileName != "bun.lockb" {
+		t.Fatalf("lockfile name: %+v", got)
+	}
+	if !bytes.Equal(got.Lockfile, raw) {
+		t.Fatalf("lockfile bytes corrupted in payload: %x", got.Lockfile)
+	}
+	b, err := json.Marshal(execsvc.Options{Deps: got})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out execsvc.Options
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(out.Deps.Lockfile, raw) {
+		t.Fatalf("lockfile bytes corrupted on the wire: %x", out.Deps.Lockfile)
+	}
+}
+
+// TestDepsOptionsResolutionFailureIsAnError: a manifest that cannot be parsed
+// is reported, not silently treated as an unconfigured run (Codex finding on
+// PR 2589).
+func TestDepsOptionsResolutionFailureIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "package.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.manifest", bad); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.depsOptions(dir, ""); err == nil {
+		t.Fatal("an unparseable explicit manifest should be an error")
+	}
+}
+
+// TestDepsOptionsDiscoverFromScriptDir: discovery starts at the script's
+// directory, not the caller's cwd -- running /repoB/scripts/report.ts from
+// /repoA means repoB's project (Codex finding on PR 2589).
+func TestDepsOptionsDiscoverFromScriptDir(t *testing.T) {
+	repoA := t.TempDir()
+	repoB := t.TempDir()
+	body := `{"dependencies":{"b-pkg":"1.0.0"}}`
+	if err := os.WriteFile(filepath.Join(repoB, "package.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repoB, "report.ts")
+	if err := os.WriteFile(script, []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.source", "cwd"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(repoA, script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Manifest != body {
+		t.Fatalf("should carry repoB's manifest, got %+v", got)
 	}
 }

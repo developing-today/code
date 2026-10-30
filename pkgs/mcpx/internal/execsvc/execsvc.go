@@ -162,8 +162,12 @@ type DepsOptions struct {
 	Manifest string `json:"manifest,omitempty"`
 	// ManifestName is the filename to write it as: package.json by default.
 	ManifestName string `json:"manifestName,omitempty"`
-	// Lockfile is the lockfile's text, honoured frozen and never rewritten.
-	Lockfile string `json:"lockfile,omitempty"`
+	// Lockfile is the lockfile's content, honoured frozen and never
+	// rewritten. It is bytes, not a string, because a lockfile may be binary
+	// (bun.lockb): encoding/json carries []byte as base64, so the content
+	// survives the wire byte-for-byte, where a string would replace invalid
+	// UTF-8 with replacement characters and corrupt it.
+	Lockfile []byte `json:"lockfile,omitempty"`
 	// LockfileName is the filename to write it as, such as bun.lock.
 	LockfileName string `json:"lockfileName,omitempty"`
 	// Source is the resolved deps.source, carried so the daemon materialises
