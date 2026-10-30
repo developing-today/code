@@ -105,15 +105,28 @@ def registry_area(path):
 
 def changed_exported_idents(diff_text):
     """Exported declarations added/removed in a unified diff (approx.):
-    func/type/var/const lines whose name starts uppercase."""
+    func/type/var/const lines whose name starts uppercase, including
+    members of grouped var/const blocks, whose lines carry no keyword."""
     idents = set()
+    grouped = False
     for line in diff_text.splitlines():
+        if line.startswith("@@"):
+            grouped = False
+            continue
         if not line or line[0] not in "+-" or line.startswith(("+++", "---")):
             continue
         body = line[1:]
+        if re.search(r"\b(?:var|const)\s*\(\s*$", body):
+            grouped = True
+            continue
+        if grouped and body.strip() == ")":
+            grouped = False
+            continue
         m = re.search(r"\bfunc\s+(?:\([^)]*\)\s*)?([A-Z]\w*)", body)
         m = m or re.search(r"\btype\s+([A-Z]\w*)", body)
         m = m or re.search(r"\b(?:var|const)\s+([A-Z]\w*)", body)
+        if m is None and grouped:
+            m = re.match(r"\s*([A-Z]\w*)\b", body)
         if m:
             idents.add(m.group(1))
     return idents
@@ -131,6 +144,47 @@ def diff_names(diff_text):
     return names
 
 
+def strip_go_noise(text):
+    """Blank out string/char literals and comments (keeping newlines and
+    positions), so brace counting sees only Go syntax. Names are still
+    searched in the original text — a setting name usually appears
+    inside a string literal, which is exactly what must not steer the
+    brace matching."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i:i + 2]
+        if two == "//":
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif two == "/*":
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            out.append("".join("\n" if c == "\n" else " " for c in text[i:j]))
+            i = j
+        elif text[i] in "\"'`":
+            quote = text[i]
+            j = i + 1
+            while j < n:
+                if quote != "`" and text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == quote:
+                    j += 1
+                    break
+                if quote != "`" and text[j] == "\n":
+                    break
+                j += 1
+            out.append("".join("\n" if c == "\n" else " " for c in text[i:j]))
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def e2e_tests_mentioning(mcpx, names):
     """Parse internal/e2e test functions; return those whose body text
     contains any of the given names."""
@@ -142,16 +196,17 @@ def e2e_tests_mentioning(mcpx, names):
         if not fn.endswith("_test.go"):
             continue
         text = open(os.path.join(e2e, fn), encoding="utf-8", errors="replace").read()
-        for m in re.finditer(r"^func (Test\w+)\(t \*testing\.T\) \{", text, re.M):
+        syntax = strip_go_noise(text)
+        for m in re.finditer(r"^func (Test\w+)\(t \*testing\.T\) \{", syntax, re.M):
             depth, i = 1, m.end()
-            while i < len(text) and depth:
-                if text[i] == "{":
+            while i < len(syntax) and depth:
+                if syntax[i] == "{":
                     depth += 1
-                elif text[i] == "}":
+                elif syntax[i] == "}":
                     depth -= 1
                 i += 1
             body = text[m.start():i]
-            if any(n in body for n in names):
+            if any(nm in body for nm in names):
                 selected.append(m.group(1))
     return selected
 
@@ -176,20 +231,28 @@ def main():
     commands = []  # (tier, command string runnable from repo root)
     notes = []
 
-    go_files = [p for p in rel if p.endswith(".go")]
-    pkgs = sorted({os.path.dirname(p) for p in go_files if os.path.dirname(p)})
+    # A deleted file appears in the diff but cannot be formatted or read;
+    # only paths that still exist take part in those steps.
+    existing = [p for p in rel if os.path.exists(os.path.join(mcpx, p))]
+    go_files = [p for p in existing if p.endswith(".go")]
+    # The module-root package (agentdocs.go and friends) has dirname "";
+    # normalize it to "." rather than dropping the package entirely.
+    pkgs = sorted({os.path.dirname(p) or "." for p in go_files})
     unit_pkgs = [p for p in pkgs if p != "internal/e2e"]
+
+    def pkg_arg(p):
+        return "." if p == "." else f"./{p}/"
 
     # T0 — format + vet on touched packages.
     if go_files:
         files = " ".join(f"pkgs/mcpx/{p}" for p in go_files)
         commands.append(("T0", f"gofmt -l {files}"))
     for p in unit_pkgs:
-        commands.append(("T0", f"(cd pkgs/mcpx && go vet ./{p}/)"))
+        commands.append(("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})"))
 
     # T1 — unit tests of edited packages.
     for p in unit_pkgs:
-        commands.append(("T1", f"(cd pkgs/mcpx && go test -count=1 ./{p}/)"))
+        commands.append(("T1", f"(cd pkgs/mcpx && go test -count=1 {pkg_arg(p)})"))
 
     # Diff text for T1b / registry analysis (registry + non-test sources).
     src = [p for p in go_files if not p.endswith("_test.go")]
@@ -201,9 +264,12 @@ def main():
     # T1b — importers of packages whose exported declarations changed.
     exported = changed_exported_idents(diff_text)
     if exported:
+        # TestImports/XTestImports count: a package that imports the
+        # changed API only from its tests is still a dependent (T1b).
         listing = run(["go", "list", "-f",
-                       "{{.ImportPath}} {{join .Imports \" \"}}", "./..."],
-                      mcpx, check=False)
+                       "{{.ImportPath}} {{join .Imports \" \"}} "
+                       "{{join .TestImports \" \"}} {{join .XTestImports \" \"}}",
+                       "./..."], mcpx, check=False)
         importers = set()
         changed_pkgs = {p for p in unit_pkgs}
         for line in listing.splitlines():
@@ -212,7 +278,8 @@ def main():
                 continue
             imp_path, imports = parts[0], parts[1:]
             for cp in changed_pkgs:
-                full = "github.com/dezren39/mcpx/" + cp
+                full = "github.com/dezren39/mcpx" if cp == "." else \
+                    "github.com/dezren39/mcpx/" + cp
                 if full in imports and imp_path != full:
                     importers.add(imp_path)
         for imp in sorted(importers):
@@ -235,12 +302,23 @@ def main():
         e2e_selected |= set(e2e_tests_mentioning(mcpx, names))
     for a in areas:
         e2e_selected |= set(E2E_GUARDS.get(a, []))
+    # The harness is internal/testsupport AND the e2e-local helpers —
+    # rule 4 names newEnv explicitly: a diff that touches it is a harness
+    # change even though the file lives in internal/e2e.
     harness = any(p.startswith("internal/testsupport/") for p in rel)
-    if harness:
-        e2e_selected |= set(HARNESS_SAMPLE)
-        notes.append("T2: harness changed (internal/testsupport) — rule-4 sample selected; "
-                     "CI runs the rest")
     edited_e2e = {p for p in go_files if p.startswith("internal/e2e/")}
+    if edited_e2e:
+        e2e_diff = run(["git", "diff", args.base, "--"] +
+                       [f"pkgs/mcpx/{p}" for p in edited_e2e], root, check=False)
+        if "newEnv" in e2e_diff:
+            harness = True
+    sample = []
+    if harness:
+        # The rule-4 sample is reserved its slots before the budget is
+        # spent on anything else.
+        sample = list(HARNESS_SAMPLE)
+        notes.append("T2: harness changed (internal/testsupport or newEnv) — "
+                     "rule-4 sample selected; CI runs the rest")
     if edited_e2e:
         # Tests defined in an edited e2e file are themselves the change.
         all_names = set()
@@ -248,9 +326,9 @@ def main():
             text = open(os.path.join(mcpx, p), encoding="utf-8", errors="replace").read()
             all_names |= set(re.findall(r"^func (Test\w+)\(", text, re.M))
         e2e_selected |= all_names
-    e2e_selected = sorted(e2e_selected)
-    truncated = len(e2e_selected) > T2_BUDGET
-    e2e_selected = e2e_selected[:T2_BUDGET]
+    ordered = sample + [t for t in sorted(e2e_selected) if t not in sample]
+    truncated = len(ordered) > T2_BUDGET
+    e2e_selected = ordered[:T2_BUDGET]
     if e2e_selected:
         regex = "^(" + "|".join(e2e_selected) + ")$"
         est = E2E_SECONDS_PER_TEST * len(e2e_selected)
