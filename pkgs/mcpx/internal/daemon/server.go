@@ -1479,22 +1479,49 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(s.set.Duration("http.ssePing"))
 	defer ping.Stop()
 
+	// lastSeq is the sequence of the last event this client actually
+	// received. A live drop leaves a hole after it, and the gap notice names
+	// that hole rather than the client discovering it by finding a sequence
+	// number missing -- which is exactly the silent loss the bus promises
+	// not to have.
+	lastSeq := since
+	// toldDrops is the subscription's drop count at the last notice, so one
+	// stall produces one gap event and not a notice per delivered event.
+	var toldDrops uint64
+	tellGap := func() {
+		dropped := sub.Dropped.Load()
+		if dropped == 0 || dropped == toldDrops {
+			return
+		}
+		toldDrops = dropped
+		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
+			lastSeq, s.Events.Latest(), dropped)
+		flusher.Flush()
+	}
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
+			// Checked here too: a subscriber that stopped reading long
+			// enough to lose events has nothing new to read afterwards, so
+			// waiting for the next event to report the loss could wait
+			// forever.
+			tellGap()
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case e, open := <-sub.C:
 			if !open {
 				return
 			}
+			tellGap()
 			b, err := json.Marshal(e)
 			if err != nil {
 				continue
 			}
 			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
+			lastSeq = e.Seq
 			flusher.Flush()
 		}
 	}
