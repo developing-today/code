@@ -84,38 +84,6 @@ let
     mcpx
     mcpxStart
   ];
-  # Post-start single-instance assertion for the unit below: counts the
-  # OpenChamber web servers (the start script has exec'd into one by the
-  # time this runs) and fails the start loudly if there is not exactly
-  # one. See the guard in openchamberStart for why a second server can
-  # otherwise survive a restart unnoticed (dezren39/nix#1117).
-  openchamberSingleInstanceCheck = pkgs.writeShellScript "openchamber-single-instance-check" ''
-    count=0
-    for proc in /proc/[0-9]*; do
-      pid="''${proc#/proc/}"
-      [ "$pid" = "$$" ] && continue
-      # The pattern text itself rides in the argv of anything inspecting
-      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
-      # is not proof: the process must actually be the node server.
-      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
-      case "$exe" in
-        */node | */openchamber) ;;
-        *) continue ;;
-      esac
-      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
-      case "$cmd" in
-        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
-        *) continue ;;
-      esac
-      case "$cmd" in
-        *"--port 3000"*) count=$((count + 1)) ;;
-      esac
-    done
-    if [ "$count" -ne 1 ]; then
-      echo "openchamber: expected exactly 1 server on port 3000 after start, found $count" >&2
-      exit 1
-    fi
-  '';
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
     # Single-instance guard (dezren39/nix#1117). The unit below is
     # socket-activated with KillMode=process: a stop terminates only the
@@ -146,7 +114,11 @@ let
         *) continue ;;
       esac
       case "$cmd" in
-        *"--port 3000"*) leftovers="$leftovers $pid" ;;
+        # Argument boundary required: "--port 3000" must not match the
+        # 30001..30009 of an unrelated instance (cmdline words are
+        # space-separated here, trailing word included).
+        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
+        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
       esac
     done
     if [ -n "$leftovers" ]; then
@@ -167,6 +139,18 @@ let
         if kill -0 "$pid" 2>/dev/null; then
           echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
           kill -KILL "$pid" 2>/dev/null || true
+        fi
+      done
+      # Verify synchronously, before taking the socket over: a leftover
+      # that could not be reaped fails this start loudly instead of
+      # silently sharing the listener with the new server. (An
+      # ExecStartPost assertion cannot do this: with Type=simple it
+      # races the guard's drain window.)
+      sleep 0.2
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
+          exit 1
         fi
       done
     fi
@@ -1113,9 +1097,6 @@ in
     Service = {
       ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
-      # Fail the start loudly if the start script's single-instance
-      # guard left anything but exactly one server on the port.
-      ExecStartPost = "${openchamberSingleInstanceCheck}";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
       # OpenChamber adopts it, so sessions survive a restart. The same
       # KillMode lets an untracked server survive a stop with the socket
@@ -1132,6 +1113,10 @@ in
             mcpx
             pkgs.git
             pkgs.openssh
+            # The start script's single-instance guard scans /proc with
+            # coreutils (readlink, cat, tr, seq, sleep); without it the
+            # guard silently matches nothing.
+            pkgs.coreutils
           ]
         }"
       ];
