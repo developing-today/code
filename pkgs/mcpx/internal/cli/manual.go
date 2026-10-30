@@ -574,6 +574,21 @@ func handCommands() []Command {
 			},
 		},
 		{
+			Name: "plugin", Group: "configuration",
+			Local:   "Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own.",
+			Usage:   "[list]",
+			Summary: "plugins discovered under paths.plugins -- each one an MCP server",
+			Detail: "A plugin is an MCP server (#1870). list shows what discovery found: " +
+				"a directory under paths.plugins holding mcpx-plugin.json, a bare " +
+				"executable in one of those directories, or an mcpx-plugin-<name> " +
+				"executable on PATH. The daemon adds every discovered plugin as a " +
+				"server of its own, so it is pooled and appears in mcpx ls, types, " +
+				"search, catalog and the generated client like any configured server.",
+			Examples: []string{
+				"mcpx plugin list",
+			},
+		},
+		{
 			Name: "registry", Group: "configuration",
 			Usage:   "[search|show|add] <query|name> [--limit N] [--write]",
 			Summary: "find servers in a public registry and add them",
