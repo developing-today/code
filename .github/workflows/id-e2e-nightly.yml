@@ -41,6 +41,13 @@ jobs:
       # Same store cache as the PR gate, so the nightly run starts warm
       # and unchanged derivations are not rebuilt from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
@@ -49,5 +56,29 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Disk telemetry + reclaim (#257, Option A): the full check
+      # intermittently dies with "No space left on device" while the big
+      # derivations build. Log free space before and after the reclaim and
+      # before and after the check so a recurrence is diagnosable at a
+      # glance, and drop preinstalled toolchains/SDKs this job never uses
+      # (the standard free-disk-space recipe, ~20-30 GB on ubuntu-latest).
+      - name: Disk space before reclaim
+        run: df -h
+
+      - name: Reclaim disk space (unused preinstalled toolchains)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Disk space after reclaim (before check)
+        run: df -h
+
       - name: Run full nix flake check
         run: nix flake check ./pkgs/id/ -L --keep-going
+
+      - name: Disk space after check
+        if: always()
+        run: df -h

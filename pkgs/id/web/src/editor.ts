@@ -44,6 +44,76 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
  */
 export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block")
+    .update("code_block", {
+      // Inherited prosemirror-schema-basic fields, preserved unchanged:
+      content: "text*",
+      marks: "",
+      group: "block",
+      code: true,
+      defining: true,
+      parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
+      toDOM() {
+        return ["pre", ["code", 0]];
+      },
+      // #1436: mirror the markdown codec's code_block attrs into the
+      // editor schema, following the #880 image linkHref / #881 table
+      // alignments mirror pattern. The Rust codec (markdown.rs) sets
+      // attrs {params: html, htmlBlock: true} for HTML blocks and
+      // {params: <info>} for authored fences, and on save reads
+      // attrs.params and requires attrs.htmlBlock == true to emit an
+      // HtmlBlock. Without these declared here, Node.fromJSON drops
+      // both attrs on editor load: HTML blocks re-fence as an html
+      // fence (the #982 regression path) and authored fences lose
+      // their language/info string.
+      attrs: {
+        params: { default: null },
+        htmlBlock: { default: null },
+      },
+    })
+    .update("bullet_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [{ tag: "ul" }],
+      toDOM() {
+        return ["ul", 0];
+      },
+      // #1469: mirror the markdown codec's bullet_list tight attr into
+      // the editor schema, following the #1036 task_list mirror. The
+      // Rust codec (markdown.rs) emits attrs {tight} for bullet lists
+      // and on save reads attrs.tight (missing -> false/loose). Without
+      // it declared here, Node.fromJSON drops tight on editor load and
+      // every tight bullet list saves as a loose list.
+      attrs: {
+        tight: { default: true },
+      },
+    })
+    .update("ordered_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [
+        {
+          tag: "ol",
+          getAttrs(dom) {
+            const el = dom as HTMLElement;
+            return { order: el.hasAttribute("start") ? Number(el.getAttribute("start")) : 1 };
+          },
+        },
+      ],
+      toDOM(node) {
+        return node.attrs.order === 1 ? ["ol", 0] : ["ol", { start: node.attrs.order }, 0];
+      },
+      // #1469: mirror the markdown codec's ordered_list tight attr,
+      // keeping the inherited order attr (default and validation)
+      // unchanged. The codec emits attrs {order, tight} and on save
+      // reads attrs.tight (missing -> false/loose); undeclared, tight
+      // was dropped on editor load and tight ordered lists saved loose.
+      attrs: {
+        order: { default: 1, validate: "number" },
+        tight: { default: true },
+      },
+    })
     .update("image", {
       inline: true,
       group: "inline",
@@ -98,6 +168,12 @@ export const richSchema = new Schema({
       task_list: {
         group: "block",
         content: "task_list_item+",
+        // #1036: tight/loose carried for the markdown codec, mirroring
+        // the #881 table-alignments pattern; absent/loose rendering
+        // depends on it so multi-block task items do not fuse on save.
+        // #997: ordered task lists carry their start in `order` (null for
+        // bullet task lists), mirroring the markdown codec's attrs.order.
+        attrs: { tight: { default: true }, order: { default: null } },
         parseDOM: [
           {
             tag: "ul",
@@ -111,8 +187,25 @@ export const richSchema = new Schema({
               return false;
             },
           },
+          {
+            tag: "ol",
+            getAttrs(dom) {
+              // Match <ol class=contains-task-list> (ordered task list);
+              // its start is the list's order.
+              const el = dom as HTMLOListElement;
+              if (el.classList.contains("contains-task-list")) return { order: el.start };
+              const firstLi = el.querySelector("li");
+              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: el.start };
+              return false;
+            },
+          },
         ],
-        toDOM() {
+        toDOM(node) {
+          if (node.attrs.order != null) {
+            const attrs: Record<string, string> = { class: "contains-task-list" };
+            if (node.attrs.order !== 1) attrs.start = String(node.attrs.order);
+            return ["ol", attrs, 0];
+          }
           return ["ul", { class: "contains-task-list" }, 0];
         },
       },
@@ -184,6 +277,28 @@ export const richSchema = new Schema({
         parseDOM: [{ tag: "th" }],
         toDOM() {
           return ["th", 0];
+        },
+      },
+      // #943: raw inline HTML (e.g. <sub>, <sup>, <u>, <kbd>) as an atom
+      // node carrying the tag verbatim in `html`; the markdown codec
+      // reads/writes it. Display shows the tag as inert text — the attr
+      // is never rendered via innerHTML or as live markup.
+      html_inline: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { html: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-html-inline]",
+            getAttrs(dom) {
+              return { html: (dom as HTMLElement).dataset.htmlInline ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
         },
       },
     }),

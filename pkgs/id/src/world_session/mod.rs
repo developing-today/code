@@ -31,7 +31,7 @@ use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
     Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
-    WorldPolicy, WorldScopes,
+    WorldMetrics, WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -51,7 +51,7 @@ mod tests;
 mod types;
 
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{
@@ -165,6 +165,7 @@ impl WorldService {
     #[must_use]
     pub fn new(world: WorldHandle, admin_token: Option<String>) -> Self {
         Self {
+            metrics: world.shared_metrics(),
             world,
             admin_token,
             blobs: None,
@@ -181,6 +182,12 @@ impl WorldService {
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// The world's host metrics registry (F11.7), for metering the
+    /// frames this service sends.
+    pub(crate) fn frame_meter(&self) -> &WorldMetrics {
+        &self.metrics
     }
 
     /// Bound the programs this world runs by the admin's limits.
@@ -207,6 +214,41 @@ impl WorldService {
     ) -> anyhow::Result<crate::world_caps::CapsReport> {
         anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
         self.world.set_caps_ceiling(ceiling).await
+    }
+
+    /// Pend one schedule for this world, admin only, journaled before the
+    /// reply. Replaces any pending schedule with the same id. Returns the
+    /// full pending map (id to fire time, unix ms).
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for an invalid or unstorable schedule.
+    pub async fn set_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+        at_ms: u64,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_schedule_at(id, at_ms).await
+    }
+
+    /// Cancel a pending schedule for this world, admin only, journaled
+    /// before the reply. A no-op when the id is not pending. Returns the
+    /// full pending map.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for a malformed id or storage failure.
+    pub async fn cancel_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_cancel_schedule(id).await
     }
 
     /// Persist a per-world resource profile. The running program keeps its
@@ -639,6 +681,42 @@ impl WorldService {
         Ok(bytes.to_vec())
     }
 
+    /// Read a stored module's bytes by hash, active or not: from the blob
+    /// store Wasm installs pin into, or from the module directory native
+    /// installs are saved to. The caller must already have
+    /// authenticated as an admin. A hash the host never installed is
+    /// unavailable: the bytes of a module it does not hold cannot be
+    /// conjured, and the error says so by kind.
+    pub async fn stored_module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
+        let hash: iroh_blobs::Hash = expected_hash
+            .parse()
+            .map_err(|_| InstallError::InvalidUpload)?;
+        // Wasm installs are pinned in the blob store; native installs are
+        // saved only in the module directory (they are never offered for
+        // peer download), so a stored native module is read from there.
+        if let Some(blobs) = self.blobs.as_ref()
+            && let Ok(bytes) = blobs.blobs().get_bytes(hash).await
+            && bytes.len() <= MAX_WORLD_MODULE_BYTES
+            && module_hash(&bytes) == expected_hash
+        {
+            return Ok(bytes.to_vec());
+        }
+        if let Some(modules) = self.module_dir.clone() {
+            let requested = expected_hash.to_owned();
+            let loaded = tokio::task::spawn_blocking(move || modules.load(&requested))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if loaded.len() <= MAX_WORLD_MODULE_BYTES {
+                return Ok(loaded);
+            }
+        }
+        if self.blobs.is_none() && self.module_dir.is_none() {
+            return Err(InstallError::Disabled);
+        }
+        Err(InstallError::Unavailable)
+    }
+
     /// Hash of the currently active module, if the world runs one.
     pub async fn active_module_hash(&self) -> Option<String> {
         self.module_hash.read().await.clone()
@@ -681,24 +759,33 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
 /// The first frame names the world (`"world": "<name>"`, default world if
 /// absent), and the session holds a lease on it until it ends.
 pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: SessionConfig) {
+    // Frames sent before a world lease exists belong to no world, so
+    // their bytes go to a throwaway meter rather than being attributed
+    // to a world that did not send them.
+    let unattributed = WorldMetrics::default();
     let first = match tokio::time::timeout(config.join_timeout, io.recv()).await {
         Ok(Inbound::Text(text)) => text,
         Ok(Inbound::Oversized) => {
-            let _ = send_error(io, "world frame is too large").await;
+            let _ = send_error(&unattributed, io, "world frame is too large").await;
             return;
         }
         Ok(Inbound::Unsupported) => {
-            let _ = send_error(io, "frames must be UTF-8 text").await;
+            let _ = send_error(&unattributed, io, "frames must be UTF-8 text").await;
             return;
         }
         Ok(Inbound::Closed) => return,
         Err(_) => {
-            let _ = send_error(io, "timed out waiting for join").await;
+            let _ = send_error(&unattributed, io, "timed out waiting for join").await;
             return;
         }
     };
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&first) else {
-        let _ = send_error(io, "first frame must be a valid join or invite request").await;
+        let _ = send_error(
+            &unattributed,
+            io,
+            "first frame must be a valid join or invite request",
+        )
+        .await;
         return;
     };
     // `world` is a routing field, not part of any frame.
@@ -709,23 +796,29 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::String(name)) => Some(name),
         Some(_) => {
-            let _ = send_error(io, "world must be a string").await;
+            let _ = send_error(&unattributed, io, "world must be a string").await;
             return;
         }
     };
     let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
-        let _ = send_error(io, "first frame must be a valid join or invite request").await;
+        let _ = send_error(
+            &unattributed,
+            io,
+            "first frame must be a valid join or invite request",
+        )
+        .await;
         return;
     };
     // Hub-level frames are about the server, not one world.
     match &frame {
         ClientFrame::ListWorlds { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
-                let _ = send_error(io, "admin denied").await;
+                let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
             let worlds = hub.list();
             let _ = send_json(
+                &unattributed,
                 io,
                 &ServerFrame::Worlds {
                     default: hub.default_world(),
@@ -737,13 +830,14 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         ClientFrame::CreateWorld { admin_token } => {
             if admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token) {
-                let _ = send_error(io, "admin denied").await;
+                let _ = send_error(&unattributed, io, "admin denied").await;
                 return;
             }
             let name = world.as_deref().unwrap_or_else(|| hub.default_world());
             match hub.create(name).await {
                 Ok(created) => {
                     let _ = send_json(
+                        &unattributed,
                         io,
                         &ServerFrame::WorldCreated {
                             world: name,
@@ -753,7 +847,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                     .await;
                 }
                 Err(error) => {
-                    let _ = send_error(io, error.message()).await;
+                    let _ = send_error(&unattributed, io, error.message()).await;
                 }
             }
             return;
@@ -764,7 +858,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     let lease = match hub.lease(world.as_deref(), admin).await {
         Ok(lease) => lease,
         Err(error) => {
-            let _ = send_error(io, error.message()).await;
+            let _ = send_error(&unattributed, io, error.message()).await;
             return;
         }
     };
@@ -785,6 +879,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         {
             Ok(isolation) => {
                 let _ = send_json(
+                    lease.service().frame_meter(),
                     io,
                     &ServerFrame::Isolation {
                         world: lease.name(),
@@ -794,7 +889,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 .await;
             }
             Err(error) => {
-                let _ = send_error(io, &format!("{error:#}")).await;
+                let _ = send_error(lease.service().frame_meter(), io, &format!("{error:#}")).await;
             }
         }
         return;
@@ -803,6 +898,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         match result {
             Ok(policy) => {
                 let _ = send_json(
+                    lease.service().frame_meter(),
                     io,
                     &ServerFrame::Policy {
                         world: lease.name(),
@@ -812,7 +908,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
                 .await;
             }
             Err(error) => {
-                let _ = send_error(io, &format!("{error:#}")).await;
+                let _ = send_error(lease.service().frame_meter(), io, &format!("{error:#}")).await;
             }
         }
         return;
@@ -964,7 +1060,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
     match frame {
         ClientFrame::Join { capability, after } => {
             if capability.len() > MAX_CAPABILITY_BYTES {
-                let _ = send_error(io, "invalid join capability").await;
+                let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
                 return;
             }
             joined(service, io, JoinCapability::from_wire(capability), after).await;
@@ -977,7 +1073,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             role,
         } => match role.as_deref().map(WorldScopes::from_role) {
             Some(None) => {
-                let _ = send_error(
+                let _ = send_error(service.frame_meter(),
                     io,
                     "unknown invite role; use spectator, observer, player, guest, delegator, builder, or moderator",
                 )
@@ -994,25 +1090,32 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 .await
             {
                 Ok(invite) => {
-                    let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+                    let _ =
+                        send_json(service.frame_meter(), io, &ServerFrame::Invite(&invite)).await;
                 }
                 Err(InviteError::InvalidBounds(message)) => {
-                    let _ = send_error(io, message).await;
+                    let _ = send_error(service.frame_meter(), io, message).await;
                 }
                 Err(InviteError::Disabled) => {
-                    let _ = send_error(io, "invites are not enabled").await;
+                    let _ = send_error(service.frame_meter(), io, "invites are not enabled").await;
                 }
                 Err(InviteError::Unauthorized) => {
-                    let _ = send_error(io, "invite denied").await;
+                    let _ = send_error(service.frame_meter(), io, "invite denied").await;
                 }
                 Err(InviteError::Unavailable) => {
-                    let _ = send_error(io, "world cannot issue another invite").await;
+                    let _ = send_error(
+                        service.frame_meter(),
+                        io,
+                        "world cannot issue another invite",
+                    )
+                    .await;
                 }
             },
         },
         // Query frames keep the session open for further queries: a client
         // can page through records, and may still join later on.
         ClientFrame::Info { .. }
+        | ClientFrame::Metrics { .. }
         | ClientFrame::Records { .. }
         | ClientFrame::RecordsTicket { .. }
         | ClientFrame::DownloadModule { .. } => {
@@ -1026,11 +1129,15 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         } => {
             if service.source_only() {
                 if service.authorize_admin(Some(&admin_token)).is_err() {
-                    let _ = send_error(io, "module install denied").await;
+                    let _ = send_error(service.frame_meter(), io, "module install denied").await;
                     return;
                 }
-                let _ =
-                    send_error(io, "raw module uploads are disabled by source-only policy").await;
+                let _ = send_error(
+                    service.frame_meter(),
+                    io,
+                    "raw module uploads are disabled by source-only policy",
+                )
+                .await;
                 return;
             }
             if let Err(message) = install_module_session(
@@ -1043,20 +1150,23 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             )
             .await
             {
-                let _ = send_error(io, message).await;
+                let _ = send_error(service.frame_meter(), io, message).await;
             }
         }
         ClientFrame::Caps { capability } => {
             let token = JoinCapability::from_wire(capability);
             if service.world().participant_id(token).await.is_err() {
-                let _ = send_error(io, "join denied").await;
+                let _ = send_error(service.frame_meter(), io, "join denied").await;
             } else {
                 match service.world().caps_report().await {
                     Ok(report) => {
-                        let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                        let _ = send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
+                            .await;
                     }
                     Err(_) => {
-                        let _ = send_error(io, "capability report unavailable").await;
+                        let _ =
+                            send_error(service.frame_meter(), io, "capability report unavailable")
+                                .await;
                     }
                 }
             }
@@ -1068,14 +1178,15 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         } => match service.authorize_admin(Some(&admin_token)) {
             Ok(()) => match service.world().update_caps(grant, revoke).await {
                 Ok(report) => {
-                    let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                    let _ =
+                        send_json(service.frame_meter(), io, &ServerFrame::Caps { report }).await;
                 }
                 Err(error) => {
-                    let _ = send_error(io, &format!("{error:#}")).await;
+                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                 }
             },
             Err(_) => {
-                let _ = send_error(io, "admin denied").await;
+                let _ = send_error(service.frame_meter(), io, "admin denied").await;
             }
         },
         ClientFrame::SetCapsCeiling {
@@ -1084,6 +1195,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         } => match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
             Ok(report) => {
                 let _ = send_json(
+                    service.frame_meter(),
                     io,
                     &ServerFrame::CapsCeiling {
                         report,
@@ -1093,7 +1205,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 .await;
             }
             Err(error) => {
-                let _ = send_error(io, &format!("{error:#}")).await;
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
         ClientFrame::SetExecutionProfile {
@@ -1104,7 +1216,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             .await
         {
             Ok(update) => {
-                let _ = send_json(
+                let _ = send_json(service.frame_meter(),
                     io,
                     &ServerFrame::ExecutionProfile {
                         update,
@@ -1114,9 +1226,87 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 .await;
             }
             Err(error) => {
-                let _ = send_error(io, &format!("{error:#}")).await;
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => match service.set_schedule(Some(&admin_token), id, at_ms).await {
+            Ok(schedules) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::Schedules { schedules },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+        }
+        ClientFrame::DownloadModuleAdmin {
+            admin_token,
+            module_hash,
+        } => {
+            if let Err(message) =
+                download_module_admin_session(service, io, &admin_token, &module_hash).await
+            {
+                let _ = send_error(service.frame_meter(), io, message).await;
+            }
+        }
+        ClientFrame::WorldState {
+            admin_token,
+            capability,
+        } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            let cap_ok = if admin_ok {
+                true
+            } else if let Some(cap) = capability.as_deref() {
+                let token = JoinCapability::from_wire(cap.to_string());
+                service.world().participant_id(token).await.is_ok()
+            } else {
+                false
+            };
+            if !admin_ok && !cap_ok {
+                let _ = send_error(service.frame_meter(), io, "access denied").await;
+            } else {
+                match service.world().manifest_state().await {
+                    Ok((seed, schedules)) => {
+                        let _ = send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::WorldState {
+                                seed: admin_ok.then_some(seed),
+                                schedules,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                    }
+                }
+            }
+        }
         ClientFrame::ExecutionProfileInfo {
             admin_token,
             capability,
@@ -1130,11 +1320,12 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 false
             };
             if !auth_ok {
-                let _ = send_error(io, "access denied").await;
+                let _ = send_error(service.frame_meter(), io, "access denied").await;
             } else {
                 match service.world().execution_profile().await {
                     Ok(profile) => {
                         let _ = send_json(
+                            service.frame_meter(),
                             io,
                             &ServerFrame::ExecutionProfile {
                                 update: crate::world::ExecutionProfileUpdate {
@@ -1147,7 +1338,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                         .await;
                     }
                     Err(error) => {
-                        let _ = send_error(io, &format!("{error:#}")).await;
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                     }
                 }
             }
@@ -1171,6 +1362,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             match service.compile_and_install(Some(&admin_token), &spec).await {
                 Ok((module_hash, sequence, diagnostics)) => {
                     let _ = send_json(
+                        service.frame_meter(),
                         io,
                         &ServerFrame::Compiled {
                             module_hash,
@@ -1181,13 +1373,18 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                     .await;
                 }
                 Err(message) => {
-                    let _ = send_error(io, &message).await;
+                    let _ = send_error(service.frame_meter(), io, &message).await;
                 }
             }
         }
         #[cfg(not(feature = "sandbox"))]
         ClientFrame::Compile { .. } => {
-            let _ = send_error(io, "compilation is not enabled on this server").await;
+            let _ = send_error(
+                service.frame_meter(),
+                io,
+                "compilation is not enabled on this server",
+            )
+            .await;
         }
         ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd
@@ -1203,7 +1400,12 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::Input { .. }
         | ClientFrame::Resize { .. }
         | ClientFrame::Paste { .. } => {
-            let _ = send_error(io, "first frame must be join, invite or install_begin").await;
+            let _ = send_error(
+                service.frame_meter(),
+                io,
+                "first frame must be join, invite or install_begin",
+            )
+            .await;
         }
     }
 }
@@ -1221,16 +1423,17 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                     if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
                         frame
                     } else {
-                        let _ = send_error(io, "invalid world frame").await;
+                        let _ = send_error(service.frame_meter(), io, "invalid world frame").await;
                         return;
                     }
                 }
                 Inbound::Oversized => {
-                    let _ = send_error(io, "world frame is too large").await;
+                    let _ = send_error(service.frame_meter(), io, "world frame is too large").await;
                     return;
                 }
                 Inbound::Unsupported => {
-                    let _ = send_error(io, "frames must be UTF-8 text").await;
+                    let _ =
+                        send_error(service.frame_meter(), io, "frames must be UTF-8 text").await;
                     return;
                 }
                 Inbound::Closed => return,
@@ -1239,7 +1442,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
         match frame {
             ClientFrame::Join { capability, after } => {
                 if capability.len() > MAX_CAPABILITY_BYTES {
-                    let _ = send_error(io, "invalid join capability").await;
+                    let _ = send_error(service.frame_meter(), io, "invalid join capability").await;
                     return;
                 }
                 joined(service, io, JoinCapability::from_wire(capability), after).await;
@@ -1249,6 +1452,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 let token = JoinCapability::from_wire(capability);
                 if let Ok(snapshot) = service.world().snapshot(token).await {
                     if !send_json(
+                        service.frame_meter(),
                         io,
                         &ServerFrame::ModuleInfo {
                             world_id: snapshot.world_id,
@@ -1262,8 +1466,37 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                         return;
                     }
                 } else {
-                    let _ = send_error(io, "join denied").await;
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
+                }
+            }
+            ClientFrame::Metrics { capability } => {
+                // Authorized exactly like `info`: holding a capability
+                // that snapshots the world is enough to read its metrics.
+                let token = JoinCapability::from_wire(capability);
+                match service.world().snapshot(token).await {
+                    Ok(_) => match service.world().metrics().await {
+                        Ok(metrics) => {
+                            if !send_json(
+                                service.frame_meter(),
+                                io,
+                                &ServerFrame::Metrics { metrics },
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ =
+                                send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                            return;
+                        }
+                    },
+                    Err(_) => {
+                        let _ = send_error(service.frame_meter(), io, "join denied").await;
+                        return;
+                    }
                 }
             }
             ClientFrame::Records {
@@ -1273,6 +1506,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             } => {
                 let token = JoinCapability::from_wire(capability);
                 if let Err(message) = records_session(
+                    service.frame_meter(),
                     service.world(),
                     io,
                     token,
@@ -1281,20 +1515,20 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 )
                 .await
                 {
-                    let _ = send_error(io, message).await;
+                    let _ = send_error(service.frame_meter(), io, message).await;
                     return;
                 }
             }
             ClientFrame::RecordsTicket { capability } => {
                 let token = JoinCapability::from_wire(capability);
                 if service.world().participant_id(token).await.is_err() {
-                    let _ = send_error(io, "join denied").await;
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
                 match records_ticket_session(service, io).await {
                     Ok(()) => {}
                     Err(message) => {
-                        let _ = send_error(io, message).await;
+                        let _ = send_error(service.frame_meter(), io, message).await;
                         return;
                     }
                 }
@@ -1305,16 +1539,16 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             } => {
                 let token = JoinCapability::from_wire(capability);
                 if service.world().snapshot(token).await.is_err() {
-                    let _ = send_error(io, "join denied").await;
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
                     return;
                 }
                 if let Err(message) = download_module_session(service, io, &module_hash).await {
-                    let _ = send_error(io, message).await;
+                    let _ = send_error(service.frame_meter(), io, message).await;
                     return;
                 }
             }
             _ => {
-                let _ = send_error(io, "expected a query frame").await;
+                let _ = send_error(service.frame_meter(), io, "expected a query frame").await;
                 return;
             }
         }
@@ -1329,7 +1563,13 @@ async fn records_ticket_session<I: SessionIo>(
     match service.records_store() {
         Some(store) => match store.read_ticket().await {
             Ok(ticket) => {
-                if send_json(io, &ServerFrame::RecordsTicket { ticket }).await {
+                if send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::RecordsTicket { ticket },
+                )
+                .await
+                {
                     Ok(())
                 } else {
                     Err("connection closed")
@@ -1346,6 +1586,7 @@ async fn records_ticket_session<I: SessionIo>(
 pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
 
 async fn records_session<I: SessionIo>(
+    meter: &WorldMetrics,
     world: &WorldHandle,
     io: &mut I,
     token: JoinCapability,
@@ -1387,6 +1628,7 @@ async fn records_session<I: SessionIo>(
     }
     let next_after = more.then_some(last_included).flatten();
     if !send_json(
+        meter,
         io,
         &ServerFrame::Records {
             sequence,
@@ -1416,10 +1658,42 @@ async fn download_module_session<I: SessionIo>(
         .module_bytes(&active_hash)
         .await
         .map_err(|_| "module bytes are unavailable")?;
+    send_module_bytes(service, io, active_hash, &bytes).await
+}
+
+/// The admin module download (#807): any module the host holds in its blob
+/// store, by hash, active or not - so `id world apply` can install the
+/// module a manifest names when another module is currently active.
+async fn download_module_admin_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+    requested_hash: &str,
+) -> Result<(), &'static str> {
+    if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
+        || service.authorize_admin(Some(admin_token)).is_err()
+    {
+        return Err("admin denied");
+    }
+    let bytes = service
+        .stored_module_bytes(requested_hash)
+        .await
+        .map_err(|_| "the host does not hold a module with that hash")?;
+    send_module_bytes(service, io, requested_hash.to_owned(), &bytes).await
+}
+
+/// Stream one module's bytes as a begin/chunk/end transfer naming `module_hash`.
+async fn send_module_bytes<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    module_hash: String,
+    bytes: &[u8],
+) -> Result<(), &'static str> {
     if !send_json(
+        service.frame_meter(),
         io,
         &ServerFrame::ModuleBegin {
-            module_hash: active_hash.clone(),
+            module_hash: module_hash.clone(),
             total_bytes: bytes.len(),
         },
     )
@@ -1429,6 +1703,7 @@ async fn download_module_session<I: SessionIo>(
     }
     for (index, chunk) in bytes.chunks(MAX_WORLD_MODULE_CHUNK_BYTES).enumerate() {
         if !send_json(
+            service.frame_meter(),
             io,
             &ServerFrame::ModuleChunk {
                 offset: index * MAX_WORLD_MODULE_CHUNK_BYTES,
@@ -1441,10 +1716,9 @@ async fn download_module_session<I: SessionIo>(
         }
     }
     if !send_json(
+        service.frame_meter(),
         io,
-        &ServerFrame::ModuleEnd {
-            module_hash: active_hash,
-        },
+        &ServerFrame::ModuleEnd { module_hash },
     )
     .await
     {
@@ -1486,6 +1760,7 @@ async fn install_module_session<I: SessionIo>(
     #[cfg(feature = "sandbox")]
     {
         if !send_json(
+            service.frame_meter(),
             io,
             &ServerFrame::UploadReady {
                 chunk_bytes: MAX_WORLD_MODULE_CHUNK_BYTES,
@@ -1553,6 +1828,7 @@ async fn install_module_session<I: SessionIo>(
                 InstallError::Unavailable => "world could not activate the module",
             })?;
         if !send_json(
+            service.frame_meter(),
             io,
             &ServerFrame::ModuleInstalled {
                 module_hash: &module_hash,
@@ -1579,11 +1855,11 @@ async fn joined<I: SessionIo>(
     let mut events = world.subscribe();
     let mut revocations = world.subscribe_revocations();
     let Ok(participant_id) = world.participant_id(token.clone()).await else {
-        let _ = send_error(io, "join denied").await;
+        let _ = send_error(service.frame_meter(), io, "join denied").await;
         return;
     };
     let Ok(snapshot) = world.snapshot(token.clone()).await else {
-        let _ = send_error(io, "join denied").await;
+        let _ = send_error(service.frame_meter(), io, "join denied").await;
         return;
     };
     let mut cursor = snapshot.current_sequence;
@@ -1595,27 +1871,43 @@ async fn joined<I: SessionIo>(
                     return;
                 };
                 cursor = fresh.current_sequence;
-                if !send_json(io, &ServerFrame::Snapshot { snapshot: &fresh }).await {
+                if !send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::Snapshot { snapshot: &fresh },
+                )
+                .await
+                {
                     return;
                 }
             }
             Ok(page) => {
                 cursor = page.current_sequence;
                 for event in &page.events {
-                    if !send_json(io, &ServerFrame::Event { event }).await {
+                    if !send_json(service.frame_meter(), io, &ServerFrame::Event { event }).await {
                         return;
                     }
-                    if !send_view(world, io, &token, event.sequence, viewport).await {
+                    if !send_view(
+                        service.frame_meter(),
+                        world,
+                        io,
+                        &token,
+                        event.sequence,
+                        viewport,
+                    )
+                    .await
+                    {
                         return;
                     }
                 }
             }
             Err(_) => {
-                let _ = send_error(io, "join denied").await;
+                let _ = send_error(service.frame_meter(), io, "join denied").await;
                 return;
             }
         }
     } else if !send_json(
+        service.frame_meter(),
         io,
         &ServerFrame::Snapshot {
             snapshot: &snapshot,
@@ -1625,7 +1917,7 @@ async fn joined<I: SessionIo>(
     {
         return;
     }
-    if !send_view(world, io, &token, cursor, viewport).await {
+    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
         return;
     }
 
@@ -1648,10 +1940,10 @@ async fn joined<I: SessionIo>(
                     }
                 }
                 Inbound::Oversized => {
-                    if !send_error(io, "world frame is too large").await { break; }
+                    if !send_error(service.frame_meter(), io, "world frame is too large").await { break; }
                 }
                 Inbound::Unsupported => {
-                    if !send_error(io, "frames must be UTF-8 text").await { break; }
+                    if !send_error(service.frame_meter(), io, "frames must be UTF-8 text").await { break; }
                 }
                 Inbound::Closed => break,
             },
@@ -1660,14 +1952,14 @@ async fn joined<I: SessionIo>(
                     if let crate::world::WorldEventKind::ProgramInstalled { ref module_hash, .. } = event.kind {
                         if event.sequence > cursor {
                             let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
-                            if !send_json(io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
+                            if !send_json(service.frame_meter(), io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
                                 break;
                             }
                             cursor = event.sequence;
-                            if !send_json(io, &ServerFrame::ProgramChanged {
+                            if !send_json(service.frame_meter(), io, &ServerFrame::ProgramChanged {
                                 module_hash,
                                 sequence: cursor,
-                            }).await || !send_view(world, io, &token, cursor, viewport).await {
+                            }).await || !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                                 break;
                             }
                         }
@@ -1687,20 +1979,20 @@ async fn joined<I: SessionIo>(
                     let Some(shown) = projected else {
                         continue;
                     };
-                    if !send_json(io, &ServerFrame::Event { event: &shown }).await {
+                    if !send_json(service.frame_meter(), io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
-                    if !send_view(world, io, &token, cursor, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
                     let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
-                    if !send_json(io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
+                    if !send_json(service.frame_meter(), io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
                         break;
                     }
                     cursor = snapshot.current_sequence;
-                    if !send_view(world, io, &token, cursor, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1709,7 +2001,7 @@ async fn joined<I: SessionIo>(
             changed = views.changed() => match changed {
                 Ok(()) => {
                     let sequence = *views.borrow_and_update();
-                    if !send_view(world, io, &token, sequence, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, sequence, viewport).await {
                         break;
                     }
                 }
@@ -1717,7 +2009,7 @@ async fn joined<I: SessionIo>(
             },
             revoked = revocations.recv() => match revoked {
                 Ok(revoked_id) if revoked_id == participant_id => {
-                    let _ = send_error(io, "world capability revoked").await;
+                    let _ = send_error(service.frame_meter(), io, "world capability revoked").await;
                     break;
                 }
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {},
@@ -1744,6 +2036,7 @@ impl Drop for PresenceGuard {
 }
 
 async fn send_view<I: SessionIo>(
+    meter: &WorldMetrics,
     world: &WorldHandle,
     io: &mut I,
     token: &JoinCapability,
@@ -1761,7 +2054,7 @@ async fn send_view<I: SessionIo>(
     match view {
         Ok(Some(data)) => {
             if data.len() > MAX_FRAME_BYTES {
-                return send_error(io, "world presentation is too large").await;
+                return send_error(meter, io, "world presentation is too large").await;
             }
             let surface = match crate::world_presentation::parse_surface(&data) {
                 Ok(Some(crate::world_presentation::WorldSurface::Screen(screen))) => {
@@ -1771,9 +2064,10 @@ async fn send_view<I: SessionIo>(
                     Some(crate::world_presentation::WorldSurface::Screen(screen))
                 }
                 Ok(surface) => surface,
-                Err(_) => return send_error(io, "invalid world screen presentation").await,
+                Err(_) => return send_error(meter, io, "invalid world screen presentation").await,
             };
             send_json(
+                meter,
                 io,
                 &ServerFrame::View {
                     sequence,
@@ -1843,13 +2137,13 @@ async fn handle_client_frame<I: SessionIo>(
 ) -> bool {
     let world = service.world();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return send_error(io, "invalid world frame").await;
+        return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     if delegation_names_uses(&value) {
-        return send_error(io, USES_REFUSED).await;
+        return send_error(service.frame_meter(), io, USES_REFUSED).await;
     }
     let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
-        return send_error(io, "invalid world frame").await;
+        return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
     let result = match frame {
         ClientFrame::Attenuate {
@@ -1858,14 +2152,14 @@ async fn handle_client_frame<I: SessionIo>(
             expires_at,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
-                return send_error(io, "unknown scope").await;
+                return send_error(service.frame_meter(), io, "unknown scope").await;
             };
             let bounds = CapabilityBounds {
                 expires_at,
                 uses: None,
             };
             let result = world.attenuate(token.clone(), scopes, bounds, name).await;
-            return send_delegation(io, result).await;
+            return send_delegation(service.frame_meter(), io, result).await;
         }
         ClientFrame::DelegateToFriend {
             friend,
@@ -1874,7 +2168,7 @@ async fn handle_client_frame<I: SessionIo>(
             expires_at,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
-                return send_error(io, "unknown scope").await;
+                return send_error(service.frame_meter(), io, "unknown scope").await;
             };
             let bounds = CapabilityBounds {
                 expires_at,
@@ -1883,12 +2177,13 @@ async fn handle_client_frame<I: SessionIo>(
             let result = world
                 .delegate_to_friend(token.clone(), friend, scopes, bounds, name)
                 .await;
-            return send_delegation(io, result).await;
+            return send_delegation(service.frame_meter(), io, result).await;
         }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
         ClientFrame::Resize { width, height } => {
             if width == 0 || height == 0 || width > 500 || height > 200 {
                 return send_error(
+                    service.frame_meter(),
                     io,
                     "viewport dimensions must be width 1..=500 and height 1..=200",
                 )
@@ -1901,11 +2196,12 @@ async fn handle_client_frame<I: SessionIo>(
                 width: clamped_width,
                 height: clamped_height,
             });
-            return send_view(world, io, token, sequence, *viewport).await;
+            return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
         }
         ClientFrame::Paste { text } => {
             let Ok(bytes) = normalize_paste(&text) else {
                 return send_error(
+                    service.frame_meter(),
                     io,
                     "paste must be at most 4096 UTF-8 bytes and contain no control characters",
                 )
@@ -1915,11 +2211,15 @@ async fn handle_client_frame<I: SessionIo>(
         }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
             Some(data) => world.input(token.clone(), data).await,
-            None => return send_error(io, "input data must be hexadecimal").await,
+            None => {
+                return send_error(service.frame_meter(), io, "input data must be hexadecimal")
+                    .await;
+            }
         },
         ClientFrame::Records { prefix, after, .. } => {
             // Authorized by the session's own capability.
             if let Err(message) = records_session(
+                service.frame_meter(),
                 world,
                 io,
                 token.clone(),
@@ -1928,7 +2228,7 @@ async fn handle_client_frame<I: SessionIo>(
             )
             .await
             {
-                return send_error(io, message).await;
+                return send_error(service.frame_meter(), io, message).await;
             }
             return true;
         }
@@ -1941,7 +2241,7 @@ async fn handle_client_frame<I: SessionIo>(
                 .await
             {
                 Ok(update) => {
-                    let _ = send_json(
+                    let _ = send_json(service.frame_meter(),
                         io,
                         &ServerFrame::ExecutionProfile {
                             update,
@@ -1950,7 +2250,9 @@ async fn handle_client_frame<I: SessionIo>(
                     )
                     .await;
                 }
-                Err(error) => return send_error(io, &format!("{error:#}")).await,
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
             }
             return true;
         }
@@ -1958,6 +2260,7 @@ async fn handle_client_frame<I: SessionIo>(
             match service.world().execution_profile().await {
                 Ok(profile) => {
                     let _ = send_json(
+                        service.frame_meter(),
                         io,
                         &ServerFrame::ExecutionProfile {
                             update: crate::world::ExecutionProfileUpdate {
@@ -1969,13 +2272,15 @@ async fn handle_client_frame<I: SessionIo>(
                     )
                     .await;
                 }
-                Err(error) => return send_error(io, &format!("{error:#}")).await,
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
             }
             return true;
         }
         ClientFrame::RecordsTicket { .. } => {
             if let Err(message) = records_ticket_session(service, io).await {
-                return send_error(io, message).await;
+                return send_error(service.frame_meter(), io, message).await;
             }
             return true;
         }
@@ -1983,9 +2288,10 @@ async fn handle_client_frame<I: SessionIo>(
         // shell contract lists `info` in the joined phase (`/stats`).
         ClientFrame::Info { .. } => {
             let Ok(snapshot) = world.snapshot(token.clone()).await else {
-                return send_error(io, "join denied").await;
+                return send_error(service.frame_meter(), io, "join denied").await;
             };
             return send_json(
+                service.frame_meter(),
                 io,
                 &ServerFrame::ModuleInfo {
                     world_id: snapshot.world_id,
@@ -1996,13 +2302,26 @@ async fn handle_client_frame<I: SessionIo>(
             )
             .await;
         }
+        // Like `info`, the joined phase may read the world's metrics with
+        // the session's own capability.
+        ClientFrame::Metrics { .. } => match world.metrics().await {
+            Ok(metrics) => {
+                return send_json(service.frame_meter(), io, &ServerFrame::Metrics { metrics })
+                    .await;
+            }
+            Err(error) => {
+                return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
         ClientFrame::Caps { .. } => {
             match service.world().caps_report().await {
                 Ok(report) => {
-                    let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                    let _ =
+                        send_json(service.frame_meter(), io, &ServerFrame::Caps { report }).await;
                 }
                 Err(_) => {
-                    return send_error(io, "capability report unavailable").await;
+                    return send_error(service.frame_meter(), io, "capability report unavailable")
+                        .await;
                 }
             }
             return true;
@@ -2015,14 +2334,15 @@ async fn handle_client_frame<I: SessionIo>(
             match service.authorize_admin(Some(&admin_token)) {
                 Ok(()) => match service.world().update_caps(grant, revoke).await {
                     Ok(report) => {
-                        let _ = send_json(io, &ServerFrame::Caps { report }).await;
+                        let _ = send_json(service.frame_meter(), io, &ServerFrame::Caps { report })
+                            .await;
                     }
                     Err(error) => {
-                        return send_error(io, &format!("{error:#}")).await;
+                        return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                     }
                 },
                 Err(_) => {
-                    return send_error(io, "admin denied").await;
+                    return send_error(service.frame_meter(), io, "admin denied").await;
                 }
             }
             return true;
@@ -2034,6 +2354,7 @@ async fn handle_client_frame<I: SessionIo>(
             match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
                 Ok(report) => {
                     let _ = send_json(
+                        service.frame_meter(),
                         io,
                         &ServerFrame::CapsCeiling {
                             report,
@@ -2042,9 +2363,70 @@ async fn handle_client_frame<I: SessionIo>(
                     )
                     .await;
                 }
-                Err(error) => return send_error(io, &format!("{error:#}")).await,
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
             }
             return true;
+        }
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => {
+            match service.set_schedule(Some(&admin_token), id, at_ms).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::WorldState { admin_token, .. } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            // The session's own capability authorizes the read, like `info`;
+            // only a valid admin token in the frame unlocks the seed (#240).
+            match world.manifest_state().await {
+                Ok((seed, schedules)) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::WorldState {
+                            seed: admin_ok.then_some(seed),
+                            schedules,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
@@ -2056,29 +2438,40 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::SetFileScope { .. }
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
+        | ClientFrame::DownloadModuleAdmin { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {
-            return send_error(io, "already joined").await;
+            return send_error(service.frame_meter(), io, "already joined").await;
         }
     };
     // Accepted events reach everyone, including the sender, through the
     // broadcast branch, so only rejections are answered directly.
-    result.is_ok() || send_error(io, "world event rejected").await
+    result.is_ok() || send_error(service.frame_meter(), io, "world event rejected").await
 }
 
-async fn send_json<I: SessionIo>(io: &mut I, frame: &impl Serialize) -> bool {
+/// Serialize and send one server frame, metering its bytes into the
+/// world's host metrics (F11.7 frame bytes).
+async fn send_json<I: SessionIo>(meter: &WorldMetrics, io: &mut I, frame: &impl Serialize) -> bool {
     match serde_json::to_string(frame) {
-        Ok(encoded) if encoded.len() <= MAX_FRAME_BYTES => io.send(encoded).await,
+        Ok(encoded) if encoded.len() <= MAX_FRAME_BYTES => {
+            let bytes = encoded.len() as u64;
+            let sent = io.send(encoded).await;
+            if sent {
+                meter.add_frame_bytes(bytes);
+            }
+            sent
+        }
         _ => false,
     }
 }
 
-async fn send_error<I: SessionIo>(io: &mut I, message: &str) -> bool {
-    send_json(io, &ServerFrame::Error { message }).await
+async fn send_error<I: SessionIo>(meter: &WorldMetrics, io: &mut I, message: &str) -> bool {
+    send_json(meter, io, &ServerFrame::Error { message }).await
 }
 
 async fn send_delegation<I: SessionIo>(
+    meter: &WorldMetrics,
     io: &mut I,
     result: anyhow::Result<(Participant, JoinCapability)>,
 ) -> bool {
@@ -2089,9 +2482,9 @@ async fn send_delegation<I: SessionIo>(
                 participant_id: participant.id,
                 display_name: participant.display_name,
             };
-            send_json(io, &ServerFrame::Invite(&delegated)).await
+            send_json(meter, io, &ServerFrame::Invite(&delegated)).await
         }
-        Err(_) => send_error(io, "delegation denied").await,
+        Err(_) => send_error(meter, io, "delegation denied").await,
     }
 }
 

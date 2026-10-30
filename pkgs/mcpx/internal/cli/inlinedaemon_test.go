@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,5 +182,77 @@ func TestInlineDaemonStartsWithLiveContext(t *testing.T) {
 	defer a.CloseInline()
 	if !c.Ping(ctx) {
 		t.Fatal("the client returned by inlineDaemon does not ping its daemon")
+	}
+}
+
+// Point 1 of #1868: inline mode must not create a socket for the CLI's
+// own calls — the client talks to the daemon's handler in-process — and
+// the socket is opened only when a script asks for it (Client.Socket).
+func TestInlineDaemonCreatesNoSocketUntilAsked(t *testing.T) {
+	a := inlineDaemonApp(t)
+	before := inlineTempDirs(t)
+	c, err := a.inlineDaemon(context.Background())
+	if err != nil {
+		t.Fatalf("inlineDaemon: %v", err)
+	}
+	defer a.CloseInline()
+	if !c.Ping(context.Background()) {
+		t.Fatal("the in-process client does not ping its daemon")
+	}
+	var dir string
+	for d := range inlineTempDirs(t) {
+		if !before[d] {
+			dir = d
+		}
+	}
+	if dir == "" {
+		t.Fatal("no inline temp dir found")
+	}
+	sock := filepath.Join(dir, "d.sock")
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Fatalf("socket %s exists before any script asked for it (stat err %v)", sock, err)
+	}
+	// A script asks: Socket opens it, and it answers like the daemon.
+	if got := c.Socket(); got != sock {
+		t.Fatalf("Socket() = %q, want %q", got, sock)
+	}
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("socket not created by Socket(): %v", err)
+	}
+	paths := daemon.Paths{Socket: sock}
+	if !NewClient(paths, a.ConfigPath).Ping(context.Background()) {
+		t.Fatal("a socket client cannot ping the lazily opened socket")
+	}
+}
+
+// The in-process transport is a real HTTP round trip to the handler:
+// status, headers and a request body all survive it.
+func TestInProcessTransportRoundTrip(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("X-Echo-Path", r.URL.Path)
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write(body)
+	})
+	tr := newInProcessTransport(handler)
+	defer tr.Close()
+	hc := &http.Client{Transport: tr}
+	resp, err := hc.Post("http://mcpx/v1/echo", "text/plain", strings.NewReader("ping-body"))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTeapot {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusTeapot)
+	}
+	if resp.Header.Get("X-Echo-Path") != "/v1/echo" {
+		t.Errorf("X-Echo-Path = %q, want /v1/echo", resp.Header.Get("X-Echo-Path"))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ping-body" {
+		t.Errorf("body = %q, want the echoed request body", body)
 	}
 }

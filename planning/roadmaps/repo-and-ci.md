@@ -4,19 +4,21 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 
 ## Now
 
-| Title                                  | Status   | Intent                                                                          | Links      |
-| -------------------------------------- | -------- | ------------------------------------------------------------------------------- | ---------- |
-| One Jules workflow                     | proposed | Three Jules workflow files become one.                                          | #287       |
-| Cache the Go build and reuse artifacts | proposed | Build cache by `go.sum` hash.                                                   | #288       |
-| `nix flake check` out of disk          | proposed | It dies intermittently with "No space left on device" in `id-test` and `id-ci`. | #257       |
-| Triage stale PRs                       | proposed | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.  | #310, #311 |
+| Title                                     | Status   | Intent                                                                                                                                                                  | Links               |
+| ----------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| One Jules workflow                        | proposed | Three Jules workflow files become one.                                                                                                                                  | #287                |
+| Cache the Go build and reuse artifacts    | proposed | Build cache by `go.sum` hash.                                                                                                                                           | #288                |
+| Triage stale PRs                          | proposed | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.                                                                                          | #311               |
+| Queue fleet reliability                   | proposed | Lane-style shifts for every repo queue and shift completion certified from queue state, so the fleet runs a week without operator repairs.                              | #1233, #1130, #1131 |
+| OpenChamber session dispatch + babysitter | proposed | Larger code tasks run as OpenChamber sessions on plan pools, dispatched with admission control and watched by one babysitter — the token-cheap executor for fleet work. | #1234, #1185, #1187 |
 
 ## Next
 
-| Title                                         | Status      | Intent                                                                               | Links                           |
-| --------------------------------------------- | ----------- | ------------------------------------------------------------------------------------ | ------------------------------- |
-| The `id` workflow gate stays under 15 minutes | planned     | The gate once took about two hours. It is fast now. Keep it that way and measure it. | #292, F11.4                     |
-| Adopt the planning folder                     | in-progress | New plans and roadmap changes go through `planning/`.                                | [planning README](../README.md) |
+| Title                                         | Status      | Intent                                                                                                                                                               | Links                           |
+| --------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| The `id` workflow gate stays under 15 minutes | planned     | The gate once took about two hours. It is fast now. Keep it that way and measure it.                                                                                 | #292, F11.4                     |
+| Adopt the planning folder                     | in-progress | New plans and roadmap changes go through `planning/`.                                                                                                                | [planning README](../README.md) |
+| OpenClaw babysitting-by-comment               | proposed    | The monitor's routine issue comment becomes the control channel: OpenClaw reports its session state and obeys instructions in-thread. Pilot first, then mirror mode. | #1234, #1190                    |
 
 ## Ideas
 
@@ -26,20 +28,4 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 
 ## Done
 
-| Title                                               | Date       | Result              |
-| --------------------------------------------------- | ---------- | ------------------- |
-| Concurrency groups on CI workflows                  | 2026-10-18 | #289                |
-| Auto-assign concurrency keyed by issue or PR number | 2026-10-18 | #303                |
-| Jules runs only when they can act                   | 2026-10-18 | #304                |
-| Timeout caps on every job                           | 2026-10-19 | #293                |
-| PR gate cannot drift from the flake                 | 2026-10-18 | #318 (closes #300)  |
-| `mcpx` and `id` workflow speed-up                   | 2026-10-18 | #295                |
-| Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
-| Action pins aligned to the repo-standard v7         | 2026-10-20 | #395 (closes #394)  |
-| mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
-| Last lagging action pins aligned                    | 2026-10-20 | #406 (closes #405)  |
-| mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
-| Jules action pinned to commit SHA                   | 2026-10-20 | #424 (opencode#184) |
-| Push-to-main runs get their own concurrency group   | 2026-10-20 | #428 (closes #392)  |
-| Goreleaser workflow repaired (v2 schema)            | 2026-10-21 | #452 (closes #344)  |
-| `pkgs/graph` builds again, in go-modules-build CI   | 2026-10-21 | #446 (closes #166)  |
+Completed work is recorded in GitHub — see closed issues and merged PRs.

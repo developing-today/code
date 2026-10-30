@@ -1,0 +1,4943 @@
+{
+  // PROVIDER ALIGNMENT (2026-10-24, Drew): both machines carry the same
+  // providers; unneeded ones are disabled here, identically on both.
+  // - Token-based Google/Gemini paths are OFF. EARMARK: when a token-based
+  //   Gemini path is wanted one day, use the "google" provider below — it is
+  //   THE token path (Gemini API key; working muse-sandbox free-tier key is
+  //   in the credential store as "Google API (muse-sandbox)").
+  // - THE Antigravity provider is "antigravity-ls" (warm language-server
+  //   route). "antigravity-agy" (CLI spawn route) is disabled, earmarked as
+  //   the fallback if the language server ever becomes unavailable.
+  // To re-enable a provider: delete its id from disabled_providers.
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": true,
+  "disabled_providers": [
+    "google",
+    "google-vertex",
+    "antigravity-agy",
+    "cloudflare-ai-gateway",
+    "groq",
+    "nvidia",
+    "vercel",
+    "huggingface",
+    "opencode",
+    "github-copilot",
+    "openai-codex",
+    "chatgpt"
+  , "design-code", "code-design", "open-design", "openrouter", "cloudflare-gateway", "cloudflare-workers-ai"],
+  "default": "claude-code/claude-haiku-5-5",
+  "provider": {
+    "claude-code": {
+      "models": {
+        "claude-haiku-5-5": {
+          "name": "Haiku 5.5 (Claude Code)",
+          "variants": {
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        }
+      }
+    },
+    // DISABLED 2026-10-25 per Drew: cloudflare providers commented out + disabled. Commented out, not deleted.
+//     "cloudflare-gateway": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Cloudflare Workers AI (via AI Gateway)",
+//       "options": {
+//         "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
+//         "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
+//       },
+//       "models": {
+//         "@cf/deepseek-ai/deepseek-v4-flash-0731": {
+//           "name": "DeepSeek V4 Flash (1M Context, Agentic)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1048576,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+//           "name": "DeepSeek V4 Pro (1M Context, Deep Reasoning)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "high",
+//                 "max_tokens": 16384
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1048576,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
+//           "name": "DeepSeek R1 Distill Qwen 32B (Reasoning)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/zai-org/glm-5.3-flash": {
+//           "name": "GLM 5.3 Flash (1M Context, Fast Agentic)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1048576,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/zai-org/glm-5.3": {
+//           "name": "GLM 5.3 Flagship (1.3M Context, Multimodal)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1310720,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/meta/llama-4-scout-17b-16e-instruct": {
+//           "name": "Llama 4 Scout 17B-16E (MoE, 131k Context)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "temperature": 0.2
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "temperature": 0.5
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "temperature": 0.7
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+//           "name": "Llama 3.3 70B Instruct Fast (24k Context, FP8)",
+//           "limit": {
+//             "context": 24000,
+//             "output": 8192
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "temperature": 0.2
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "temperature": 0.5
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "temperature": 0.7
+//               }
+//             }
+//           }
+//         },
+//         "@cf/meta/llama-3.2-11b-vision-instruct": {
+//           "name": "Llama 3.2 11B Vision Instruct (Multimodal)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 8192
+//           }
+//         },
+//         "@cf/google/gemma-4-26b-a4b-it": {
+//           "name": "Gemma 4 26B-A4B Instruct (Google Open Weights)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 8192
+//           }
+//         },
+//         "@cf/qwen/qwen3.8-27b": {
+//           "name": "Qwen 3.8 27B (262k Context)",
+//           "limit": {
+//             "context": 262144,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/qwen/qwen3-30b-a3b-fp8": {
+//           "name": "Qwen 3 MoE 30B-A3B (Edge Speed)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/qwen/qwen2.5-coder-32b-instruct": {
+//           "name": "Qwen 2.5 Coder 32B (Code Specialist)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/qwen/qwq-32b": {
+//           "name": "QwQ 32B (Thinking / Math & Architecture)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/moonshotai/kimi-k2.7-code": {
+//           "name": "Kimi K2.7 Code (262k Context, Repo Analysis)",
+//           "limit": {
+//             "context": 262144,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/mistralai/mistral-small-3.1-24b-instruct": {
+//           "name": "Mistral Small 3.1 24B Instruct",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/openai/gpt-oss-120b": {
+//           "name": "GPT-OSS 120B (Open-Weight Flagship)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/openai/gpt-oss-20b": {
+//           "name": "GPT-OSS 20B (Open-Weight Latency Tier)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         },
+//         "@cf/cloudflare/clef": {
+//           "name": "Cloudflare Clef 27B (Typed Classifier)",
+//           "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+//           "limit": {
+//             "context": 32768,
+//             "output": 4096
+//           }
+//         },
+//         "@cf/cloudflare/clef-flash": {
+//           "name": "Cloudflare Clef Flash 9B (Edge Classifier)",
+//           "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+//           "limit": {
+//             "context": 32768,
+//             "output": 4096
+//           }
+//         },
+//         "@cf/meta/llama-guard-3-8b": {
+//           "name": "Llama Guard 3 8B",
+//           "limit": {
+//             "context": 131072,
+//             "output": 131072
+//           }
+//         },
+//         "@cf/meta/llama-3.1-8b-instruct-fp8": {
+//           "name": "Llama 3.1 8B Instruct fp8",
+//           "limit": {
+//             "context": 32000,
+//             "output": 32000
+//           }
+//         },
+//         "@cf/meta/llama-3.2-1b-instruct": {
+//           "name": "Llama 3.2 1B Instruct",
+//           "limit": {
+//             "context": 60000,
+//             "output": 60000
+//           }
+//         },
+//         "@cf/meta/llama-3.2-3b-instruct": {
+//           "name": "Llama 3.2 3B Instruct",
+//           "limit": {
+//             "context": 80000,
+//             "output": 80000
+//           }
+//         },
+//         "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
+//           "name": "Gemma Sea Lion V4 27B It",
+//           "limit": {
+//             "context": 128000,
+//             "output": 128000
+//           }
+//         },
+//         "@cf/ibm-granite/granite-4.0-h-micro": {
+//           "name": "Granite 4.0 H Micro",
+//           "limit": {
+//             "context": 131000,
+//             "output": 131000
+//           }
+//         },
+//         "@cf/moonshotai/kimi-k2.6": {
+//           "name": "Kimi K2.6",
+//           "limit": {
+//             "context": 262144,
+//             "output": 256000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         },
+//         "@cf/zai-org/glm-4.7-flash": {
+//           "name": "GLM-4.7-Flash",
+//           "limit": {
+//             "context": 131072,
+//             "output": 131072
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         },
+//         "@cf/zai-org/glm-5.2": {
+//           "name": "Glm 5.2",
+//           "limit": {
+//             "context": 262144,
+//             "output": 256000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         },
+//         "@cf/nvidia/nemotron-3-120b-a12b": {
+//           "name": "Nemotron 3 Super 120B",
+//           "limit": {
+//             "context": 256000,
+//             "output": 256000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         },
+//         "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+//           "name": "Deepseek V4.1 Flash 1017",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 1048576
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         }
+//       }
+//     },
+    // DISABLED 2026-10-25 per Drew: cloudflare providers commented out + disabled. Commented out, not deleted.
+//     "cloudflare-workers-ai": {},
+    // "cloudflare-ai-gateway": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Cloudflare AI Gateway (Unified Routing)",
+//       "options": {
+//         "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway",
+//         "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
+//       },
+//       "models": {
+//         "anthropic/claude-sonnet-5.5": {
+//           "name": "Claude Sonnet 5.5 (via AI Gateway)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 4096
+//                 }
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 16384
+//                 }
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 32768
+//                 }
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 64000
+//                 }
+//               }
+//             }
+//           }
+//         },
+//         "anthropic/claude-opus-5.5": {
+//           "name": "Claude Opus 5.5 (via AI Gateway)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 8192
+//                 }
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 16384
+//                 }
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 32768
+//                 }
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "thinking": {
+//                   "type": "enabled",
+//                   "budget_tokens": 64000
+//                 }
+//               }
+//             }
+//           }
+//         },
+//         "anthropic/claude-sonnet-4.5": {
+//           "name": "Claude Sonnet 4.5 (via AI Gateway)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "openai/gpt-4o": {
+//           "name": "GPT-4o (via AI Gateway)",
+//           "limit": {
+//             "context": 128000,
+//             "output": 16384
+//           }
+//         },
+//         "openai/gpt-4o-mini": {
+//           "name": "GPT-4o mini (via AI Gateway)",
+//           "limit": {
+//             "context": 128000,
+//             "output": 16384
+//           }
+//         },
+//         "openai/o1": {
+//           "name": "o1 (via AI Gateway)",
+//           "limit": {
+//             "context": 200000,
+//             "output": 100000
+//           }
+//         },
+//         "openai/o3-mini": {
+//           "name": "o3-mini (via AI Gateway)",
+//           "limit": {
+//             "context": 200000,
+//             "output": 100000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           }
+//         },
+//         "openai/gpt-5-mini": {
+//           "name": "GPT-5 mini (via AI Gateway)",
+//           "limit": {
+//             "context": 200000,
+//             "output": 32768
+//           }
+//         },
+//         "openai/gpt-5.6-sol": {
+//           "name": "GPT-5.6-SOL (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.6-sol-fast": {
+//           "name": "GPT-5.6-SOL-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.6-luna": {
+//           "name": "GPT-5.6-LUNA (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.6-luna-fast": {
+//           "name": "GPT-5.6-LUNA-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.6-terra": {
+//           "name": "GPT-5.6-TERRA (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.6-terra-fast": {
+//           "name": "GPT-5.6-TERRA-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-sol": {
+//           "name": "GPT-6-SOL (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-sol-fast": {
+//           "name": "GPT-6-SOL-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6.1-sol": {
+//           "name": "GPT-6.1-SOL (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6.1-sol-fast": {
+//           "name": "GPT-6.1-SOL-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-luna": {
+//           "name": "GPT-6-LUNA (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-luna-fast": {
+//           "name": "GPT-6-LUNA-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-astra": {
+//           "name": "GPT-6-ASTRA (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-6-astra-fast": {
+//           "name": "GPT-6-ASTRA-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.5": {
+//           "name": "GPT-5.5 (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.5-fast": {
+//           "name": "GPT-5.5-FAST (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.4": {
+//           "name": "GPT-5.4 (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.4-pro": {
+//           "name": "GPT-5.4-PRO (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         },
+//         "openai/gpt-5.5-pro": {
+//           "name": "GPT-5.5-PRO (via AI Gateway)",
+//           "limit": {
+//             "context": 1050000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    // "google": {
+//       "models": {
+//         "antigravity-claude-sonnet-5.5": {
+//           "name": "Claude Sonnet 5.5 (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 4096
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-sonnet-5.5-thinking": {
+//           "name": "Claude Sonnet 5.5 Thinking (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 4096
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-sonnet-5-5": {
+//           "name": "Claude Sonnet 5.5 (Antigravity, agy-compat)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 4096
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-opus-5.5": {
+//           "name": "Claude Opus 5.5 (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 8192
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-opus-5.5-thinking": {
+//           "name": "Claude Opus 5.5 Thinking (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 8192
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-opus-5-5": {
+//           "name": "Claude Opus 5.5 (Antigravity, agy-compat)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 8192
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "xhigh": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 48000
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-claude-sonnet-4-6": {
+//           "name": "Claude Sonnet 4.6 (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           }
+//         },
+//         "antigravity-claude-opus-4-6-thinking": {
+//           "name": "Claude Opus 4.6 Thinking (Antigravity)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 8192
+//               }
+//             },
+//             "medium": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 16384
+//               }
+//             },
+//             "high": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 32768
+//               }
+//             },
+//             "max": {
+//               "thinkingConfig": {
+//                 "thinkingBudget": 64000
+//               }
+//             }
+//           }
+//         },
+//         "antigravity-gemini-3.8-flash": {
+//           "name": "Gemini 3.8 Flash (Antigravity)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "minimal": {
+//               "thinkingLevel": "minimal"
+//             },
+//             "low": {
+//               "thinkingLevel": "low"
+//             },
+//             "medium": {
+//               "thinkingLevel": "medium"
+//             },
+//             "high": {
+//               "thinkingLevel": "high"
+//             },
+//             "max": {
+//               "thinkingLevel": "high"
+//             }
+//           }
+//         },
+//         "antigravity-gemini-3.7-flash": {
+//           "name": "Gemini 3.7 Flash (Antigravity)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "minimal": {
+//               "thinkingLevel": "minimal"
+//             },
+//             "low": {
+//               "thinkingLevel": "low"
+//             },
+//             "medium": {
+//               "thinkingLevel": "medium"
+//             },
+//             "high": {
+//               "thinkingLevel": "high"
+//             }
+//           }
+//         },
+//         "antigravity-gemini-3.6-flash": {
+//           "name": "Gemini 3.6 Flash (Antigravity)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingLevel": "low"
+//             },
+//             "medium": {
+//               "thinkingLevel": "medium"
+//             },
+//             "high": {
+//               "thinkingLevel": "high"
+//             }
+//           }
+//         },
+//         "antigravity-gemini-3.1-pro": {
+//           "name": "Gemini 3.1 Pro (Antigravity)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "modalities": {
+//             "input": [
+//               "text",
+//               "image",
+//               "pdf"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingLevel": "low"
+//             },
+//             "high": {
+//               "thinkingLevel": "high"
+//             },
+//             "max": {
+//               "thinkingLevel": "high"
+//             }
+//           }
+//         },
+//         "antigravity-gpt-oss-120b": {
+//           "name": "GPT-OSS 120B (Antigravity)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           },
+//           "modalities": {
+//             "input": [
+//               "text"
+//             ],
+//             "output": [
+//               "text"
+//             ]
+//           },
+//           "variants": {
+//             "low": {
+//               "thinkingLevel": "low"
+//             },
+//             "medium": {
+//               "thinkingLevel": "medium"
+//             },
+//             "high": {
+//               "thinkingLevel": "high"
+//             }
+//           }
+//         },
+//         "gemini-flash-latest": {
+//           "name": "Gemini Flash Latest",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemma-4-31b-it": {
+//           "name": "Gemma 4 31B IT",
+//           "limit": {
+//             "context": 262144,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-omni-flash-preview": {
+//           "name": "Gemini Omni Flash Preview",
+//           "limit": {
+//             "context": 131072,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.1-flash-image-preview": {
+//           "name": "Nano Banana 2",
+//           "limit": {
+//             "context": 65536,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "veo-3.1-lite-generate-preview": {
+//           "name": "Veo 3.1 lite",
+//           "limit": {
+//             "context": 480,
+//             "output": 8192
+//           }
+//         },
+//         "lyria-3-pro-preview": {
+//           "name": "Lyria 3 Pro Preview",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.1-flash-tts-preview": {
+//           "name": "Gemini 3.1 Flash TTS Preview",
+//           "limit": {
+//             "context": 8192,
+//             "output": 16384
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-flash-image": {
+//           "name": "Nano Banana",
+//           "limit": {
+//             "context": 32768,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-flash-lite-latest": {
+//           "name": "Gemini Flash-Lite Latest",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-embedding-2": {
+//           "name": "Gemini Embedding 2",
+//           "limit": {
+//             "context": 8192,
+//             "output": 1
+//           }
+//         },
+//         "gemini-3.6-flash": {
+//           "name": "Gemini 3.6 Flash",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemma-4-26b-a4b-it": {
+//           "name": "Gemma 4 26B A4B IT",
+//           "limit": {
+//             "context": 262144,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3-pro-image-preview": {
+//           "name": "Nano Banana Pro",
+//           "limit": {
+//             "context": 131072,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-pro-preview-tts": {
+//           "name": "Gemini 2.5 Pro Preview TTS",
+//           "limit": {
+//             "context": 8192,
+//             "output": 16384
+//           }
+//         },
+//         "gemini-3.5-flash-lite": {
+//           "name": "Gemini 3.5 Flash Lite",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.1-flash-image": {
+//           "name": "Nano Banana 2",
+//           "limit": {
+//             "context": 131072,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "lyria-3-clip-preview": {
+//           "name": "Lyria 3 Clip Preview",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.1-pro-preview": {
+//           "name": "Gemini 3.1 Pro Preview",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-computer-use-preview-10-2025": {
+//           "name": "Gemini 2.5 Computer Use Preview 10-2025",
+//           "limit": {
+//             "context": 128000,
+//             "output": 64000
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.5-flash": {
+//           "name": "Gemini 3.5 Flash",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-pro": {
+//           "name": "Gemini 2.5 Pro",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3-pro-image": {
+//           "name": "Nano Banana Pro",
+//           "limit": {
+//             "context": 65536,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-flash": {
+//           "name": "Gemini 2.5 Flash",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-2.5-flash-preview-tts": {
+//           "name": "Gemini 2.5 Flash Preview TTS",
+//           "limit": {
+//             "context": 8192,
+//             "output": 16384
+//           }
+//         },
+//         "gemini-3.1-flash-lite-image": {
+//           "name": "Nano Banana 2 Lite",
+//           "limit": {
+//             "context": 65536,
+//             "output": 4096
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "deep-research-preview-04-2026": {
+//           "name": "Deep Research Preview (Apr-21-2026)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "deep-research-max-preview-04-2026": {
+//           "name": "Deep Research Max Preview (Apr-21-2026)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "veo-3.1-fast-generate-preview": {
+//           "name": "Veo 3.1 fast",
+//           "limit": {
+//             "context": 480,
+//             "output": 8192
+//           }
+//         },
+//         "gemini-3.7-flash": {
+//           "name": "Gemini 3.7 Flash",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "veo-3.1-generate-preview": {
+//           "name": "Veo 3.1",
+//           "limit": {
+//             "context": 480,
+//             "output": 8192
+//           }
+//         },
+//         "gemini-3.1-pro-preview-customtools": {
+//           "name": "Gemini 3.1 Pro Preview Custom Tools",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3-flash-preview": {
+//           "name": "Gemini 3 Flash Preview",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.8-flash": {
+//           "name": "Gemini 3.8 Flash",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.5-live-translate-preview": {
+//           "name": "Gemini 3.5 Live Translate Preview",
+//           "limit": {
+//             "context": 16384,
+//             "output": 32768
+//           }
+//         },
+//         "gemini-2.5-flash-lite": {
+//           "name": "Gemini 2.5 Flash-Lite",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-embedding-001": {
+//           "name": "Gemini Embedding 001",
+//           "limit": {
+//             "context": 2048,
+//             "output": 1
+//           }
+//         },
+//         "gemini-3.1-flash-lite-preview": {
+//           "name": "Gemini 3.1 Flash Lite Preview",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.1-flash-live-preview": {
+//           "name": "Gemini 3.1 Flash Live Preview",
+//           "limit": {
+//             "context": 131072,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-3.1-flash-lite": {
+//           "name": "Gemini 3.1 Flash Lite",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-4-argon": {
+//           "name": "Gemini 4 Argon",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 32768
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         },
+//         "gemini-pro-latest": {
+//           "name": "Gemini Pro Latest",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           },
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "thinkingLevel": "low"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "thinkingLevel": "high"
+//               }
+//             }
+//           }
+//         }
+//       }
+//     },
+    // "antigravity-agy": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Antigravity CLI (via agy)",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18743/v1",
+//         "apiKey": "agy-local"
+//       },
+//       "models": {
+//         "gemini-3.8-flash": {
+//           "name": "Gemini 3.8 Flash (agy)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "claude-sonnet-5-5": {
+//           "name": "Claude Sonnet 5.5 (agy)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "claude-opus-5-5": {
+//           "name": "Claude Opus 5.5 (agy)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "gemini-2.5-flash": {
+//           "name": "Gemini 3.5 Flash Lite (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-2.5-flash-lite": {
+//           "name": "Gemini 3.5 Flash Lite (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-2.5-flash-thinking": {
+//           "name": "Gemini 3.5 Flash Lite (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-2.5-pro": {
+//           "name": "Gemini 2.5 Pro (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3-flash": {
+//           "name": "Gemini 3 Flash (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.1-flash-image": {
+//           "name": "Gemini 3.1 Flash Image (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.1-flash-lite": {
+//           "name": "Gemini 3.1 Flash Lite (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.5-flash-lite": {
+//           "name": "Gemini 3.5 Flash Lite (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gemini-3.8-flash-tiered": {
+//           "name": "gemini-3.8-flash-tiered (agy)",
+//           "limit": {
+//             "context": 1048576,
+//             "output": 65536
+//           }
+//         },
+//         "gpt-oss-120b": {
+//           "name": "GPT-OSS 120B (agy)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           },
+//           "variants": {
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             }
+//           }
+//         }
+//       }
+//     },
+    "antigravity-ls": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
+      "options": {
+        "baseURL": "http://127.0.0.1:18745/v1",
+        "apiKey": "antigravity-local"
+      },
+      "models": {
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (Direct LS)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Direct LS)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
+          }
+        }
+      }
+    },
+    "openai": {
+      "models": {
+        "gpt-4o": {
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-4o-mini": {
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "o1": {
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        },
+        "o3-mini": {
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          }
+        },
+        "gpt-5.6-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-luna": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-luna-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5-fast": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4-pro": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5-pro": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
+        "gpt-5": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5-mini": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.1": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.2": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.3-codex": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "gpt-5.4-mini": {
+          "limit": {
+            "context": 400000,
+            "output": 128000
+          }
+        },
+        "chatgpt-image-latest": {
+          "name": "chatgpt-image-latest",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-3.5-turbo": {
+          "name": "GPT-3.5-turbo",
+          "limit": {
+            "context": 16385,
+            "output": 4096
+          }
+        },
+        "text-embedding-3-small": {
+          "name": "text-embedding-3-small",
+          "limit": {
+            "context": 8191,
+            "output": 1536
+          }
+        },
+        "gpt-5.4-nano": {
+          "name": "GPT-5.4 nano",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-realtime-2.1": {
+          "name": "GPT-Realtime-2.1",
+          "limit": {
+            "context": 128000,
+            "input": 96000,
+            "output": 32000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-4o-2024-05-13": {
+          "name": "GPT-4o (2024-05-13)",
+          "limit": {
+            "context": 128000,
+            "output": 4096
+          }
+        },
+        "gpt-image-2": {
+          "name": "gpt-image-2",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-5.2-pro": {
+          "name": "GPT-5.2 Pro",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o4-mini": {
+          "name": "o4-mini",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "text-embedding-ada-002": {
+          "name": "text-embedding-ada-002",
+          "limit": {
+            "context": 8192,
+            "output": 1536
+          }
+        },
+        "gpt-4": {
+          "name": "GPT-4",
+          "limit": {
+            "context": 8192,
+            "output": 8192
+          }
+        },
+        "gpt-4.1-nano": {
+          "name": "GPT-4.1 nano",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-5-nano": {
+          "name": "GPT-5 Nano",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.6": {
+          "name": "GPT-5.6",
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.2-chat-latest": {
+          "name": "GPT-5.2 Chat",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5-pro": {
+          "name": "GPT-5 Pro",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 272000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-5.3-codex-spark": {
+          "name": "GPT-5.3 Codex Spark",
+          "limit": {
+            "context": 128000,
+            "input": 100000,
+            "output": 32000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "text-embedding-3-large": {
+          "name": "text-embedding-3-large",
+          "limit": {
+            "context": 8191,
+            "output": 3072
+          }
+        },
+        "gpt-4o-2024-08-06": {
+          "name": "GPT-4o (2024-08-06)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "o3-pro": {
+          "name": "o3-pro",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-image-1": {
+          "name": "gpt-image-1",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-daybreak-blue-latest": {
+          "name": "Daybreak Blue",
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "gpt-4.1": {
+          "name": "GPT-4.1",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-4o-2024-11-20": {
+          "name": "GPT-4o (2024-11-20)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-4.1-mini": {
+          "name": "GPT-4.1 mini",
+          "limit": {
+            "context": 1047576,
+            "output": 32768
+          }
+        },
+        "gpt-5.3-chat-latest": {
+          "name": "GPT-5.3 Chat (latest)",
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        },
+        "gpt-image-1-mini": {
+          "name": "gpt-image-1-mini",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-image-1.5": {
+          "name": "gpt-image-1.5",
+          "limit": {
+            "context": 0,
+            "input": 0,
+            "output": 0
+          }
+        },
+        "gpt-4-turbo": {
+          "name": "GPT-4 Turbo",
+          "limit": {
+            "context": 128000,
+            "output": 4096
+          }
+        },
+        "gpt-daybreak-red-latest": {
+          "name": "Daybreak Red",
+          "limit": {
+            "context": 400000,
+            "input": 272000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o3": {
+          "name": "o3",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "o1-pro": {
+          "name": "o1-pro",
+          "limit": {
+            "context": 200000,
+            "output": 100000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        }
+      }
+    },
+    // "openai-codex": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "OpenAI Codex CLI (via codex)",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18744/v1",
+//         "apiKey": "codex-local"
+//       },
+//       "models": {
+//         "gpt-6.1-sol": {
+//           "name": "GPT-6.1 Sol (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-astra": {
+//           "name": "GPT-6 Astra (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-sol": {
+//           "name": "GPT-6 Sol (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-luna": {
+//           "name": "GPT-6 Luna (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-sol": {
+//           "name": "GPT-5.6 Sol (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-terra": {
+//           "name": "GPT-5.6 Terra (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-luna": {
+//           "name": "GPT-5.6 Luna (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.5": {
+//           "name": "GPT-5.5 (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-reserve": {
+//           "name": "GPT Reserve (codex)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "codex-auto-review": {
+//           "name": "Codex Auto Review",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    // "chatgpt": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "ChatGPT (via Codex)",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18744/v1",
+//         "apiKey": "codex-local"
+//       },
+//       "models": {
+//         "gpt-6.1-sol": {
+//           "name": "GPT-6.1 Sol (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-astra": {
+//           "name": "GPT-6 Astra (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-sol": {
+//           "name": "GPT-6 Sol (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6-luna": {
+//           "name": "GPT-6 Luna (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-sol": {
+//           "name": "GPT-5.6 Sol (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-terra": {
+//           "name": "GPT-5.6 Terra (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             },
+//             "ultra": {
+//               "options": {
+//                 "reasoning_effort": "ultra"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.6-luna": {
+//           "name": "GPT-5.6 Luna (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             },
+//             "max": {
+//               "options": {
+//                 "reasoning_effort": "max"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-5.5": {
+//           "name": "GPT-5.5 (ChatGPT)",
+//           "variants": {
+//             "low": {
+//               "options": {
+//                 "reasoning_effort": "low"
+//               }
+//             },
+//             "medium": {
+//               "options": {
+//                 "reasoning_effort": "medium"
+//               }
+//             },
+//             "high": {
+//               "options": {
+//                 "reasoning_effort": "high"
+//               }
+//             },
+//             "xhigh": {
+//               "options": {
+//                 "reasoning_effort": "xhigh"
+//               }
+//             }
+//           },
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    // "design-code": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Design Code",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18746/v1",
+//         "apiKey": "design-local"
+//       },
+//       "models": {
+//         "claude-haiku-5.5": {
+//           "name": "Claude Haiku 5.5 (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "gpt-6-luna": {
+//           "name": "GPT-6 Luna (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6.1-sol": {
+//           "name": "GPT-6.1 Sol (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "deepseek-v4.1-flash": {
+//           "name": "DeepSeek V4.1 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flash": {
+//           "name": "GLM 5.3 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flashx": {
+//           "name": "GLM 5.3 FlashX (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-flash": {
+//           "name": "MIMO v2.6 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-pro": {
+//           "name": "MIMO v2.6 Pro (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-pro": {
+//           "name": "Design Code Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-flash": {
+//           "name": "Design Code Flash",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "open-design-pro": {
+//           "name": "Open Design Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    // "code-design": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Code Design",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18746/v1",
+//         "apiKey": "design-local"
+//       },
+//       "models": {
+//         "claude-haiku-5.5": {
+//           "name": "Claude Haiku 5.5 (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "gpt-6-luna": {
+//           "name": "GPT-6 Luna (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6.1-sol": {
+//           "name": "GPT-6.1 Sol (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "deepseek-v4.1-flash": {
+//           "name": "DeepSeek V4.1 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flash": {
+//           "name": "GLM 5.3 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flashx": {
+//           "name": "GLM 5.3 FlashX (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-flash": {
+//           "name": "MIMO v2.6 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-pro": {
+//           "name": "MIMO v2.6 Pro (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-pro": {
+//           "name": "Design Code Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-flash": {
+//           "name": "Design Code Flash",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "open-design-pro": {
+//           "name": "Open Design Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    // "open-design": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Open Design",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18746/v1",
+//         "apiKey": "design-local"
+//       },
+//       "models": {
+//         "claude-haiku-5.5": {
+//           "name": "Claude Haiku 5.5 (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "gpt-6-luna": {
+//           "name": "GPT-6 Luna (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "gpt-6.1-sol": {
+//           "name": "GPT-6.1 Sol (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         },
+//         "deepseek-v4.1-flash": {
+//           "name": "DeepSeek V4.1 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flash": {
+//           "name": "GLM 5.3 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "glm-5.3-flashx": {
+//           "name": "GLM 5.3 FlashX (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-flash": {
+//           "name": "MIMO v2.6 Flash (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "mimo-v2.6-pro": {
+//           "name": "MIMO v2.6 Pro (Design Code)",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-pro": {
+//           "name": "Design Code Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "design-code-flash": {
+//           "name": "Design Code Flash",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 64000
+//           }
+//         },
+//         "open-design-pro": {
+//           "name": "Open Design Pro",
+//           "limit": {
+//             "context": 1000000,
+//             "output": 128000
+//           }
+//         }
+//       }
+//     },
+    "opendesign": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenDesign",
+      "options": {
+        "baseURL": "http://127.0.0.1:18746/v1",
+        "apiKey": "design-local"
+      },
+      "models": {
+        "claude-haiku-5.5": {
+          "name": "Claude Haiku 5.5 (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flashx": {
+          "name": "GLM 5.3 FlashX (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-flash": {
+          "name": "MIMO v2.6 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-pro": {
+          "name": "MIMO v2.6 Pro (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-pro": {
+          "name": "Design Code Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-flash": {
+          "name": "Design Code Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "open-design-pro": {
+          "name": "Open Design Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek Official API",
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1"
+      },
+      "models": {
+        "deepseek-chat": {
+          "name": "DeepSeek V4.1 Flash (Chat)",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        },
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        }
+      }
+    },
+// DISABLED 2026-10-25 per Drew: openrouter commented out for now — its configured free model (minimax-m3.1-flash:free) was retired 2026-10-22 and the key is at its monthly limit. Commented out, not deleted.
+//    "openrouter": {
+//      "npm": "@ai-sdk/openai-compatible",
+//      "name": "OpenRouter (Free Tier)",
+//      "options": {
+//        "baseURL": "https://openrouter.ai/api/v1"
+//      },
+//      "models": {
+//        "minimax/minimax-m3.1-flash:free": {
+//          "name": "MiniMax M3.1 Flash (Free)",
+//          "limit": {
+//            "context": 204800,
+//            "output": 131072
+//          }
+//        },
+//        "poolside/laguna-s-2.1:free": {
+//          "name": "Poolside Laguna S 2.1 (Free)",
+//          "limit": {
+//            "context": 131072,
+//            "output": 32768
+//          }
+//        }
+//      }
+//    },
+    // "groq": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Groq (Free Cloud)",
+//       "options": {
+//         "baseURL": "https://api.groq.com/openai/v1"
+//       },
+//       "models": {
+//         "qwen/qwen3.8-27b": {
+//           "name": "Qwen 3.8 27B (Groq)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 8192
+//           }
+//         },
+//         "openai/gpt-oss-120b": {
+//           "name": "GPT-OSS 120B (Groq)",
+//           "limit": {
+//             "context": 131072,
+//             "output": 16384
+//           }
+//         }
+//       }
+//     },
+    "meta": {
+      "npm": "@ai-sdk/openai",
+      "name": "Meta Model API",
+      "options": {
+        "baseURL": "https://api.meta.ai/v1"
+      },
+      "models": {
+        "muse-wonder-1.0": {
+          "name": "Muse Wonder"
+        },
+        "muse-spark-1.3": {
+          "name": "Muse Spark 1.3"
+        },
+        "muse-spark-1.1": {
+          "name": "Muse Spark 1.1"
+        }
+      }
+    },
+// DISABLED 2026-10-25 per Drew: the "muse" provider (Muse CLI subscription route) is not a pool plan — the Meta pool plan is the "meta" provider. Commented out per fleet rule, not deleted.
+//     "muse": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Muse (CLI via muse-proxy)",
+//       "options": {
+//         "baseURL": "http://127.0.0.1:18747/v1",
+//         "apiKey": "muse-local"
+//       },
+//       "models": {
+//         "muse-spark-1.3": {
+//           "name": "Muse Spark 1.3 (muse)"
+//         },
+//         "muse-wonder-1.0": {
+//           "name": "Muse Wonder 1.0 (muse)"
+//         },
+//         "muse-spark-1.3-low": {
+//           "name": "Muse Spark 1.3 Low (muse)"
+//         },
+//         "muse-wonder-1.0-low": {
+//           "name": "Muse Wonder 1.0 Low (muse)"
+//         }
+//       }
+//     },
+    // "cline": {
+//       "npm": "@ai-sdk/openai-compatible",
+//       "name": "Cline (ClinePass)",
+//       "options": {
+//         "baseURL": "https://api.cline.bot/api/v1"
+//       },
+//       "models": {
+//         "cline-pass/glm-5.3": {
+//           "name": "GLM-5.3 (ClinePass)"
+//         },
+//         "cline-pass/glm-5.3-flash": {
+//           "name": "GLM-5.3 Flash (ClinePass)"
+//         },
+//         "cline-pass/kimi-k3": {
+//           "name": "Kimi K3 (ClinePass)"
+//         },
+//         "cline-pass/deepseek-v4-pro": {
+//           "name": "DeepSeek V4 Pro (ClinePass)"
+//         },
+//         "cline-pass/deepseek-v4.1-flash": {
+//           "name": "DeepSeek V4.1 Flash (ClinePass)"
+//         },
+//         "cline-pass/mimo-v2.5": {
+//           "name": "MiMo-V2.5 (ClinePass)"
+//         },
+//         "cline-pass/mimo-v2.5-pro": {
+//           "name": "MiMo-V2.5-Pro (ClinePass)"
+//         },
+//         "cline-pass/minimax-m3": {
+//           "name": "MiniMax M3 (ClinePass)"
+//         },
+//         "cline-pass/muse-spark-1.3-contributor": {
+//           "name": "Muse Spark 1.3 Contributor (ClinePass)"
+//         },
+//         "cline-pass/qwen3.8-max": {
+//           "name": "Qwen3.8 Max (ClinePass)"
+//         },
+//         "cline-pass/qwen3.7-max": {
+//           "name": "Qwen3.7 Max (ClinePass)"
+//         },
+//         "cline-pass/qwen3.7-plus": {
+//           "name": "Qwen3.7 Plus (ClinePass)"
+//         }
+//       }
+//     },
+    "opencode-go-personal": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (Personal)"
+    },
+    "opencode-go-lab": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (Lab)"
+    },
+    // disabled 2026-10-25: Home workspace has no active Go subscription (e2e: "An active OpenCode Go subscription is required"); re-enable when subscribed
+    // "opencode-go-home": {
+      // "instanceOf": "opencode-go",
+      // "name": "OpenCode Go (Home)"
+    // },
+    "commandcode": {
+          "npm": "@ai-sdk/openai-compatible",
+          "name": "Command Code (CLI proxy)",
+          "options": {
+                "baseURL": "http://127.0.0.1:18748/v1",
+                "apiKey": "commandcode-local"
+          },
+          "models": {
+                "deepseek/deepseek-v4-pro": {
+                      "name": "DeepSeek v4 Pro (Command Code)"
+                },
+                "deepseek/deepseek-v4-flash": {
+                      "name": "DeepSeek v4 Flash (Command Code)"
+                },
+                "deepseek/deepseek-v4-flash-vision-exp": {
+                      "name": "DeepSeek v4 Flash Vision Exp (Command Code)"
+                },
+                "deepseek/deepseek-v4-flash-fast": {
+                      "name": "DeepSeek v4 Flash Fast (Command Code)"
+                },
+                "deepseek/deepseek-v4.1-flash": {
+                      "name": "DeepSeek v4.1 Flash (Command Code)"
+                },
+                "deepseek/deepseek-v4.1-flash-fast": {
+                      "name": "DeepSeek v4.1 Flash Fast (Command Code)"
+                },
+                "moonshotai/kimi-k3": {
+                      "name": "Kimi k3 (Command Code)"
+                },
+                "moonshotai/kimi-k2.7-code": {
+                      "name": "Kimi k2.7 Code (Command Code)"
+                },
+                "moonshotai/kimi-k2.7-code-highspeed": {
+                      "name": "Kimi k2.7 Code Highspeed (Command Code)"
+                },
+                "moonshotai/kimi-k2.6": {
+                      "name": "Kimi k2.6 (Command Code)"
+                },
+                "moonshotai/kimi-k2.5": {
+                      "name": "Kimi k2.5 (Command Code)"
+                },
+                "z-ai/glm-5.3-flash": {
+                      "name": "GLM 5.3 Flash (Command Code)"
+                },
+                "z-ai/glm-5.3-flashx": {
+                      "name": "GLM 5.3 FlashX (Command Code)"
+                },
+                "zai-org/glm-5.3": {
+                      "name": "GLM 5.3 (Command Code)"
+                },
+                "zai-org/glm-5.2": {
+                      "name": "GLM 5.2 (Command Code)"
+                },
+                "zai-org/glm-5.2-fast": {
+                      "name": "GLM 5.2 Fast (Command Code)"
+                },
+                "zai-org/glm-5.1": {
+                      "name": "GLM 5.1 (Command Code)"
+                },
+                "zai-org/glm-5": {
+                      "name": "GLM 5 (Command Code)"
+                },
+                "minimaxai/minimax-m3": {
+                      "name": "MiniMax m3 (Command Code)"
+                },
+                "minimaxai/minimax-m2.7": {
+                      "name": "MiniMax m2.7 (Command Code)"
+                },
+                "minimaxai/minimax-m2.5": {
+                      "name": "MiniMax m2.5 (Command Code)"
+                },
+                "xiaomi/mimo-v2.6-pro": {
+                      "name": "MiMo v2.6 Pro (Command Code)"
+                },
+                "xiaomi/mimo-v2.6-pro-ultraspeed": {
+                      "name": "MiMo v2.6 Pro Ultraspeed (Command Code)"
+                },
+                "xiaomi/mimo-v2.6-flash": {
+                      "name": "MiMo v2.6 Flash (Command Code)"
+                },
+                "xiaomi/mimo-v2.5-pro": {
+                      "name": "Mimo v2.5 Pro (Command Code)"
+                },
+                "xiaomi/mimo-v2.5": {
+                      "name": "Mimo v2.5 (Command Code)"
+                },
+                "qwen/qwen3.8-omni-flash": {
+                      "name": "qwen3.8 Omni Flash (Command Code)"
+                },
+                "qwen/qwen3.8-max-0902": {
+                      "name": "qwen3.8 Max 0902 (Command Code)"
+                },
+                "qwen/qwen3.8-max": {
+                      "name": "qwen3.8 Max (Command Code)"
+                },
+                "qwen/qwen3.8-27b": {
+                      "name": "qwen3.8 27b (Command Code)"
+                },
+                "qwen/qwen3.8-flash": {
+                      "name": "qwen3.8 Flash (Command Code)"
+                },
+                "qwen/qwen3.7-max": {
+                      "name": "qwen3.7 Max (Command Code)"
+                },
+                "qwen/qwen3.7-plus": {
+                      "name": "qwen3.7 Plus (Command Code)"
+                },
+                "qwen/qwen3.7-flash": {
+                      "name": "qwen3.7 Flash (Command Code)"
+                },
+                "qwen/qwen3.6-max-preview": {
+                      "name": "qwen3.6 Max Preview (Command Code)"
+                },
+                "qwen/qwen3.6-plus": {
+                      "name": "qwen3.6 Plus (Command Code)"
+                },
+                "meituan/longcat-2.0": {
+                      "name": "LongCat 2.0 (Command Code)"
+                },
+                "stepfun/step-5-preview": {
+                      "name": "Step 5 Preview (Command Code)"
+                },
+                "stepfun/step-3.7-flash": {
+                      "name": "Step 3.7 Flash (Command Code)"
+                },
+                "stepfun/step-3.5-flash": {
+                      "name": "Step 3.5 Flash (Command Code)"
+                },
+                "tencent/hy3-paid": {
+                      "name": "Hy3 Paid (Command Code)"
+                },
+                "tencent/hy4-preview": {
+                      "name": "Hy4 Preview (Command Code)"
+                },
+                "nvidia/nemotron-3-ultra-550b-a55b": {
+                      "name": "Nemotron 3 Ultra 550b a55b (Command Code)"
+                },
+                "thinkingmachines/inkling": {
+                      "name": "Inkling (Command Code)"
+                },
+                "thinkingmachines/inkling-small": {
+                      "name": "Inkling Small (Command Code)"
+                },
+                "poolside/laguna-s-2.1-free": {
+                      "name": "Laguna S 2.1 Free (Command Code)"
+                },
+                "inclusionai/ling-3.0-flash-sante:free": {
+                      "name": "Ling 3.0 Flash Sante:Free (Command Code)"
+                },
+                "inclusionai/ling-3.1-flash:free": {
+                      "name": "Ling 3.1 Flash:Free (Command Code)"
+                },
+                "stealth/space-bunny-alpha": {
+                      "name": "Space Bunny Alpha (Command Code)"
+                },
+                "claude-sonnet-5-5": {
+                      "name": "Claude Sonnet 5 5 (Command Code)"
+                },
+                "claude-sonnet-5": {
+                      "name": "Claude Sonnet 5 (Command Code)"
+                },
+                "claude-sonnet-4-6": {
+                      "name": "Claude Sonnet 4 6 (Command Code)"
+                },
+                "claude-fable-5-1": {
+                      "name": "Claude Fable 5 1 (Command Code)"
+                },
+                "claude-fable-5": {
+                      "name": "Claude Fable 5 (Command Code)"
+                },
+                "claude-opus-5-5": {
+                      "name": "Claude Opus 5 5 (Command Code)"
+                },
+                "claude-opus-5": {
+                      "name": "Claude Opus 5 (Command Code)"
+                },
+                "claude-opus-4-8": {
+                      "name": "Claude Opus 4 8 (Command Code)"
+                },
+                "claude-opus-4-7": {
+                      "name": "Claude Opus 4 7 (Command Code)"
+                },
+                "claude-haiku-4-5": {
+                      "name": "Claude Haiku 4 5 (Command Code)"
+                },
+                "gpt-6-astra": {
+                      "name": "GPT 6 Astra (Command Code)"
+                },
+                "gpt-6.1-sol": {
+                      "name": "GPT 6.1 Sol (Command Code)"
+                },
+                "gpt-6-sol": {
+                      "name": "GPT 6 Sol (Command Code)"
+                },
+                "gpt-6-luna": {
+                      "name": "GPT 6 Luna (Command Code)"
+                },
+                "gpt-5.6-sol": {
+                      "name": "GPT 5.6 Sol (Command Code)"
+                },
+                "gpt-5.6-terra": {
+                      "name": "GPT 5.6 Terra (Command Code)"
+                },
+                "gpt-5.6-luna": {
+                      "name": "GPT 5.6 Luna (Command Code)"
+                },
+                "gpt-5.5": {
+                      "name": "GPT 5.5 (Command Code)"
+                },
+                "gpt-5.4": {
+                      "name": "GPT 5.4 (Command Code)"
+                },
+                "gpt-5.3-codex": {
+                      "name": "GPT 5.3 Codex (Command Code)"
+                },
+                "gpt-5.4-mini": {
+                      "name": "GPT 5.4 Mini (Command Code)"
+                },
+                "google/gemini-3.8-flash": {
+                      "name": "Gemini 3.8 Flash (Command Code)"
+                },
+                "google/gemini-3.7-flash": {
+                      "name": "Gemini 3.7 Flash (Command Code)"
+                },
+                "google/gemini-3.6-flash": {
+                      "name": "Gemini 3.6 Flash (Command Code)"
+                },
+                "google/gemini-3.5-flash": {
+                      "name": "Gemini 3.5 Flash (Command Code)"
+                },
+                "google/gemini-3.5-flash-lite": {
+                      "name": "Gemini 3.5 Flash Lite (Command Code)"
+                },
+                "google/gemini-3.1-flash-lite": {
+                      "name": "Gemini 3.1 Flash Lite (Command Code)"
+                },
+                "sakana/fugu-ultra": {
+                      "name": "Fugu Ultra (Command Code)"
+                },
+                "meta/muse-spark-1.1": {
+                      "name": "Muse Spark 1.1 (Command Code)"
+                },
+                "meta/muse-spark-1.2": {
+                      "name": "Muse Spark 1.2 (Command Code)"
+                },
+                "meta/muse-spark-1.2-contributor": {
+                      "name": "Muse Spark 1.2 Contributor (Command Code)"
+                },
+                "meta/muse-spark-1.3": {
+                      "name": "Muse Spark 1.3 (Command Code)"
+                },
+                "meta/muse-spark-1.3-contributor": {
+                      "name": "Muse Spark 1.3 Contributor (Command Code)"
+                },
+                "xai/grok-4.5": {
+                      "name": "Grok 4.5 (Command Code)"
+                },
+                "xai/grok-4.6": {
+                      "name": "Grok 4.6 (Command Code)"
+                },
+                "xai/grok-4.7": {
+                      "name": "Grok 4.7 (Command Code)"
+                }
+          }
+    }
+  },
+  "agent": {
+    "build": {
+      "mode": "all",
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "classifier-complex": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "classifier": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "reasoner": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "coder": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0.2
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "compaction": {
+      "threshold": 0.5
+    }
+  },
+  "instructions": [
+    ".opencode/instructions/mcpx.md",
+    ".opencode/instructions/subagents.md"
+  ],
+  "compaction": {
+    "reserved": 8192
+  },
+  "websearch": {
+    "provider": "random"
+  },
+  "warming": true,
+  "plugin": [
+    // "@pieliesdie/opencode-antigravity-auth@2.0.0", -- disabled 2026-10-24: direct-auth/API-key agy route off; plan agy runs via the antigravity-ls proxy only
+    "opencode-working-memory@latest",
+    "opencode-scheduler@latest",
+    "@openspoon/subtask2@latest",
+    "@mohak34/opencode-notifier@latest",
+    "opencode-pty@latest",
+    "opencode-devcontainers@latest",
+    "@franlol/opencode-md-table-formatter@latest",
+    "opencode-cmd-provider@latest",
+    "opencode-cockpit@latest",
+    "@openchamber/opencode-claude@1.3.8",
+    "opencode-models-discovery@latest",
+    "opencode-mem@latest",
+    "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
+  ],
+  "experimental": {
+    "model_routes": {
+      "cheap-pool": {
+        "targets": [
+          "google/gemma-4-31b-it",
+          "google/gemma-4-26b-a4b-it",
+          "google/lyria-3-pro-preview",
+          "google/lyria-3-clip-preview"
+        ],
+        "autonomy": "rules",
+        "selection": "ordered"
+      },
+      "fast": {
+        "targets": [
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#low",
+          "deepseek/deepseek-chat#low",
+          "groq/qwen/qwen3.8-27b"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deep": {
+        "targets": [
+          "deepseek/deepseek-v4-pro#max",
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-pro-0813#high"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "free": {
+        "targets": [
+          "openrouter/minimax/minimax-m3.1-flash:free",
+          "openrouter/poolside/laguna-s-2.1:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "balanced": {
+        "targets": [
+          "deepseek/deepseek-chat#high",
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#medium"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      }
+    }
+  }
+}

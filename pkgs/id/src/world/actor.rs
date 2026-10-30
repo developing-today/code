@@ -5,8 +5,45 @@ use std::sync::Arc;
 
 use anyhow::{Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+
+impl WorldCommand {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Issue { .. } => "Issue",
+            Self::Attenuate { .. } => "Attenuate",
+            Self::DelegateToFriend { .. } => "DelegateToFriend",
+            Self::Directory { .. } => "Directory",
+            Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::Revoke { .. } => "Revoke",
+            Self::ParticipantId { .. } => "ParticipantId",
+            Self::Chat { .. } => "Chat",
+            Self::Input { .. } => "Input",
+            Self::Snapshot { .. } => "Snapshot",
+            Self::EventsAfter { .. } => "EventsAfter",
+            Self::ProjectEvent { .. } => "ProjectEvent",
+            Self::View { .. } => "View",
+            Self::ViewAt { .. } => "ViewAt",
+            Self::InstallProgram { .. } => "InstallProgram",
+            Self::Presence { .. } => "Presence",
+            Self::UpdateCaps { .. } => "UpdateCaps",
+            Self::SetCapsCeiling { .. } => "SetCapsCeiling",
+            Self::SetExecutionProfile { .. } => "SetExecutionProfile",
+            Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::CapsInfo { .. } => "CapsInfo",
+            Self::SetIsolation { .. } => "SetIsolation",
+            Self::IsolationInfo { .. } => "IsolationInfo",
+            Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
+            Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
+            Self::SetFileScope { .. } => "SetFileScope",
+            Self::PolicyInfo { .. } => "PolicyInfo",
+            Self::Metrics { .. } => "Metrics",
+            Self::Shutdown { .. } => "Shutdown",
+        }
+    }
+}
 
 pub(crate) enum WorldCommand {
     Issue {
@@ -121,6 +158,25 @@ pub(crate) enum WorldCommand {
     ExecutionProfileInfo {
         reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
     },
+    /// Admin: read the manifest-reconciliation state — the active install
+    /// seed and the pending schedules. The seed stays inside the actor and
+    /// the admin layer; it is never part of a participant projection (#240).
+    ManifestState {
+        reply: oneshot::Sender<(u64, BTreeMap<String, u64>)>,
+    },
+    /// Admin: pend one schedule, replacing any pending schedule with the
+    /// same id. Replies with the full pending map after the change.
+    AdminScheduleAt {
+        id: String,
+        at_ms: u64,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
+    },
+    /// Admin: cancel a pending schedule by id (a no-op when absent).
+    /// Replies with the full pending map after the change.
+    AdminCancelSchedule {
+        id: String,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -154,6 +210,11 @@ pub(crate) enum WorldCommand {
     },
     PolicyInfo {
         reply: oneshot::Sender<WorldPolicy>,
+    },
+    /// Read this world's host metrics (F11.7): counters and histograms
+    /// recorded by the actor, the journal path, and the session layer.
+    Metrics {
+        reply: oneshot::Sender<MetricsSnapshot>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -189,6 +250,9 @@ pub(crate) struct WorldActor {
     pub(crate) auth: crate::directory_auth::DirectoryAuth,
     pub(crate) program: Box<dyn WorldProgram>,
     pub(crate) journal: Option<Box<dyn WorldJournal>>,
+    /// Host metrics registry (F11.7), shared with the handle and the
+    /// session layer; see [`WorldMetrics`].
+    pub(crate) metrics: WorldMetrics,
     pub(crate) storage_failed: bool,
     pub(crate) program_healthy: bool,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
@@ -243,7 +307,15 @@ impl WorldActor {
                 }
                 break;
             }
-            self.handle(command).await;
+            self.metrics.record_queue_depth(receiver.len() as u64);
+            let started = std::time::Instant::now();
+            let name = command.name();
+            async {
+                self.handle(command).await;
+            }
+            .instrument(tracing::info_span!("command", name))
+            .await;
+            self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
         }
@@ -303,12 +375,16 @@ impl WorldActor {
             !self.storage_failed,
             "world storage failed; the world is read-only"
         );
-        if let Some(journal) = self.journal.as_mut()
-            && let Err(error) = journal.append(&entry)
-        {
-            self.storage_failed = true;
-            tracing::error!("world journal append failed: {error:#}");
-            return Err(error.context("world storage failed; the world is read-only"));
+        if let Some(journal) = self.journal.as_mut() {
+            // The append includes its fsync, so this is the full durable
+            // cost of the entry (F11.7 journal append + fsync latency).
+            let started = std::time::Instant::now();
+            if let Err(error) = journal.append(&entry) {
+                self.storage_failed = true;
+                tracing::error!("world journal append failed: {error:#}");
+                return Err(error.context("world storage failed; the world is read-only"));
+            }
+            self.metrics.record_journal_append(started.elapsed());
         }
         Ok(())
     }
@@ -1282,6 +1358,53 @@ impl WorldActor {
             WorldCommand::ExecutionProfileInfo { reply } => {
                 let _ = reply.send(self.core.execution_profile);
             }
+            WorldCommand::ManifestState { reply } => {
+                let _ = reply.send((self.core.active_seed, self.core.schedules.clone()));
+            }
+            WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    if self.core.schedules.get(&id) == Some(&at_ms) {
+                        return Ok(self.core.schedules.clone());
+                    }
+                    // Validate the replacement before anything is persisted:
+                    // a refusal (say, past the horizon) must leave the
+                    // existing schedule standing, in the journal as in
+                    // memory (#807).
+                    let replacing = self.core.schedules.contains_key(&id);
+                    self.core.check_schedule_replacing(
+                        &id,
+                        at_ms,
+                        self.core.clock().now_ms(),
+                        replacing,
+                    )?;
+                    if replacing {
+                        // Journal the cancel before the replacement set:
+                        // replay refuses two pending sets for one id.
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    self.persist(JournalEntry::ScheduleSet {
+                        id: id.clone(),
+                        at_ms,
+                    })?;
+                    self.core.schedules.insert(id, at_ms);
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
+            }
+            WorldCommand::AdminCancelSchedule { id, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    crate::world_caps::validate_schedule_id(&id)?;
+                    if self.core.schedules.contains_key(&id) {
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
+            }
             WorldCommand::SetIsolation {
                 authority,
                 isolation,
@@ -1317,6 +1440,10 @@ impl WorldActor {
             WorldCommand::PolicyInfo { reply } => {
                 let _ = reply.send(self.core.policy());
             }
+            WorldCommand::Metrics { reply } => {
+                let sessions = self.presence.values().sum::<usize>() as u64;
+                let _ = reply.send(self.metrics.snapshot(sessions));
+            }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());
             }
@@ -1337,8 +1464,9 @@ impl WorldActor {
         let Some(journal) = self.journal.as_mut() else {
             return;
         };
+        let started = std::time::Instant::now();
         match compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut()) {
-            Ok(true) => {}
+            Ok(true) => self.metrics.record_checkpoint(started.elapsed()),
             Ok(false) => self.compaction_off = true,
             Err(error) => {
                 // The journal is still complete; just do not retry until
@@ -1400,6 +1528,7 @@ impl WorldActor {
             overdue_at_open,
             acting: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
+            metrics: WorldMetrics::default(),
         }
     }
 }

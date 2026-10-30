@@ -15,18 +15,22 @@ Design record (source of truth):
 
 ## The views
 
-| Route             | View                                                                                                                                                                                                                                                                                                                       | Machine-first JSON                          |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's goal measurements (#899) when a section exists; derived from board + roadmap + item activity, and labelled as derived, until then. | `/api/today.json`                           |
-| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                       | `/api/attention.json`, `/api/coverage.json` |
-| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                    | `/api/board.json`                           |
-| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                              | `/api/roadmap.json`                         |
-| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                                          | `/api/quota.json`                           |
-| `/dns`            | **DNS / domain register** (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                            | `/api/dns.json`                             |
-| `/sessions`       | **Sessions** (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                       | `/api/registry.json`                        |
-| `/pages`          | **All pages** — the page manifest rendered: every registered page, its route, and its JSON twin.                                                                                                                                                                                                                           | — (the manifest is `src/pages.ts`)          |
-| `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                          | `/api/comments.json?object=<ref>`           |
-| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                         | —                                           |
+| Route             | View                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Machine-first JSON                                                                                                             |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's goal measurements (#899) when a section exists; derived from board + roadmap + item activity, and labelled as derived, until then.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `/api/today.json`                                                                                                              |
+| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS USER** (default; the intake queue the orchestrator works first — only items it cannot resolve escalate here, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `/api/attention.json`, `/api/coverage.json`                                                                                    |
+| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `/api/board.json`                                                                                                              |
+| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `/api/roadmap.json`                                                                                                            |
+| `/quota`          | **Usage & billing** (hub, design 2026-10-25; pools from #851) — needs-attention strip (bubble rules: >80% of a limit, >$5 projected unbilled PAYG), token-quota pools + PAYG dollars card, SaaS service cards grouped by kind with highlight metrics, charges evidence strip. Per-service detail: `/quota/service/<id>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `/api/quota.json` (extended: `saas`/`payg`/`charges`/…), `/api/quota/service.json?id=`                                         |
+| `/aa`             | **Cost Explorer** — two tabs over the fleet-feed AA section. **AA Explorer**: the Artificial Analysis workbook measurements (rankings ⋈ Test_Runs) as three frontier charts (completion time × score, cost × score, cost × time, log axes, Pareto frontiers, effort ladders), with client-side filters (search, creator, family, benchmark, effort rungs, eligible-only) and three efficiency perspectives — **plan** (score/sec, dollars ignored), **API** (score/$, cost per task), **per-task** (fastest/cheapest finished task). **Model Explorer**: every model in the fleet config's provider catalogs with its pool seats, plan + effective value multiplier, and AA measurement, from a `catalog` section the collector builds out of the same `.opencode/opencode.jsonc` read as coverage. The AA tab also carries the reference design's companion views: tasks-completed vs duration (nominal-budget circles + published Go-cap diamonds), multiples-of-a-baseline chart + table (baseline selectable), a scores-only bar view (no-cost configurations included), per-chart dot-sizing by the third metric, PNG download, and a hide-a-configuration tray. Coverage lists (measured-not-pooled etc.) sit under the tabs. | `/api/aa.json` (extended: `catalog`)                                                                                           |
+| `/dns`            | **DNS / domain register** (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `/api/dns.json`                                                                                                                |
+| `/sessions`       | **Sessions** (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `/api/registry.json`                                                                                                           |
+| `/program`        | **Program status — projects index** (#1046, generalized #1121) — one card per configured project (title, live Project-pool counts by status for its Area, Grist roadmap row count, home-doc link), the whole-pool summary, orchestration freshness, and the pool's unset-Area count as a visible gap. Driven by the project registry in `src/project-config.ts`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `/api/program.json` (incl. per-project summaries)                                                                              |
+| `/program/<id>`   | **Project page** (#1121) — one per registry entry (pm-dashboard, lab-cluster, id, repo-fleet, mcpx, cloud-program): intro + home-doc/dashboard links, live tracked-issue states, its Area's pool items grouped by status, its roadmap area's rows, and editorial done/next/long-term/gaps where configured. Null Area/roadmap/home-doc render as honest gap notes, never empty sections. The full PM-dashboard document (#1046) lives at `/program/pm-dashboard`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `/api/program-project.json?id=<id>`                                                                                            |
+| `/health`         | **Health & topology** (#1147 + #1137) — every stack service probed live (60 s probe cache): the aggregator, Kaneo, its Postgres, ready-for-agent, Pad, Grist, the fleet-feed collector, the orchestration pass, and the projector (off by config, stated not implied); the services & ports topology table (port, bind, runs-as, consumers, what breaks); feed section ages; last job runs; per-source facets; and this dashboard's own per-page render history (in-process registry — an unrendered page says so, never fake-green).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `/api/health` (extended in place: `services` / `feed` / `pages` / `jobs` beside the original `status` / `source` / `sections`) |
+| `/pages`          | **All pages** — the page manifest rendered: every registered page, its route, and its JSON twin.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | — (the manifest is `src/pages.ts`)                                                                                             |
+| `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `/api/comments.json?object=<ref>`                                                                                              |
+| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —                                                                                                                              |
 
 All views are mobile-first (single-column stacking, scrollable tables,
 touch-sized switchers) — verify at phone width, not by resizing a desktop
@@ -38,7 +42,7 @@ that is plumbing, not links).
 ### Needs-you tiers + session clarity (slice 2, #898)
 
 - **Tiering** (`buildAttention` in `src/derive.ts`): every classified
-  session lands in NEEDS DREW (with an explainable `drewReason`),
+  session lands in NEEDS USER (with an explainable `drewReason`),
   NEEDS ORCHESTRATOR (with the fleet's next step), or in-motion. Drew
   rules, in order: the orchestration job's own classification (#899 —
   its tiers win for anything they name, reason verbatim) → a keeper
@@ -79,6 +83,37 @@ manifest, so a new page never touches the chrome. To add one:
 (`src/dns.ts`, keyed on the register's table header), and the page
 renders its views from that section alone.
 
+### Projects are configured, not coded (#1120)
+
+Every project on `/program` is one entry in the registry in
+`src/project-config.ts` (`PROJECT_CONFIGS`) — the single source the
+index, the per-project pages, and both JSON twins read. To add a
+project (target: under 30 minutes):
+
+1. Add one `ProjectConfig` entry: `id` (the `/program/<id>` slug),
+   `title`, `intro`, `poolArea` (its org Project #4 Area value, or
+   `null` — the page then states honestly that it has no dedicated
+   Area yet), `roadmapArea` (its Grist Program-roadmap area, or
+   `null`), `homeDoc` (its `planning/roadmaps/<project>.md` home, as
+   `{ repo, path, url }`), an optional `statusReport` (`{ label, url }`
+   for the latest dated status report), `dashboardLinks` (dashboard
+   routes or https source-doc URLs, with an optional `note` caveat),
+   and `trackedRefs` (the issues whose live state the page resolves).
+2. Optionally add `editorial` sections (`done` / `next` / `longTerm` /
+   `gaps`, `ProgramEntry[]` — every entry should carry its tracker
+   refs) and, for a program-level doc like pm-dashboard's,
+   `architecture` entries.
+3. Nothing else: the index card, the `/program/<id>` page, and the
+   JSON twins all derive from the entry, and every countable thing
+   (pool items by status, roadmap rows, issue states) is derived from
+   the Source at request time — never written into the config.
+
+Validation is fail-soft at render and strict in tests:
+`validateProjectConfigs` (duplicate ids, duplicate pool/roadmap
+areas, malformed slugs/refs, unusable home-doc / status-report /
+dashboard-link URLs) is asserted clean over the shipped registry in
+`test/program.test.ts`.
+
 ### Dashboard comments (slice 3, #906)
 
 Comments live in a dashboard-side store (`src/comments.ts`, one JSON
@@ -105,12 +140,116 @@ Two kinds, visually distinct everywhere they render:
 pass polls `GET /api/comments.json?kind=message&state=new` (and
 `?kind=github&state=new` for pending GitHub posts), triages each into
 its normal flow — update the item, queue work, escalate to Drew via
-the usual NEEDS DREW path; github-kind ones get posted and reported —
+the usual NEEDS USER path; github-kind ones get posted and reported —
 then marks them consumed with `POST /api/comments/triage { ids }`.
 Notes are never polled; they are read from
 `/api/comments.json?object=<ref>` when an item is picked up. Item
 pages merge the item's own thread with the threads of its linked
 `gh:` refs.
+
+### Dashboard actions — the triage write path (#1152/#1154/#1156)
+
+Actions are the dashboard's second write surface: where comments are
+conversation, actions are **requests a fleet job applies**. They live
+in their own store (`src/actions.ts`, one JSON file with atomic
+writes; path `PM_AGG_ACTIONS_FILE`) on the comments pattern, keyed by
+the same object refs, and every action carries a validated author
+(self-asserted on this loopback+tailnet-only surface — the trust
+model #941 tracks hardening).
+
+**How dashboard actions flow:** a form on a card posts
+`POST /api/actions` → the record sits in the store at state `new`,
+rendered on the card as a ⏳ badge → the consuming fleet job polls
+`GET /api/actions.json?state=new`, applies the action as the single
+writer of its surface, and reports the outcome via
+`POST /api/actions/result { id, outcome, byRun, note }` → the card
+then shows ✓ applied (or ✗ rejected, with the note). A result only
+transitions out of `new` (consume-once), a reposted form returns its
+existing record (per-form `clientToken` dedupe), and undo is a
+superseding action — records are never deleted, so
+`GET /api/actions.json` is the inspectable audit log.
+
+Kinds and consumers (one consumer per kind/source slice):
+
+- **triage** — the orchestration pass: `acknowledge` (seen; the next
+  published tier entry carries the ack), `snooze` (the item leaves
+  the Needs User tier until `payload.until`, and renders meanwhile in
+  the page's visible "Snoozed by you" strip), `escalate` /
+  `de-escalate` (tier override with reason), `answer` (text, a picked
+  `optionId`, or survey `answers[]` — one content verb), plus the
+  needs-user layer's `delegate` / `dismiss` / proposal verbs
+  (#1290–#1293; `dismiss` requires a reason at the boundary).
+- **status-request** — the orchestration pass again: `request-status`
+  asks for a Project Status change (the card shows "change requested"
+  until applied). The dashboard never writes the Project; the pass —
+  its single writer, #910 — applies it and its run log names
+  "requested via dashboard, action da-…".
+- **session** — routed by the recorded `sessionSource`: `poke` /
+  `answer` / `stop` on live sessions. Jules sessions are
+  keeper-mediated (the jules-review job consumes their `answer`
+  actions; poke/stop render disabled with the reason), OpenCode
+  sessions are consumed by the orchestration pass, and sources with
+  no live control channel (Muse, cron) render no enabled
+  controls. Stop sits behind a two-step confirm.
+- **preference** — the orchestration pass: `set-delegation-default`
+  records the standing auto toggle (below). The aggregator also reads
+  these records to compute the effective default.
+
+Controls render only where they are honest: while the orchestration
+tier source is not live, section-derived items on `/attention`
+disable theirs with the reason shown (session-derived items stay
+enabled — the session feed is live).
+
+### Needs-user item contract (#1290–#1293)
+
+Needs-user tier items may carry optional extension fields, published
+by the orchestration pass, validated **per item** in the live source
+(`src/tier-items.ts`) — the section gate never learns them, so a
+malformed extension drops (the whole field for `delegation`, the
+offending entry for `options`/`questions`), never the item or the
+section. Naming is role-based; the legacy published tier array name
+(`needsDrew`) is the existing shape and stays.
+
+- `whyUser` — why the item needs the user: `decision` |
+  `missing-info` | `approval` | `access` | `policy`. Fallback when
+  absent: `decision` kind → `decision`; an item carrying a question →
+  `missing-info`; otherwise `decision`.
+- `summary`, `ifIgnored` — the plain-language item and what happens
+  if it sits. `ifIgnored` falls back to a line computed from `since`.
+- `options[]` (≤6) — `{ id (slug), label (≤80), description?,
+effect? }`; duplicate ids drop the later entry. Picking one posts
+  `answer` with `optionId`.
+- `questions[]` (≤5) — `{ id (slug), prompt (≤200), type:
+single|multi|text|yesno, options? (≥2, required for single/multi),
+required? (default true), covers (mandatory) }`. Answering posts
+  `answer` with `answers[]`; the POST boundary checks the ids against
+  the currently published item and enforces required questions with a
+  legible error.
+- `delegation` — `{ mode: user|first-pass|auto, status:
+idle|working|proposal-ready|unable|done, updatedAt, runId?,
+proposal?, unable? }`, validated as a unit: `proposal` is present
+  exactly when the status is `proposal-ready`, `unable` exactly when
+  `unable` (with a non-empty `whatItTried`). An `auto` delegation on
+  an `access`/`policy` item drops — those classes never auto.
+
+**Delegation default (the standing toggle).** When an item carries
+no `delegation`, the aggregator stamps the effective default: mode
+`auto` when the standing toggle is ON and the item's class is
+`decision`/`missing-info`/`approval`, else `user`. The toggle is a
+dashboard preference action (kind `preference`, verb
+`set-delegation-default`, object `needs-user-delegation-default`);
+the latest non-superseded record wins, and before any exists Drew's
+2026-10-27 decision — ON — is the initial record. A per-item
+`delegate` action always overrides the default.
+
+**Proposals (#1293).** One live proposal per item; its identity is
+(item id, `delegation.runId`, `delegation.updatedAt`).
+`approve-proposal` / `reject-proposal` (reason required) carry that
+identity, and the boundary refuses a stale triple as
+superseded/withdrawn. A proposal older than 48 h reads expired on
+the card and can no longer be approved. A proposal-pending or
+unable item is still one needs-user item — counts on `/attention`,
+`/today`, and the JSON twins count it once.
 
 ### Session identity registry (slice 3, #906)
 
@@ -166,22 +305,26 @@ bun test
 
 Everything defaults to **fixtures** and works with no configuration:
 
-| Env var                    | Default                                             | Purpose                                                                                 |
-| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                  |
-| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                               |
-| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)        |
-| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)             |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                  |
-| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                           |
-| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
-| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                 |
-| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                          |
-| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                               |
-| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                        |
-| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it |
-| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment             |
-| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts       |
+| Env var                    | Default                                             | Purpose                                                                                                                                              |
+| -------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                                                                               |
+| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                            |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                     |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                          |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by writer jobs + `scripts/backfill-usage-snapshots.ts` |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                              |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                         |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                               |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                                                                                        |
+| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                                                                                      |
+| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                                                                              |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                                                                                       |
+| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                                                                                            |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                     |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                              |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                          |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                               |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                    |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
@@ -234,6 +377,72 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   The pool map is the corrected one from the provider-quota
   registry: exactly one Meta pool (Muse API High Usage, `meta`
   provider the only door); no "muse plan" pool exists.
+- **Usage & billing hub sections** — the same collector run extracts
+  quota-view Part (b) via `src/saas-extract.ts` into `saas` / `payg` /
+  `charges` / `subscriptions` feed sections (the provider registry's
+  billing incidents supply the gateway accrual + card-alert charges).
+  The aggregator's `Source.usage()` serves them with snapshot history
+  from the §4 store; older feeds without the sections fall back to a
+  direct read of the two source documents. Seed the store once with
+  `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
+- **Snapshot writers (hub §4)** — history accumulates three ways, all
+  riding the feed: the collector derives records from its own hub
+  sections (`src/snapshot-records.ts`) and embeds them in the feed's
+  `snapshots` field; stewardship-cycle (after a quota-view refresh)
+  and the keeper's check-usage append records to
+  `usage-snapshot-outbox.jsonl` beside the keeper state — via
+  `bun run scripts/append-usage-snapshots.ts` (add
+  `--from-provider-usage` for the keeper snapshot) or, for
+  check-usage, from Python directly — and the collector drains the
+  outbox into the same field. `Source.usage()` ingests feed records
+  into the local store; dedupe on (service, metric, timestamp, value)
+  makes every writer safe to re-run.
+
+## The quota gatherer (Stage 2 — #1151)
+
+`scripts/gather-quota.ts` is the quota plane's 15-minute tick. It
+runs on the **laptop** (nothing executes on the sandbox), as the
+`quota-gatherer` systemd **user** timer (units in this package's
+`systemd/`, installed by `install.sh`; linger keeps it
+boot-persistent). The unit runs the script from the laptop's repo
+clone (`~/git/code`) — package re-deploys replace the deployed
+`scripts/` wholesale and must not be able to vanish the gatherer —
+with its outputs pinned by env to the deployed aggregator dir
+`~/pm-stack/aggregator`.
+
+Each tick:
+
+- imports the OpenChamber quota module in-process (from the laptop's
+  OpenChamber checkout) and fetches every configured provider
+  per-credential, with credentials read **directly from OpenCode's
+  credential store** (`opencode.db`, read-only) — no OpenCode server
+  needs to be listening. One provider failing or exceeding the 15s
+  cap degrades only its own rows.
+- ingests laptop **file exports** in the Meta Phase-1 convention
+  (#1301): a producer's `latest.json` (today: Meta,
+  `~/atlas/meta-quota-export/latest.json`) maps onto the same
+  contract; a failure-status document or a file older than 30
+  minutes is an error entry, never zeros.
+- writes **`quota-current.json`** — the latest-state contract
+  (`QuotaCurrentFile` in `src/model.ts`: per provider/credential,
+  windows carrying value, % of limit, reset, measured-at, source,
+  state) — and `quota-gatherer-heartbeat.json` (tick time,
+  per-provider state/duration; the heartbeat also rides inside
+  quota-current.json), both in the deployed aggregator dir beside
+  `fleet-feed.json`.
+- appends §4 snapshot records for windows whose value **moved**
+  since the last appended record, directly to the snapshot store
+  (`SnapshotStore.append` dedupes; change-tracking state in
+  `quota-gatherer-state.json`). Setting `USAGE_SNAPSHOT_OUTBOX_PATH`
+  reroutes records to the writers' outbox instead.
+
+Fail-soft: a module-import or credential-store failure writes a
+heartbeat with the error, exits non-zero, and leaves the previous
+`quota-current.json` untouched. **Remaining hop:** the aggregator
+does not read `quota-current.json` yet — `Source` pickup (freshness
+rendering, lazy pull on page load) is the follow-up that makes the
+tick visible on /quota.
+
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
   parent/agent/outcome; keeper supervision entries from
@@ -306,6 +515,35 @@ projector-ized live per-source feeds.
   in `pm-stack/kaneo-projects.json` (Session H): `code`, `opencode`,
   `openchamber` under `developing-today/`, `nix` under `dezren39/`.
 
+## Honesty + freshness (#1139, #1267, #1138)
+
+- **No silent zeros (#1139).** The orchestration section is
+  diagnosed on every read — live / stale (>90 min) / absent /
+  invalid (with the failing check named) — via
+  `diagnoseOrchestrationSection` in `src/feed.ts` and
+  `Source.diagnostics()`. `/attention` banners an absent, invalid, or
+  stale tier source at the point of display and renders the tier
+  counts as "unknown" rather than a confident 0 when the source is
+  missing; `/today`'s derived-view banner names the section's true
+  state. The stale/absent banner is also the aggregator-side
+  dead-man's switch for #1148: if the orchestration job dies, the
+  surfaces Drew reads say so. Visible tier wording is role-based —
+  NEEDS USER, not NEEDS DREW (Drew's 2026-10-27 direction; internal
+  field names and the orchestration contract are unchanged). The
+  NEEDS USER queue is an intake the orchestrator works first; only
+  items it cannot resolve escalate to the user.
+- **Health primes (#1267).** Provenance strings populate lazily, one
+  facet per method call, so `/api/health` exercises every facet
+  (60 s-cached) before answering — its report no longer depends on
+  which pages were visited since boot. The response also carries the
+  structured `sections` diagnosis beside the provenance strings.
+- **Freshness chips (#1138).** Pages render per-source chips
+  (source · state · age, counts always with their noun) for exactly
+  the sources they use, from `Source.provenanceDetail()`; the full
+  provenance line moves to a collapsed "source detail" disclosure in
+  the footer. The registry chip counts the merged store total — the
+  same number the /sessions header renders.
+
 ## Design notes — the two new views (#851, #852)
 
 Both were added as **design issues** (2026-10-25) and are implemented
@@ -339,7 +577,16 @@ src/
                 dns, comments, registry)
   source.ts     the one Source interface
   pages.ts      the page manifest — nav, dropdown, /pages (#906)
+  program.ts    the /program page's editorial record + live-data
+                builder (tracked issues, pool summary, freshness) (#1046)
+  project-config.ts  the project registry: one ProjectConfig per
+                project + validation + the per-project live builders
+                the index, project pages, and JSON twins read (#1120)
   derive.ts     execution strip, timeline lanes, quota/attention rules
+  topology.ts   the services & ports registry: what runs where, bound
+                how, consumed by whom (#1137)
+  health.ts     /health assembly: cached service probes, feed ages,
+                job runs, the render registry (#1147)
   render.ts     pure HTML rendering of every view
   server.ts     Bun HTTP server (pages, JSON twins, comment writes)
   config.ts     env config
@@ -373,4 +620,9 @@ test/
                     grains, today derivation, slice-2 render smoke
   slice3.test.ts    dns parser, registry normalization, comment store,
                     page manifest, slice-3 renders + HTTP flows
+  program.test.ts   /program manifest entry, live-data builder
+                    (empty/absent/null inputs), render smoke (#1046)
+  health.test.ts    health assembly vs fake fetchers (up/down/timeout/
+                    cache/degraded), fixtures story, /health boot
+                    (#1137, #1147)
 ```

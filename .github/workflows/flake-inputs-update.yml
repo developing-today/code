@@ -8,10 +8,12 @@
 # repo's own nix-ci evaluates). This repo has no OpenChamber-specific test
 # suite, so evaluation is the check — no full test run. If validation passes
 # and flake.lock moved, the change lands as a pull request that this
-# workflow merges itself. Exception: this repository protects main against
-# the workflow token and has auto-merge disabled, so here the PR is
-# commented as validated and left for a privileged merge — the same way
-# other PRs land in this repo.
+# workflow merges itself. This repository protects main against the
+# workflow token, so the merge normally lands through auto-merge (a merge
+# commit, enabled repository-wide): the workflow sets it and GitHub merges
+# once checks pass. Only if both the direct and the auto-merge attempts
+# are refused is the PR commented as validated and left for a privileged
+# merge.
 #
 # Failures are tracked in ONE issue (title in FAILURE_ISSUE_TITLE below):
 # the first failure opens it, later failures edit it in place (attempt count,
@@ -21,6 +23,12 @@
 # never disables later runs: every scheduled run retries with the newest
 # revs, and while a failure issue is open validation runs even when the
 # lockfile did not move, so a manual fix is picked up too.
+#
+# Escalation chain (Drew, 2026-10-28): the first recorded failure also
+# dispatches a Jules session to fix the tracking issue (see the
+# "Escalate the failure" step below). If the failure reaches a third
+# attempt with no fix landed, that step comments the issue for the
+# Muse repo tasks to triage and fix it as a normal work item.
 name: flake-inputs-update
 
 on:
@@ -166,7 +174,7 @@ jobs:
           # Error excerpt: last lines of the failing step's log with nix's
           # "copying path" noise removed, capped, and code fences neutralized
           # so the issue body stays valid Markdown.
-          grep -v "copying path" "${ERROR_LOG}" | tail -n 80 | sed 's/~~~/---/g' | head -c 5000 > "$RUNNER_TEMP/excerpt.txt" || true
+          grep -v "copying path" "${ERROR_LOG}" | tail -n 80 | sed 's/~~~/---/g' | tail -c 5000 > "$RUNNER_TEMP/excerpt.txt" || true
           entry_file="$RUNNER_TEMP/entry.md"
           {
             echo "### Attempt ${attempts} — ${now} — openchamber \`${NEW_OC_REV}\`, opencode \`${NEW_OPENCODE_REV}\`"
@@ -180,7 +188,48 @@ jobs:
             echo '~~~'
             echo
           } > "${entry_file}"
-          body_file="$RUNNER_TEMP/issue-body.md"
+          # Bound the carried-over history (#947): keep only the newest
+          # entries that fit within 10 entries AND 30,000 chars, dropping
+          # the oldest first. Without this the body grows ~5,300 chars per
+          # failed attempt and passes GitHub's 65,536-char issue-body
+          # limit after roughly a dozen attempts, after which
+          # `gh issue edit` is rejected and this issue silently freezes.
+          # Attempts / First failure above are parsed from the header
+          # block, not the history, so trimming cannot corrupt them.
+          previously_trimmed=$(sed -n 's/^_\([0-9][0-9]*\) earlier attempt.*/\1/p' "${history_file}" | head -n 1)
+          previously_trimmed=${previously_trimmed:-0}
+          combined_file="$RUNNER_TEMP/history-combined.md"
+          cat "${history_file}" "${entry_file}" > "${combined_file}"
+          entries_dir="$RUNNER_TEMP/history-entries"
+          mkdir -p "${entries_dir}"
+          (cd "${entries_dir}" && csplit -s -f entry- -b '%04d.md' "${combined_file}" '/^### Attempt /' '{*}' || true)
+          entry_files=()
+          for f in "${entries_dir}"/entry-*.md; do
+            [ -f "$f" ] || continue
+            if head -n 1 "$f" | grep -q '^### Attempt '; then
+              entry_files+=("$f")
+            fi
+          done
+          total_entries=${#entry_files[@]}
+          # Select the newest contiguous entries within both bounds; the
+          # newest entry is always kept.
+          kept_start=$total_entries
+          kept_chars=0
+          kept_count=0
+          i=$((total_entries - 1))
+          while [ "$i" -ge 0 ]; do
+            entry_size=$(wc -c < "${entry_files[$i]}")
+            if [ "$kept_count" -gt 0 ]; then
+              if [ $((kept_count + 1)) -gt 10 ]; then break; fi
+              if [ $((kept_chars + entry_size)) -gt 30000 ]; then break; fi
+            fi
+            kept_chars=$((kept_chars + entry_size))
+            kept_count=$((kept_count + 1))
+            kept_start=$i
+            i=$((i - 1))
+          done
+          trimmed_count=$((previously_trimmed + kept_start))
+          header_file="$RUNNER_TEMP/issue-header.md"
           {
             echo "<!-- automated-failure-issue: flake-inputs-update -->"
             echo "Automated openchamber+opencode input updates are currently failing. This issue is maintained by the \`flake-inputs-update\` workflow: one issue per workflow, edited in place on every failed attempt, and closed by the next successful update."
@@ -192,9 +241,31 @@ jobs:
             echo "Latest run: ${RUN_URL}"
             echo
             echo "## Failure history"
-            cat "${history_file}"
-            cat "${entry_file}"
-          } > "${body_file}"
+          } > "${header_file}"
+          body_file="$RUNNER_TEMP/issue-body.md"
+          assemble_body() {
+            {
+              cat "${header_file}"
+              if [ "${trimmed_count}" -gt 0 ]; then
+                echo "_${trimmed_count} earlier attempt(s) trimmed to keep this issue under GitHub's body limit._"
+                echo
+              fi
+              j=$kept_start
+              while [ "$j" -lt "$total_entries" ]; do
+                cat "${entry_files[$j]}"
+                j=$((j + 1))
+              done
+            } > "${body_file}"
+          }
+          assemble_body
+          # Final safety net: if the assembled body still exceeds 60,000
+          # chars, drop the oldest remaining history entries until it fits
+          # (always keeping the newest entry).
+          while [ "$(wc -c < "${body_file}")" -gt 60000 ] && [ $((total_entries - kept_start)) -gt 1 ]; do
+            kept_start=$((kept_start + 1))
+            trimmed_count=$((trimmed_count + 1))
+            assemble_body
+          done
           if [ -n "${EXISTING_NUMBER}" ]; then
             gh issue edit "${EXISTING_NUMBER}" --body-file "${body_file}"
             echo "Updated failure issue #${EXISTING_NUMBER} (attempt ${attempts})."
@@ -203,6 +274,39 @@ jobs:
             echo "Opened a new failure issue (attempt ${attempts})."
           fi
           exit 1
+
+      - name: Escalate the failure (Jules first, then Muse tasks)
+        if: always() && steps.outcome.outputs.result == 'failure'
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          set -u
+          number=$(gh issue list --state open --search "\"$FAILURE_ISSUE_TITLE\" in:title" --limit 100 --json number,title | jq -r --arg title "$FAILURE_ISSUE_TITLE" '.[] | select(.title == $title) | .number' | head -n 1)
+          if [ -z "${number}" ]; then
+            echo "No open failure issue found; nothing to escalate."
+            exit 0
+          fi
+          attempts=$(gh issue view "${number}" --json body --jq .body | grep -E '^Attempts: ' | head -n 1 | grep -oE '[0-9]+' || true)
+          attempts=${attempts:-1}
+          echo "Failure issue #${number} (attempts: ${attempts})."
+          if [ "${attempts}" -eq 1 ]; then
+            if [ -z "${JULES_API_KEY:-}" ]; then
+              gh issue comment "${number}" --body "Automated escalation: first recorded failure, but no JULES_API_KEY secret is configured for this repository, so no Jules session was dispatched. Muse repo tasks: please triage and fix."
+              exit 0
+            fi
+            prompt=$(printf 'Fix GitHub issue #%s in %s.\n\n%s\n\nThe automated dependency-update workflow in this repository is failing. The issue body carries the failure history and error excerpts; the workflow file under .github/workflows/ is where to reproduce it. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #%s", so this tracking issue closes when the fix lands and a later successful update run confirms it. Run the relevant checks before opening the PR. Merge only if you are reasonably certain the PR is correct; otherwise leave it open and state your confidence and what a human should check. If the root cause belongs to a different repository (for example the upstream project this update pulls in), say exactly that on the issue instead of opening a PR here.' "${number}" "${{ github.repository }}" "$FAILURE_ISSUE_TITLE" "${number}")
+            payload=$(jq -n --arg title "Fix #${number}: automated update failing" --arg prompt "$prompt" --arg source "sources/github/${{ github.repository }}" '{title: $title, prompt: $prompt, sourceContext: {source: $source, githubRepoContext: {startingBranch: "main"}}, automationMode: "AUTO_CREATE_PR"}')
+            response=$(curl -sS -m 60 -X POST "https://jules.googleapis.com/v1alpha/sessions" -H "X-Goog-Api-Key: ${JULES_API_KEY}" -H "Content-Type: application/json" -d "$payload" || true)
+            session_id=$(printf '%s' "$response" | jq -r '.name // empty' | sed 's|^sessions/||')
+            if [ -n "${session_id}" ]; then
+              gh issue comment "${number}" --body "Automated escalation: dispatched Jules to fix this failure — https://jules.google.com/session/${session_id}. If Jules does not land a passing fix, Muse repo tasks take over triage."
+            else
+              gh issue comment "${number}" --body "Automated escalation: tried to dispatch Jules for this first failure, but session creation returned no session. Muse repo tasks: please triage and fix."
+            fi
+          elif [ "${attempts}" -eq 3 ]; then
+            gh issue comment "${number}" --body "Automated escalation: this update has failed ${attempts} times and no Jules fix has landed. Muse repo tasks: please triage and fix this as a normal work item."
+          fi
+
 
       - name: Publish and merge the update
         if: steps.outcome.outputs.result == 'success' && steps.plan.outputs.changed == 'true'
@@ -213,13 +317,12 @@ jobs:
           NEW_OPENCODE_REV: ${{ steps.plan.outputs.opencode_rev }}
           EXISTING_NUMBER: ${{ steps.failure-issue.outputs.number }}
         run: |
-          branch="automation/flake-inputs-update-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${branch}"
-          git add flake.lock
-          git commit -m "chore(deps): update openchamber to ${NEW_OC_REV:0:12} and opencode to ${NEW_OPENCODE_REV:0:12}"
-          git push origin "${branch}"
+          pr_title="chore(deps): update openchamber to ${NEW_OC_REV:0:12} and opencode to ${NEW_OPENCODE_REV:0:12}"
+          # Preserve this run's computed lock before any branch switching:
+          # the in-place update and the fallback below both restore from it.
+          cp flake.lock "$RUNNER_TEMP/new-flake.lock"
           pr_body="$RUNNER_TEMP/pr-body.md"
           {
             echo "Automated update of the \`openchamber\` and \`opencode\` flake inputs, produced by the \`flake-inputs-update\` workflow. The openchamber input's \`inputs.opencode.follows = \"opencode\"\` is unchanged, so OpenChamber is evaluated against this same opencode pin."
@@ -233,11 +336,58 @@ jobs:
               echo "Fixes #${EXISTING_NUMBER}"
             fi
           } > "${pr_body}"
-          pr_url=$(gh pr create --base main --head "${branch}" \
-            --title "chore(deps): update openchamber to ${NEW_OC_REV:0:12} and opencode to ${NEW_OPENCODE_REV:0:12}" \
-            --body-file "${pr_body}")
-          pr_number="${pr_url##*/}"
-          echo "Opened PR #${pr_number}: ${pr_url}"
+          # #946: an automation update PR left open (e.g. a validated
+          # handoff PR waiting for a privileged merge) must be superseded
+          # IN PLACE, never stacked with a second PR for newer pins.
+          existing_number=$(gh pr list --state open --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("automation/flake-inputs-update-"))] | .[0].number // empty')
+          pr_number=""
+          pr_url=""
+          if [ -n "${existing_number}" ]; then
+            existing_branch=$(gh pr view "${existing_number}" --json headRefName --jq .headRefName)
+            existing_title=$(gh pr view "${existing_number}" --json title --jq .title)
+            existing_url=$(gh pr view "${existing_number}" --json url --jq .url)
+            if [ "${existing_title}" = "${pr_title}" ]; then
+              # Same revs: the open PR already carries exactly this
+              # update, so publishing again would only duplicate it.
+              echo "Open automation PR #${existing_number} already carries these exact revs (${pr_title}); reusing it and skipping publish."
+              pr_number="${existing_number}"
+              pr_url="${existing_url}"
+            elif git fetch origin "${existing_branch}" \
+              && git checkout -f -B "${existing_branch}" "origin/${existing_branch}" \
+              && cp "$RUNNER_TEMP/new-flake.lock" flake.lock \
+              && git add flake.lock \
+              && git commit -m "${pr_title}" \
+              && git push origin "${existing_branch}" \
+              && gh pr edit "${existing_number}" --title "${pr_title}" --body-file "${pr_body}"; then
+              echo "Updated open automation PR #${existing_number} in place on branch ${existing_branch} with the new pins."
+              pr_number="${existing_number}"
+              pr_url="${existing_url}"
+            else
+              # In-place update is impossible (e.g. the branch was
+              # deleted): close the stale PR naming its replacement
+              # BEFORE creating the replacement, so two open automation
+              # update PRs never linger at once.
+              echo "::warning::In-place update of PR #${existing_number} failed; closing it and publishing a replacement."
+              branch="automation/flake-inputs-update-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}"
+              gh pr comment "${existing_number}" --body "Superseded by a replacement update PR from this \`flake-inputs-update\` run (${RUN_URL}) on branch \`${branch}\`: this PR's pins are stale and its branch could not be updated in place, so it is being closed to avoid stacked duplicate update PRs (#946)."
+              gh pr close "${existing_number}"
+              git checkout -f main
+              cp "$RUNNER_TEMP/new-flake.lock" flake.lock
+            fi
+          fi
+          if [ -z "${pr_number}" ]; then
+            branch="automation/flake-inputs-update-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}"
+            git checkout -b "${branch}"
+            git add flake.lock
+            git commit -m "${pr_title}"
+            git push origin "${branch}"
+            pr_url=$(gh pr create --base main --head "${branch}" \
+              --title "${pr_title}" \
+              --body-file "${pr_body}")
+            pr_number="${pr_url##*/}"
+            echo "Opened PR #${pr_number}: ${pr_url}"
+          fi
           merged="false"
           handoff="false"
           if merge_out=$(gh pr merge "${pr_number}" --merge 2>&1); then
@@ -246,17 +396,17 @@ jobs:
           elif auto_out=$(gh pr merge "${pr_number}" --auto --merge 2>&1); then
             echo "Direct merge was refused; auto-merge enabled for PR #${pr_number}."
           else
-            # This repository protects main against the workflow token and
-            # has auto-merge disabled, so a validated update PR waits for a
-            # privileged merge here — the same way other PRs land in this
-            # repo. Hand it over visibly instead of failing the run: the
+            # This repository protects main against the workflow token, and
+            # both the direct merge and the auto-merge attempt were refused,
+            # so a validated update PR waits for a privileged merge here.
+            # Hand it over visibly instead of failing the run: the
             # update itself succeeded. Any other publish error still fails.
             echo "${merge_out}"
             echo "${auto_out}"
             if echo "${merge_out}${auto_out}" | grep -qiE "not authorized|not allowed|protected|permission"; then
               handoff="true"
-              gh pr comment "${pr_number}" --body "Validated by the \`flake-inputs-update\` workflow (run: ${RUN_URL}): the flake evaluates with these pins, including the openchamber and opencode package outputs. The workflow's token cannot merge into protected \`main\` and auto-merge is disabled for this repository, so this PR is ready for a privileged merge."
-              echo "::warning::PR #${pr_number} is validated and ready, but the workflow token cannot merge it (protected main, auto-merge disabled). Left open for a privileged merge."
+              gh pr comment "${pr_number}" --body "Validated by the \`flake-inputs-update\` workflow (run: ${RUN_URL}): the flake evaluates with these pins, including the openchamber and opencode package outputs. The workflow's token cannot merge into protected \`main\` and the auto-merge attempt was also refused, so this PR is ready for a privileged merge."
+              echo "::warning::PR #${pr_number} is validated and ready, but the workflow token cannot merge it (protected main; direct and auto-merge refused). Left open for a privileged merge."
             else
               exit 1
             fi

@@ -118,7 +118,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (64)
+## CLI commands (67)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -130,6 +130,7 @@ that reaches none says why: those are decisions, not gaps.
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |
 | `batch` | `batch` |  |
+| `cache` | – | Reads and prunes the cache directory on this machine; no daemon is involved. |
 | `call` | `call`, `call_path` |  |
 | `catalog` | `catalog` |  |
 | `client` | `client_module` |  |
@@ -151,6 +152,7 @@ that reaches none says why: those are decisions, not gaps.
 | `health` | `health` | Generated from the operation table. |
 | `help` | – | Text about the binary, produced by the binary. |
 | `history` | `catalog_history` | Generated from the operation table. |
+| `hook` | – | Reads the resolved `hooks` setting from the configuration chain on this machine. |
 | `init` | – | Writes a file into the current directory. |
 | `interactions` | `interactions_list`, `interactions_get` |  |
 | `log` / `logs` | `log_query`, `log_record` |  |
@@ -158,6 +160,7 @@ that reaches none says why: those are decisions, not gaps.
 | `man` | – | Text about the binary, produced by the binary. |
 | `metrics` | `metrics_tokens`, `metrics_tools` | Generated from the operation table. |
 | `openapi` | `openapi` |  |
+| `plugin` | – | Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own. |
 | `preflight` | `preflight` | Generated from the operation table. |
 | `prompt` | `intent` |  |
 | `prompts` | `prompt_get`, `prompts` |  |
@@ -182,7 +185,9 @@ that reaches none says why: those are decisions, not gaps.
 | `skills` | – | Manages embedded agent skills. |
 | `stats` | `stats_query` |  |
 | `status` | `status` |  |
+| `stdio-proxy` | – | It is a byte pipe: it dials the daemon's unix socket on this host and copies stdin/stdout to it, which no /v1 operation can express. |
 | `stop` | `shutdown` |  |
+| `supervise` | – | Runs in its own process as the re-exec target of the supervised transport; it serves no API. |
 | `task` / `tasks` | `tasks_list`, `task_get`, `task_cancel`, `task_result` | Generated from the operation table. |
 | `tool` | `tool_invoke` | Generated from the operation table. |
 | `tools` | `tools` | Generated from the operation table. |

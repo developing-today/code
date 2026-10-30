@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Meta quota exporter every 15 minutes — code#1301 Phase 1
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=20
+Persistent=true
+Unit=meta-quota-export.service
+
+[Install]
+WantedBy=timers.target

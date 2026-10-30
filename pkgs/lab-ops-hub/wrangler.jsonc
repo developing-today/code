@@ -28,15 +28,16 @@
   "durable_objects": {
     "bindings": [
       { "name": "LIVE", "class_name": "LiveRoom" },
-      { "name": "CRAWLER", "class_name": "CrawlerContainer" }
+      { "name": "CRAWLER", "class_name": "CrawlerContainerV2" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["LiveRoom", "CrawlerContainer"] }
+    { "tag": "v1", "new_sqlite_classes": ["LiveRoom", "CrawlerContainer"] },
+    { "tag": "v2", "new_sqlite_classes": ["CrawlerContainerV2"] }
   ],
 
   "containers": [
-    { "class_name": "CrawlerContainer", "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v3", "max_instances": 2, "instance_type": "lite" }
+    { "class_name": "CrawlerContainerV2", "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v5", "max_instances": 2, "instance_type": "lite" }
   ],
 
   "ai": { "binding": "AI" },

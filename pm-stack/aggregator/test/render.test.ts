@@ -3,9 +3,16 @@ import {
   attentionSorted,
   buildAttention,
   classifyAttention,
+  deriveToday,
   executionStrip,
+  isCalendarDate,
   laneFor,
+  monthLabel,
+  monthTimeline,
+  roadmapDayGrain,
+  rowDate,
   timeline,
+  ymdLabel,
   allRefs,
 } from "../src/derive.ts";
 import {
@@ -15,6 +22,7 @@ import {
   refUrl,
   type BoardItem,
   type GhItem,
+  type ProvenanceDetail,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
@@ -26,7 +34,15 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import { renderAttention, renderBoard, renderItem, renderQuota, renderRoadmap } from "../src/render.ts";
+import {
+  renderAttention,
+  renderBoard,
+  renderItem,
+  renderQuota,
+  renderRoadmap,
+  renderSessions,
+  renderToday,
+} from "../src/render.ts";
 
 const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
 
@@ -120,6 +136,74 @@ describe("roadmap timeline", () => {
   });
 });
 
+describe("horizon calendar-date validation (#1628)", () => {
+  const row = (horizon: string, id = 1): RoadmapRow => ({
+    id,
+    subject: `grist:d/${id}`,
+    title: `row ${id}`,
+    area: "T",
+    status: "Idea",
+    horizon,
+    source: "",
+    notes: "",
+    links: [],
+  });
+
+  test("isCalendarDate rejects impossible dates, keeps real ones", () => {
+    expect(isCalendarDate(2026, 13, 15)).toBe(false);
+    expect(isCalendarDate(2026, 0, 15)).toBe(false);
+    expect(isCalendarDate(2026, 1, 0)).toBe(false);
+    expect(isCalendarDate(2026, 2, 30)).toBe(false);
+    expect(isCalendarDate(2026, 4, 31)).toBe(false);
+    expect(isCalendarDate(2026, 2, 29)).toBe(false);
+    expect(isCalendarDate(2100, 2, 29)).toBe(false);
+    expect(isCalendarDate(2028, 2, 29)).toBe(true);
+    expect(isCalendarDate(2000, 2, 29)).toBe(true);
+    expect(isCalendarDate(2026, 10, 24)).toBe(true);
+  });
+
+  test("laneFor sends impossible dates to the other lane", () => {
+    expect(laneFor("2026-13-15").key).toStartWith("other:");
+    expect(laneFor("2026-00-15").key).toStartWith("other:");
+    expect(laneFor("2026-02-30").key).toStartWith("other:");
+    expect(laneFor("2026-10-24").key).toBe("2026-Q4");
+    expect(laneFor("2028-02-29").key).toBe("2028-Q1");
+  });
+
+  test("rowDate returns null for impossible dates", () => {
+    expect(rowDate(row("2026-13-15"))).toBeNull();
+    expect(rowDate(row("2026-00-15"))).toBeNull();
+    expect(rowDate(row("2026-02-30"))).toBeNull();
+    expect(rowDate(row("2026-04-31"))).toBeNull();
+    expect(rowDate(row("2026-10-24"))).toBe("2026-10-24");
+    expect(rowDate(row("2028-02-29"))).toBe("2028-02-29");
+  });
+
+  test("monthTimeline never renders an 'undefined' lane label", () => {
+    const tl = monthTimeline([row("2026-13-15", 1), row("2026-10-24", 2)]);
+    const labels = tl.lanes.map((l) => l.label);
+    expect(labels).toContain("October 2026");
+    expect(labels.some((l) => l.includes("undefined"))).toBe(false);
+    expect(tl.lanes.some((l) => l.key.startsWith("other:"))).toBe(true);
+  });
+
+  test("roadmapDayGrain counts impossible dates as coarse, not outside", () => {
+    const now = new Date("2026-10-28T12:00:00Z");
+    const g = roadmapDayGrain([row("2026-02-30", 1), row("2026-13-15", 2), row("2026-12-25", 3)], "week", now);
+    expect(g.coarse.map((r) => r.horizon)).toEqual(["2026-02-30", "2026-13-15"]);
+    expect(g.outside).toBe(1);
+  });
+
+  test("ymdLabel and monthLabel neither throw nor relabel impossible dates", () => {
+    expect(ymdLabel("2026-13-15")).toBe("2026-13-15");
+    expect(ymdLabel("2026-02-30")).toBe("2026-02-30");
+    expect(ymdLabel("2026-10-24")).toBe("Sat Oct 24");
+    expect(monthLabel("2026-13")).toBe("2026-13");
+    expect(monthLabel("2026-00")).toBe("2026-00");
+    expect(monthLabel("2026-10")).toBe("October 2026");
+  });
+});
+
 describe("attention classification", () => {
   test("orders stopped-for-question and errored first", () => {
     const feed: SessionFeedEntry[] = [
@@ -159,7 +243,7 @@ describe("fixture source", () => {
     const board = await src.board();
     const rows = await src.roadmap();
     expect(board.length).toBeGreaterThan(0);
-    expect(rows.length).toBe(16); // the real Grist seed
+    expect(rows.length).toBe(23); // the real Grist seed (grew 16 → 23 with the cluster/id rows)
     const crossRepo = board.find((b) => b.id.includes("aggregator"));
     expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today/openchamber"))).toBe(true);
   });
@@ -212,9 +296,64 @@ describe("render smoke (fixtures)", () => {
     const view = buildAttention(await src.attention(), await src.orchestration());
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Needs you");
-    expect(html).toContain("Needs Drew");
-    expect(html).toContain("Needs orchestrator");
+    expect(html).toContain("Needs User");
+    expect(html).toContain("Needs Orchestrator");
+    // No orchestration section in fixtures: the honesty banner shows
+    // and the tier heading reports "unknown", not a number (#1139).
+    expect(html).toContain("Tier source missing");
+    expect(html).toContain("Needs User (unknown)");
+    expect(html).not.toContain("Needs User (0)");
     expect(html).toContain("waiting for an answer");
     expect(html).toContain("Waiting on:");
+  });
+});
+
+describe("freshness chips (#1138)", () => {
+  const detail: ProvenanceDetail = {
+    board: { text: "fixtures", state: "fixtures" },
+    roadmap: { text: "fixtures", state: "fixtures" },
+    items: { text: "fixtures", state: "fixtures" },
+    comments: { text: "fixtures", state: "fixtures" },
+    quota: { text: "live (fleet feed)", state: "live", ageMs: 120_000 },
+    usage: { text: "fixtures", state: "fixtures" },
+    attention: { text: "live (laptop live)", state: "live" },
+    orchestration: { text: "live (orchestration section orch-x)", state: "live", ageMs: 600_000 },
+    dns: { text: "fixtures", state: "fixtures" },
+    registry: {
+      text: "live (221 session records · 61 from the latest feed)",
+      state: "live",
+      ageMs: 180_000,
+      count: 221,
+      countLabel: "session records",
+    },
+    aa: { text: "fixtures", state: "fixtures" },
+  };
+
+  test("sessions chip carries the merged count with its noun; footer detail is collapsed", async () => {
+    const src = fixtureSource();
+    const html = renderSessions(await src.registry(), src.provenance(), detail);
+    expect(html).toContain('class="fchip live"');
+    expect(html).toContain("registry · live · 221 session records");
+    // The ten-string provenance line survives, inside <details>.
+    expect(html).toContain("<details");
+    expect(html).toContain("source detail");
+    expect(html).toContain("board: fixtures");
+  });
+
+  test("today renders chips for its own sources only", async () => {
+    const src = fixtureSource();
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
+    const attention = buildAttention(await src.attention(), null);
+    const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance(), detail);
+    expect(html).toContain("orchestration · live");
+    expect(html).toContain("quota · live");
+    expect(html).not.toContain("dns · fixtures");
+    expect(html).not.toContain("registry · live");
+  });
+
+  test("no detail, no chips — older callers render as before", async () => {
+    const src = fixtureSource();
+    const html = renderSessions(await src.registry(), src.provenance());
+    expect(html).not.toContain('class="fchip');
   });
 });

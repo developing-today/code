@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/dezren39/mcpx/internal/config"
+	"github.com/dezren39/mcpx/internal/hooks"
 	"github.com/dezren39/mcpx/internal/opencode"
 )
 
@@ -261,6 +262,32 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		add(check{"api specs", "fail", aerr.Error(), "fix the declaration file"})
 	} else if len(apis) > 0 {
 		add(check{"api specs", "ok", fmt.Sprintf("%d declared", len(apis)), ""})
+	}
+
+	// Declared hooks. A hook whose declaration does not parse, or whose
+	// executor cannot run, fails silently at fire time -- the daemon
+	// logs it and carries on, which is right for the daemon and useless
+	// for the person wondering why nothing happened. Doctor is where
+	// that silence ends. (Runtime slow/failing counts live on the
+	// daemon's hook runner and surface as hook.failed events.)
+	if raw := a.Settings().String("hooks"); raw != "" {
+		declared, herr := hooks.Parse(raw, a.Settings().Duration("hooks.timeout"))
+		switch {
+		case herr != nil:
+			add(check{"hooks", "fail", herr.Error(), "fix the `hooks` setting; `mcpx hook ls` shows the same error"})
+		default:
+			var unready []string
+			for _, h := range declared {
+				if r := hookReady(h); r != "yes" {
+					unready = append(unready, h.Name+": "+strings.TrimPrefix(r, "no: "))
+				}
+			}
+			if len(unready) > 0 {
+				add(check{"hooks", "warn", strings.Join(unready, "; "), "install the command or fix the module path"})
+			} else {
+				add(check{"hooks", "ok", fmt.Sprintf("%d declared, all executors ready", len(declared)), ""})
+			}
+		}
 	}
 
 	if a.JSON {

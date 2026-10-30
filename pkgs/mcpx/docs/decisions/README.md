@@ -10,11 +10,13 @@ They exist because #181 found eighteen collisions between themes, each between
 issues written by people who could not see each other's work, and none with an
 owner.
 
-| # | title | status | date | issues |
-| --- | --- | --- | --- | --- |
-| [0001](0001-hook-vocabulary.md) | One hook vocabulary, and where a hook's output goes in the exec stream | accepted | 2026-09-30 | #81 #82 #112 #111 · #181 rows 2, 7, 13 |
-| [0002](0002-autonomy-dial.md) | One autonomy dial, and a ceiling the daemon sets | accepted | 2026-09-30 | #111 #112 #113 #114 #110 · #181 rows 3, 5 |
-| [0003](0003-declared-vs-enforced-capabilities.md) | What mcpx declares, and what it enforces | accepted | 2026-09-30 | #82 #177 · #181 row 10 |
+| #                                                 | title                                                                              | status   | date       | issues                                              |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------- | -------- | ---------- | --------------------------------------------------- |
+| [0001](0001-hook-vocabulary.md)                   | One hook vocabulary, and where a hook's output goes in the exec stream             | accepted | 2026-09-30 | #81 #82 #112 #111 · #181 rows 2, 7, 13              |
+| [0002](0002-autonomy-dial.md)                     | One autonomy dial, and a ceiling the daemon sets                                   | accepted | 2026-09-30 | #111 #112 #113 #114 #110 · #181 rows 3, 5           |
+| [0003](0003-declared-vs-enforced-capabilities.md) | What mcpx declares, and what it enforces                                           | accepted | 2026-09-30 | #82 #177 · #181 row 10                              |
+| [0004](0004-scope-resolved-roots.md)              | Scope-resolved roots: spawn cwd, `${mcpx.root}` substitution, initialize workspace | accepted | 2026-10-26 | dezren39/nix#817 #818 #819 · touches #308 #309 #864 |
+| [0005](0005-release-pipeline.md)                   | Release pipeline, version single-sourcing, and the module path | proposed | 2026-10-29 | #1881 |
 
 ## Status
 
@@ -80,7 +82,7 @@ is deferred and to which issue.
 
 ## Mapping
 
-| term | from | becomes |
-| --- | --- | --- |
+| term                 | from                           | becomes        |
+| -------------------- | ------------------------------ | -------------- |
 | every competing term | the issue or file it came from | the chosen one |
 ````

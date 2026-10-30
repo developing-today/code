@@ -103,6 +103,12 @@ type Extras struct {
 	Namespace string `json:"namespace,omitempty"`
 	// Disabled skips the server entirely.
 	Disabled bool `json:"disabled,omitempty"`
+	// Supervised runs a stdio server under a per-server supervisor
+	// process (#1385, Phase 1 of #1384): the supervisor owns the child's
+	// pipes for the child's whole life and daemons attach to it, so the
+	// child survives a daemon restart. Default false - the direct spawn
+	// path is unchanged.
+	Supervised bool `json:"supervised,omitempty"`
 	// Logging overrides the global settings for records about this server, so
 	// a single misbehaving server can be made verbose without drowning in the
 	// rest. Nested rather than flat, because "logging.level" reads as one
@@ -210,6 +216,12 @@ type Config struct {
 	Path string `json:"-"`
 	// Sources lists every file that contributed, nearest first.
 	Sources []string `json:"-"`
+	// Chain records the two-pass resolution that produced Sources
+	// (issue #1842): which locations the discovery pass searched, and
+	// any pass-2 paths.config declarations reported rather than
+	// applied. Nil for an explicit --config load, which skips the
+	// chain entirely.
+	Chain *ChainInfo `json:"-"`
 	// Origin maps a server name to the file that defined the winning entry.
 	Origin map[string]string `json:"-"`
 	// Ignored lists keys on server entries that mcpx does not read, with
@@ -340,13 +352,13 @@ func pickLoggingLevel(vals ...*LoggingConfig) string {
 // Resolved is a Server with all defaults folded in and durations parsed.
 type Resolved struct {
 	*Server
-	Sharing      Sharing
-	Scope        Scope
-	Max          int
-	Min          int
-	IdleTimeout  time.Duration
-	CallTimeout  time.Duration
-	StartTimeout time.Duration
+	Sharing         Sharing
+	Scope           Scope
+	Max             int
+	Min             int
+	IdleTimeout     time.Duration
+	CallTimeout     time.Duration
+	StartTimeout    time.Duration
 	Namespace       string
 	Description     string
 	Prelude         string
@@ -627,18 +639,18 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 			name, ex.Namespace)
 	}
 	r := &Resolved{
-		Server:       s,
-		Sharing:      sharing,
-		Scope:        scope,
-		Max:          max,
-		Min:          pick(ex.Min, d.Min, 0),
-		IdleTimeout:  parseDur(pick(ex.IdleTimeout, d.IdleTimeout), DefaultIdleTimeout),
-		CallTimeout:  parseDur(pick(ex.CallTimeout, d.CallTimeout), DefaultCallTimeout),
-		StartTimeout: parseDur(pick(ex.StartTimeout, d.StartTimeout), DefaultStartTimeout),
-		Namespace:    pick(ex.Namespace, SanitizeNamespace(name)),
-		Description:  ex.Description,
-		Prelude:      pick(ex.Prelude, d.Prelude),
-		LogLevel:     pickLoggingLevel(ex.Logging, d.Logging),
+		Server:          s,
+		Sharing:         sharing,
+		Scope:           scope,
+		Max:             max,
+		Min:             pick(ex.Min, d.Min, 0),
+		IdleTimeout:     parseDur(pick(ex.IdleTimeout, d.IdleTimeout), DefaultIdleTimeout),
+		CallTimeout:     parseDur(pick(ex.CallTimeout, d.CallTimeout), DefaultCallTimeout),
+		StartTimeout:    parseDur(pick(ex.StartTimeout, d.StartTimeout), DefaultStartTimeout),
+		Namespace:       pick(ex.Namespace, SanitizeNamespace(name)),
+		Description:     ex.Description,
+		Prelude:         pick(ex.Prelude, d.Prelude),
+		LogLevel:        pickLoggingLevel(ex.Logging, d.Logging),
 		Tools:           allow,
 		ExcludeTools:    deny,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
@@ -790,8 +802,12 @@ func LoadFrom(explicit, wd string) (*Config, error) {
 		return c, nil
 	}
 
-	merged := &Config{MCPServers: map[string]*Server{}, Origin: map[string]string{}}
-	for _, p := range SearchPathFrom(wd) {
+	chain, chainInfo, cerr := ResolveChainFrom(wd)
+	if cerr != nil {
+		return nil, cerr
+	}
+	merged := &Config{MCPServers: map[string]*Server{}, Origin: map[string]string{}, Chain: chainInfo}
+	for _, p := range chain {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue

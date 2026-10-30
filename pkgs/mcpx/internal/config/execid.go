@@ -30,12 +30,21 @@ import (
 // check. An in-place rewrite changes size or mtime in practice; a replacement
 // changes the inode.
 //
-// Caveat: the bytes of the file are the whole identity, so a program that finds
-// its own files relative to its real location is not. A node script beside its
-// node_modules, re-pointed at an identical copy in another directory, keeps its
-// child, which still runs with the dependencies of the old location. A restart
-// (mcpx restart) is what moves it. Above the hash limit the identity is the
-// inode, so such a copy is restarted instead.
+// One exception: a script — a hashed file whose first two bytes are #! — is
+// identified by its content plus the resolved directory of the real file,
+// because a script finds its own files relative to its real location. A node
+// script beside its node_modules, re-pointed at an identical copy in another
+// directory, is a different program and gets a new child, which runs with the
+// new location's dependencies; a re-point within the same directory keeps
+// its child. The directory is folded into the hash under a NUL-led marker
+// framing: a filesystem path cannot contain NUL, so the trailing directory
+// component is unambiguous and no two distinct (content, directory) pairs
+// share a hash input. Non-script files stay bytes-only, so their identities
+// do not move. Script identities changed once when this rule landed: a
+// recorded script identity mismatches at the first check after the upgrade
+// and the pool restarts once, through the usual binary-changed path. Above
+// the hash limit the identity is the inode, so such a copy is restarted
+// instead, script or not.
 //
 // The identity is "" for a server that is not a child process, and begins
 // with "missing:" when the command does not resolve. A missing command is
@@ -118,10 +127,30 @@ func (s ExecStamp) Identity() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// Note the first two bytes while streaming the file: a file that
+		// begins with #! is a script, and a script's identity also folds
+		// in the resolved directory below.
+		var head [2]byte
+		n, err := io.ReadFull(f, head[:])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			f.Close()
+			return "", err
+		}
+		h.Write(head[:n])
 		_, err = io.Copy(h, f)
 		f.Close()
 		if err != nil {
 			return "", err
+		}
+		if n == 2 && head == [2]byte{'#', '!'} {
+			// Framing: content || NUL || "mcpx:exec-dir" || NUL ||
+			// directory. A path cannot contain NUL, so the trailing
+			// directory component is uniquely recoverable and no two
+			// distinct (content, directory) pairs share a hash input.
+			h.Write([]byte{0})
+			h.Write([]byte("mcpx:exec-dir"))
+			h.Write([]byte{0})
+			h.Write([]byte(filepath.Dir(s.Path)))
 		}
 		return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16], nil
 	}

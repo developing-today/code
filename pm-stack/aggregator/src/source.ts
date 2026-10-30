@@ -1,15 +1,20 @@
 // The one interface every data source implements. The views never know
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
+import type { SectionDiagnosis } from "./feed.ts";
 import type {
+  AaFeedSection,
   BoardItem,
   Comment,
   DnsSection,
   GhItem,
   OrchestrationSection,
+  ProjectPoolItem,
   Provenance,
+  ProvenanceDetail,
   QuotaView,
   RefKey,
+  UsageView,
   RoadmapRow,
   SessionFeedEntry,
   SessionRecord,
@@ -27,15 +32,38 @@ export interface Source {
   comments(refs: RefKey[]): Promise<Comment[]>;
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
+  /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
+   * charges evidence, bubble flags, and snapshot history (hub §3). */
+  usage(): Promise<UsageView>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
   orchestration(): Promise<OrchestrationSection | null>;
   /** The DNS/domain register (#902) for the register page; null = not collected yet. */
   dns(): Promise<DnsSection | null>;
+  /** The AA cost explorer section (ainventory workbook data via the
+   * fleet feed); null = not collected yet. The absent form
+   * ({status:"absent"}) is a real section: it renders its reason. */
+  aa(): Promise<AaFeedSection | null>;
   /** The identity registry (#906 §3): durable session records, oldest sources merged. */
   registry(): Promise<SessionRecord[]>;
+  /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */
+  projects(): Promise<ProjectPoolItem[]>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;
+  /**
+   * Structured per-section diagnosis (#1139/#1140): the honesty
+   * surfaces read the orchestration section's state from here instead
+   * of inferring it from a null section — absent, invalid, and stale
+   * are different failures with different remedies. Optional so test
+   * doubles and older sources keep working; absent = unmeasured.
+   */
+  diagnostics?(): { orchestration: SectionDiagnosis };
+  /**
+   * Structured per-facet freshness for the chips (#1138). Optional for
+   * the same reason as diagnostics(); when a source does not provide
+   * it, pages render without chips rather than with invented states.
+   */
+  provenanceDetail?(): ProvenanceDetail;
 }

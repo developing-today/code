@@ -1,5 +1,6 @@
 // Pure derivations from the read model: the execution strip, the roadmap
 // timeline lanes, and the unified comment stream. No I/O here.
+import type { SectionDiagnosis } from "./feed.ts";
 import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
 
 export interface ExecutionStrip {
@@ -61,7 +62,22 @@ export interface Lane {
 }
 
 const QUARTER = /^Q([1-4])\s+(\d{4})$/i;
-const DATE = /^(\d{4})-(\d{2})-\d{2}/;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * True when year/month/day form a real calendar date. The DATE/YMD
+ * regexes check digit shape only, so month 00/13, day 00, Feb 30 and
+ * Apr 31 all pass them; this rejects those (a JS Date would silently
+ * roll them into a neighbouring month instead of failing).
+ */
+export function isCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const maxDay = month === 2 && leap ? 29 : DAYS_IN_MONTH[month - 1];
+  return day <= maxDay;
+}
 
 /**
  * Maps a Horizon cell to its timeline lane. Dates fold into their quarter;
@@ -72,7 +88,8 @@ export function laneFor(horizon: string): Lane {
   const q = QUARTER.exec(h);
   if (q) return quarterLane(Number(q[2]), Number(q[1]));
   const d = DATE.exec(h);
-  if (d) return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
+  if (d && isCalendarDate(Number(d[1]), Number(d[2]), Number(d[3])))
+    return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
   if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 };
   if (h === "" || /^unscheduled$/i.test(h)) {
     return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 2 };
@@ -335,9 +352,29 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
   return { ...e, tier: "needs-orchestrator", orchestratorNote: ORCHESTRATOR_NOTES[e.state] };
 }
 
+/**
+ * Where the tiers came from, honestly (#1139): when the orchestration
+ * section is absent, invalid, or stale, the tier counts are not the
+ * orchestrator's published queues and the page must say so at the
+ * point of display instead of rendering a confident zero. `present`
+ * means a valid section was served (stale counts as present — its
+ * numbers render, badged old).
+ */
+export interface TierSourceInfo {
+  present: boolean;
+  state: SectionDiagnosis["state"];
+  runId?: string;
+  generatedAt?: string;
+  failedChecks?: string[];
+}
+
 export interface AttentionView {
   drew: TieredEntry[];
   orchestrator: TieredEntry[];
+  /** The deduped #1148 watchdog items merged into orchestratorExtra,
+   *  exposed separately so JSON surfaces can publish the derived
+   *  queue items without re-deriving them. */
+  watchdog: TierItem[];
   /** #899 tier items that are not live sessions (decisions, tasks, gaps). */
   drewExtra: TierItem[];
   orchestratorExtra: TierItem[];
@@ -345,6 +382,8 @@ export interface AttentionView {
   all: TieredEntry[];
   /** Finished/stale entries dropped before display. */
   expiredCount: number;
+  /** The tier source's diagnosis (#1139); drives the banner + counts. */
+  tierSource: TierSourceInfo;
 }
 
 /** Classify, expire, and tier a raw session feed in one pass. */
@@ -352,7 +391,26 @@ export function buildAttention(
   feed: SessionFeedEntry[],
   section?: OrchestrationSection | null,
   now = Date.now(),
+  diagnosis?: SectionDiagnosis,
+  watchdogItems: TierItem[] = [],
 ): AttentionView {
+  // The tier source's state (#1139): the caller's diagnosis when it
+  // has one (the live source tracks it in Source.diagnostics()); else
+  // derive the coarse form from the section itself — a served section
+  // is present, a missing one is absent. "invalid" can only come from
+  // a real diagnosis, since an invalid section never reaches here as
+  // a section.
+  const tierSource: TierSourceInfo = diagnosis
+    ? {
+        present: diagnosis.state === "live" || diagnosis.state === "stale",
+        state: diagnosis.state,
+        runId: diagnosis.runId,
+        generatedAt: diagnosis.generatedAt,
+        failedChecks: diagnosis.failedChecks,
+      }
+    : section
+      ? { present: true, state: "live", runId: section.runId, generatedAt: section.generatedAt }
+      : { present: false, state: "absent" };
   const { current, expired } = partitionFresh(feed, now);
   const bySession = new Map<string, SectionMatch>();
   if (section) {
@@ -385,13 +443,28 @@ export function buildAttention(
       const sid = tierItemSessionId(item);
       return !(sid && knownIds.has(sid));
     });
+  // #1148: watchdog items are aggregator-derived NEEDS ORCHESTRATOR
+  // cards, merged alongside the orchestrator-published extras. They
+  // are never session items, so they skip the extras() session
+  // filtering; dedupe is by stable watchdog id, and a published item
+  // with the same id (there cannot be one today) would win.
+  const publishedExtra = extras(section?.tiers.needsOrchestrator);
+  const publishedIds = new Set(publishedExtra.map((i) => i.id));
+  const seenWatchdog = new Set<string>();
+  const watchdogExtra = watchdogItems.filter((i) => {
+    if (publishedIds.has(i.id) || seenWatchdog.has(i.id)) return false;
+    seenWatchdog.add(i.id);
+    return true;
+  });
   return {
     drew: all.filter((e) => e.tier === "needs-drew"),
     orchestrator: all.filter((e) => e.tier === "needs-orchestrator"),
+    watchdog: watchdogExtra,
     drewExtra: extras(section?.tiers.needsDrew),
-    orchestratorExtra: extras(section?.tiers.needsOrchestrator),
+    orchestratorExtra: [...publishedExtra, ...watchdogExtra],
     all,
     expiredCount: expired.length,
+    tierSource,
   };
 }
 
@@ -459,12 +532,19 @@ const MONTH_NAMES = [
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function ymdLabel(ymd: string): string {
+  const m = YMD.exec(ymd.trim());
+  // Defensive: an impossible date is echoed verbatim instead of
+  // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
+  if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
   const d = new Date(`${ymd}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
 export function monthLabel(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
+  // Defensive: an out-of-range month is echoed verbatim instead of
+  // rendering the literal "undefined" as a lane label.
+  if (!Number.isInteger(m) || m < 1 || m > 12) return ym;
   return `${MONTH_NAMES[m - 1]} ${y}`;
 }
 
@@ -475,7 +555,8 @@ export type RoadmapGrain = "quarter" | "month" | "week" | "3d" | "today";
 /** The row's calendar date when its Horizon is an ISO date, else null. */
 export function rowDate(row: RoadmapRow): string | null {
   const m = YMD.exec(row.horizon.trim());
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+  if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
 }
 
 export interface DayLane {
@@ -580,9 +661,26 @@ export interface TodayView {
   generatedAt?: string;
   /** What the orchestrator pushed back into motion (section path only). */
   actions?: { at: string; kind: string; target: string; summary: string }[];
+  /**
+   * The orchestration section's diagnosis (#1139): the derived view's
+   * banner names the true state (absent vs invalid vs stale) instead
+   * of always claiming the job "has not published yet".
+   */
+  sectionDiagnosis?: SectionDiagnosis;
 }
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
+
+/**
+ * The orchestrator sometimes publishes `progressedSinceLastRun` as a
+ * single string rather than a list (its declared shape). Normalize at
+ * this boundary so every downstream consumer can trust `string[]`.
+ */
+export function asStringList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x));
+  if (typeof v === "string" && v) return [v];
+  return [];
+}
 
 /** Map the #899 section's goal measurements into the today view. */
 export function todayFromSection(section: OrchestrationSection): TodayView {
@@ -617,7 +715,7 @@ export function todayFromSection(section: OrchestrationSection): TodayView {
     return {
       project: g.goal,
       state: g.momentum === "moving" ? "moving" : g.momentum === "blocked" ? "blocked" : "stalled",
-      accomplished: g.progressedSinceLastRun,
+      accomplished: asStringList(g.progressedSinceLastRun),
       blockedBy: blockers.join("; ") || undefined,
       detail: [g.summary, ...g.gaps].filter(Boolean).join(" "),
     };
@@ -637,8 +735,17 @@ export function deriveToday(
   items: Map<RefKey, GhItem>,
   section: OrchestrationSection | null,
   now = new Date(),
+  diagnosis?: SectionDiagnosis,
 ): TodayView {
-  if (section) return todayFromSection(section);
+  if (section) {
+    const view = todayFromSection(section);
+    view.sectionDiagnosis = diagnosis ?? {
+      state: "live",
+      runId: section.runId,
+      generatedAt: section.generatedAt,
+    };
+    return view;
+  }
 
   // Derived until #899 lands: today's dated roadmap rows first, then the
   // board's in-progress work by priority, then what's in review.
@@ -696,5 +803,190 @@ export function deriveToday(
       detail: inProgress ? undefined : "nothing in progress on the board",
     });
   }
-  return { fromOrchestrator: false, objectives, momentum };
+  return { fromOrchestrator: false, objectives, momentum, sectionDiagnosis: diagnosis ?? { state: "absent" } };
+}
+
+// ---------------------------------------------------------------------------
+// Usage & billing hub derivations (hub design §1.3, §4). Bubble rules are
+// GOAL.md-fixed: any metric over 80% of its limit, or projected unbilled
+// PAYG over $5 (unbilled accrual only — Q3 default), surfaces worst-first.
+// ---------------------------------------------------------------------------
+
+import { countedEstimate, type AttentionFlag, type QuotaView, type SnapshotRecord, type UsageView } from "./model.ts";
+
+export const BUBBLE_PCT = 80;
+export const BUBBLE_USD = 5;
+
+/**
+ * Every tripped bubble rule across both families. `usage.payg` is the
+ * aggregation point for PAYG estimates, so a service whose estimate is
+ * already a PAYG line is not double-counted (service ids listed in
+ * `paygLineServices`).
+ */
+export function buildAttentionFlags(
+  quota: QuotaView,
+  usage: Pick<UsageView, "services" | "payg">,
+  paygLineServices: ReadonlySet<string> = new Set(["cloudflare"]),
+): AttentionFlag[] {
+  const flags: AttentionFlag[] = [];
+  for (const pool of quota.pools) {
+    for (const w of pool.windows) {
+      const pct = windowPercent(w);
+      if (pct > BUBBLE_PCT) {
+        flags.push({
+          kind: "over-limit",
+          label: `${pool.provider} · ${pool.plan} — ${w.name}`,
+          detail: `${Math.round(pct)}% of limit used${w.resetsAt ? ` · resets ${w.resetsAt.slice(0, 10)}` : ""}`,
+          href: "/quota",
+          severity: pct,
+        });
+      }
+    }
+  }
+  for (const svc of usage.services) {
+    for (const m of svc.metrics) {
+      if (m.percent != null && m.percent > BUBBLE_PCT) {
+        flags.push({
+          kind: "over-limit",
+          label: `${svc.name} — ${m.label}`,
+          detail: `${Math.round(m.percent)}% of limit used`,
+          href: `/quota/service/${svc.id}`,
+          severity: m.percent,
+        });
+      }
+    }
+    if (svc.paygEstimate && !paygLineServices.has(svc.id)) {
+      const counted = countedEstimate(svc.paygEstimate);
+      if (counted > BUBBLE_USD) {
+        flags.push({
+          kind: "payg-unbilled",
+          label: `${svc.name} — PAYG estimate`,
+          detail: `counted $${counted.toFixed(2)} unbilled (1.2 × high $${svc.paygEstimate.high.toFixed(2)})`,
+          href: `/quota/service/${svc.id}`,
+          severity: counted,
+        });
+      }
+    }
+  }
+  for (const line of usage.payg) {
+    if (line.unbilledUsd != null && line.unbilledUsd > BUBBLE_USD) {
+      flags.push({
+        kind: "payg-unbilled",
+        label: line.label,
+        detail: `$${line.unbilledUsd.toFixed(2)} projected unbilled${line.estimate ? ` (estimate $${line.estimate.low.toFixed(2)}–$${line.estimate.high.toFixed(2)})` : ""}`,
+        href: "/quota",
+        severity: line.unbilledUsd,
+      });
+    }
+  }
+  // Worst first: over-limit by percent, then PAYG by dollars — the two
+  // severities are different units, so kinds stay grouped, worst kind
+  // (over-limit) first per the design's "worst first" reading order.
+  return flags.sort((a, b) => (a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1));
+}
+
+export interface Freshness {
+  stale: boolean;
+  /** Whole days since the freshest read; null when never measured. */
+  ageDays: number | null;
+}
+
+/** A card is stale when its freshest read is older than its cadence (§1.1). */
+export function freshness(measuredAt: string | null, cadenceDays: number, now = new Date()): Freshness {
+  if (!measuredAt) return { stale: true, ageDays: null };
+  // Date-only stamps age by calendar day (a read dated yesterday is
+  // 1 day old all day today); datetimes age by elapsed whole days.
+  if (measuredAt.length <= 10) {
+    const t = Date.parse(`${measuredAt}T00:00:00Z`);
+    if (Number.isNaN(t)) return { stale: true, ageDays: null };
+    const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
+    return { stale: ageDays > cadenceDays, ageDays };
+  }
+  const t = Date.parse(measuredAt);
+  if (Number.isNaN(t)) return { stale: true, ageDays: null };
+  const ageDays = Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
+  return { stale: ageDays > cadenceDays, ageDays };
+}
+
+export interface PaceProjection {
+  metricId: string;
+  /** Points used in the fit (after the last reset boundary). */
+  points: number;
+  /** Percent-points burned per day. */
+  slopePerDay: number;
+  /** ISO when the metric reaches 100% at the current slope, if it does. */
+  projectedExhaustionAt: string | null;
+  /** Projected percent at the window's recorded reset, when known. */
+  projectedPercentAtReset: number | null;
+}
+
+const RESET_DROP_PCT = 30;
+
+/** Index just after the last reset boundary (a resetsAt passing, or a big drop). */
+function windowStartIndex(recs: SnapshotRecord[]): number {
+  let start = 0;
+  for (let i = 1; i < recs.length; i++) {
+    const prev = recs[i - 1];
+    const cur = recs[i];
+    const resetPassed = prev.resetsAt != null && Date.parse(prev.resetsAt) <= Date.parse(cur.ts);
+    const dropped =
+      typeof prev.value === "number" && typeof cur.value === "number" && prev.value - cur.value >= RESET_DROP_PCT;
+    if (resetPassed || dropped) start = i;
+  }
+  return start;
+}
+
+/**
+ * Linear pace projection for one pct metric from its snapshot history
+ * (§4: the computation quota-view.md does by hand for Claude). Null
+ * when history cannot support a projection — never invented.
+ */
+export function projectPace(records: SnapshotRecord[], metricId: string): PaceProjection | null {
+  const recs = records
+    .filter((r) => r.metricId === metricId && r.unit === "pct" && typeof r.value === "number")
+    .sort((a, b) => a.ts.localeCompare(b.ts));
+  const win = recs.slice(windowStartIndex(recs));
+  if (win.length < 2) return null;
+  const first = win[0];
+  const last = win[win.length - 1];
+  const days = (Date.parse(last.ts) - Date.parse(first.ts)) / 86_400_000;
+  if (days < 0.5) return null;
+  const slope = ((last.value as number) - (first.value as number)) / days;
+  if (slope <= 0.05) return null;
+  const lastVal = last.value as number;
+  const projectedExhaustionAt =
+    lastVal >= 100 ? last.ts : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
+  let projectedPercentAtReset: number | null = null;
+  if (last.resetsAt) {
+    const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
+    if (toReset > 0) projectedPercentAtReset = Math.round((lastVal + slope * toReset) * 10) / 10;
+  }
+  return {
+    metricId,
+    points: win.length,
+    slopePerDay: Math.round(slope * 100) / 100,
+    projectedExhaustionAt,
+    projectedPercentAtReset,
+  };
+}
+
+/** Reset points in a metric's history, for chart markers (§4, §1.5). */
+export function resetMarkers(records: SnapshotRecord[], metricId: string): { ts: string; resetsAt: string }[] {
+  const recs = records.filter((r) => r.metricId === metricId).sort((a, b) => a.ts.localeCompare(b.ts));
+  const out: { ts: string; resetsAt: string }[] = [];
+  for (let i = 1; i < recs.length; i++) {
+    const prev = recs[i - 1];
+    const cur = recs[i];
+    if (prev.resetsAt && Date.parse(prev.resetsAt) <= Date.parse(cur.ts)) {
+      out.push({ ts: prev.resetsAt, resetsAt: prev.resetsAt });
+    } else if (
+      typeof prev.value === "number" &&
+      typeof cur.value === "number" &&
+      prev.value - cur.value >= RESET_DROP_PCT
+    ) {
+      out.push({ ts: cur.ts, resetsAt: cur.ts });
+    }
+  }
+  return out;
 }
