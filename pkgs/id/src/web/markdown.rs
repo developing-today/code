@@ -119,6 +119,14 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     // placeholder substitution in `substitute_spaced_destinations`)
     // and restore them in the converted href/src attrs afterwards.
     let (protected, newline_token) = protect_newline_destinations(markdown);
+    // #1424: comrak's table extension splits rows on unescaped pipes
+    // before inline parsing, so a pipe inside a code span in a table
+    // cell ends the cell early. Escape those pipes in table rows
+    // before parsing; comrak then forms the code mark with the literal
+    // pipe, and its renderer already emits the same `\|` spelling for
+    // code spans in table cells on save, so the directions are
+    // symmetric with no save-side mirror needed.
+    let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
     let mut doc = convert_node(root, &[]);
     if let Some(token) = newline_token {
@@ -207,6 +215,142 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     } else {
         (markdown.to_string(), None)
     }
+}
+
+/// Whether `line` is a GFM table delimiter row (`| --- | :---: |`,
+/// `--- | ---`, …): optional outer pipes, every cell a run of dashes
+/// with an optional alignment colon on each side. The line must contain
+/// a pipe — a bare `---` is a setext underline or thematic break, and
+/// every table comrak itself renders carries pipes in its delimiter
+/// row.
+fn is_table_delimiter_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.contains('-') || !trimmed.contains('|') {
+        return false;
+    }
+    let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let body = body.strip_suffix('|').unwrap_or(body);
+    if body.trim().is_empty() {
+        return false;
+    }
+    body.split('|').all(|cell| {
+        let cell = cell.trim();
+        let cell = cell.strip_prefix(':').unwrap_or(cell);
+        let cell = cell.strip_suffix(':').unwrap_or(cell);
+        !cell.is_empty() && cell.bytes().all(|b| b == b'-')
+    })
+}
+
+/// Whether the byte at `i` is backslash-escaped: preceded by an odd
+/// number of backslashes.
+fn byte_is_escaped(bytes: &[u8], i: usize) -> bool {
+    let mut backslashes = 0;
+    let mut j = i;
+    while j > 0 && bytes[j - 1] == b'\\' {
+        backslashes += 1;
+        j -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+/// Escape every unescaped pipe inside a code span on a single line
+/// (#1424). A code span opens at an unescaped backtick run and closes
+/// at the next run of exactly the same length on the same line; an
+/// unmatched run is literal text and is left alone, as is everything
+/// outside code spans (plain-text pipes are the row syntax itself).
+fn escape_code_span_pipes_in_line(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' && !byte_is_escaped(bytes, i) {
+            let mut run = 0;
+            while i + run < bytes.len() && bytes[i + run] == b'`' {
+                run += 1;
+            }
+            // Find the closing run of exactly `run` backticks.
+            let mut close = None;
+            let mut j = i + run;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let mut r = 0;
+                    while j + r < bytes.len() && bytes[j + r] == b'`' {
+                        r += 1;
+                    }
+                    if r == run {
+                        close = Some((j, j + r));
+                        break;
+                    }
+                    j += r;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some((close_start, close_end)) = close {
+                out.push_str(&line[i..i + run]);
+                let mut backslashes = 0usize;
+                for ch in line[i + run..close_start].chars() {
+                    if ch == '|' && backslashes % 2 == 0 {
+                        out.push('\\');
+                    }
+                    if ch == '\\' {
+                        backslashes += 1;
+                    } else {
+                        backslashes = 0;
+                    }
+                    out.push(ch);
+                }
+                out.push_str(&line[close_start..close_end]);
+                i = close_end;
+                continue;
+            }
+            out.push_str(&line[i..i + run]);
+            i += run;
+            continue;
+        }
+        let ch_len = line[i..].chars().next().unwrap().len_utf8();
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+/// Escape pipes inside code spans in the rows of every table in
+/// `markdown` (#1424): the header row (identified by the delimiter row
+/// that follows it), and the body rows that follow the delimiter row
+/// up to the next blank line. Lines outside tables are returned
+/// untouched — outside a table `\|` inside a code span is literal
+/// text, not an escape, so escaping there would corrupt the span.
+fn escape_table_code_span_pipes(markdown: &str) -> String {
+    if !markdown.contains('`') || !markdown.contains('|') {
+        return markdown.to_string();
+    }
+    let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(markdown.len() + 16);
+    let mut in_table = false;
+    for (idx, raw) in lines.iter().enumerate() {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let ending = &raw[line.len()..];
+        if is_table_delimiter_row(line) {
+            in_table = true;
+            out.push_str(raw);
+            continue;
+        }
+        if in_table && line.trim().is_empty() {
+            in_table = false;
+        }
+        let header_row = lines
+            .get(idx + 1)
+            .is_some_and(|next| is_table_delimiter_row(next));
+        if in_table || header_row {
+            out.push_str(&escape_code_span_pipes_in_line(line));
+            out.push_str(ending);
+        } else {
+            out.push_str(raw);
+        }
+    }
+    out
 }
 
 /// Restore protected newlines in the converted document: the token
@@ -4207,6 +4351,98 @@ Some text
         assert!(result.contains("H2"), "Should have header H2: {result}");
         assert!(result.contains('A'), "Should have cell A: {result}");
         assert!(result.contains('B'), "Should have cell B: {result}");
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_body_cell() {
+        // #1424: a pipe inside a code span in a body cell must not
+        // split the cell: one cell, code mark intact, literal pipe.
+        let md = "| Command | Note |\n| --- | --- |\n| run `a|b` now | c |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 2, "no phantom column: {doc}");
+        let inline = cells[0]["content"][0]["content"].as_array().unwrap();
+        let code = inline
+            .iter()
+            .find(|n| n["marks"][0]["type"] == "code")
+            .expect("code mark survives");
+        assert_eq!(code["text"], "a|b");
+        // Save emits the escaped spelling comrak's renderer produces
+        // for code in table cells, and the round trip is a fixpoint.
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert!(saved.contains("`a\\|b`"), "escaped on save: {saved}");
+        let back = markdown_to_prosemirror(&saved);
+        assert_eq!(back, doc, "reparse of saved form is stable");
+        assert_eq!(prosemirror_to_markdown(&back).unwrap(), saved);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_header_cell() {
+        // #1424: the same protection applies to the header row.
+        let md = "| `x|y` | H2 |\n| --- | --- |\n| A | B |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        let header = rows[0]["content"].as_array().unwrap();
+        assert_eq!(header.len(), 2, "header not split: {doc}");
+        let code = &header[0]["content"][0]["content"][0];
+        assert_eq!(code["text"], "x|y");
+        assert_eq!(code["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_only_content() {
+        // #1424: a code span with a pipe as a cell's only content.
+        let md = "| H1 | H2 |\n| --- | --- |\n| `a|b` | c |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 2, "no phantom column: {doc}");
+        let inline = cells[0]["content"][0]["content"].as_array().unwrap();
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0]["text"], "a|b");
+        assert_eq!(inline[0]["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_one_column_no_drop() {
+        // #1424: under a 1-column header the fragment after the pipe
+        // was dropped entirely; the whole code span now survives in
+        // the single cell.
+        let md = "| `h|x` |\n| --- |\n| `a|b` |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let header = rows[0]["content"].as_array().unwrap();
+        assert_eq!(header.len(), 1);
+        assert_eq!(header[0]["content"][0]["content"][0]["text"], "h|x");
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 1, "single column: {doc}");
+        let code = &cells[0]["content"][0]["content"][0];
+        assert_eq!(code["text"], "a|b", "no fragment dropped: {doc}");
+        assert_eq!(code["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_code_span_pipe_outside_table_untouched() {
+        // #1424 guard: outside a table a pipe in a code span needs no
+        // escape, and the preprocessing must not add one (a `\|`
+        // there would be literal backslash text in the span).
+        let md = "Run `a|b` here.\n";
+        let doc = markdown_to_prosemirror(md);
+        let inline = doc["content"][0]["content"].as_array().unwrap();
+        let code = inline
+            .iter()
+            .find(|n| n["marks"][0]["type"] == "code")
+            .expect("code mark present");
+        assert_eq!(code["text"], "a|b");
     }
 
     #[test]
