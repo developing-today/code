@@ -463,8 +463,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             no_relay,
         } => {
             let manifest = parse_manifest_file(&file)?;
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability, None).await?;
+            let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&client, &capability, None).await?;
             client.close();
             endpoint.close().await;
             print!("{}", crate::world_manifest::diff(&manifest, &state));
@@ -481,8 +481,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             no_relay,
         } => {
             let manifest = parse_manifest_file(&file)?;
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability, Some(&admin_token)).await?;
+            let (endpoint, client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&client, &capability, Some(&admin_token)).await?;
             let steps = crate::world_manifest::plan(&manifest, &state);
             if steps.is_empty() {
                 println!("no drift");
@@ -497,7 +497,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 );
                 if !dry_run {
                     let applied =
-                        apply_steps(&mut client, &admin_token, &capability, &steps).await?;
+                        apply_steps(&client, &admin_token, &capability, &steps).await?;
                     if applied == steps.len() {
                         println!("applied {} step(s)", applied);
                     } else {
@@ -872,17 +872,34 @@ fn parse_manifest_file(file: &std::path::Path) -> Result<crate::world_manifest::
 /// with seed 0 — a seed alone never plans a step, and apply always reads with
 /// the admin token.
 async fn current_world_state(
-    client: &mut WorldClient,
+    client: &WorldClient,
     capability: &str,
     admin_token: Option<&str>,
 ) -> Result<crate::world_manifest::WorldState> {
-    let info = client.info_details(capability).await?;
-    let caps: crate::world_caps::CapsReport =
-        serde_json::from_value(client.caps(capability).await?)
-            .context("host returned a malformed capability report")?;
-    let profile: crate::world_limits::WorldExecutionProfile =
-        serde_json::from_value(client.execution_profile(None, Some(capability)).await?)
-            .context("host returned a malformed execution profile")?;
+    // One fresh session per read: admin and query frames are served one
+    // operation per stream, so sequencing these reads on one stream would
+    // talk to a session the host already finished.
+    let info = client
+        .fresh_session()
+        .await?
+        .info_details(capability)
+        .await?;
+    let caps: crate::world_caps::CapsReport = serde_json::from_value(
+        client
+            .fresh_session()
+            .await?
+            .caps(capability)
+            .await?,
+    )
+    .context("host returned a malformed capability report")?;
+    let profile: crate::world_limits::WorldExecutionProfile = serde_json::from_value(
+        client
+            .fresh_session()
+            .await?
+            .execution_profile(None, Some(capability))
+            .await?,
+    )
+    .context("host returned a malformed execution profile")?;
     // The report carries the world's own ceiling as a list; an unrestricted
     // ceiling is the whole catalog, which we fold back to "no ceiling".
     let ceiling = if caps.ceiling
@@ -894,7 +911,11 @@ async fn current_world_state(
     } else {
         Some(caps.ceiling.clone())
     };
-    let (seed, schedules) = client.manifest_state(admin_token, Some(capability)).await?;
+    let (seed, schedules) = client
+        .fresh_session()
+        .await?
+        .manifest_state(admin_token, Some(capability))
+        .await?;
     Ok(crate::world_manifest::WorldState {
         module_hash: info.active_module_hash,
         seed: seed.unwrap_or(0),
@@ -929,19 +950,58 @@ fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
 /// set/cancel — each journaled by the host. Returns how many of the steps
 /// were actually applied, so the caller's summary cannot claim credit for
 /// any step whose apply path is missing (#818).
+///
+/// The steps run in an order that makes the plan's result reachable, not
+/// strictly in plan order (#807): schedule cancels first, so a manifest
+/// that replaces ids at the pending-schedule capacity frees the slots its
+/// additions need; the execution profile next, so a module installed in
+/// the same apply is instantiated under the manifest's profile, not the
+/// previous one (a profile applies on the next install); grants and
+/// ceiling next, so a module compiled in the same apply may import the
+/// capabilities the manifest grants; then the module install; schedule
+/// additions last.
+///
+/// Each operation runs on a fresh session (see
+/// [`WorldClient::fresh_session`]): the host serves admin frames one
+/// operation per stream, so a second operation on the same stream would
+/// write to a session that no longer has a receiver.
+/// Order steps for reachability (see [`apply_steps`]): cancellations
+/// first, then profile, grants and ceiling, then the module install,
+/// and schedule additions last. The sort is stable, so steps of the
+/// same kind keep their plan order.
+fn ordered_steps<'a>(
+    steps: &'a [crate::world_manifest::ApplyStep],
+) -> Vec<&'a crate::world_manifest::ApplyStep> {
+    use crate::world_manifest::ApplyStep;
+    fn rank(step: &ApplyStep) -> u8 {
+        match step {
+            ApplyStep::CancelSchedule { .. } => 0,
+            ApplyStep::SetProfile { .. } => 1,
+            ApplyStep::SetGrants { .. } => 2,
+            ApplyStep::SetCeiling { .. } => 3,
+            ApplyStep::InstallModule { .. } => 4,
+            ApplyStep::ScheduleAt { .. } => 5,
+        }
+    }
+    let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
+    ordered.sort_by_key(|step| rank(step));
+    ordered
+}
+
 async fn apply_steps(
-    client: &mut WorldClient,
+    client: &WorldClient,
     admin_token: &str,
     capability: &str,
     steps: &[crate::world_manifest::ApplyStep],
 ) -> Result<usize> {
     use crate::world_manifest::ApplyStep;
     let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-    for step in steps {
+    let ordered = ordered_steps(steps);
+    for step in ordered {
         match step {
             ApplyStep::SetGrants { grants } => {
                 let current: crate::world_caps::CapsReport =
-                    serde_json::from_value(client.caps(capability).await?)
+                    serde_json::from_value(client.fresh_session().await?.caps(capability).await?)
                         .context("host returned a malformed capability report")?;
                 let to_revoke: Vec<String> = current
                     .granted
@@ -956,6 +1016,8 @@ async fn apply_steps(
                     .collect();
                 if !to_grant.is_empty() || !to_revoke.is_empty() {
                     client
+                        .fresh_session()
+                        .await?
                         .update_caps(admin_token, &to_grant, &to_revoke)
                         .await?;
                 }
@@ -967,29 +1029,29 @@ async fn apply_steps(
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
-                client.set_caps_ceiling(admin_token, &names).await?;
+                client.fresh_session().await?.set_caps_ceiling(admin_token, &names).await?;
             }
             ApplyStep::SetProfile { profile } => {
-                client.set_execution_profile(admin_token, *profile).await?;
+                client.fresh_session().await?.set_execution_profile(admin_token, *profile).await?;
             }
             ApplyStep::InstallModule { hash, source, seed } => {
                 if let Some(source) = source {
                     let sources = read_compile_sources(source)?;
-                    client.compile(admin_token, sources, *seed, false).await?;
+                    client.fresh_session().await?.compile(admin_token, sources, *seed, false).await?;
                 } else if let Some(hash) = hash {
                     // The module is already on the host: fetch its bytes by
                     // hash and install them under the manifest's seed.
-                    let wasm = client.download_module(capability, hash).await?;
-                    client.install_wasm(admin_token, &wasm, *seed).await?;
+                    let wasm = client.fresh_session().await?.download_module_admin(admin_token, hash).await?;
+                    client.fresh_session().await?.install_wasm(admin_token, &wasm, *seed).await?;
                 } else {
                     anyhow::bail!("install_module step names neither a hash nor a source");
                 }
             }
             ApplyStep::ScheduleAt { id, at_ms } => {
-                client.set_schedule(admin_token, id, *at_ms).await?;
+                client.fresh_session().await?.set_schedule(admin_token, id, *at_ms).await?;
             }
             ApplyStep::CancelSchedule { id } => {
-                client.cancel_schedule(admin_token, id).await?;
+                client.fresh_session().await?.cancel_schedule(admin_token, id).await?;
             }
         }
     }
@@ -1669,6 +1731,49 @@ mod tests {
         assert_eq!(applied, steps.len());
     }
 
+    /// The execution order is what makes a plan reachable (#807): a
+    /// cancellation frees the schedule slot an addition needs, and the
+    /// profile, grants and ceiling all land before the module step that
+    /// compiles or installs under them.
+    #[test]
+    fn apply_steps_run_in_reachability_order() {
+        use crate::world_manifest::ApplyStep;
+        let steps = [
+            ApplyStep::ScheduleAt {
+                id: "new".to_owned(),
+                at_ms: 5,
+            },
+            ApplyStep::InstallModule {
+                hash: None,
+                source: Some(std::path::PathBuf::from("main.roc")),
+                seed: 0,
+            },
+            ApplyStep::SetCeiling { ceiling: None },
+            ApplyStep::SetGrants { grants: vec![] },
+            ApplyStep::SetProfile {
+                profile: crate::world_limits::WorldExecutionProfile::default(),
+            },
+            ApplyStep::CancelSchedule {
+                id: "old".to_owned(),
+            },
+        ];
+        let kinds: Vec<&str> = super::ordered_steps(&steps)
+            .iter()
+            .map(|step| step.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "cancel_schedule",
+                "set_profile",
+                "set_grants",
+                "set_ceiling",
+                "install_module",
+                "schedule_at"
+            ]
+        );
+    }
+
     /// A manifest `module_source` that names a directory compiles its
     /// `main.roc` plus the sibling `.roc` files (and nothing else); a plain
     /// file compiles alone, always sent as `main.roc`.
@@ -1755,7 +1860,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.2"
+            "3 frames conform to shell contract v1.3"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
