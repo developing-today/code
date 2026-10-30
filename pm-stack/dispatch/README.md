@@ -156,6 +156,11 @@ thin in-CI wrapper over that entry point:
   `session_id`, `issue_number` and `issue_url`, mapped from the
   task action step.
 
+Alongside the actions sits one reusable workflow,
+`.github/workflows/pm-scheduled.yml` ("pm-scheduled", below), which
+runs the scheduled tasks through the task action so per-repo
+callers carry only their triggers.
+
 Usage, pinned to `@main` so fleet call sites pick up central updates:
 
 ```yaml
@@ -364,6 +369,62 @@ jobs:
     steps:
       - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
 ```
+
+### pm-scheduled — the reusable scheduled workflow
+
+`.github/workflows/pm-scheduled.yml` is the fleet's single
+scheduled-agents runner: a reusable workflow (`workflow_call`) with
+exactly one job, `run`. A run dispatches each task in its resolved
+task list through one `pm-dispatch-task` step per task (THE LIST in
+the workflow: `bolt`, `palette`, `suggestions`, in that order), and
+a final `always()` step writes each task step's outputs (`task_id`,
+`session_id`, `issue_number`, `issue_url` — blank when the step was
+skipped) to the step summary under the repo name. It declares no
+permissions of its own: a reusable workflow runs with the calling
+job's token, so callers grant `id-token: write` + `contents: read`.
+
+The callers are the thin per-repo `agents.yml` files, which carry
+only triggers (their cron lines, `workflow_dispatch`, ...) and pass
+the fired schedule through:
+
+```yaml
+jobs:
+  scheduled:
+    uses: developing-today/code/.github/workflows/pm-scheduled.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      schedule: ${{ github.event.schedule }}
+```
+
+Inputs (all optional strings, default `""`): `schedule` (the cron
+expression that fired), `tasks` (an explicit comma-separated task
+list), and `repo` (target repo; default: the caller's repository).
+Resolution, in the workflow's `resolve` step: a non-empty `tasks`
+input is used verbatim; otherwise `schedule` is mapped through the
+slot table — a bash `case` statement in that step, which is the
+single place schedule → tasks resolution lives (and where future
+repo-name / time filtering will be added; the caller repo is
+available to the case as a variable). The table (cron is UTC;
+America/Chicago / CDT equivalents in the workflow's comments):
+
+- Task slots → `bolt,palette`: `0 1 * * *` (code), `0 2 * * *`
+  (openchamber), `0 0 * * *` (opencode), `0 5 * * *` (nix +
+  dezren39), `30 13 * * *` (zettel).
+- Suggestions slots → `suggestions`: `0 13 * * *` (code 08:00),
+  `0 14 * * *` (openchamber 09:00), `0 15 * * *` (opencode 10:00),
+  `0 16 * * *` (nix 11:00), `0 17 * * *` (zettel 12:00),
+  `0 18 * * *` (dezren39 13:00).
+- An empty or unknown schedule runs all three:
+  `bolt,palette,suggestions`.
+
+To add a common task (per the workflow's header comment): add its
+prompt to the pm-dispatch-task prompt library
+(`.github/actions/pm-dispatch-task/prompts/<task>.md`) and add one
+step for it to THE LIST in `pm-scheduled.yml` — no caller changes.
+Add a cron line to a repo's `agents.yml` only if the task needs a
+time that repo doesn't already trigger.
 
 #### Design note
 
