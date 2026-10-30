@@ -26,8 +26,10 @@ func TestTypeScriptIsTheDefaultLanguage(t *testing.T) {
 	if !ok || l.Name != "typescript" {
 		t.Fatalf("Lookup(typescript) = %+v, %v", l, ok)
 	}
-	if _, ok := Lookup("python"); ok {
-		t.Fatal("python is the #1917 follow-on slice; it must not be registered before its emitters exist")
+	if _, ok := Lookup("python"); !ok {
+		t.Fatal("python is registered by its emitters (py.go); Lookup must find it")
+	} else if l, _ := Lookup("python"); l.ClientFile != "mcpx_client.py" || l.ScriptExt != ".py" {
+		t.Fatalf("python entry = %+v, want mcpx_client.py / .py", l)
 	}
 }
 

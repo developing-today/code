@@ -57,7 +57,7 @@ var TypeScript = Language{
 }
 
 // Languages is the registry of codegen targets, in preference order.
-var Languages = []Language{TypeScript}
+var Languages = []Language{TypeScript, Python}
 
 // Default is the target every surface that does not name one means: the
 // only target there has ever been.
