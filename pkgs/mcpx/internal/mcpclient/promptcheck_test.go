@@ -16,6 +16,8 @@ func TestValidatePromptResult(t *testing.T) {
 		`{"messages":[{"role":"user","content":{"type":"resource","resource":{"uri":"file:///x","blob":"aGk=","mimeType":"application/octet-stream"}}}]}`,
 		`{"messages":[{"role":"user","content":{"type":"resource_link","uri":"file:///x","name":"x"}}]}`,
 		`{"messages":[{"role":"user","content":{"type":"resource_link","uri":"file:///x","name":"","title":"Titled link"}}]}`,
+		`{"messages":[{"role":"user","content":{"type":"image","data":"aGk=","mimeType":""}}]}`,
+		`{"messages":[{"role":"user","content":{"type":"audio","data":"aGk=","mimeType":""}}]}`,
 		`{"messages":[]}`,
 	}
 	for _, raw := range valid {

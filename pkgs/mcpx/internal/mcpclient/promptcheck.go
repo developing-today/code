@@ -132,7 +132,7 @@ func validatePromptBlock(raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &b); err != nil {
 			return fmt.Errorf("an %s block's data or mimeType is not a string: %w", *head.Type, err)
 		}
-		if b.Data == nil || b.MimeType == nil || *b.MimeType == "" {
+		if b.Data == nil || b.MimeType == nil {
 			return fmt.Errorf("an %s block must carry data and mimeType", *head.Type)
 		}
 		if _, err := base64.StdEncoding.DecodeString(*b.Data); err != nil {
