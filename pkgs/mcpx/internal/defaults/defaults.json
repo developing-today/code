@@ -16,12 +16,7 @@
     "maxLines": 200000,
     "maxAge": "24h",
     "keep": 8,
-    "include": [
-      "host",
-      "user",
-      "process",
-      "version"
-    ],
+    "include": ["host", "user", "process", "version"],
     "trace": false
   },
   "daemon": {
@@ -151,7 +146,9 @@
     "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
-    "inputRounds": 8
+    "inputRounds": 8,
+    "retentionMaxAge": "720h",
+    "retentionMaxTerminalRows": 1000
   },
   "proto": {
     "native": true,
@@ -167,11 +164,7 @@
   "transport": {
     "sseKeepAlive": "15s",
     "stdioDrain": "30s",
-    "loopbackHosts": [
-      "localhost",
-      "127.0.0.1",
-      "::1"
-    ],
+    "loopbackHosts": ["localhost", "127.0.0.1", "::1"],
     "allowedOrigins": []
   },
   "consumer": {
@@ -237,10 +230,7 @@
   },
   "autostart": {
     "bin": "",
-    "args": [
-      "daemon",
-      "--detached"
-    ],
+    "args": ["daemon", "--detached"],
     "idleExit": "4h",
     "connectTimeout": "20s",
     "pollInterval": "50ms",

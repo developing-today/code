@@ -93,6 +93,13 @@ type Defaults struct {
 		PollInterval   string `json:"pollInterval"`
 		HandlerTimeout string `json:"handlerTimeout"`
 		InputRounds    int    `json:"inputRounds"`
+		// Retention bounds for terminal elicitation rows (#1677): a
+		// question that has been answered or has expired is kept for
+		// RetentionMaxAge and at most RetentionMaxTerminalRows of them
+		// are kept; the broker prunes on open. Pending rows are live
+		// state and are never pruned.
+		RetentionMaxAge          string `json:"retentionMaxAge"`
+		RetentionMaxTerminalRows int    `json:"retentionMaxTerminalRows"`
 	} `json:"elicit"`
 	// Proto governs how mcpx speaks the protocol to its own clients: which
 	// era mechanisms it offers, and how long it will hold a call open while
@@ -532,6 +539,13 @@ var (
 	ElicitMaxAge         = mustDur(builtin.Elicit.MaxAge, "elicit.maxAge")
 	ElicitPollInterval   = mustDur(builtin.Elicit.PollInterval, "elicit.pollInterval")
 	ElicitHandlerTimeout = mustDur(builtin.Elicit.HandlerTimeout, "elicit.handlerTimeout")
+	// ElicitRetentionMaxAge is how long a terminal (answered or expired)
+	// question is kept in the broker store before an open prunes it
+	// (#1677, design #1675 Phase 2: the recorded 30 days).
+	ElicitRetentionMaxAge = mustDur(builtin.Elicit.RetentionMaxAge, "elicit.retentionMaxAge")
+	// ElicitRetentionMaxTerminalRows caps how many terminal questions
+	// the broker store keeps, oldest first out (#1677).
+	ElicitRetentionMaxTerminalRows = builtin.Elicit.RetentionMaxTerminalRows
 	// InputRounds bounds how many times one 2026-07-28 request may come back
 	// input_required. A server that keeps asking is broken or adversarial,
 	// and without a bound the client would answer it forever.
