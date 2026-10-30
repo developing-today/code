@@ -607,7 +607,12 @@ func pyTypeForSchema(s *schema, indent string) string {
 		if typ, ok := pyCompoundType(s.Const); ok {
 			return typ
 		}
-		return pyLiteral(s.Const)
+		// A scalar constant is a one-value Literal type, exactly like
+		// a one-value enum. Emitting the bare value instead (a quoted
+		// string such as "hello world") makes TypedDict read it as a
+		// forward reference, and Python rejects the annotation at
+		// import: "Forward reference must be an expression".
+		return "Literal[" + pyLiteral(s.Const) + "]"
 	}
 	if len(s.Enum) > 0 {
 		compound := ""
@@ -767,8 +772,12 @@ func pyClassNames(nss []Namespace) []string {
 	// namespace is allocated: a namespace named "tool_error" must not
 	// emit `class ToolError` and replace the runtime's exception
 	// class, and likewise for the typing names the header imports.
+	// Python's keyword literals are reserved for the same reason: a
+	// namespace named "none" normalises to None, and `class None:` is
+	// a SyntaxError that takes down every tool in the module.
 	for _, name := range []string{"ToolError", "TypedDict", "Literal",
-		"Any", "Dict", "List", "Optional", "Union"} {
+		"Any", "Dict", "List", "Optional", "Union",
+		"None", "True", "False"} {
 		used[name] = true
 	}
 	out := make([]string, 0, len(nss))
@@ -910,6 +919,28 @@ var pyReserved = func() map[string]bool {
 	return m
 }()
 
+// findPropSchema resolves a property's schema, looking through
+// composed subschemas (allOf, then anyOf, then oneOf) when the
+// property is not declared at the top level — the same composition
+// schemaFields reads for parameter names. The first declaration
+// found wins.
+func findPropSchema(s *schema, name string) *schema {
+	if s == nil {
+		return nil
+	}
+	if p, ok := s.Properties[name]; ok && p != nil {
+		return p
+	}
+	for _, subs := range [][]*schema{s.AllOf, s.AnyOf, s.OneOf} {
+		for _, sub := range subs {
+			if p := findPropSchema(sub, name); p != nil {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
 // propSchema pulls one property's schema out of a tool's input schema.
 func propSchema(raw json.RawMessage, name string) json.RawMessage {
 	if len(raw) == 0 {
@@ -919,8 +950,8 @@ func propSchema(raw json.RawMessage, name string) json.RawMessage {
 	if json.Unmarshal(raw, &s) != nil {
 		return nil
 	}
-	p, ok := s.Properties[name]
-	if !ok || p == nil {
+	p := findPropSchema(&s, name)
+	if p == nil {
 		return nil
 	}
 	b, err := json.Marshal(p)

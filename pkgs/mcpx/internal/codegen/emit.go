@@ -235,6 +235,73 @@ func toolMeta(nss []Namespace) string {
 		string(b) + ";\n"
 }
 
+// schemaFieldsDoc is the field-naming part of a JSON Schema: its own
+// properties/required plus any composed subschemas. A tool's input
+// schema may define its arguments inside allOf/anyOf/oneOf instead of
+// at the top level; reading only the outer properties dropped those
+// arguments from the generated signatures entirely, so the generated
+// method could not make a valid call for such a schema.
+type schemaFieldsDoc struct {
+	Properties map[string]any     `json:"properties"`
+	Required   []string           `json:"required"`
+	AllOf      []*schemaFieldsDoc `json:"allOf"`
+	AnyOf      []*schemaFieldsDoc `json:"anyOf"`
+	OneOf      []*schemaFieldsDoc `json:"oneOf"`
+}
+
+// collectProps adds every property name visible through composition.
+func (d *schemaFieldsDoc) collectProps(into map[string]bool) {
+	if d == nil {
+		return
+	}
+	for k := range d.Properties {
+		into[k] = true
+	}
+	for _, subs := range [][]*schemaFieldsDoc{d.AllOf, d.AnyOf, d.OneOf} {
+		for _, sub := range subs {
+			sub.collectProps(into)
+		}
+	}
+}
+
+// requiredSet returns the fields every valid argument object must
+// carry: the schema's own required fields, everything an allOf branch
+// requires (every branch applies), and the fields required by EVERY
+// anyOf/oneOf branch (the only ones guaranteed, whichever branch a
+// caller satisfies).
+func (d *schemaFieldsDoc) requiredSet() map[string]bool {
+	out := map[string]bool{}
+	if d == nil {
+		return out
+	}
+	for _, r := range d.Required {
+		out[r] = true
+	}
+	for _, sub := range d.AllOf {
+		for r := range sub.requiredSet() {
+			out[r] = true
+		}
+	}
+	for _, branches := range [][]*schemaFieldsDoc{d.AnyOf, d.OneOf} {
+		if len(branches) == 0 {
+			continue
+		}
+		common := branches[0].requiredSet()
+		for _, sub := range branches[1:] {
+			subReq := sub.requiredSet()
+			for r := range common {
+				if !subReq[r] {
+					delete(common, r)
+				}
+			}
+		}
+		for r := range common {
+			out[r] = true
+		}
+	}
+	return out
+}
+
 // schemaFields pulls parameter names out of a JSON Schema.
 func schemaFields(raw json.RawMessage) (params, required []string) {
 	// Never nil. A nil slice marshals to JSON null, and the emitted type
@@ -245,19 +312,18 @@ func schemaFields(raw json.RawMessage) (params, required []string) {
 	if len(raw) == 0 {
 		return params, required
 	}
-	var doc struct {
-		Properties map[string]any `json:"properties"`
-		Required   []string       `json:"required"`
-	}
+	var doc schemaFieldsDoc
 	if json.Unmarshal(raw, &doc) != nil {
 		return params, required
 	}
-	for k := range doc.Properties {
+	props := map[string]bool{}
+	doc.collectProps(props)
+	for k := range props {
 		params = append(params, k)
 	}
 	sort.Strings(params)
-	if doc.Required != nil {
-		required = doc.Required
+	for r := range doc.requiredSet() {
+		required = append(required, r)
 	}
 	sort.Strings(required)
 	return params, required

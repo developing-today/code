@@ -475,3 +475,118 @@ func TestPythonCodexRound4(t *testing.T) {
 		t.Fatalf("fixture daemon got x-mcpx-cwd = %q, want %q", gotCwd, want)
 	}
 }
+
+// TestPythonCodexRound5 covers the three Codex round-5 findings on
+// deffb123: scalar const annotations emitted bare (a string const
+// becomes a TypedDict forward reference, a SyntaxError at import),
+// Python keyword literals (None/True/False) not reserved when
+// allocating namespace class names, and arguments defined only inside
+// composed (allOf/anyOf) input schemas being dropped by schemaFields.
+func TestPythonCodexRound5(t *testing.T) {
+	l := pythonLang(t)
+	none := codegen.Namespace{
+		Name:   "none",
+		Server: "none-server",
+		Tools: []codegen.Tool{{
+			Name:        "ping",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"mode":{"const":"hello world"},"empty":{"const":""}}}`),
+		}},
+	}
+	demo := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "composed",
+				InputSchema: json.RawMessage(`{"type":"object","allOf":[{"properties":{"x":{"type":"string"}},"required":["x"]},{"properties":{"y":{"type":"integer"}}}]}`),
+			},
+			{
+				Name:        "branched",
+				InputSchema: json.RawMessage(`{"type":"object","anyOf":[{"properties":{"a":{"type":"string"}},"required":["a"]},{"properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"]}]}`),
+			},
+		},
+	}
+	out := l.EmitModule([]codegen.Namespace{none, demo}, "http://127.0.0.1:1234", "sess-5")
+	for _, want := range []string{
+		// Scalar consts render as Literal[...], like enum values.
+		`mode: Literal["hello world"]`,
+		`empty: Literal[""]`,
+		// A namespace named "none" must not emit `class None:`.
+		"class None2:",
+		// allOf arguments appear with their real types; the first
+		// branch's required field stays required.
+		"def composed(self, *, x: str, y: Optional[int] = _MISSING)",
+		// anyOf: "a" is required by every branch, "b" only by one.
+		"def branched(self, *, a: str, b: Optional[str] = _MISSING)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{
+		"class None:",
+		`mode: "hello world"`,
+	} {
+		if strings.Contains(out, bad) {
+			t.Errorf("python module contains %q:\n%s", bad, out)
+		}
+	}
+
+	// Drive the composed-schema tool against a fixture daemon: the
+	// generated method must accept the allOf arguments and send them.
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	type callBody struct {
+		Args json.RawMessage `json:"args"`
+	}
+	seen := make(chan callBody, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body callBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("fixture daemon: decode call: %v", err)
+		}
+		seen <- body
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"ok":true}}}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	module := l.EmitModule([]codegen.Namespace{demo}, srv.URL, "sess-5")
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(module), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"from mcpx_client import tools\n" +
+		"print(tools.Demo.composed(x=\"hi\", y=3))\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	cmd.Env = append(os.Environ(), "MCPX_ENDPOINT="+srv.URL, "MCPX_SESSION=sess-5", "MCPX_SOCKET=")
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated python client failed for composed schema: %v\n%s\n--- module ---\n%s", err, got, module)
+	}
+	body := <-seen
+	var args map[string]any
+	if err := json.Unmarshal(body.Args, &args); err != nil {
+		t.Fatalf("fixture daemon: unmarshal args: %v", err)
+	}
+	if args["x"] != "hi" || args["y"] != float64(3) {
+		t.Fatalf("fixture daemon got args = %s, want x=hi, y=3", body.Args)
+	}
+
+	// The "none"-namespace module must import cleanly (no `class None`,
+	// no bare-string const annotation).
+	dir2 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir2, "mcpx_client.py"), []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	imp := exec.Command(python, "-c", "import sys; sys.path.insert(0, "+pyStrLit(dir2)+"); import mcpx_client")
+	if got, err := imp.CombinedOutput(); err != nil {
+		t.Fatalf("generated python module with none namespace / const fields does not import: %v\n%s\n--- module ---\n%s", err, got, out)
+	}
+}
