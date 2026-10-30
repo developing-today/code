@@ -44,6 +44,18 @@ type Options struct {
 	// ModernVersions narrows the modern revisions offered, newest first.
 	// Nil means all of ModernVersions.
 	ModernVersions []string
+	// ServerName identifies the server this session belongs to, for the
+	// per-server rate limits on its sampling and elicitation requests
+	// (ratelimit.go). Empty means the session is bounded per session only.
+	ServerName string
+	// RequestLimits bounds this server's sampling and elicitation
+	// requests. The zero value means DefaultRequestLimits.
+	RequestLimits RequestLimits
+	// ServerLimiter is this server's shared rate-limit budget, owned by
+	// whoever runs several sessions to the same server (the pool) and
+	// handed to each of them. Nil means the client builds its own,
+	// which bounds it at per-session strength.
+	ServerLimiter *ServerRequestLimiter
 }
 
 // NewWithOptions connects with everything known up front.
@@ -330,6 +342,12 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 		}
 		return map[string]any{"roots": roots}, nil
 	case "elicitation/create", "sampling/createMessage":
+		// Bounded before anything else is spent on the request: an
+		// over-limit server learns so from the error, and the request
+		// reaches no handler (#2192).
+		if rerr := c.checkServerRequest(method); rerr != nil {
+			return nil, rerr
+		}
 		if method == "elicitation/create" {
 			var p struct {
 				Mode string `json:"mode"`

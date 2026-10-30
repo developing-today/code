@@ -898,6 +898,11 @@ func (r *Registry) upstreamHooks(h *pool.Hooks) {
 		h.Protocol = mcpclient.Preference(r.set.String("upstream.protocol"))
 		h.ProbeTimeout = r.set.Duration("upstream.probeTimeout")
 		cache = r.set.Bool("upstream.eraCache")
+		h.RequestLimits = mcpclient.RequestLimits{
+			SamplingPerServer:    r.set.Int("proto.samplingPerMinute"),
+			SamplingPerSession:   r.set.Int("proto.samplingSessionPerMinute"),
+			ElicitationPerServer: r.set.Int("proto.elicitationPerMinute"),
+		}
 	}
 	if cache && r.paths.State != "" {
 		h.Eras = pool.OpenEraFile(filepath.Join(r.paths.State, defaults.UpstreamEraFile))
