@@ -6,10 +6,11 @@
 #
 # The base URL is a derivation argument (#1941): `siteUrl` is baked
 # into the rendered book as mdBook's output.html.site-url, so a local
-# build, the CI build, and a future custom-domain build differ only in
-# that one value. The flake output uses the default "/" (the GitHub
-# Pages Actions deploy root); other deployments override the argument,
-# e.g. `mcpxDocs.override { siteUrl = "/code/"; }`.
+# build, the CI build, and a deployed build differ only in that one
+# value. The flake output uses the default "/"; the GitHub Pages
+# deploy overrides it with "/code/" (the project site's path — mdBook
+# needs the real hosting path or its generated 404 page points assets
+# at the domain root), e.g. `mcpxDocs.override { siteUrl = "/code/"; }`.
 {
   lib,
   runCommand,

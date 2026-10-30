@@ -13,10 +13,10 @@ name: mcpx docs
 #
 # The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
 # #1939 / PR #2629): the same `nix build` locally and in CI. The
-# derivation takes the base URL as its `siteUrl` argument (default "/",
-# the Pages Actions deploy root), baked in as mdBook's site-url — so
-# local, CI, and any future custom-domain build differ only in that
-# one value (#1941).
+# derivation takes the base URL as its `siteUrl` argument, baked in as
+# mdBook's site-url: PR/local builds use the default "/", the Pages
+# deploy overrides it with "/code/" (the project site's path) — builds
+# differ only in that one value (#1941).
 
 on:
   pull_request:
@@ -104,8 +104,16 @@ jobs:
           use-flakehub: false
           use-gha-cache: true
 
-      - name: Nix build
-        run: nix build .#mcpx-docs --print-build-logs
+      # The deployed book is served from the project Pages path
+      # (https://developing-today.github.io/code/), and mdBook needs
+      # that path as its site-url: with "/" the generated 404 page
+      # points its CSS/JS and navigation at the domain root and breaks.
+      # Same derivation as the PR build, differing only in the siteUrl
+      # argument (#1941).
+      - name: Nix build (deploy variant, siteUrl /code/)
+        run: |
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.mcpx-docs.override { siteUrl = "/code/"; }'
 
       - name: Stage site
         run: |
