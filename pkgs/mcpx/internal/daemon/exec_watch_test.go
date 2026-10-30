@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -133,6 +134,9 @@ func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
 // so this is what tells the old program from the new one.
 func exeBytes(t *testing.T, pid int) []byte {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("exeBytes reads /proc/%d/exe, which only exists on linux", pid)
+	}
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/exe", pid))
 	if err != nil {
 		t.Fatalf("read /proc/%d/exe: %v", pid, err)
