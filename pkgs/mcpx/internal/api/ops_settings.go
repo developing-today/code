@@ -126,7 +126,7 @@ func settingsOps() []Op {
 				{Name: "headers", In: InBody, Type: "object", Desc: "headers sent to a remote server",
 					Schema: `{"type":"object","additionalProperties":{"type":"string"}}`},
 				{Name: "transport", In: InBody, Type: "string",
-					Enum: []string{"stdio", "http", "sse"}, Desc: "defaults to stdio with a command, http with a url"},
+					Enum: []string{"stdio", "http", "sse"}, Desc: "defaults to stdio with a command, http with a url; sse names a URL server like http -- the protocol era is negotiated per endpoint: Streamable HTTP first, falling back to the legacy 2024-11-05 HTTP+SSE transport when an endpoint refuses it"},
 				{Name: "mcpx", In: InBody, Type: "object",
 					Desc:   "mcpx's own per-server options: namespace, sharing, scope, max, description",
 					Schema: `{"type":"object","additionalProperties":true}`},

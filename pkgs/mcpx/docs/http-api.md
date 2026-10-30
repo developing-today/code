@@ -35,7 +35,11 @@ adds one concrete path per tool in the **live catalogue**
 (`POST /v1/call/<namespace>/<tool>`, with that tool's input
 schema, generated per request by `handleOpenAPI` in
 `internal/daemon/ops.go`), so a server that appears after startup
-is described without a restart; the offline document reads no
+is described without a restart. A third form, `GET
+/v1/openapi.json?static=1`, returns the daemon document *without*
+the live catalogue merged in -- only the ops-table paths -- so a
+docs build can publish the API surface without publishing the
+builder's configured servers (#1883 item 4); the offline document reads no
 configured servers and covers upstream tools only through the
 declared `/v1/call/{server}/{tool}` template. The two documents
 that used to share this name — one of them describing a server
