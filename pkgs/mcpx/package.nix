@@ -19,12 +19,14 @@
   installShellFiles,
 }:
 let
-  # The mcpx version, written once here (#1895): the derivation attribute
-  # below and the ldflags build stamp both take this binding, because the
-  # argument to buildGo127Module is a non-recursive attribute set and its
-  # own attributes are not in scope for interpolation inside it.
-  # internal/buildcheck keeps cmd/mcpx/main.go default in agreement.
-  version = "0.1.0";
+  # The mcpx version's single source is the VERSION file beside this
+  # one (decision 0005 §3, #1881; #1895's one-literal rule, moved):
+  # the derivation attribute below and the ldflags build stamp both
+  # take this binding, because the argument to buildGo127Module is a
+  # non-recursive attribute set and its own attributes are not in
+  # scope for interpolation inside it. internal/buildcheck guards
+  # the scheme.
+  version = lib.removeSuffix "\n" (builtins.readFile ./VERSION);
 in
 buildGo127Module {
   pname = "mcpx";
@@ -79,10 +81,12 @@ buildGo127Module {
     export GOFLAGS="$GOFLAGS -buildvcs=false"
   '';
 
-  # The version is written once, above, and interpolated here, so the build
-  # stamp cannot silently disagree with `package.nix`'s version. The default in
-  # cmd/mcpx/main.go is the third site and is kept honest by
-  # internal/buildcheck's version agreement test (#1895).
+  # The version comes from VERSION (above) and is interpolated here, so
+  # the build stamp cannot silently disagree with the package version.
+  # The default in cmd/mcpx/main.go is deliberately NOT this version:
+  # it is the 0.0.0-dev sentinel (decision 0005 §3), so a binary built
+  # without ldflags announces that fact instead of impersonating a
+  # release. internal/buildcheck guards both halves of that scheme.
   ldflags = [
     "-s"
     "-w"
