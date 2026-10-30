@@ -83,10 +83,25 @@ func TestDistinctStateDirsGetDistinctSockets(t *testing.T) {
 }
 
 func TestExplicitSocketOverrideWins(t *testing.T) {
+	// #1886 step 6: MCPX_SOCKET is read at the connect/bind call sites,
+	// not inside the computed path — so the computed path stays the
+	// computed path (answers about other keys use it), while a client
+	// connecting to its own daemon and a daemon binding both honour
+	// the override.
 	t.Setenv("MCPX_SOCKET", "/tmp/explicit.sock")
 	t.Setenv("MCPX_STATE_DIR", "/tmp/s")
-	if got := daemon.ResolvePaths().Socket; got != "/tmp/explicit.sock" {
-		t.Fatalf("got %q", got)
+	p := daemon.ResolvePaths()
+	if p.Socket == "/tmp/explicit.sock" {
+		t.Fatalf("computed path leaked the override: %q", p.Socket)
+	}
+	if got := p.ClientSocket(); got != "/tmp/explicit.sock" {
+		t.Fatalf("ClientSocket got %q", got)
+	}
+	if got := p.BindSocket(); got != "/tmp/explicit.sock" {
+		t.Fatalf("BindSocket got %q", got)
+	}
+	if got := p.Resolve(); got == "/tmp/explicit.sock" {
+		t.Fatalf("Resolve (other-key answer) leaked the override: %q", got)
 	}
 }
 

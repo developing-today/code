@@ -49,6 +49,12 @@ type Client struct {
 	lazySocket func() (string, error)
 	socketOnce sync.Once
 	socketPath string
+	// dialSocket is the socket the local transport actually dials,
+	// resolved once at construction through the info record
+	// (Paths.ClientSocket, #1886): the computed Paths.Socket is only a
+	// hint, and a daemon whose state path was too long for sun_path
+	// bound somewhere else and wrote the real path in its record.
+	dialSocket string
 	// set is this process's resolved configuration.
 	set *settings.Set
 	// callSettings is the JSON header carrying whatever call-scoped settings
@@ -128,12 +134,14 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	idle := set.Duration("http.idleConnTimeout")
 
 	if c.endpoint == "" {
+		c.dialSocket = paths.ClientSocket()
+		dialSocket := c.dialSocket
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					var d net.Dialer
-					return d.DialContext(ctx, "unix", paths.Socket)
+					return d.DialContext(ctx, "unix", dialSocket)
 				},
 				// No connection is kept between calls. A takeover closes
 				// the old daemon's idle connections; a client that reused
@@ -153,6 +161,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	// two daemons.
 	if sock, ok := strings.CutPrefix(c.endpoint, "unix://"); ok {
 		c.endpoint = ""
+		c.dialSocket = sock
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -263,6 +272,9 @@ func (c *Client) Socket() string {
 	}
 	if c.endpoint != "" {
 		return ""
+	}
+	if c.dialSocket != "" {
+		return c.dialSocket
 	}
 	return c.paths.Socket
 }

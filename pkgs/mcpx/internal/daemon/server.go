@@ -296,6 +296,14 @@ func (s *Server) TSNetStatus(ctx context.Context) (status TSNetStatus, ok bool, 
 
 // Listen binds both listeners and publishes the daemon record.
 func (s *Server) Listen(tcpPort int) error {
+	// The bind call site for MCPX_SOCKET (#1886 step 6): a daemon started
+	// with the variable binds the named socket, and the record it
+	// publishes then names that socket.
+	s.paths.Socket = s.paths.BindSocket()
+	if preferred, relocated := s.paths.Relocated(); relocated {
+		s.logger.Printf("socket relocated to %s: state path is %d bytes, limit %d",
+			s.paths.Socket, len(preferred), maxSocketPath)
+	}
 	// A stale socket from a crashed daemon must not block a fresh one.
 	if err := s.clearStaleSocket(); err != nil {
 		return err
