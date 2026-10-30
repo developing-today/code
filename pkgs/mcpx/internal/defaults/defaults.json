@@ -148,9 +148,12 @@
   },
   "elicit": {
     "ttl": "120s",
+    "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
-    "inputRounds": 8
+    "inputRounds": 8,
+    "retentionMaxAge": "720h",
+    "retentionMaxTerminalRows": 1000
   },
   "proto": {
     "native": true,
@@ -171,7 +174,9 @@
       "127.0.0.1",
       "::1"
     ],
-    "allowedOrigins": []
+    "allowedOrigins": [],
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
+    "sshWaitDelay": "3s"
   },
   "consumer": {
     "disambiguate": "never",
@@ -327,5 +332,8 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "hooks": {
+    "timeout": "2s"
   }
 }

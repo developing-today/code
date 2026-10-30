@@ -357,6 +357,11 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 			}
 			if method == "elicitation/create" {
 				out = applyDefaults(out, params)
+				checked, rerr := c.checkElicitationAnswer(out, params)
+				if rerr != nil {
+					return nil, rerr
+				}
+				out = checked
 			}
 			return out, nil
 		}

@@ -21,7 +21,7 @@ import { join } from "node:path";
 import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
 
 const SOURCES: ReadonlySet<string> = new Set(["api", "console", "manual", "estimate", "invoice"]);
-const UNITS: ReadonlySet<string> = new Set(["pct", "usd", "count", "gb", "tokens", "usd-est", "minutes", "hours", "gb-hours"]);
+const UNITS: ReadonlySet<string> = new Set(["pct", "usd", "cny", "count", "gb", "tokens", "usd-est", "minutes", "hours", "gb-hours"]);
 const FILE_RE = /^usage-(\d{4}-\d{2})\.jsonl$/;
 
 const ROLLUP_RE = /^usage-(\d{4}-\d{2})\.rollup\.jsonl$/;

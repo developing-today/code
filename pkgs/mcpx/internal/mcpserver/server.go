@@ -316,6 +316,17 @@ func New(b Backend, name, version string) *Server {
 		Cache: Cache{List: defaults.ProtoListMaxAge, Read: defaults.ProtoReadMaxAge}}
 }
 
+// sessionMetaKeys resolves the configured key list, falling back to the
+// defaults when the server was built without one or the setting is empty.
+func (s *Server) sessionMetaKeys() []string {
+	if s != nil && s.SessionMetaKeys != nil {
+		if keys := s.SessionMetaKeys(); len(keys) > 0 {
+			return keys
+		}
+	}
+	return DefaultSessionMetaKeys
+}
+
 // Cache is the ttlMs mcpx attaches to the results 2026-07-28 makes
 // cacheable.
 type Cache struct {

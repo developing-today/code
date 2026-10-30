@@ -91,6 +91,38 @@ func (r *Registry) publish(e events.Event) {
 	}
 }
 
+// elicitEventSummary is the only shape of an elicitation that may go
+// on the event bus (#1677, design #1675 Phase 2): id, server, tool,
+// mode, audience, state, expiry. Never a question's message, schema or
+// url, and never an answer's content -- the bus has no field-level
+// filtering, so every future subscriber would inherit whatever is
+// published here. Anyone who needs the question itself reads it from
+// the broker (Broker.Get / Broker.Await), which is the read path the
+// shrink points consumers at.
+func elicitEventSummary(req elicit.Request) map[string]any {
+	return map[string]any{
+		"id":       req.ID,
+		"server":   req.Server,
+		"tool":     req.Tool,
+		"mode":     string(req.Mode),
+		"audience": string(req.Audience),
+		"state":    string(req.State),
+		"expiry":   req.ExpiresAt,
+	}
+}
+
+// elicitAnsweredSummary is elicitEventSummary for the answer event:
+// the question's identity fields, with the state the answer settled
+// it into (expired when the answer came from expiry, per Respond).
+func elicitAnsweredSummary(req elicit.Request, ans elicit.Answer) map[string]any {
+	out := elicitEventSummary(req)
+	out["state"] = string(elicit.Answered)
+	if ans.By == "expiry" {
+		out["state"] = string(elicit.Expired)
+	}
+	return out
+}
+
 func mustJSON(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -162,13 +194,13 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	// this and is still correct.
 	callID, _ := r.attach(ctx, server, key, req, "elicitation/create", params)
 	r.publish(events.Event{Kind: events.ElicitOpened, Server: server, Trace: callID,
-		Data: mustJSON(req)})
+		Data: mustJSON(elicitEventSummary(req))})
 
 	ans, err := r.broker.Await(ctx, req.ID)
 	if err != nil {
 		return map[string]any{"action": "cancel"}, nil
 	}
-	r.publish(events.Event{Kind: events.ElicitAnswered, Server: server, Data: mustJSON(ans)})
+	r.publish(events.Event{Kind: events.ElicitAnswered, Server: server, Data: mustJSON(elicitAnsweredSummary(req, ans))})
 
 	out := map[string]any{"action": string(ans.Action)}
 	if ans.Action == elicit.Accept && len(ans.Content) > 0 {
@@ -221,13 +253,13 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	}
 	callID, _ := r.attach(ctx, server, key, req, "sampling/createMessage", params)
 	r.publish(events.Event{Kind: events.SampleOpened, Server: server, Trace: callID,
-		Data: mustJSON(req)})
+		Data: mustJSON(elicitEventSummary(req))})
 
 	ans, err := r.broker.Await(ctx, req.ID)
 	if err != nil {
 		return nil, err
 	}
-	r.publish(events.Event{Kind: events.SampleAnswered, Server: server, Data: mustJSON(ans)})
+	r.publish(events.Event{Kind: events.SampleAnswered, Server: server, Data: mustJSON(elicitAnsweredSummary(req, ans))})
 
 	// An expired wait is not a refusal: nobody was there to refuse. The
 	// broker synthesizes the expiry answer itself (Action cancel, By

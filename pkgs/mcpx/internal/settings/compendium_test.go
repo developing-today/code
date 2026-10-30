@@ -130,7 +130,7 @@ func TestEveryDocumentHasAChapter(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "node_modules", "testdata":
+			case ".git", "node_modules", "testdata", "vendor":
 				return filepath.SkipDir
 			}
 			return nil
