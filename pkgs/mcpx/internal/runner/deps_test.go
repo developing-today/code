@@ -1,9 +1,12 @@
 package runner
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -140,6 +143,10 @@ func TestFrozenNPM(t *testing.T) {
 	if !d.frozenNPM(KindNode) {
 		t.Fatal("node + package-lock.json should be a frozen npm set")
 	}
+	ds := &Deps{Lockfile: []byte("x"), LockfileName: "npm-shrinkwrap.json"}
+	if !ds.frozenNPM(KindNode) {
+		t.Fatal("node + npm-shrinkwrap.json should be a frozen npm set (npm ci accepts either)")
+	}
 	if d.frozenNPM(KindBun) || d.frozenNPM(KindDeno) {
 		t.Fatal("frozen npm is node-only")
 	}
@@ -235,6 +242,28 @@ func TestDepsFingerprintSeparatesSets(t *testing.T) {
 // TestLinkNodeModules is the Codex finding on PR #2589 (runner.go):
 // installed deps sat in the exec workdir while a file script resolved
 // imports from its own directory, so the install changed nothing.
+func TestMaterialiseDepsStripsScriptsAndKeepsESM(t *testing.T) {
+	dir := t.TempDir()
+	d := &Deps{Manifest: `{"name":"p","type":"commonjs","scripts":{"prepare":"node ./scripts/prepare.js","preinstall":"x"},"dependencies":{"foo":"1.0.0"}}`}
+	if _, err := materialiseDeps(dir, KindNode, d); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["scripts"]; ok {
+		t.Fatal("materialised manifest still carries the project's lifecycle scripts")
+	}
+	if got["type"] != "module" {
+		t.Fatalf("materialised manifest type = %v, want module (generated files are ESM)", got["type"])
+	}
+}
+
 func TestLinkNodeModules(t *testing.T) {
 	work := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(work, "node_modules", "foo"), 0o755); err != nil {
@@ -262,5 +291,93 @@ func TestLinkNodeModules(t *testing.T) {
 	// Nothing installed in the workdir: no link, no error.
 	if err := linkNodeModules(t.TempDir(), t.TempDir()); err != nil {
 		t.Fatal(err)
+	}
+	// A stale runner-owned link (an earlier workdir, recognisable by
+	// the generated client beside its node_modules) is refreshed to
+	// the current set.
+	oldWork := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(oldWork, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldWork, clientFileName), []byte("// client"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proj := t.TempDir()
+	if err := os.Symlink(filepath.Join(oldWork, "node_modules"), filepath.Join(proj, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkNodeModules(proj, work); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(filepath.Join(proj, "node_modules")); err != nil || got != filepath.Join(work, "node_modules") {
+		t.Fatalf("stale runner link = %q, %v; want refreshed to the current set", got, err)
+	}
+	// A live symlink the runner did not leave (no generated client
+	// beside its target) is the project's own and wins untouched.
+	foreign := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(foreign, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj2 := t.TempDir()
+	if err := os.Symlink(filepath.Join(foreign, "node_modules"), filepath.Join(proj2, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkNodeModules(proj2, work); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(filepath.Join(proj2, "node_modules")); got != filepath.Join(foreign, "node_modules") {
+		t.Fatalf("foreign link = %q; want untouched", got)
+	}
+}
+
+func TestInstallFrozenNPMInstallsOncePerSet(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	calls := filepath.Join(binDir, "calls")
+	stub := "#!/bin/sh\n" +
+		"echo x >> \"" + calls + "\"\n" +
+		"prev=\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--prefix\" ]; then mkdir -p \"$a/node_modules\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	d := &Deps{Lockfile: []byte("locked"), LockfileName: "package-lock.json"}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- installFrozenNPM(ctx, dir, d)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(strings.Fields(string(b))); n != 1 {
+		t.Fatalf("npm ci ran %d times for 4 concurrent runs of one set, want 1", n)
+	}
+	// A different set installs again.
+	d2 := &Deps{Lockfile: []byte("locked-v2"), LockfileName: "package-lock.json"}
+	if err := installFrozenNPM(ctx, dir, d2); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(calls)
+	if n := len(strings.Fields(string(b))); n != 2 {
+		t.Fatalf("npm ci ran %d times after the set changed, want 2", n)
 	}
 }

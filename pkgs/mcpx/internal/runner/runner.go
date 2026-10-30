@@ -293,10 +293,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
-			ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", workDir, "--no-audit", "--no-fund")
-			if out, cerr := ci.CombinedOutput(); cerr != nil {
-				return nil, fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
-					cerr, strings.TrimSpace(string(out)))
+			if cerr := installFrozenNPM(ctx, workDir, opts.Deps); cerr != nil {
+				return nil, cerr
 			}
 		}
 		// A file script resolves bare imports from its own directory
@@ -511,22 +509,52 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 // linkNodeModules symlinks workDir/node_modules beside a file script
 // so the script's bare imports resolve to the materialised dependency
-// set. Anything already at that path -- a real install, a directory, a
-// live link -- is the project's own and wins untouched; a dangling
-// link (its content-addressed target was pruned) is replaced.
+// set. What already sits at that path decides:
+//   - a real install or directory is the project's own and wins
+//     untouched;
+//   - a symlink to THIS set's modules is already right;
+//   - a symlink into an earlier mcpx workdir (runner-owned: its
+//     parent holds the generated client) is stale the moment the
+//     dep set changes -- the new fingerprint picked a new workdir,
+//     and keeping the old link would keep importing the old set
+//     (Codex review, PR #2589) -- so it is refreshed;
+//   - a dangling link (its content-addressed target was pruned) is
+//     replaced; any other symlink is left as the project put it.
 func linkNodeModules(scriptDir, workDir string) error {
 	modules := filepath.Join(workDir, "node_modules")
 	if st, err := os.Stat(modules); err != nil || !st.IsDir() {
 		return nil
 	}
 	link := filepath.Join(scriptDir, "node_modules")
-	if _, err := os.Stat(link); err == nil {
+	fi, err := os.Lstat(link)
+	if err != nil {
+		return os.Symlink(modules, link)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return nil // a real directory or file: the project's own
+	}
+	target, rerr := os.Readlink(link)
+	if rerr != nil {
 		return nil
 	}
-	if _, err := os.Lstat(link); err == nil {
-		_ = os.Remove(link)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(scriptDir, target)
 	}
-	return os.Symlink(modules, link)
+	if filepath.Clean(target) == filepath.Clean(modules) {
+		return nil // already points at this set
+	}
+	if _, serr := os.Stat(target); serr != nil {
+		_ = os.Remove(link) // dangling
+		return os.Symlink(modules, link)
+	}
+	// A live link elsewhere: refresh it only when it is one this
+	// runner left -- an earlier workdir, recognisable by the
+	// generated client sitting beside its node_modules.
+	if _, serr := os.Stat(filepath.Join(filepath.Dir(target), clientFileName)); serr == nil {
+		_ = os.Remove(link)
+		return os.Symlink(modules, link)
+	}
+	return nil
 }
 
 // writeIfChanged avoids touching mtime when content is identical, which keeps

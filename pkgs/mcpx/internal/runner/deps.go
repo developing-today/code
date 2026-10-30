@@ -2,14 +2,17 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Deps is a script's resolved dependency set, as the runner consumes it
@@ -214,6 +217,24 @@ func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
 		if name == "" || name == "." || !strings.HasSuffix(name, ".json") {
 			name = "package.json"
 		}
+		// The materialised copy is an installation + resolution
+		// manifest for THIS runner's workdir, not the project:
+		// - its lifecycle scripts must not travel with it. Only the
+		//   manifest and lockfile were transported, so a project's
+		//   prepare/preinstall would run in the workdir against
+		//   files that are not there (and is a code-execution
+		//   surface the caller never asked mcpx to run). Dependency
+		//   packages keep their own hooks; only the root project's
+		//   scripts are dropped (Codex review, PR #2589).
+		// - a project "type": "commonjs" must not reclassify the
+		//   generated execution files, which are ESM by
+		//   construction (the launcher's imports); Node would fail
+		//   them with "Cannot use import statement outside a
+		//   module" (Codex review, PR #2589).
+		delete(manifest, "scripts")
+		if manifest["type"] == "commonjs" {
+			manifest["type"] = "module"
+		}
 		text, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("deps: render manifest: %w", err)
@@ -301,16 +322,55 @@ func depsFlags(kind string, d *Deps) []string {
 }
 
 // frozenNPM reports whether this run must install a frozen npm set
-// before executing: a node run carrying a package-lock.json. npm ci
-// installs exactly the lockfile into the workdir's node_modules and
-// fails when the lockfile and manifest disagree, which is what frozen
-// means; it runs in the exec workdir, never a user's project.
+// before executing: a node run carrying a package-lock.json or an
+// npm-shrinkwrap.json -- npm ci accepts either name for a frozen
+// installation, and a project carrying only the shrinkwrap is frozen
+// too (Codex review, PR #2589). npm ci installs exactly the lockfile
+// into the workdir's node_modules and fails when the lockfile and
+// manifest disagree, which is what frozen means; it runs in the exec
+// workdir, never a user's project.
 func (d *Deps) frozenNPM(kind string) bool {
 	if kind != KindNode {
 		return false
 	}
 	name, _, ok := d.selectedLockfile(kind)
-	return ok && name == "package-lock.json"
+	return ok && (name == "package-lock.json" || name == "npm-shrinkwrap.json")
+}
+
+// frozenInstallLocks serialises first installation per workdir:
+// concurrent runs sharing a content-addressed workdir (same client,
+// same dep fingerprint) must not install underneath each other --
+// npm ci removes the existing node_modules before installing, so a
+// second run's install can delete the set a live first run is still
+// resolving imports from (Codex review, PR #2589).
+var frozenInstallLocks sync.Map // map[string]*sync.Mutex, keyed by workdir
+
+// installFrozenNPM runs npm ci in dir exactly once per dep set: the
+// first run for a fingerprint installs and records a marker; later
+// runs with the same fingerprint and an intact node_modules skip the
+// install entirely. A changed set (different fingerprint), a missing
+// marker, or a pruned node_modules installs again.
+func installFrozenNPM(ctx context.Context, dir string, d *Deps) error {
+	mu, _ := frozenInstallLocks.LoadOrStore(dir, &sync.Mutex{})
+	lock := mu.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	marker := filepath.Join(dir, ".mcpx-deps-installed")
+	want := d.fingerprint()
+	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
+		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
+			return nil
+		}
+	}
+	ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", dir, "--no-audit", "--no-fund")
+	out, cerr := ci.CombinedOutput()
+	if cerr != nil {
+		return fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
+			cerr, strings.TrimSpace(string(out)))
+	}
+	_ = os.WriteFile(marker, []byte(want), 0o600)
+	return nil
 }
 
 // writeBytesIfChanged is writeIfChanged for byte content (a lockfile
