@@ -192,6 +192,17 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	}
 	_ = json.Unmarshal(params, &p)
 
+	// The request is checked against the era the upstream negotiated before
+	// anybody is asked: a message list that is not sampling's shape is the
+	// server's mistake, and -32602 says so without a question nobody could
+	// answer well. No era on the context means this was called outside a
+	// connection's answer path (tests), where the permissive union applies.
+	era, known := mcpclient.SamplingEraFrom(ctx)
+	arrayOK := !known || era.Negotiated == "" || era.Negotiated >= "2025-11-25"
+	if err := elicit.ValidateSampleRequest(params, arrayOK); err != nil {
+		return nil, &elicit.SamplingInvalidParams{Err: err}
+	}
+
 	req, err := r.broker.OpenRequest(elicit.Request{
 		Server: server,
 		Trace:  r.askIDFor(ctx, server, key),
@@ -243,14 +254,18 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	if result == nil {
 		return nil, errors.New("a sampling answer must be a CreateMessageResult, not null")
 	}
-	// The two fields a server relies on. Filled if the answerer left them
-	// out, since a result without a role or a model is rejected by strict
-	// servers for a reason unrelated to its content.
-	if _, ok := result["role"]; !ok {
-		result["role"] = "assistant"
+	// Role and model are no longer filled in when the answerer leaves them
+	// out: a result that is not a CreateMessageResult is refused upstream as
+	// -32602, and inventing a role or a model for it hid that from the
+	// server that asked. A model hint is still not checked -- hints are
+	// expressly ignorable, so a mismatch is not a failure.
+	var carriedTools struct {
+		Tools json.RawMessage `json:"tools"`
 	}
-	if _, ok := result["model"]; !ok {
-		result["model"] = "unknown"
+	_ = json.Unmarshal(params, &carriedTools)
+	tools := len(carriedTools.Tools) > 0 && string(carriedTools.Tools) != "null"
+	if err := elicit.ValidateSampleResult(ans.Content, arrayOK, tools); err != nil {
+		return nil, &elicit.SamplingInvalidParams{Err: err}
 	}
 	return result, nil
 }

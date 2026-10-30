@@ -96,6 +96,11 @@ type Client struct {
 	loopDone chan struct{}
 	// Negotiated is the version actually in use.
 	Negotiated string
+	// negotiated mirrors Negotiated for answer, which runs on the server's
+	// goroutine while a concurrent recovery's finishLegacy may be writing
+	// Negotiated after a session-ending 404. Reading the plain field there
+	// raced that write; the mirror is published by every writer.
+	negotiated atomic.Value // string
 	// toolValidators holds each listed tool's compiled input/output
 	// schema validators (schemacheck.go), keyed by tool name.
 	toolValidators map[string]*toolSchemas
@@ -443,6 +448,7 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 	c.Capabilities = ir.Capabilities
 	c.Instructions = ir.Instructions
 	c.Negotiated = ir.ProtocolVersion
+	c.negotiated.Store(ir.ProtocolVersion)
 	c.Era = EraLegacy
 
 	if h, ok := c.t.(interface{ setNegotiated(string) }); ok {

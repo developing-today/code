@@ -286,6 +286,12 @@ func narrowCapabilities(own map[string]any, relayed json.RawMessage) map[string]
 // elicitation and sampling only -- so with the broker on, which is always,
 // every roots/list got "not implemented" while the roots sat configured.
 func (c *Client) answer(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
+	// Both sampling paths arrive here, so the era the request was made under
+	// is stamped once, for the relay that answers it to validate against.
+	// modern and negotiated are the atomic mirrors rather than Era and
+	// Negotiated: a concurrent recovery's finishLegacy writes both, and
+	// this runs on the server's goroutine.
+	ctx = WithSamplingEra(ctx, SamplingEra{Negotiated: c.negotiatedVersion(), Era: c.modernEra()})
 	c.mu.Lock()
 	h := c.onElicit
 	roots := append([]Root(nil), c.roots...)
@@ -309,7 +315,7 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 				return out, nil
 			}
 			if !errors.Is(err, ErrNotRelayed) {
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				return nil, rpcErrorFor(err)
 			}
 		}
 		if roots == nil {
@@ -342,14 +348,12 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 			if err != nil {
 				// A typed handler error names its own code: a sampling
 				// refusal is -1, a tool-shape violation -32602 (see
-				// CodedError). Flattening those to -32603 would tell the
-				// upstream an internal failure happened and invite a
-				// retry of a request a person already refused.
-				var ce *CodedError
-				if errors.As(err, &ce) {
-					return nil, &rpcError{Code: ce.Code, Message: ce.Message}
-				}
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				// CodedError, which Phase 1 gave an RPCCode method for
+				// exactly this). rpcErrorFor relays it instead of
+				// flattening to -32603, which would tell the upstream an
+				// internal failure happened and invite a retry of a
+				// request a person already refused.
+				return nil, rpcErrorFor(err)
 			}
 			if method == "elicitation/create" {
 				out = applyDefaults(out, params)
