@@ -1481,7 +1481,7 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         // Skip whitespace: any `char::is_whitespace` char separates terms,
         // not only the ASCII space.
         while i < input.len() {
-            let ch = input[i..].chars().next().expect("i is a char boundary");
+            let Some(ch) = input[i..].chars().next() else { break; };
             if !ch.is_whitespace() {
                 break;
             }
@@ -1496,7 +1496,7 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         let start = i;
         let mut in_quotes = false;
         while i < input.len() {
-            let ch = input[i..].chars().next().expect("i is a char boundary");
+            let Some(ch) = input[i..].chars().next() else { break; };
             if ch == '"' {
                 in_quotes = !in_quotes;
                 i += 1;
