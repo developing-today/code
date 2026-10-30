@@ -489,10 +489,17 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     title: "mcpx",
     intro:
       "mcpx is the Go MCP gateway and Code Mode runner in pkgs/mcpx: it pools MCP servers behind one daemon, runs TypeScript scripts against them, and hands a running daemon to its successor during upgrades. This repo is the only source for mcpx — the vendored copy in dezren39/nix was deleted 2026-10-19 — and the OpenCode and OpenChamber forks consume the result.",
-    poolArea: null,
-    roadmapArea: null,
+    poolArea: "mcpx",
+    roadmapArea: "mcpx",
     homeDoc: home("planning/roadmaps/mcpx.md"),
-    dashboardLinks: [{ label: "Sessions", route: "/sessions" }],
+    dashboardLinks: [
+      { label: "Sessions", route: "/sessions" },
+      { label: "Projects pool (mcpx)", route: "/projects?area=mcpx" },
+      { label: "pkgs/mcpx/TODO.md", route: blob("pkgs/mcpx/TODO.md") },
+      { label: "pkgs/mcpx/ASSESSMENT.md", route: blob("pkgs/mcpx/ASSESSMENT.md") },
+      { label: "pkgs/mcpx/docs/compare/", route: tree("pkgs/mcpx/docs/compare") },
+      { label: "pkgs/mcpx/daemon/README.md", route: blob("pkgs/mcpx/daemon/README.md") },
+    ],
     trackedRefs: [code(308), code(309), code(237), code(290), code(864)],
     editorial: {
       done: [
@@ -535,10 +542,10 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       ],
       gaps: [
         {
-          title: "No Project Area or roadmap area yet",
+          title: "Pool covers this repo only — the nix-side backlog is not re-homed yet",
           detail:
-            "mcpx has no dedicated org Project Area and no Grist roadmap area, so this page's live pool/roadmap sections are honestly empty; its work is tracked in GitHub issues and planning/roadmaps/mcpx.md. The integration decision is tracked in #1127.",
-          links: [{ label: "#1127", url: refUrl(code(1127), "issue") }],
+            "mcpx's org Project Area and Grist roadmap area were wired to this page in #1127, so the live sections above render its pool items and roadmap rows. What they cannot show yet is the large mcpx backlog that still lives in dezren39/nix: it joins the pool only as it is re-homed into this repo, tracked in #309.",
+          links: [{ label: "#309", url: refUrl(code(309), "issue") }],
         },
       ],
     },

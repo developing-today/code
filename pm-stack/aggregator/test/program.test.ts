@@ -351,9 +351,38 @@ describe("project registry", () => {
       poolItem({ status: "Done", area: "pm-dashboard" }),
       poolItem({ status: "Todo", area: "pm-dashboard" }),
       poolItem({ status: "Todo", area: "id-train" }),
+      poolItem({ status: "Todo", area: "mcpx" }),
+      poolItem({ status: "Todo", area: "mcpx" }),
       poolItem({ status: null, area: null }),
     ];
-    const summaries = buildProjectSummaries(PROJECT_CONFIGS, pool, FIXTURE_ROADMAP);
+    // The live Grist table gained mcpx rows 24-27 in the #1127 taxonomy pass;
+    // the in-repo seed predates them, so the wired-area rows are added here.
+    const roadmap = [
+      ...FIXTURE_ROADMAP,
+      {
+        id: 24,
+        subject: "grist:fixture/Roadmap/24",
+        title: "mcpx — single source: consumption decision + backlog re-home",
+        area: "mcpx",
+        status: "In progress",
+        horizon: "Now",
+        source: "https://github.com/developing-today/code/issues/308",
+        notes: "",
+        links: [],
+      },
+      {
+        id: 25,
+        subject: "grist:fixture/Roadmap/25",
+        title: "mcpx — supervisor, session resume, ExecIdentity",
+        area: "mcpx",
+        status: "Planned",
+        horizon: "Next",
+        source: "",
+        notes: "",
+        links: [],
+      },
+    ];
+    const summaries = buildProjectSummaries(PROJECT_CONFIGS, pool, roadmap);
     const byId = new Map(summaries.map((s) => [s.id, s]));
     expect(byId.get("pm-dashboard")?.poolTotal).toBe(2);
     expect(byId.get("pm-dashboard")?.poolByStatus).toContainEqual({ name: "Done", count: 1 });
@@ -362,9 +391,10 @@ describe("project registry", () => {
     expect(byId.get("id")?.roadmapRows).toBe(7); // fixture seed area "id"
     expect(byId.get("repo-fleet")?.roadmapRows).toBe(4);
     expect(byId.get("lab-cluster")?.roadmapRows).toBe(6);
-    // A null pool Area claims no pool items, however much pool exists.
-    expect(byId.get("mcpx")?.poolTotal).toBe(0);
-    expect(byId.get("mcpx")?.roadmapRows).toBe(0);
+    // mcpx is wired to its own Area (#1127): its fixture pool items and
+    // roadmap rows count, where a null Area would claim none.
+    expect(byId.get("mcpx")?.poolTotal).toBe(2);
+    expect(byId.get("mcpx")?.roadmapRows).toBe(2);
     // cloud-program has no pool Area, but its Grist area exists (#1128):
     // the fixture seed's one "Cloud program" row counts.
     expect(byId.get("cloud-program")?.poolTotal).toBe(0);
@@ -397,12 +427,17 @@ describe("renderProgramProject", () => {
       expect(html).toContain("Project pool — live");
       expect(html).toContain("Roadmap — live");
     }
-    // Null-area projects say so, with the gap, instead of empty sections.
+    // mcpx is wired to its own Area (#1127): with no mcpx pool items or
+    // roadmap rows in the fixture feed it states the empty feed honestly,
+    // not the old null-area gap.
     const mcpx = projectConfigById("mcpx")!;
     const mcpxHtml = renderProgramProject(buildProjectDetail(mcpx, items, pool, rows), items, PROV);
-    expect(mcpxHtml).toContain("No dedicated Project Area yet");
-    expect(mcpxHtml).toContain("No Grist roadmap area yet");
+    expect(mcpxHtml).not.toContain("No dedicated Project Area yet");
+    expect(mcpxHtml).not.toContain("No Grist roadmap area yet");
+    expect(mcpxHtml).toContain("No pool items with Area");
+    expect(mcpxHtml).toContain("No roadmap rows with area");
     expect(mcpxHtml).toContain("planning/roadmaps/mcpx.md");
+    expect(mcpxHtml).toContain("pkgs/mcpx/TODO.md");
     const cloud = projectConfigById("cloud-program")!;
     const cloudHtml = renderProgramProject(buildProjectDetail(cloud, items, pool, rows), items, PROV);
     expect(cloudHtml).toContain("No home doc configured");
