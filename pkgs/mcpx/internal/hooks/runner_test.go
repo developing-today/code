@@ -37,9 +37,14 @@ func TestDeclaredHookFiresOnMatchingKindsOnly(t *testing.T) {
 
 	bus.Publish(events.Event{Kind: events.ServerStarted, Server: "x"})
 	bus.Publish(events.Event{Kind: events.ServerStopped, Server: "chrome"})
-	waitFor(t, "hook to fire", func() bool {
-		_, err := os.Stat(marker)
-		return err == nil
+	// Wait for the payload itself, not the marker file's existence:
+	// `cat > marker` creates the file before it writes the payload, so
+	// existence alone races the write and can read back an empty file
+	// under load (the #2609 flake). Poll the real postcondition.
+	waitFor(t, "hook payload to land", func() bool {
+		body, err := os.ReadFile(marker)
+		return err == nil &&
+			strings.Contains(string(body), `"kind":"server.stopped"`)
 	})
 	body, err := os.ReadFile(marker)
 	if err != nil {
