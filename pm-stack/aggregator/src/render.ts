@@ -20,14 +20,20 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import { applyBoardDonePolicy } from "./board-policy.ts";
+import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
+  NEEDS_ORDER_OBJECT_REF,
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  type NeedsOrder,
 } from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
+import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
@@ -53,6 +59,7 @@ import {
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
+  type QuotaState,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -71,7 +78,7 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES } from "./pages.ts";
+import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
@@ -100,9 +107,14 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-nav { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-nav a { color: #58a6ff; text-decoration: none; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
+.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
 nav a.active, nav a:hover { background: #21262d; }
+nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
+.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
 main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
 h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
@@ -118,6 +130,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -204,6 +217,30 @@ meter { width: 140px; height: 14px; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
 .card.stale { opacity: .55; }
+.card.acked { opacity: .72; }
+.card .sentline { color: #3fb950; font-size: 12.5px; margin: 6px 0 2px; }
+.card.tombstone { opacity: .6; }
+details.carddetail { margin: 8px 0 2px; border-top: 1px solid #21262d; padding-top: 6px; }
+details.carddetail summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
+details.carddetail dl { display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px; margin: 6px 0; font-size: 12.5px; }
+details.carddetail dt { color: #8b949e; }
+details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
+.histline { font-size: 12.5px; margin: 3px 0; }
+.quickbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.quickbar .qlabel { font-size: 12px; color: #8b949e; flex-basis: 100%; }
+.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 36px; }
+.qchip.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.qchip:disabled { opacity: .45; cursor: not-allowed; }
+.aform.qform { display: inline-flex; margin: 0; }
+.cbox { border-top: 1px solid #21262d; margin-top: 8px; padding-top: 6px; }
+.cbox .cform { border: 0; padding: 4px 0 0; margin: 0; background: none; }
+.cbox summary { cursor: pointer; color: #58a6ff; font-size: 12.5px; padding: 4px 0; }
+.qblock .qanswered { color: #3fb950; font-size: 12px; }
+.qblock .qremaining { color: #e3b341; font-size: 12px; }
+.skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
+.orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
+.orderctl .aform { margin: 0; }
+.stripcard .restore-note { font-size: 12.5px; }
 .badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.conflict { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
 .flag { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
@@ -243,7 +280,10 @@ body.xp-plan .xpl-costcol { display: none; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
-  nav { padding: 8px 10px; }
+  nav { padding: 7px 10px; gap: 2px 8px; }
+  .navgroup + .navgroup { padding-left: 8px; }
+  .navlabel { font-size: 10px; margin-right: 2px; }
+  nav a { padding: 5px 7px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -257,11 +297,41 @@ body.xp-plan .xpl-costcol { display: none; }
 export const TAILNET_URL = "http://amd-6.raptor-pumpkinseed.ts.net:4870";
 
 /**
+ * Shared post-submit feedback (#1443): the click must visibly land.
+ * The card's controls disable, a "✓ sent · pending" line appears in
+ * place, and a suppressing verb (snooze / dismiss / mark-done)
+ * tombstones the card immediately — the server render (via the
+ * Datastar fragment refresh this dispatches, or the next page load)
+ * then moves it to its strip for real. Pages without Datastar
+ * fragment containers keep the historical full reload.
+ */
+const DASH_AFTER_JS = `
+window.__dashAfter = window.__dashAfter || function (form, msg) {
+  var card = form.closest(".card");
+  form.querySelectorAll("button, input, select, textarea").forEach(function (b) { b.disabled = true; });
+  if (card) {
+    var line = document.createElement("div");
+    line.className = "sentline";
+    line.textContent = msg;
+    card.appendChild(line);
+    var verb = form.dataset.verb;
+    if (verb === "snooze" || verb === "dismiss" || verb === "mark-done") card.classList.add("tombstone");
+  }
+  window.dispatchEvent(new CustomEvent("dashrefresh"));
+  if (!document.querySelector("[data-frag]")) location.reload();
+};
+`;
+
+/**
  * The client side of the comment form (one delegated submit handler;
  * pages without a form never notice it). Kept dependency-free and
- * inline, like everything else in this app.
+ * inline, like everything else in this app. The card comment box
+ * (#1446) posts kind "message" for the orchestrator and — when its
+ * "also post publicly" box is ticked and the card carries a gh: ref
+ * in data-ghref — a second, kind "github" comment the orchestrator
+ * posts to the issue (the aggregator holds no GitHub credentials).
  */
-const COMMENT_SCRIPT = `<script>
+const COMMENT_SCRIPT = `<script>${DASH_AFTER_JS}
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("cform")) return;
@@ -271,17 +341,25 @@ document.addEventListener("submit", async (ev) => {
   const kind = String(data.get("kind") || "note");
   const [akind, aid, asession] = String(data.get("author") || "drew|drew|").split("|");
   const labelEl = form.querySelector('option[value="' + CSS.escape(String(data.get("author"))) + '"]');
+  const author = { kind: akind, id: aid, label: labelEl ? labelEl.textContent : aid, ...(asession ? { sessionId: asession } : {}) };
   const payload = {
     objectRef: form.dataset.object,
     kind,
-    author: { kind: akind, id: aid, label: labelEl ? labelEl.textContent : aid, ...(asession ? { sessionId: asession } : {}) },
+    author,
     body: String(data.get("body") || ""),
     ...(kind === "github" ? { githubRef: String(data.get("githubRef") || "") } : {}),
   };
-  try {
-    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+  const post = async (p) => {
+    const res = await fetch("/api/comments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
-    location.reload();
+  };
+  try {
+    await post(payload);
+    const also = form.querySelector("input[name=alsoGithub]");
+    if (also && also.checked && form.dataset.ghref) {
+      await post({ objectRef: form.dataset.object, kind: "github", author, body: payload.body, githubRef: form.dataset.ghref });
+    }
+    window.__dashAfter(form, "✓ sent · pending — the orchestrator picks it up on its next pass");
   } catch (e) { if (err) err.textContent = "Not posted: " + e.message; }
 });
 document.addEventListener("change", (ev) => {
@@ -301,7 +379,7 @@ document.addEventListener("change", (ev) => {
  * inputs carry the payload. A stop form must have its confirm box
  * ticked before the script will send it (two-step confirm).
  */
-const ACTION_SCRIPT = `<script>
+const ACTION_SCRIPT = `<script>${DASH_AFTER_JS}
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
   if (!(form instanceof HTMLFormElement) || !form.classList.contains("aform")) return;
@@ -312,12 +390,14 @@ document.addEventListener("submit", async (ev) => {
     if (err) err.textContent = "Not sent: tick Confirm stop first — stopping ends the session's run.";
     return;
   }
+  const submitBtn = form.querySelector("button[type=submit]");
+  if (submitBtn) submitBtn.disabled = true;
   const box = form.closest(".actbox");
   const authorRaw = String((box && box.querySelector("select[name=author]") || {}).value || "drew|drew|");
   const [akind, aid, asession] = authorRaw.split("|");
   const labelEl = box ? box.querySelector('option[value="' + CSS.escape(authorRaw) + '"]') : null;
   const payload = {};
-  for (const name of ["text", "reason", "status", "tier", "mode", "optionId", "proposalRunId", "proposalUpdatedAt"]) {
+  for (const name of ["text", "reason", "status", "tier", "mode", "optionId", "proposalRunId", "proposalUpdatedAt", "needsOrder"]) {
     const v = data.get(name);
     if (v) payload[name] = String(v);
   }
@@ -351,8 +431,11 @@ document.addEventListener("submit", async (ev) => {
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
-    location.reload();
-  } catch (e) { if (err) err.textContent = "Not recorded: " + e.message; }
+    window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
+  } catch (e) {
+    if (submitBtn) submitBtn.disabled = false;
+    if (err) err.textContent = "Not recorded: " + e.message;
+  }
 });
 </script>`;
 
@@ -391,6 +474,31 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
 }
 
+/**
+ * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
+ * bar order, marking the active page's section. /pages itself stays out
+ * of the bar (it is the full manifest) but is in the dropdown.
+ */
+export function navLinks(active: string, activeGroup?: string): string {
+  // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
+  // reaches it, so the bar always shows where you are (#1135).
+  const activeRoute = manifestRouteFor(active) ?? active;
+  const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
+  return groupedPages()
+    .filter((g) => g.pages.some((p) => p.id !== "pages"))
+    .map(({ group, pages }) => {
+      const anchors = pages
+        .filter((p) => p.id !== "pages")
+        .map((p) =>
+          `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
+        )
+        .join("");
+      const current = group.id === groupOfActive ? ' data-current="true"' : "";
+      return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
+    })
+    .join("");
+}
+
 function layout(
   title: string,
   body: string,
@@ -401,10 +509,10 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either.
-  const links = PAGES.filter((p) => p.id !== "pages")
-    .map((p) => `<a href="${p.route}"${p.route === active ? ' class="active"' : ""}>${esc(p.title)}</a>`)
-    .join("");
+  // in either. The bar groups its links by section (#1135) so ten pages
+  // wrap onto a second row at phone width instead of scrolling
+  // sideways, and the page's own section stays marked.
+  const links = navLinks(active);
   const options = PAGES.map(
     (p) =>
       `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
@@ -412,7 +520,7 @@ function layout(
   const dropdown = `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${options}</select>`;
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · aggregator</title><style>${CSS}</style></head>
+<title>${esc(title)} · aggregator</title><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main>${extra}</body></html>`;
@@ -424,6 +532,14 @@ function layout(
 export const sessionObjectRef = (id: string): string => `session:${id}`;
 export const ghObjectRef = (ref: RefKey): string => `gh:${ref}`;
 export function tierItemObjectRef(item: TierItem): string {
+  // Watchdog items (#1148) all carry the implementation issue as their
+  // display ref, but each watchdog:<input> is an independent object:
+  // keying them all by the shared gh: ref would give every watchdog
+  // card the same DOM id, actions, dismissal state, and comment
+  // thread, so dismissing one input's card would suppress them all
+  // (Codex P1 on PR #2431). Watchdog cards key by their unique id;
+  // the gh: ref still renders as the card's issue link.
+  if (item.source === "watchdog") return `orch:${item.id}`;
   return item.ref ? ghObjectRef(item.ref) : `orch:${item.id}`;
 }
 
@@ -527,6 +643,9 @@ const VERB_BADGE_LABELS: Record<string, string> = {
   answer: "answer",
   delegate: "delegate",
   dismiss: "dismiss",
+  "mark-done": "already done",
+  restore: "restore",
+  "set-needs-order": "card order",
   "approve-proposal": "approve proposal",
   "reject-proposal": "reject proposal",
   "request-status": "status change",
@@ -611,6 +730,134 @@ export interface ActionFormOpts {
   disabledReason?: string;
 }
 
+/** Stable DOM id for one card, from its object ref (#1444 fragments
+ *  patch sections; #1443's in-place feedback finds cards by ref). */
+export function cardDomId(objectRef: string): string {
+  return `card-${objectRef.replace(/[^a-zA-Z0-9]+/g, "-")}`;
+}
+
+/** The card's action history (#1445): every recorded action with its
+ *  state — the audit trail the store keeps, readable on the card. */
+export function actionHistoryHtml(actions: DashAction[] | undefined): string {
+  if (!actions?.length) return `<p class="muted">No actions recorded on this card yet.</p>`;
+  return [...actions]
+    .reverse()
+    .map((a) => {
+      const bits = [
+        `<strong>${esc(VERB_BADGE_LABELS[a.verb] ?? a.verb)}</strong>`,
+        a.state === "new"
+          ? "⏳ pending"
+          : a.state === "applied"
+            ? `✓ applied${a.appliedByRun ? ` by ${esc(a.appliedByRun)}` : ""}`
+            : a.state === "rejected"
+              ? "✗ rejected"
+              : "superseded",
+        esc(relTime(a.createdAt)),
+        a.payload.reason ? `— ${esc(a.payload.reason)}` : "",
+        a.payload.until ? `until ${esc(fmtDate(a.payload.until))}` : "",
+        a.resultNote ? `· ${esc(a.resultNote)}` : "",
+      ].filter(Boolean);
+      return `<div class="histline">${bits.join(" ")}</div>`;
+    })
+    .join("");
+}
+
+/**
+ * The per-card comment box (#1446): the card's existing dashboard
+ * comments with their queued/posted state, plus a compact form. The
+ * form posts kind "message" (the orchestrator's queue input); the
+ * "also post publicly" checkbox adds a kind "github" comment when
+ * the card carries a gh: ref — posted later by the orchestrator,
+ * never by the aggregator (no GitHub credentials here).
+ */
+export function cardCommentHtml(
+  objectRef: string,
+  ghRef: RefKey | undefined,
+  comments: DashComment[] | undefined,
+  opts: CommentFormOpts,
+): string {
+  const list = comments?.length
+    ? comments.map((c) => dashCommentHtml(c)).join("")
+    : `<p class="muted">No comments on this card yet.</p>`;
+  const authorOptions = opts.identities
+    .map(
+      (i) =>
+        `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
+    )
+    .join("");
+  const ghBox = ghRef
+    ? `<label><input type="checkbox" name="alsoGithub" value="1"> Also post publicly to the GitHub issue (${esc(ghRef)})</label>`
+    : `<span class="muted">No GitHub issue on this card — the comment stays internal.</span>`;
+  return `<div class="cbox"><details><summary>💬 Comments for the orchestrator${comments?.length ? ` (${comments.length})` : ""}</summary>${list}<form class="cform" data-object="${esc(objectRef)}"${ghRef ? ` data-ghref="${esc(ghRef)}"` : ""}>
+<input type="hidden" name="kind" value="message">
+<label>Comment as</label><select name="author">${authorOptions}</select>
+<label>Comment</label><textarea name="body" rows="2" required placeholder="Note for the orchestrator…"></textarea>
+<div class="kinds">${ghBox}</div>
+<button type="submit">Send comment</button><div class="err"></div></form></details></div>`;
+}
+
+/** One-tap dismissal reasons (#1449): the common resolutions. */
+export const DISMISS_REASONS = ["Already handled", "No longer relevant", "Duplicate", "Won't do"] as const;
+/** One-tap de-escalation reasons (#1449): Drew's "send why" chips. */
+export const DEESCALATE_REASONS = [
+  "Orchestrator should have handled this",
+  "Passing to orchestrator this time",
+  "Need more info",
+  "Need recommendations",
+] as const;
+
+/**
+ * The quick-action bar (#1449): one-tap resolutions with the reason
+ * attached, writing the existing action vocabulary. Chips disable
+ * while their verb is pending, so a resolution can't be double-sent.
+ */
+export function quickBarHtml(objectRef: string, tier: "needs-drew" | "needs-orchestrator", cs: CardState): string {
+  const chip = (
+    verb: DashAction["verb"],
+    label: string,
+    hidden: string,
+    opts: { primary?: boolean; disabled?: boolean; sentLabel?: string } = {},
+  ): string =>
+    aformHtml({
+      kind: "triage",
+      verb,
+      objectRef,
+      inner: `${hidden}<button type="submit" class="qchip${opts.primary ? " primary" : ""}"${opts.disabled ? " disabled" : ""}>${esc(opts.disabled && opts.sentLabel ? opts.sentLabel : label)}</button>`,
+    }).replace('class="aform"', 'class="aform qform"');
+  const donePending = pendingVerb(cs, "mark-done");
+  const dismissPending = pendingVerb(cs, "dismiss");
+  const movePending = pendingVerb(cs, "de-escalate") ?? pendingVerb(cs, "escalate");
+  const parts: string[] = [
+    chip("mark-done", "Already done", "", {
+      primary: true,
+      disabled: !!donePending,
+      sentLabel: "✓ Already done · sent",
+    }),
+  ];
+  for (const reason of DISMISS_REASONS) {
+    parts.push(
+      chip("dismiss", `Dismiss: ${reason}`, `<input type="hidden" name="reason" value="${esc(reason)}">`, {
+        disabled: !!dismissPending,
+        sentLabel: "Dismiss · sent",
+      }),
+    );
+  }
+  if (tier === "needs-drew") {
+    for (const reason of DEESCALATE_REASONS) {
+      parts.push(
+        chip(
+          "de-escalate",
+          reason,
+          `<input type="hidden" name="tier" value="needs-orchestrator"><input type="hidden" name="reason" value="${esc(reason)}">`,
+          { disabled: !!movePending, sentLabel: "Sent to orchestrator" },
+        ),
+      );
+    }
+  }
+  const note = donePending || dismissPending || movePending ? ` <span class="muted">⏳ sent · pending</span>` : "";
+  return `<div class="quickbar"><span class="qlabel">Quick actions — one tap, reason attached${note}</span>${parts.join("")}</div>`;
+}
+
 function authorSelectHtml(identities: AuthorIdentity[]): string {
   const options = identities
     .map(
@@ -683,33 +930,47 @@ export function triageActionsHtml(
   tier: "needs-drew" | "needs-orchestrator",
   opts: ActionFormOpts,
   extraForms = "",
+  cs: CardState = cardState(undefined),
 ): string {
+  // #1443: a control whose verb is already pending (or, for
+  // acknowledge, already in effect) renders disabled — repeat clicks
+  // cannot pile up duplicate pending actions, and the card SAYS so.
+  const ackPending = pendingVerb(cs, "acknowledge");
+  const snoozePending = pendingVerb(cs, "snooze");
+  const moveVerb = tier === "needs-drew" ? "de-escalate" : "escalate";
+  const movePending = pendingVerb(cs, moveVerb);
   const move =
     tier === "needs-drew"
       ? aformHtml({
           kind: "triage",
           verb: "de-escalate",
           objectRef,
-          inner: `<input type="hidden" name="tier" value="needs-orchestrator"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="De-escalate reason"><button type="submit">De-escalate to Needs Orchestrator</button>`,
+          inner: `<input type="hidden" name="tier" value="needs-orchestrator"><input type="text" name="reason" placeholder="Why? (optional free text)" aria-label="De-escalate reason"><button type="submit"${movePending ? " disabled" : ""}>${movePending ? "De-escalate · sent · pending" : "De-escalate to Needs Orchestrator"}</button>`,
         })
       : aformHtml({
           kind: "triage",
           verb: "escalate",
           objectRef,
-          inner: `<input type="hidden" name="tier" value="needs-drew"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="Escalate reason"><button type="submit">Escalate to Needs User</button>`,
+          inner: `<input type="hidden" name="tier" value="needs-drew"><input type="text" name="reason" placeholder="Why? (optional free text)" aria-label="Escalate reason"><button type="submit"${movePending ? " disabled" : ""}>${movePending ? "Escalate · sent · pending" : "Escalate to Needs User"}</button>`,
         });
+  const ackInner = ackPending
+    ? `<button type="submit" class="primary" disabled>⏳ Acknowledge sent · pending</button><span class="why">Recorded — the fleet applies it on its next pass.</span>`
+    : cs.acked
+      ? `<button type="submit" class="primary" disabled>✓ Acknowledged</button><span class="why">You have seen this — it stays until a resolving action or a new signal.</span>`
+      : `<button type="submit" class="primary">Acknowledge</button><span class="why">Records that you have seen this — it stays until a resolving action or a new signal.</span>`;
   const forms = [
+    quickBarHtml(objectRef, tier, cs),
     aformHtml({
       kind: "triage",
       verb: "acknowledge",
       objectRef,
-      inner: `<button type="submit" class="primary">Acknowledge</button><span class="why">Records that you have seen this — it stays until a resolving action or a new signal.</span>`,
+      inner: ackInner,
     }),
     aformHtml({
       kind: "triage",
       verb: "snooze",
       objectRef,
-      inner: `${snoozeFieldsHtml()}<button type="submit">Snooze</button>`,
+      inner: `${snoozeFieldsHtml()}<button type="submit"${snoozePending ? " disabled" : ""}>${snoozePending ? "Snooze · sent · pending" : "Snooze"}</button>`,
     }),
     move,
   ].join("");
@@ -741,8 +1002,9 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
   const name = `answers:${q.id}`;
+  const answered = answeredValue !== undefined;
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -752,17 +1014,28 @@ function questionFieldHtml(q: TierItemQuestion): string {
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${q.required ? " required" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
+    const chosen = Array.isArray(answeredValue) ? answeredValue : answeredValue ? [answeredValue] : [];
     field = `<span class="qopts">${(q.options ?? [])
-      .map((o) => `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"> ${esc(o.label)}</label>`)
+      .map(
+        (o) =>
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+      )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}"${q.required ? " required" : ""}>`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
   }
-  return `<div class="qblock"><strong>${esc(q.prompt)}</strong>${q.required ? "" : ` <span class="muted">(optional)</span>`}<br>${field}<br><span class="muted">Needed: ${esc(q.covers)}</span></div>`;
+  // #1451: answered state rides the card — a partial submit records
+  // what it covered and the still-open required questions say so.
+  const state = answered
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    : q.required
+      ? ` <span class="qremaining">still needed</span>`
+      : "";
+  return `<div class="qblock"><strong>${esc(q.prompt)}</strong>${q.required ? "" : ` <span class="muted">(optional)</span>`}${state}<br>${field}<br><span class="muted">Needed: ${esc(q.covers)}</span></div>`;
 }
 
 /** The latest applied reject-proposal on an item, when one exists —
@@ -856,27 +1129,39 @@ export function needsUserBodyHtml(item: TierItem, actions: DashAction[] | undefi
  * form, a free-text answer when the item offers neither, delegation
  * mode controls, proposal approve/reject, and dismiss (#1291).
  */
-export function needsUserFormsHtml(item: TierItem, objectRef: string, now = Date.now()): string {
+export function needsUserFormsHtml(
+  item: TierItem,
+  objectRef: string,
+  now = Date.now(),
+  cs: CardState = cardState(undefined),
+): string {
   const forms: string[] = [];
   for (const opt of item.options ?? []) {
+    const picked = cs.answeredOptionId === opt.id;
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary">${esc(opt.label)}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
+    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q)).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">Required questions are enforced when this posts — an incomplete survey comes back with a legible error, nothing is recorded.</span>`,
+        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+          allDone
+            ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
+            : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`
+        }</span>`,
       }),
     );
   }
@@ -922,13 +1207,13 @@ export function needsUserFormsHtml(item: TierItem, objectRef: string, now = Date
           kind: "triage",
           verb: "approve-proposal",
           objectRef,
-          inner: `${identity}<button type="submit" class="primary">Approve Proposal</button><span class="why">The pass applies it on its next run and reports the application.</span>`,
+          inner: `${identity}<button type="submit" class="primary">I accept your proposal</button><span class="why">The pass applies it on its next run and reports the application.</span>`,
         }),
         aformHtml({
           kind: "triage",
           verb: "reject-proposal",
           objectRef,
-          inner: `${identity}<input type="text" name="reason" placeholder="Reason (required)" aria-label="Rejection reason" required><button type="submit">Reject Proposal</button>`,
+          inner: `${identity}<input type="text" name="reason" placeholder="Why not? (required)" aria-label="Rejection reason" required><button type="submit">No — make another</button>`,
         }),
       );
     }
@@ -1085,10 +1370,16 @@ export function coverageHtml(coverage: SourceCoverage[]): string {
 }
 
 function itemBadge(item: GhItem): string {
+  // #1141: fixture-resolved state is invented fallback data — render it
+  // hollow (dashed, transparent) and named "unverified" so it can never
+  // be mistaken for a live badge on board/roadmap/item/program pages.
+  const unverified = item.resolution === "fixture";
   const cls = item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed";
   const kind = item.kind === "pr" ? (item.state === "merged" ? "PR merged" : "PR") : "issue";
   const draft = item.draft ? " · draft" : "";
-  return `<a class="badge ${cls}" href="${esc(item.url)}" title="${esc(item.title)}">${kind} ${esc(item.ref)}${draft}</a>`;
+  const marker = unverified ? " · unverified" : "";
+  const title = unverified ? `${item.title} (unverified — fixture state, not live GitHub data)` : item.title;
+  return `<a class="badge ${cls}${unverified ? " unverified" : ""}" href="${esc(item.url)}" title="${esc(title)}">${kind} ${esc(item.ref)}${draft}${marker}</a>`;
 }
 
 function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): string {
@@ -1113,18 +1404,22 @@ function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): strin
 
 // --- Board view -----------------------------------------------------------
 
-export function renderBoard(
+/** The board's card grid alone (#1444 fragment payload). */
+export function renderBoardBody(
   board: BoardItem[],
   items: Map<RefKey, GhItem>,
-  provenance: Provenance,
   counts?: Map<string, number>,
-  detail?: ProvenanceDetail,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
   },
 ): string {
+  // #1146: finished work is not WIP — aged-out done items and the
+  // retired ROADMAP Done-table class never reach the board, whatever
+  // source assembled it (the Kaneo source filters too; see
+  // board-policy.ts). Surviving done renders collapsed, below.
+  board = applyBoardDonePolicy(board);
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
@@ -1166,11 +1461,17 @@ export function renderBoard(
               statusCtl = `${actionBadgesHtml(act.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, pooled.ref, pooled.status ?? null, { identities: act.identities })}`;
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}${statusCtl}</div>`;
+          const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
       // produced it (stamped on every synthetic entry as updatedAt).
+      if (k === "done") {
+        // Collapsed by default (#1146): a count + the last 7 days
+        // behind an expander, never a full column of finished cards.
+        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)</summary>${cards}</details>`;
+      }
       const heading =
         k === "in-flight"
           ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
@@ -1178,12 +1479,41 @@ export function renderBoard(
       return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
     })
     .join("");
+  return `<div class="board">${bodies}</div>`;
+}
+
+/** The board page (#1444): full server render. */
+export function renderBoard(
+  board: BoardItem[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  counts?: Map<string, number>,
+  detail?: ProvenanceDetail,
+  act?: {
+    actionsByObject?: Map<string, DashAction[]>;
+    poolByRef?: Map<RefKey, ProjectPoolItem>;
+    identities?: AuthorIdentity[];
+  },
+): string {
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p>${renderBoardBody(board, items, counts, act)}`,
     provenance,
-    "/",
+    "/board",
     act?.identities ? ACTION_SCRIPT : "",
+    detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
+  );
+}
+
+/** The Datastar shell for / (#1444): heading + intro paint at once;
+ *  the board itself streams in from /frag/board. */
+export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Cross-repo WIP board",
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    provenance,
+    "/board",
+    ACTION_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -1206,7 +1536,8 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
     .map(itemBadge)
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}</div>`;
+  const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}</div>`;
 }
 
 function timelineTable(
@@ -1236,7 +1567,17 @@ export function renderRoadmap(
   grain: RoadmapGrain = "quarter",
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  reconciliation?: RoadmapReconciliation,
 ): string {
+  // #1144: when the Grist rows and the Project's Kind=Epic pool items
+  // disagree, say so on the page itself — drift the reader can see,
+  // with the full lists published in /api/roadmap.json.
+  const driftFlag =
+    reconciliation?.availability === "unavailable"
+      ? `<div class="flag">Roadmap reconciliation unavailable: ${esc(reconciliation.unavailableReason ?? "a roadmap source could not be read")} — no drift is asserted when a source read failed (#1144).</div>`
+      : reconciliation && reconciliation.drift > 0
+        ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
+        : "";
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
@@ -1264,7 +1605,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
     provenance,
     "/roadmap",
     "",
@@ -1286,6 +1627,8 @@ export interface ItemExtras {
   actions?: DashAction[];
   /** Set when one of the item's refs is in the Project pool (#1154). */
   statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
+  /** Outbound links to the live services this item lives in (#1136). */
+  serviceLinks?: ItemServiceLink[];
 }
 
 export function renderItem(
@@ -1329,15 +1672,18 @@ export function renderItem(
     extras?.statusRequest && extras.formOpts
       ? `<h2>Request status change</h2>${actionBadgesHtml(extras.actions)}${statusRequestHtml(extras.statusRequest.objectRef, extras.statusRequest.targetRef, extras.statusRequest.currentStatus, { identities: extras.formOpts.identities })}`
       : "";
+  const svcLinks = extras?.serviceLinks?.length
+    ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
+    : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${dashSection}`,
     provenance,
-    "/",
+    "/board",
     extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
   );
 }
@@ -1679,7 +2025,12 @@ function sessionCard(
   children: Map<string, TieredEntry[]>,
   depth = 0,
   counts?: Map<string, number>,
-  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+  act?: {
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
+    commentsByObject?: Map<string, DashComment[]>;
+    commentOpts?: CommentFormOpts;
+  },
 ): string {
   const src = SESSION_SOURCE_LABELS[sourceOf(e)];
   const sub =
@@ -1709,16 +2060,24 @@ function sessionCard(
   const objectRef = sessionObjectRef(e.sessionId);
   const own = act?.actionsByObject?.get(objectRef);
   const badges = actionBadgesHtml(own);
+  const cs = cardState(own);
   let controls = "";
   if (act?.identities) {
     const sessionBox = sessionActionsHtml(e.sessionId, sourceOf(e), { identities: act.identities });
     const triageBox =
       e.tier === "needs-drew" || e.tier === "needs-orchestrator"
-        ? triageActionsHtml(objectRef, e.tier, { identities: act.identities })
+        ? triageActionsHtml(objectRef, e.tier, { identities: act.identities }, "", cs)
         : "";
     controls = `${sessionBox}${triageBox}`;
   }
-  return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${kidsHtml}</div>`;
+  // #1445/#1446: inline detail (state + full action history) and the
+  // per-card comment box ride the session card too.
+  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Session</dt><dd><code>${esc(e.sessionId)}</code></dd><dt>State</dt><dd>${esc(STATE_LABELS[e.state] ?? e.state)}</dd><dt>Last activity</dt><dd>${esc(fmtDate(e.lastActivityAt))}</dd><dt>Ref</dt><dd><code>${esc(objectRef)}</code></dd></dl>${actionHistoryHtml(own)}</details>`;
+  const commentBox =
+    act?.identities && act.commentOpts
+      ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
+      : "";
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -1726,7 +2085,13 @@ function tierItemCard(
   item: TierItem,
   whyLabel: string,
   counts?: Map<string, number>,
-  act?: { actions?: DashAction[]; identities?: AuthorIdentity[]; disabledReason?: string },
+  act?: {
+    actions?: DashAction[];
+    identities?: AuthorIdentity[];
+    disabledReason?: string;
+    comments?: DashComment[];
+    commentOpts?: CommentFormOpts;
+  },
 ): string {
   const blocked = item.blockedBy?.length
     ? `<br><strong>Blocked by:</strong> ${item.blockedBy
@@ -1746,8 +2111,9 @@ function tierItemCard(
   // options / survey / delegation / dismiss forms in the actbox.
   const isUserTier = whyLabel === "Why you";
   const objectRef = tierItemObjectRef(item);
+  const cs = cardState(act?.actions);
   const extBody = isUserTier ? needsUserBodyHtml(item, act?.actions) : "";
-  const extForms = isUserTier ? needsUserFormsHtml(item, objectRef) : "";
+  const extForms = isUserTier ? needsUserFormsHtml(item, objectRef, Date.now(), cs) : "";
   // #1152: the triage control set. Section-derived items disable with
   // the reason when the tier source is absent/invalid (#1139 state) —
   // the item may not exist in the publisher's current view.
@@ -1760,9 +2126,121 @@ function tierItemCard(
           ...(act.disabledReason ? { disabledReason: act.disabledReason } : {}),
         },
         extForms,
+        cs,
       )
     : "";
-  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${esc(item.title)}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}</div>`;
+  // #1445: the title itself links to the GitHub issue when the card
+  // carries a gh: ref, and every card expands inline to its full
+  // detail — source, state, since/lastSeenAt, horizon, blockedBy,
+  // the question payload, and the recorded action history.
+  const titleHtml = item.ref ? `<a href="${esc(refUrl(item.ref))}">${esc(item.title)}</a>` : esc(item.title);
+  const questionPayload = item.questions?.length
+    ? `<dt>Questions</dt><dd>${item.questions
+        .map(
+          (q) =>
+            `${esc(q.prompt)} <span class="muted">(covers: ${esc(q.covers)}${q.required ? "" : "; optional"})</span>`,
+        )
+        .join("<br>")}</dd>`
+    : item.question
+      ? `<dt>Question</dt><dd>“${esc(item.question)}”</dd>`
+      : "";
+  const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
+  const commentBox =
+    act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+}
+
+export interface AttentionAct {
+  actionsByObject?: Map<string, DashAction[]>;
+  identities?: AuthorIdentity[];
+  commentsByObject?: Map<string, DashComment[]>;
+  commentOpts?: CommentFormOpts;
+  /** #1456: the effective Needs-you card order + its pending state. */
+  needsOrder?: NeedsOrder;
+  needsOrderPending?: boolean;
+}
+
+interface StripEntry {
+  objectRef: string;
+  title?: string;
+  cs: CardState;
+}
+
+/** One suppressed card in a strip (#1443/#1450): what happened, when it
+ *  lifts, and the way back — Unsnooze for a snooze (a superseding
+ *  snooze at "now"), Restore for a dismiss / mark-done (a restore
+ *  action superseding the suppressor). */
+function stripCardHtml(entry: StripEntry, identities: AuthorIdentity[] | undefined): string {
+  const sup = entry.cs.suppressed!;
+  const refLink = `<a href="/discuss/${encodeURIComponent(entry.objectRef)}">${entry.title ? esc(entry.title) : `<code>${esc(entry.objectRef)}</code>`}</a>`;
+  if (sup.kind === "snoozed") {
+    const a = sup.action;
+    const stateLine =
+      a.state === "new"
+        ? `⏳ sent · pending — snooze until ${esc(fmtDate(sup.until))}`
+        : `applied by ${esc(a.appliedByRun ?? "a fleet run")} — snoozed until ${esc(fmtDate(sup.until))}`;
+    const unsnooze =
+      identities !== undefined
+        ? actboxHtml(
+            { identities },
+            aformHtml({
+              kind: "triage",
+              verb: "snooze",
+              objectRef: entry.objectRef,
+              supersedes: a.id,
+              inner: `<input type="hidden" name="untilPreset" value="${new Date().toISOString()}"><button type="submit">Unsnooze now</button>`,
+            }),
+          )
+        : "";
+    return `<div class="card stripcard" id="${cardDomId(entry.objectRef)}">💤 ${refLink} <span class="badge act-snoozed">snoozed until ${esc(fmtDate(sup.until))}</span><br><span class="muted">${stateLine}${a.resultNote ? ` — ${esc(a.resultNote)}` : ""}</span>${unsnooze}</div>`;
+  }
+  const a = sup.action;
+  const label = sup.kind === "done" ? "✓ marked done by you" : "dismissed by you";
+  const stateLine =
+    a.state === "new"
+      ? "⏳ sent · pending"
+      : a.state === "applied"
+        ? `applied by ${esc(a.appliedByRun ?? "a fleet run")}`
+        : a.state;
+  const restore =
+    identities !== undefined
+      ? actboxHtml(
+          { identities },
+          aformHtml({
+            kind: "triage",
+            verb: "restore",
+            objectRef: entry.objectRef,
+            supersedes: a.id,
+            inner: `<button type="submit">Restore to the queue</button><span class="why">Records a restore that supersedes the ${sup.kind === "done" ? "mark-done" : "dismiss"} — the card returns with its history intact.</span>`,
+          }),
+        )
+      : "";
+  return `<div class="card stripcard" id="${cardDomId(entry.objectRef)}">${refLink} <span class="badge act-applied">${label}</span><br><span class="muted">${stateLine}${a.payload.reason ? ` — reason: ${esc(a.payload.reason)}` : ""}${a.resultNote ? ` · ${esc(a.resultNote)}` : ""} · ${esc(relTime(a.createdAt))}</span>${restore}</div>`;
+}
+
+const HORIZON_RANK: Record<string, number> = { today: 0, "3d": 1, week: 2, month: 3, quarter: 4 };
+
+/** #1456: the order control for the Needs-you list — a preference
+ *  action; the render applies the saved order immediately. */
+function needsOrderHtml(act: AttentionAct | undefined): string {
+  if (!act?.identities) return "";
+  const order = act.needsOrder ?? "urgency";
+  const labels: Record<NeedsOrder, string> = {
+    urgency: "Urgency (orchestrator's order)",
+    newest: "Newest first",
+    oldest: "Oldest first",
+    deadline: "Deadline (horizon)",
+  };
+  const options = (Object.keys(labels) as NeedsOrder[])
+    .map((o) => `<option value="${o}"${o === order ? " selected" : ""}>${labels[o]}</option>`)
+    .join("");
+  const form = aformHtml({
+    kind: "preference",
+    verb: "set-needs-order",
+    objectRef: NEEDS_ORDER_OBJECT_REF,
+    inner: `<label>Card order <select name="needsOrder">${options}</select></label><button type="submit">Save order</button>${act.needsOrderPending ? `<span class="badge act-pending">⏳ change pending — the orchestrator's canonical order follows on its next pass</span>` : ""}`,
+  });
+  return `<div class="orderctl">Needs-you list order: <strong>${esc(labels[order])}</strong>${actboxHtml({ identities: act.identities }, form)}</div>`;
 }
 
 export function renderAttention(
@@ -1771,12 +2249,35 @@ export function renderAttention(
   provenance: Provenance,
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
-  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+  act?: AttentionAct,
 ): string {
+  const sections = attentionSections(view, coverage, counts, act);
+  return layout(
+    "Needs you",
+    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
+${sections.header}${sections.queues}${sections.sessions}`,
+    provenance,
+    "/attention",
+    act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT : "",
+    detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
+  );
+}
+
+/**
+ * The attention page in three independently loadable sections
+ * (#1444): header (banner / chips / coverage / standing default),
+ * queues (Needs User + Needs Orchestrator + the snoozed & hidden
+ * strips), sessions. The full page assembles them; the shell serves
+ * them as Datastar fragments from /frag/attention/*.
+ */
+export function attentionSections(
+  view: AttentionView,
+  coverage: SourceCoverage[],
+  counts?: Map<string, number>,
+  act?: AttentionAct,
+): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
-  const drewTotal = view.drew.length + view.drewExtra.length;
-  const orchTotal = view.orchestrator.length + view.orchestratorExtra.length;
   // #1139: the tier source's state decides what the counts may claim.
   // Absent/invalid → the orchestrator's published queues are NOT
   // reflected here, so the banner says so and the headings render
@@ -1796,9 +2297,6 @@ export function renderAttention(
     ts.present && ts.runId
       ? ` <span class="muted">· section ${esc(ts.runId)} · ${esc(ts.generatedAt ? feedAgeText(ts.generatedAt) : "")}</span>`
       : "";
-  const drewCount = ts.present ? String(drewTotal) : "unknown";
-  const orchCount = ts.present ? String(orchTotal) : "unknown";
-  const chips = `<div class="chips"><a href="#drew">Needs User (${drewCount})</a><a href="#orchestrator">Needs Orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
   // #1152: section-derived items disable their controls whenever the
   // tier source is not live — stale items come from the publisher's
   // last section and may no longer exist in its current view (absent/
@@ -1808,11 +2306,122 @@ export function renderAttention(
     ts.state !== "live"
       ? `the tier source is ${ts.state}, so this item cannot be confirmed against the orchestrator's current published queues`
       : undefined;
-  const tierAct = (item: TierItem) => ({
-    actions: act?.actionsByObject?.get(tierItemObjectRef(item)),
-    identities: act?.identities,
-    ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
-  });
+  const tierAct = (item: TierItem) => {
+    const objectRef = tierItemObjectRef(item);
+    // #1148 watchdog cards describe the aggregator's CURRENT diagnosis,
+    // not the publisher's possibly-obsolete section, so the #1152 gate
+    // must not disable them: the orchestration-outage card is exactly
+    // the one that has to stay actionable while the tier source is
+    // absent/invalid/stale (Codex P2, PR #2431).
+    const disabledReason = item.source === "watchdog" ? undefined : sectionDisabledReason;
+    return {
+      actions: act?.actionsByObject?.get(objectRef),
+      identities: act?.identities,
+      ...(disabledReason ? { disabledReason } : {}),
+      comments: act?.commentsByObject?.get(objectRef),
+      commentOpts: act?.commentOpts,
+    };
+  };
+  const sessionAct = act
+    ? {
+        actionsByObject: act.actionsByObject,
+        identities: act.identities,
+        commentsByObject: act.commentsByObject,
+        commentOpts: act.commentOpts,
+      }
+    : undefined;
+
+  // #1443/#1449/#1450: partition every queue entry by its render-time
+  // effective state. A suppressed entry (active snooze, dismiss, or
+  // mark-done — pending counts, exactly like applied) leaves its list
+  // NOW and lands in the matching strip with its way back; the counts
+  // below are the VISIBLE counts, so acting on a card visibly moves
+  // the numbers.
+  const now = Date.now();
+  const snoozedList: StripEntry[] = [];
+  const hiddenList: StripEntry[] = [];
+  const inViewRefs = new Set<string>();
+  const partition = (
+    objectRef: string,
+    title: string | null | undefined,
+    actions: DashAction[] | undefined,
+  ): CardState => {
+    inViewRefs.add(objectRef);
+    const cs = cardState(actions, now);
+    if (cs.suppressed) {
+      (cs.suppressed.kind === "snoozed" ? snoozedList : hiddenList).push({ objectRef, title: title ?? undefined, cs });
+    }
+    return cs;
+  };
+  interface QueuedCard {
+    html: string;
+    sinceMs: number;
+    seenMs: number;
+    rank: number;
+  }
+  const drewCardsList: QueuedCard[] = [];
+  for (const e of view.drew) {
+    const objectRef = sessionObjectRef(e.sessionId);
+    const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
+    if (cs.suppressed) continue;
+    drewCardsList.push({
+      html: sessionCard(e, children, 0, counts, sessionAct),
+      sinceMs: Date.parse(e.lastActivityAt ?? "") || 0,
+      seenMs: Date.parse(e.lastActivityAt ?? "") || 0,
+      rank: 5,
+    });
+  }
+  for (const item of view.drewExtra) {
+    const objectRef = tierItemObjectRef(item);
+    const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
+    if (cs.suppressed) continue;
+    drewCardsList.push({
+      html: tierItemCard(item, "Why you", counts, tierAct(item)),
+      sinceMs: Date.parse(item.since) || 0,
+      seenMs: Date.parse(item.lastSeenAt) || 0,
+      rank: item.horizon ? (HORIZON_RANK[item.horizon] ?? 5) : 5,
+    });
+  }
+  // #1456: the saved card order applies at render. "urgency" is the
+  // published order (no sort); the rest sort the visible list.
+  // #1485: every order sorts on the single sinceMs axis (when the card
+  // entered the queue), so newest and oldest are exact reverses. seenMs
+  // (lastSeenAt) is NOT the axis: a stale card seen recently would lead
+  // both orders. Deadline ties break oldest-waiting first (ascending
+  // sinceMs), matching the deadline/urgency reading.
+  const order = act?.needsOrder ?? "urgency";
+  if (order === "newest") drewCardsList.sort((a, b) => b.sinceMs - a.sinceMs);
+  else if (order === "oldest") drewCardsList.sort((a, b) => a.sinceMs - b.sinceMs);
+  else if (order === "deadline") drewCardsList.sort((a, b) => a.rank - b.rank || a.sinceMs - b.sinceMs);
+  const orchCardsList: string[] = [];
+  for (const e of view.orchestrator) {
+    const objectRef = sessionObjectRef(e.sessionId);
+    const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
+    if (cs.suppressed) continue;
+    orchCardsList.push(sessionCard(e, children, 0, counts, sessionAct));
+  }
+  for (const item of view.orchestratorExtra) {
+    const objectRef = tierItemObjectRef(item);
+    const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
+    if (cs.suppressed) continue;
+    orchCardsList.push(tierItemCard(item, "Why the fleet", counts, tierAct(item)));
+  }
+  // Store-only suppressed refs: items the publisher no longer lists
+  // (their dismissal was applied and they left the tiers) stay visible
+  // — and restorable — here, never silently gone (#1450).
+  for (const [objectRef, actions] of act?.actionsByObject?.entries() ?? []) {
+    if (inViewRefs.has(objectRef)) continue;
+    const cs = cardState(actions, now);
+    if (cs.suppressed) {
+      (cs.suppressed.kind === "snoozed" ? snoozedList : hiddenList).push({ objectRef, cs });
+    }
+  }
+
+  const drewVisible = drewCardsList.length;
+  const orchVisible = orchCardsList.length;
+  const drewCount = ts.present ? String(drewVisible) : "unknown";
+  const orchCount = ts.present ? String(orchVisible) : "unknown";
+  const chips = `<div class="chips"><a href="#drew">Needs User (${drewCount})</a><a href="#orchestrator">Needs Orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
   // #1290/#1291: the standing delegation-default toggle — a dashboard
   // preference, so it renders whenever the action surface is up; its
   // state comes from the preference records in the store.
@@ -1821,77 +2430,71 @@ export function renderAttention(
         identities: act.identities,
       })
     : "";
+  const header = `${tierBanner}${chips}
+${coverageHtml(coverage)}
+${delegationDefault}`;
   const drewCards =
-    [
-      ...view.drew.map((e) => sessionCard(e, children, 0, counts, act)),
-      ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts, tierAct(i))),
-    ].join("") ||
+    drewCardsList.map((c) => c.html).join("") ||
     (ts.present
       ? `<p class="muted">Nothing in the user queue right now.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
   const orchCards =
-    [
-      ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts, act)),
-      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts, tierAct(i))),
-    ].join("") ||
+    orchCardsList.join("") ||
     (ts.present
       ? `<p class="muted">The fleet's queue is empty.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
-  // The snoozed strip: an applied snooze makes the pass omit the item
-  // from the tiers, so the suppression is rendered HERE, from the
-  // actions store — visible, never silent (design Cluster 3).
-  const now = Date.now();
-  const snoozedEntries = [...(act?.actionsByObject?.entries() ?? [])]
-    .map(([objectRef, actions]) => ({ objectRef, snooze: latestInFamily(actions, "snooze") }))
-    .filter((x) => x.snooze?.state === "applied" && x.snooze.payload.until && Date.parse(x.snooze.payload.until) > now);
-  const snoozedStrip = snoozedEntries.length
-    ? `<h2 id="snoozed">Snoozed by you (${snoozedEntries.length})</h2><p class="muted">These items are out of the queues until their snooze expires — the orchestration pass omits them, and they resurface on their own. Unsnoozing records a superseding action.</p>${snoozedEntries
-        .map(({ objectRef, snooze }) => {
-          const unsnooze =
-            act?.identities && snooze
-              ? actboxHtml(
-                  { identities: act.identities },
-                  aformHtml({
-                    kind: "triage",
-                    verb: "snooze",
-                    objectRef,
-                    supersedes: snooze.id,
-                    inner: `<input type="hidden" name="untilPreset" value="${new Date(now).toISOString()}"><button type="submit">Unsnooze now</button>`,
-                  }),
-                )
-              : "";
-          return `<div class="card">💤 <a href="/discuss/${encodeURIComponent(objectRef)}"><code>${esc(objectRef)}</code></a> <span class="badge act-snoozed">snoozed until ${esc(fmtDate(snooze!.payload.until))}</span><br><span class="muted">applied by ${esc(snooze!.appliedByRun ?? "a fleet run")}${snooze!.resultNote ? ` — ${esc(snooze!.resultNote)}` : ""}</span>${unsnooze}</div>`;
-        })
-        .join("")}`
+  const snoozedStrip = snoozedList.length
+    ? `<h2 id="snoozed">Snoozed by you (${snoozedList.length})</h2><p class="muted">These items are out of the queues until their snooze expires — the orchestration pass omits them, and they resurface on their own. Unsnoozing records a superseding action.</p>${snoozedList.map((e) => stripCardHtml(e, act?.identities)).join("")}`
     : "";
+  const hiddenStrip = hiddenList.length
+    ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
+    : "";
+  const queues = `${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
   const sessionCards = roots.length
-    ? roots.map((e) => sessionCard(e, children, 0, counts, act)).join("")
+    ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
     : `<p class="muted">No current sessions.</p>`;
+  const sessions = `<h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
+${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`;
+  return { header, queues, sessions };
+}
+
+/** Wrap one attention section as a Datastar fragment container: the
+ *  shell's placeholder and the fragment payload share this shape, so
+ *  a refresh re-patches the container with itself (attrs included). */
+export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string): string {
+  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}')" data-on-dashrefresh__window="@get('/frag/attention/${section}')">${innerHtml}</div>`;
+}
+
+/**
+ * The Datastar shell for /attention (#1444): nav + headings paint
+ * immediately; the three heavy sections stream in as fragments.
+ * Without JS, a meta refresh lands on the full server render.
+ */
+export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
+  const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
+${attentionFragment("header", skel("queue status"))}
+${attentionFragment("queues", skel("the queues"))}
+${attentionFragment("sessions", skel("sessions"))}`;
   return layout(
     "Needs you",
-    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
-${tierBanner}${chips}
-${coverageHtml(coverage)}
-${delegationDefault}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-${snoozedStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
-<h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
-${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
+    body,
     provenance,
     "/attention",
-    act?.identities ? ACTION_SCRIPT : "",
+    ACTION_SCRIPT + COMMENT_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
 
 // --- Today view (slice 2, #898 §4) -------------------------------------------
 
-export function renderToday(
+/** The today page's body alone (#1444 fragment payload). */
+export function renderTodayBody(
   today: TodayView,
   attention: AttentionView,
   quota: QuotaView,
   coverage: SourceCoverage[],
-  provenance: Provenance,
-  detail?: ProvenanceDetail,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const alerts: string[] = [];
@@ -1951,16 +2554,215 @@ export function renderToday(
         })
         .join("")
     : `<p class="muted">No projects to measure yet.</p>`;
-  return layout(
-    "Today",
-    `<h1>Today</h1>${provenanceLine}${alerts.join("")}
+  return `${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${actions}${coverageHtml(coverage)}`,
+${actions}${coverageHtml(coverage)}`;
+}
+
+/** The today page (#1444): full server render. */
+export function renderToday(
+  today: TodayView,
+  attention: AttentionView,
+  quota: QuotaView,
+  coverage: SourceCoverage[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  return layout(
+    "Today",
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage)}`,
     provenance,
     "/today",
     "",
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
+  );
+}
+
+/** The Datastar shell for /today (#1444). */
+export function renderTodayShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Today",
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')"><div class="skel">Loading today…</div></div>`,
+    provenance,
+    "/today",
+    "",
+    detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
+  );
+}
+
+// --- Overview / front door (#1134) -------------------------------------------
+// "/" is the stack front door: one glance at what needs Drew, what is
+// moving, what is broken, and where the quotas sit. Every number here
+// is derived from the same source views the dedicated pages render
+// (attention, the Project pool, quota, health, the board) — the
+// overview owns no data of its own, so its counts cannot drift from
+// their source pages. deriveOverview is pure, so the HTML page and
+// /api/overview.json serve the identical summary.
+
+export interface OverviewData {
+  attention: AttentionView;
+  pool: ProjectPoolItem[];
+  quota: QuotaView;
+  health: HealthView;
+  board: BoardItem[];
+  /** Dashboard actions by object ref, so the needs-you summary applies
+   *  the same render-time suppression as /attention (Codex review on
+   *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
+  actionsByObject?: Map<string, DashAction[]>;
+}
+
+export interface OverviewSummary {
+  /** count is null when the tier source is not present: the queue is
+   *  unknown, never a confident zero (Codex review on PR 2424). */
+  needsYou: { count: number | null; tierState: string; top: { title: string; detail?: string }[] };
+  projects: { repo: string; total: number; inProgress: number; inReview: number; done: number }[];
+  quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
+  health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
+  recentDone: { title: string; repo: string }[];
+  inProgress: { title: string; repo: string }[];
+}
+
+export function deriveOverview(data: OverviewData): OverviewSummary {
+  // The needs-you summary must agree with /attention on the same data:
+  // suppressed entries (snoozed / dismissed / marked done — pending
+  // counts, exactly as on the attention page) leave the count and the
+  // top list, and when the tier source is not present the count is
+  // unknown rather than an authoritative number over a partial queue.
+  const now = Date.now();
+  const suppressed = (objectRef: string): boolean =>
+    cardState(data.actionsByObject?.get(objectRef), now).suppressed !== null;
+  const drewVisible = data.attention.drew.filter((e) => !suppressed(sessionObjectRef(e.sessionId)));
+  const drewExtraVisible = data.attention.drewExtra.filter((item) => !suppressed(tierItemObjectRef(item)));
+  const tierPresent = data.attention.tierSource.present;
+  const top: { title: string; detail?: string }[] = tierPresent
+    ? [
+        ...drewExtraVisible.map((t) => ({ title: t.title, detail: t.reason })),
+        ...drewVisible.map((e) => ({ title: e.title ?? e.sessionId, detail: e.drewReason })),
+      ].slice(0, 5)
+    : [];
+  const byRepo = new Map<string, { repo: string; total: number; inProgress: number; inReview: number; done: number }>();
+  for (const item of data.pool) {
+    const row = byRepo.get(item.repo) ?? { repo: item.repo, total: 0, inProgress: 0, inReview: 0, done: 0 };
+    row.total += 1;
+    if (item.status === "In Progress") row.inProgress += 1;
+    else if (item.status === "In Review") row.inReview += 1;
+    else if (item.status === "Done") row.done += 1;
+    byRepo.set(item.repo, row);
+  }
+  const quota = data.quota.pools.map((pool) => {
+    // #1134 review (Codex P2): derive from used/limit with the shared
+    // helper — a window that carries `used` and `limit` but no explicit
+    // `percent` must not silently drop out of the tightest-window figure.
+    const percents = pool.windows.map((w) => windowPercent(w));
+    return {
+      provider: pool.provider,
+      plan: pool.plan,
+      state: pool.state,
+      worstPercent: percents.length ? Math.max(...percents) : null,
+    };
+  });
+  const services = data.health.services;
+  const byRecency = (a: BoardItem, b: BoardItem) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  return {
+    needsYou: {
+      count: tierPresent ? drewVisible.length + drewExtraVisible.length : null,
+      tierState: data.attention.tierSource.state,
+      top,
+    },
+    projects: [...byRepo.values()].sort((a, b) => b.total - a.total || a.repo.localeCompare(b.repo)),
+    quota,
+    health: {
+      degraded: data.health.degraded,
+      up: services.filter((svc) => svc.ok === true).length,
+      down: services.filter((svc) => svc.ok === false).length,
+      total: services.length,
+      feedAgeMs: data.health.feed.ageMs,
+    },
+    recentDone: data.board
+      .filter((b) => b.status === "done")
+      .sort(byRecency)
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+    // In-flight board entries carry their real status in orchStatus
+    // (in-progress | queued | blocked): only the running ones belong
+    // under "In progress" — queued/blocked entries must not fill the
+    // list ahead of running work (Codex review on PR 2424).
+    inProgress: data.board
+      .filter(
+        (b) =>
+          b.status === "in-progress" ||
+          (b.status === "in-flight" && (b.orchStatus === undefined || b.orchStatus === "in-progress")),
+      )
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+  };
+}
+
+export function renderOverviewBody(summary: OverviewSummary): string {
+  // #1134 review (Codex P2): the stale note is about the tier source, not
+  // about the count, so an empty last published queue must still say it.
+  const staleNote = `<p class="muted">Tier source stale — this is its last published state and may have moved since.</p>`;
+  const needs =
+    summary.needsYou.count === null
+      ? `<div class="banner">Needs-you count <strong>unknown</strong> — the tier source is ${esc(summary.needsYou.tierState)}, so the orchestrator's published queues are not reflected here. <a href="/attention">Needs you</a></div>`
+      : summary.needsYou.count
+        ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>${summary.needsYou.tierState === "stale" ? staleNote : ""}`
+        : `<p class="muted">Nothing needs you right now.</p>${summary.needsYou.tierState === "stale" ? staleNote : ""}`;
+  const topItems = summary.needsYou.top.length
+    ? `<ul>${summary.needsYou.top.map((t) => `<li><strong>${esc(t.title)}</strong>${t.detail ? ` — ${esc(t.detail)}` : ""}</li>`).join("")}</ul>`
+    : "";
+  const projectCards = summary.projects.length
+    ? summary.projects
+        .map(
+          (proj) =>
+            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/projects">projects</a></div>`,
+        )
+        .join("")
+    : `<p class="muted">No Project pool items collected yet.</p>`;
+  const quotaStrip = summary.quota.length
+    ? summary.quota
+        .map((pool) => {
+          const pct = pool.worstPercent !== null ? ` · ${Math.round(pool.worstPercent)}% of tightest window` : "";
+          return `<div class="card"><strong>${esc(pool.provider)}</strong> <span class="muted">${esc(pool.plan)}</span> <span class="badge ${esc(pool.state)}">${esc(pool.state)}</span>${pct}</div>`;
+        })
+        .join("")
+    : `<p class="muted">No quota pools measured yet.</p>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const itemList = (items: { title: string; repo: string }[], empty: string) =>
+    items.length
+      ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
+      : `<p class="muted">${empty}</p>`;
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
+<h2>Projects</h2>${projectCards}
+<h2>Quota</h2>${quotaStrip}
+<h2>Health</h2>${healthStrip}
+<h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
+<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}`;
+}
+
+/** The overview page (#1134): full server render. */
+export function renderOverview(data: OverviewData, provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1>${renderOverviewBody(deriveOverview(data))}`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
+  );
+}
+
+/** The Datastar shell for / (#1134, on the #1444 pattern). */
+export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
 
@@ -3921,6 +4723,11 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  const cov = view.itemsCoverage;
+  const coverageLine =
+    cov && cov.total > 0
+      ? `<strong>${cov.resolvedLive} of ${cov.total}</strong> board items resolved from live data (project pool / projector) · <strong>${cov.fixture}</strong> resolved from fixtures (rendered hollow + "unverified") · coverage ratio <strong>${cov.ratio !== null ? cov.ratio.toFixed(2) : "—"}</strong> — measured on the health prime's board resolution pass, the same pass that sets the items facet provenance (#1141).`
+      : `not measured yet — coverage is computed on the health prime's board resolution pass (#1267); a pass that resolved no tagged items reports nothing rather than inventing a ratio.`;
   const facets = view.facets
     ? freshnessChips(view.facets, [
         "board",
@@ -3947,13 +4754,17 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
-<p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed; the projector is off by config and says so.</p>
+<p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table><tr><th>Service</th><th>Port</th><th>Bind</th><th>Runs as</th><th>State</th><th>Consumed by</th><th>If it is down</th></tr>${serviceRows}</table></div>
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><tr><th>Section</th><th>Present</th><th>Age</th><th>Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
+<h2>Item resolution coverage</h2>
+<div class="card">${coverageLine}</div>
+<h2>Dashboard comments</h2>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
@@ -4005,19 +4816,35 @@ export function renderProjects(
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
-  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
+  // the /program index banner — without it they are silently mixed into
+  // "all" with no count and no way to view them as the gap they are.
+  const UNSET_AREA = "(unset)";
+  const unsetCount = pool.filter((p) => !p.area).length;
+  const area =
+    opts.area === UNSET_AREA && unsetCount > 0
+      ? UNSET_AREA
+      : opts.area && areas.includes(opts.area)
+        ? opts.area
+        : null;
+  const shown =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
     `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
         `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
+    ...(unsetCount > 0
+      ? [
+          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+        ]
+      : []),
   ].join("");
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>`,
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`,
       provenance,
       "/projects",
     );
@@ -4050,6 +4877,8 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+<p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
     "Projects",
@@ -4192,6 +5021,8 @@ export function renderProgramProject(
   }
   if (config.statusReport) {
     linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
+  } else {
+    linkBits.push(`<span class="muted">No status report yet for this project.</span>`);
   }
   for (const l of config.dashboardLinks ?? []) {
     linkBits.push(
@@ -4248,6 +5079,26 @@ export function renderProgramProject(
     roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
   }
 
+  const repoCardsHtml = detail.repoCards.length
+    ? `<h2>Per-repo cards</h2>
+<p class="muted">One card per working repo. Open-issue counts are a dated GitHub-search snapshot (date on each card), never a live claim; the pool items and roadmap rows are split live from the same sections above, by repo.</p>${detail.repoCards
+        .map(({ card, poolItems, roadmapRows, tracked }) => {
+          const refs = tracked
+            .map(
+              ({ ref, item }) =>
+                `<a class="badge src" href="${esc(refUrl(ref))}">${esc(ref)}</a>${item ? ` <span class="badge ${item.state === "open" ? "open" : "closed"}">${esc(item.state)}</span>` : ""}`,
+            )
+            .join(" ");
+          return `<div class="card"><strong><a href="https://github.com/${esc(card.repo)}">${esc(card.repo)}</a></strong><br>${esc(card.role)}<br><span class="muted">Open issues (GitHub search, ${esc(card.openIssuesAsOf)}): <strong>${card.openIssues}</strong> · fleet pool items in this repo: ${poolItems.length} · roadmap rows: ${roadmapRows.length}</span>${refs ? `<br>${refs}` : ""}</div>`;
+        })
+        .join("")}`
+    : "";
+
+  const sweepHealthHtml = config.sweepHealth?.length
+    ? `<h2>Sweep health — published fleet state</h2>
+<p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
+    : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -4265,6 +5116,8 @@ ${trackedTable(detail.tracked)}
 ${poolHtml}
 <h2>Roadmap — live</h2>
 ${roadmapHtml}
+${repoCardsHtml}
+${sweepHealthHtml}
 ${editorialHtml}`;
   return layout(
     config.title,

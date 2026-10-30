@@ -20,6 +20,10 @@
 # The aggregate `crash-gate` is likewise covered by composition on
 # PRs: crash-gate-sampled/-sweep/-control/-ingest partition its tests
 # by name filter (#551). They still run in the nightly full flake check.
+# That partition is a checked invariant, not just prose:
+# check-crash-gate-coverage.sh runs in the same guard job and fails,
+# naming the test, when an #[ignore]d crash test matches none of the
+# split filters (#1635).
 #
 # Usage: check-id-pr-checks.sh [list-file]
 # For tests, ID_FLAKE_CHECKS_FILE names a file with one flake check

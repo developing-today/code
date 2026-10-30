@@ -40,6 +40,7 @@ import { getVersion, receiveTransaction } from "prosemirror-collab";
 import { Step } from "prosemirror-transform";
 import { markCursorFresh, onInitReceived, removeCursor, setConnectionState, updateCursor } from "./cursors";
 import { type ContentMode, type EditorInstance, getSendableSteps, initEditor } from "./editor";
+import { closeImageBrowser } from "./image-browser";
 
 // Message type tags
 const MSG = {
@@ -235,6 +236,9 @@ export function initCollab(
           // version mismatch errors.
           console.log("[collab] Reconnect: re-initializing editor, server version:", version);
           container.removeEventListener("editor:change", handleEditorChange);
+          // The view is about to be destroyed; the image browser overlay
+          // would outlive it on document.body (#1381).
+          closeImageBrowser();
           editorInstance.view.destroy();
 
           editorInstance = initEditor(container, doc, version, mode, sendCursor, filename);

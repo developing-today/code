@@ -34,6 +34,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+mod metrics;
 mod util;
 
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
+pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,

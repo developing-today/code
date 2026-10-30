@@ -5,8 +5,14 @@ import {
   classifyAttention,
   deriveToday,
   executionStrip,
+  isCalendarDate,
   laneFor,
+  monthLabel,
+  monthTimeline,
+  roadmapDayGrain,
+  rowDate,
   timeline,
+  ymdLabel,
   allRefs,
 } from "../src/derive.ts";
 import {
@@ -127,6 +133,74 @@ describe("roadmap timeline", () => {
     expect(laneFor("Q1 2027").key).toBe("2027-Q1");
     expect(laneFor("2026-10-24").key).toBe("2026-Q4");
     expect(laneFor("Ongoing").key).toBe("ongoing");
+  });
+});
+
+describe("horizon calendar-date validation (#1628)", () => {
+  const row = (horizon: string, id = 1): RoadmapRow => ({
+    id,
+    subject: `grist:d/${id}`,
+    title: `row ${id}`,
+    area: "T",
+    status: "Idea",
+    horizon,
+    source: "",
+    notes: "",
+    links: [],
+  });
+
+  test("isCalendarDate rejects impossible dates, keeps real ones", () => {
+    expect(isCalendarDate(2026, 13, 15)).toBe(false);
+    expect(isCalendarDate(2026, 0, 15)).toBe(false);
+    expect(isCalendarDate(2026, 1, 0)).toBe(false);
+    expect(isCalendarDate(2026, 2, 30)).toBe(false);
+    expect(isCalendarDate(2026, 4, 31)).toBe(false);
+    expect(isCalendarDate(2026, 2, 29)).toBe(false);
+    expect(isCalendarDate(2100, 2, 29)).toBe(false);
+    expect(isCalendarDate(2028, 2, 29)).toBe(true);
+    expect(isCalendarDate(2000, 2, 29)).toBe(true);
+    expect(isCalendarDate(2026, 10, 24)).toBe(true);
+  });
+
+  test("laneFor sends impossible dates to the other lane", () => {
+    expect(laneFor("2026-13-15").key).toStartWith("other:");
+    expect(laneFor("2026-00-15").key).toStartWith("other:");
+    expect(laneFor("2026-02-30").key).toStartWith("other:");
+    expect(laneFor("2026-10-24").key).toBe("2026-Q4");
+    expect(laneFor("2028-02-29").key).toBe("2028-Q1");
+  });
+
+  test("rowDate returns null for impossible dates", () => {
+    expect(rowDate(row("2026-13-15"))).toBeNull();
+    expect(rowDate(row("2026-00-15"))).toBeNull();
+    expect(rowDate(row("2026-02-30"))).toBeNull();
+    expect(rowDate(row("2026-04-31"))).toBeNull();
+    expect(rowDate(row("2026-10-24"))).toBe("2026-10-24");
+    expect(rowDate(row("2028-02-29"))).toBe("2028-02-29");
+  });
+
+  test("monthTimeline never renders an 'undefined' lane label", () => {
+    const tl = monthTimeline([row("2026-13-15", 1), row("2026-10-24", 2)]);
+    const labels = tl.lanes.map((l) => l.label);
+    expect(labels).toContain("October 2026");
+    expect(labels.some((l) => l.includes("undefined"))).toBe(false);
+    expect(tl.lanes.some((l) => l.key.startsWith("other:"))).toBe(true);
+  });
+
+  test("roadmapDayGrain counts impossible dates as coarse, not outside", () => {
+    const now = new Date("2026-10-28T12:00:00Z");
+    const g = roadmapDayGrain([row("2026-02-30", 1), row("2026-13-15", 2), row("2026-12-25", 3)], "week", now);
+    expect(g.coarse.map((r) => r.horizon)).toEqual(["2026-02-30", "2026-13-15"]);
+    expect(g.outside).toBe(1);
+  });
+
+  test("ymdLabel and monthLabel neither throw nor relabel impossible dates", () => {
+    expect(ymdLabel("2026-13-15")).toBe("2026-13-15");
+    expect(ymdLabel("2026-02-30")).toBe("2026-02-30");
+    expect(ymdLabel("2026-10-24")).toBe("Sat Oct 24");
+    expect(monthLabel("2026-13")).toBe("2026-13");
+    expect(monthLabel("2026-00")).toBe("2026-00");
+    expect(monthLabel("2026-10")).toBe("October 2026");
   });
 });
 

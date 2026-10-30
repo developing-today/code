@@ -77,13 +77,21 @@ export type DashActionVerb =
   | "dismiss"
   | "approve-proposal"
   | "reject-proposal"
+  // triage — quick actions + restore (#1449/#1450): "mark-done" is the
+  // one-tap "Already done" (the consumer closes the item out; for gh:
+  // refs it performs the Done status write). "restore" undoes a
+  // suppression — it MUST name the suppressing action in `supersedes`.
+  | "mark-done"
+  | "restore"
   // status-request (#1154)
   | "request-status"
   // session (#1156)
   | "poke"
   | "stop"
   // preference (#1290)
-  | "set-delegation-default";
+  | "set-delegation-default"
+  // preference — Needs-you card order (#1456)
+  | "set-needs-order";
 
 export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = {
   triage: [
@@ -96,10 +104,12 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
     "dismiss",
     "approve-proposal",
     "reject-proposal",
+    "mark-done",
+    "restore",
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default"],
+  preference: ["set-delegation-default", "set-needs-order"],
 };
 
 export interface DashActionPayload {
@@ -130,6 +140,9 @@ export interface DashActionPayload {
   proposalUpdatedAt?: string;
   /** set-delegation-default: the standing auto toggle value. */
   standingAuto?: boolean;
+  /** set-needs-order: the Needs-you card ordering (#1456). "urgency" is
+   *  the orchestrator's published order; the rest sort at render. */
+  needsOrder?: "urgency" | "newest" | "oldest" | "deadline";
 }
 
 export interface DashAction {
@@ -288,6 +301,17 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
     }
     payload.standingAuto = rawPayload.standingAuto;
   }
+  if (rawPayload.needsOrder !== undefined) {
+    if (
+      rawPayload.needsOrder !== "urgency" &&
+      rawPayload.needsOrder !== "newest" &&
+      rawPayload.needsOrder !== "oldest" &&
+      rawPayload.needsOrder !== "deadline"
+    ) {
+      return { ok: false, error: "payload.needsOrder must be urgency | newest | oldest | deadline" };
+    }
+    payload.needsOrder = rawPayload.needsOrder;
+  }
 
   let targetRef: RefKey | undefined;
   if (b.targetRef !== undefined) {
@@ -332,6 +356,12 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   if (verb === "set-delegation-default" && payload.standingAuto === undefined) {
     return { ok: false, error: "set-delegation-default requires payload.standingAuto (boolean)" };
+  }
+  if (verb === "set-needs-order" && payload.needsOrder === undefined) {
+    return { ok: false, error: "set-needs-order requires payload.needsOrder" };
+  }
+  if (verb === "restore" && supersedes === undefined) {
+    return { ok: false, error: "restore requires supersedes (the id of the action it undoes)" };
   }
   if ((verb === "dismiss" || verb === "reject-proposal") && payload.reason === undefined) {
     return { ok: false, error: `${verb} requires payload.reason` };
@@ -386,31 +416,75 @@ export function newClientToken(): string {
 
 export class ActionsStore {
   private actions: DashAction[] = [];
-  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
 
   constructor(private readonly file: string) {}
 
+  // The load is memoized as a single promise (#1509): the old
+  // loaded-flag version let concurrent first callers proceed before
+  // the read finished, and the read's completion then reset the
+  // in-memory array, wiping records those callers had just pushed.
   async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+    if (!this.loadPromise) this.loadPromise = this.doLoad();
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
+    // #1452: a missing file is the only silent empty start ("no store
+    // yet"). An unparseable or wrongly-shaped file is NOT an empty
+    // store: it is the append-only audit history, so quarantine the
+    // original bytes to <file>.corrupt-<timestamp>, start empty, and
+    // log loudly — the next persist then writes a fresh valid file and
+    // never touches the quarantined copy.
+    let raw: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as ActionsFile).actions)) {
-        this.actions = (parsed as ActionsFile).actions.filter(
-          (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
-        );
-      }
+      raw = await readFile(this.file, "utf8");
     } catch {
       this.actions = []; // no store yet — the first write creates it
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ActionsFile).actions)) {
+        throw new Error("store file does not have the expected { actions: [...] } shape");
+      }
+      this.actions = (parsed as ActionsFile).actions.filter(
+        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
+      );
+    } catch (err) {
+      this.actions = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
     }
   }
 
-  private async persist(): Promise<void> {
-    const data: ActionsFile = { version: 1, actions: this.actions };
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    await writeFile(tmp, JSON.stringify(data, null, 2));
-    await rename(tmp, this.file);
+  // Serialized persists + unique temp path per write - see
+  // CommentsStore.persist (#1509).
+  private persist(): Promise<void> {
+    const run = this.writeChain.then(async () => {
+      const data: ActionsFile = { version: 1, actions: this.actions };
+      await mkdir(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
+      await writeFile(tmp, JSON.stringify(data, null, 2));
+      await rename(tmp, this.file);
+    });
+    this.writeChain = run.catch(() => {});
+    return run;
   }
 
   async all(): Promise<DashAction[]> {
@@ -506,6 +580,7 @@ export const VERB_FAMILIES: Partial<Record<DashActionVerb, string>> = {
   "de-escalate": "tier",
   delegate: "delegation",
   dismiss: "dismiss",
+  "mark-done": "done",
   "request-status": "status",
   poke: "poke",
   stop: "stop",

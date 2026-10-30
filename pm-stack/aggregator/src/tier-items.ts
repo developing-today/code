@@ -275,11 +275,41 @@ export function effectiveStandingAuto(records: DashAction[]): {
   };
 }
 
+/** The Needs-you card order preference (#1456): persisted as a
+ *  `preference` action (verb set-needs-order) on this object ref. */
+export const NEEDS_ORDER_OBJECT_REF = "needs-user-order";
+export type NeedsOrder = "urgency" | "newest" | "oldest" | "deadline";
+export const NEEDS_ORDERS: readonly NeedsOrder[] = ["urgency", "newest", "oldest", "deadline"];
+
+/** The effective Needs-you card order from the preference records:
+ *  the latest non-superseded record (pending or applied) wins; before
+ *  any exists, the orchestrator's published order ("urgency") applies.
+ *  Mirrors effectiveStandingAuto. */
+export function effectiveNeedsOrder(records: DashAction[]): { order: NeedsOrder; pending: boolean } {
+  const prefs = records
+    .filter(
+      (r) =>
+        r.kind === "preference" &&
+        r.verb === "set-needs-order" &&
+        (r.state === "new" || r.state === "applied") &&
+        typeof r.payload?.needsOrder === "string" &&
+        (NEEDS_ORDERS as readonly string[]).includes(r.payload.needsOrder),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const latest = prefs[0];
+  if (!latest) return { order: "urgency", pending: false };
+  return { order: latest.payload!.needsOrder as NeedsOrder, pending: latest.state === "new" };
+}
+
 /** #1293: a proposal-ready delegation past its TTL is expired — it
- *  renders as expired and the item is decidable again. */
+ *  renders as expired and the item is decidable again. The clock is the
+ *  proposal's own draft time (`proposal.at`, #1623): `updatedAt` moves on
+ *  any delegation write, so clocking from it would let churn resurrect an
+ *  old proposal indefinitely (and read a fresh proposal as expired when
+ *  the delegation record itself is old). */
 export function proposalExpired(d: TierItemDelegation | undefined, nowMs: number): boolean {
   if (!d || d.status !== "proposal-ready") return false;
-  const at = Date.parse(d.updatedAt);
+  const at = Date.parse(d.proposal?.at ?? "");
   return !Number.isNaN(at) && nowMs - at > PROPOSAL_TTL_MS;
 }
 
@@ -330,9 +360,11 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
             return `answers for "${q.id}" must be chosen from its options`;
         }
       }
-      const answered = new Set(p.answers.map((a) => a.questionId));
-      const missing = qs.filter((q) => q.required && !answered.has(q.id)).map((q) => q.id);
-      if (missing.length) return `missing required answers: ${missing.join(", ")}`;
+      // #1451 (Drew, 2026-10-27): partial survey submits are allowed —
+      // the card merges answers across submits and shows which required
+      // questions remain open. Membership and value checks above still
+      // reject anything the item never asked. (Before #1451 this point
+      // rejected a submit missing required answers outright.)
     } else if (p.optionId) {
       if (!item) return "this item is no longer on the published Needs User tier — refresh and try again";
       if (!(item.options ?? []).some((o) => o.id === p.optionId))

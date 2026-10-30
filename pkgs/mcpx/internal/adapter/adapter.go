@@ -33,6 +33,13 @@ type Spec struct {
 	Name string `json:"name"`
 	// Command is the binary.
 	Command string `json:"command"`
+	// Runtime is the interpreter a script command needs: bash, js, ts or
+	// py. Empty leaves Command as the executable itself, as it always was.
+	// A declared runtime is resolved on PATH by this package, deliberately
+	// not by script.runtime: that setting is about the JavaScript runtime
+	// mcpx itself executes generated scripts on, and a declaration naming
+	// its own interpreter means something different (#1875, #105/#106).
+	Runtime string `json:"runtime,omitempty"`
 	// Args are prepended to every invocation, for a program reached through
 	// a wrapper: {"command":"docker","args":["run","--rm","thing"]}.
 	Args []string `json:"args,omitempty"`
@@ -45,7 +52,7 @@ type Spec struct {
 	// Instructions explain conventions the schemas cannot, exactly as a real
 	// server's initialize does.
 	Instructions string `json:"instructions,omitempty"`
-	// Timeout bounds every invocation. Empty means 60s.
+	// Timeout bounds every invocation. Empty or zero means 60s.
 	Timeout string `json:"timeout,omitempty"`
 	// Tools are the subcommands worth exposing.
 	Tools []ToolSpec `json:"tools"`
@@ -66,7 +73,7 @@ type ToolSpec struct {
 	// JSON parses the output as JSON before returning it, so a caller gets
 	// structure rather than a string containing structure.
 	JSON bool `json:"json,omitempty"`
-	// Timeout overrides the server's for this tool.
+	// Timeout overrides the server's for this tool. Empty or zero inherits it.
 	Timeout string `json:"timeout,omitempty"`
 }
 
@@ -101,6 +108,13 @@ func (s Spec) Validate() error {
 	}
 	if strings.TrimSpace(s.Command) == "" {
 		problems = append(problems, s.Name+": no command")
+	}
+	if s.Runtime != "" {
+		// Only the name is checked here: whether an interpreter is
+		// installed is Probe's question, not a declaration's.
+		if err := checkRuntime(s.Runtime); err != nil {
+			problems = append(problems, s.Name+": "+err.Error())
+		}
 	}
 	if _, err := parseDuration(s.Timeout, time.Minute); err != nil {
 		problems = append(problems, s.Name+": timeout "+err.Error())
@@ -145,6 +159,14 @@ func (s Spec) Validate() error {
 	return nil
 }
 
+// parseDuration resolves a timeout string against a fallback.
+//
+// Zero is unset: an empty string or an explicit zero ("0s") yields the
+// fallback, so at Call a zero tool timeout inherits the server timeout and
+// a zero server timeout yields the 60s default. A negative duration is
+// never a timeout - it would hand context.WithTimeout an already-expired
+// context and fail every call instantly - so it is an error naming the
+// offending value, which Validate surfaces at both levels.
 func parseDuration(v string, fallback time.Duration) (time.Duration, error) {
 	if strings.TrimSpace(v) == "" {
 		return fallback, nil
@@ -152,6 +174,12 @@ func parseDuration(v string, fallback time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(v)
 	if err != nil {
 		return 0, fmt.Errorf("is not a duration: %q", v)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("is a negative duration: %q", v)
+	}
+	if d == 0 {
+		return fallback, nil
 	}
 	return d, nil
 }
@@ -225,8 +253,22 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 	if err != nil {
 		return nil, err
 	}
-	full := append(append([]string{}, s.Args...), argv...)
 
+	// A script declared with a runtime is spawned through its interpreter;
+	// without one this is the same exec as before.
+	bin, prefix, script, err := s.command()
+	if err != nil {
+		return nil, err
+	}
+	full := append(append([]string{}, s.Args...), argv...)
+	cmdArgs := append([]string{}, prefix...)
+	if script != "" {
+		cmdArgs = append(cmdArgs, script)
+	}
+	cmdArgs = append(cmdArgs, full...)
+
+	// Zero is unset (see parseDuration): a tool timeout of zero inherits
+	// the server timeout, and a server timeout of zero gets the default.
 	timeout, _ := parseDuration(spec.Timeout, 0)
 	if timeout == 0 {
 		timeout, _ = parseDuration(s.Timeout, time.Minute)
@@ -234,7 +276,7 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, s.Command, full...)
+	cmd := exec.CommandContext(cctx, bin, cmdArgs...)
 	cmd.Dir = s.Dir
 	cmd.Env = os.Environ()
 	for k, v := range s.Env {
@@ -247,10 +289,16 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	runErr := cmd.Run()
 
+	display := s.Command + " " + strings.Join(full, " ")
+	if script != "" {
+		// The resolved form, so a failure names the interpreter that ran
+		// and the file it ran, not just the name the declaration used.
+		display = strings.Join(append([]string{bin}, cmdArgs...), " ")
+	}
 	res := &Result{
 		Stdout:  out.String(),
 		Stderr:  errb.String(),
-		Command: s.Command + " " + strings.Join(full, " "),
+		Command: display,
 	}
 	if ee, ok := runErr.(*exec.ExitError); ok {
 		res.ExitCode = ee.ExitCode()
@@ -374,7 +422,10 @@ func contains(list []string, v string) bool {
 
 // Probe checks the binary exists before anything tries to call it.
 func (s Spec) Probe() error {
-	if _, err := exec.LookPath(s.Command); err != nil {
+	if _, _, _, err := s.command(); err != nil {
+		if s.Runtime != "" {
+			return fmt.Errorf("%s: %w", s.Name, err)
+		}
 		return fmt.Errorf("%s: %s is not on PATH", s.Name, s.Command)
 	}
 	return nil

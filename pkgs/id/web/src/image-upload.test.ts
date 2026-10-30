@@ -4,6 +4,8 @@
  * and ProseMirror plugin creation.
  */
 
+import type { Slice } from "prosemirror-model";
+import type { EditorView } from "prosemirror-view";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
 import {
@@ -262,5 +264,107 @@ describe("uploadImageFile", () => {
 
     const file = new File(["data"], "photo.png", { type: "image/png" });
     await expect(uploadImageFile(file)).rejects.toThrow("Network error");
+  });
+});
+
+// ============================================================================
+// handlePaste / handleDrop size filtering (#1321)
+// ============================================================================
+
+describe("handlePaste/handleDrop oversized filtering", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  const handleDrop = plugin.props.handleDrop;
+  if (!handlePaste || !handleDrop) throw new Error("plugin must define paste/drop handlers");
+
+  function oversizedFile(name = "big.png"): File {
+    const file = new File(["x"], name, { type: "image/png" });
+    Object.defineProperty(file, "size", { value: MAX_IMAGE_SIZE + 1 });
+    return file;
+  }
+
+  function stubView() {
+    const tr = { setMeta: vi.fn().mockReturnThis() };
+    return {
+      state: { tr, selection: { from: 0 } },
+      dispatch: vi.fn(),
+      posAtCoords: vi.fn().mockReturnValue(null),
+    };
+  }
+
+  function pasteEvent(files: File[]) {
+    return { clipboardData: { files }, preventDefault: vi.fn() };
+  }
+
+  function dropEvent(files: File[]) {
+    return { dataTransfer: { files }, preventDefault: vi.fn(), clientX: 10, clientY: 20 };
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Uploads never settle, so dispatch counts stay at the synchronous
+    // placeholder insert for accepted files.
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(() => {}));
+  });
+
+  it("oversized-only paste is not claimed: returns false, no preventDefault, no dispatch", () => {
+    const view = stubView();
+    const event = pasteEvent([oversizedFile()]);
+    const result = handlePaste.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("oversized-only drop is not claimed: returns false, no preventDefault, no dispatch", () => {
+    const view = stubView();
+    const event = dropEvent([oversizedFile()]);
+    const result = handleDrop.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
+    );
+    expect(result).toBe(false);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
+    expect(view.posAtCoords).not.toHaveBeenCalled();
+  });
+
+  it("mixed paste uploads only the valid file and still claims the event", () => {
+    const view = stubView();
+    const event = pasteEvent([oversizedFile(), new File(["ok"], "ok.png", { type: "image/png" })]);
+    const result = handlePaste.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    // One synchronous placeholder dispatch, for the one accepted file.
+    expect(view.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("mixed drop uploads only the valid file and still claims the event", () => {
+    const view = stubView();
+    const event = dropEvent([new File(["ok"], "ok.png", { type: "image/png" }), oversizedFile()]);
+    const result = handleDrop.call(
+      plugin,
+      view as unknown as EditorView,
+      event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
+    );
+    expect(result).toBe(true);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(view.dispatch).toHaveBeenCalledTimes(1);
   });
 });

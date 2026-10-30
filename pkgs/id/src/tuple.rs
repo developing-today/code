@@ -456,6 +456,11 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
                 i64::try_from(v).is_ok(),
                 "positive integer exceeds i64::MAX"
             );
+            // The encoder emits the minimal byte count, so a leading zero
+            // payload byte (including an all-zero payload: zero has its own
+            // ZERO tag) is an encoding no encoder produces. Reject it rather
+            // than accept a second spelling of the same key.
+            ensure!(be[8 - n] != 0, "non-minimal positive integer encoding");
             // Correctness: we verified v ≤ i64::MAX via try_from above
             #[allow(clippy::cast_possible_wrap)]
             Ok(Some(TupleValue::Int(v as i64)))
@@ -471,6 +476,19 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
             }
             *pos += n;
             let abs = u64::from_be_bytes(be);
+            // Mirror the positive branch's range check. The encoder only
+            // emits magnitudes in 1..=2^63 (2^63 is i64::MIN); outside that,
+            // abs=0 would decode to Int(0) and abs>2^63 wraps via the
+            // wrapping negation below to a zero or positive value — a key
+            // that sorts and compares as a different number than it claims.
+            ensure!(
+                (1..=(1u64 << 63)).contains(&abs),
+                "negative integer magnitude out of range"
+            );
+            // Non-minimal encodings are rejected, as in the positive branch:
+            // the encoder's minimal byte count makes the magnitude's top byte
+            // non-zero, i.e. the first payload byte is never 0xFF.
+            ensure!(be[8 - n] != 0, "non-minimal negative integer encoding");
             // Negate: handles i64::MIN correctly via wrapping
             // (abs=2^63 → 0u64.wrapping_sub(2^63) = 2^63 as u64 → as i64 = i64::MIN)
             #[allow(clippy::cast_possible_wrap)]
@@ -494,7 +512,13 @@ fn decode_one(data: &[u8], pos: &mut usize, nested: bool) -> Result<Option<Tuple
                     *x = !*x;
                 }
             }
-            Ok(Some(TupleValue::Float(f64::from_be_bytes(b))))
+            let v = f64::from_be_bytes(b);
+            // The encoder refuses NaN, so a payload that reverses to NaN is
+            // one no encoder produces; admitting it would let two different
+            // keys decode to floats that compare unequal to everything,
+            // including themselves. Infinities stay decodable: they encode.
+            ensure!(!v.is_nan(), "decoded float64 is NaN");
+            Ok(Some(TupleValue::Float(v)))
         }
 
         _ => bail!("unknown tuple type tag: 0x{tag:02X}"),
@@ -1130,6 +1154,52 @@ mod tests {
         // Tag says float64, but only 4 bytes follow
         let result = decode(&[FLOAT64, 0x00, 0x00, 0x00, 0x00]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_negative_int_magnitude_range() {
+        // abs == 0 (ones-complement of 0x00): would decode to Int(0).
+        assert!(decode(&[0x13, 0xFF]).is_err());
+        // abs == u64::MAX (payload is ones-complement of 0xFF * 8): would
+        // wrap via the negation to Int(1).
+        assert!(decode(&[NEG_INT_8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).is_err());
+        // abs == 2^63 + 1: would wrap to a positive value.
+        assert!(decode(&[NEG_INT_8, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE]).is_err());
+    }
+
+    #[test]
+    fn test_decode_negative_int_min_boundary() {
+        // abs == 2^63 is i64::MIN and stays decodable.
+        let vals = decode(&[NEG_INT_8, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
+        assert_eq!(vals, vec![TupleValue::Int(i64::MIN)]);
+        // The encoder's own i64::MIN output round-trips.
+        let key = TupleEncoder::new().int(i64::MIN).build();
+        assert_eq!(decode(&key).unwrap(), vec![TupleValue::Int(i64::MIN)]);
+    }
+
+    #[test]
+    fn test_decode_non_minimal_int_rejected() {
+        // Positive 5 spelled in two bytes with a leading zero.
+        assert!(decode(&[POS_INT_1 + 1, 0x00, 0x05]).is_err());
+        // Positive zero under an int tag: zero has its own ZERO tag.
+        assert!(decode(&[POS_INT_1, 0x00]).is_err());
+        // Negative -5 spelled in two bytes (ones-complement of [0x00, 0x05]).
+        assert!(decode(&[0x12, 0xFF, 0xFA]).is_err());
+    }
+
+    #[test]
+    fn test_decode_nan_float_rejected() {
+        // Stored form of a positive NaN (the sort transform flips the sign
+        // bit of a positive float's bytes).
+        assert!(decode(&[FLOAT64, 0xFF, 0xF8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]).is_err());
+        // Stored form of a negative NaN (the transform flips every bit).
+        assert!(decode(&[FLOAT64, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]).is_err());
+        // Infinities are encodable, so they stay decodable.
+        let key = TupleEncoder::new().float(f64::INFINITY).unwrap().build();
+        assert_eq!(
+            decode(&key).unwrap(),
+            vec![TupleValue::Float(f64::INFINITY)]
+        );
     }
 
     #[test]

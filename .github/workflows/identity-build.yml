@@ -1,5 +1,7 @@
 name: identity build
 
+# CI tier policy: see .github/ci-policy.md
+
 # Build verification for the pkgs/identity Go module (#340).
 #
 # pkgs/identity builds only with a build tag: its charm fork keeps the
@@ -11,14 +13,18 @@ name: identity build
 
 on:
   pull_request:
+    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
+    # changes (lockfiles, module roots, flake files, build definitions,
+    # workflow files, shared libs); on push to main they always run.
     paths:
-      - "pkgs/identity/**"
-      - ".github/workflows/identity-build.yml"
+      - "pkgs/identity/go.mod"
+      - "pkgs/identity/go.sum"
+      - "pkgs/identity/package.nix"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/**"
   push:
     branches: [main]
-    paths:
-      - "pkgs/identity/**"
-      - ".github/workflows/identity-build.yml"
 
 permissions:
   contents: read
@@ -37,7 +43,7 @@ concurrency:
 
 jobs:
   build:
-    name: go build (${{ matrix.tags }})
+    name: "basic: go build (${{ matrix.tags }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

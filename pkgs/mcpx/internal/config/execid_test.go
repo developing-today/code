@@ -32,9 +32,18 @@ func TestExecIdentityFollowsTheExecutableNotTheCommandName(t *testing.T) {
 	r := &Resolved{Server: &Server{Command: "tool", Env: map[string]string{"PATH": filepath.Join(dir, "bin")}}}
 
 	first := r.ExecIdentity()
-	sum := sha256.Sum256([]byte("#!/bin/sh\necho one\n"))
-	if want := "sha256:" + hex.EncodeToString(sum[:])[:16]; first != want {
-		t.Fatalf("identity %q of a small file is not its content hash %q", first, want)
+	// #1532: the file is a script (#!), so its identity is the framed
+	// hash — content || NUL || "mcpx:exec-dir" || NUL || resolved
+	// directory — not the bare content hash this test pinned before.
+	h := sha256.New()
+	h.Write([]byte("#!/bin/sh\necho one\n"))
+	h.Write([]byte{0})
+	h.Write([]byte("mcpx:exec-dir"))
+	h.Write([]byte{0})
+	h.Write([]byte(filepath.Join(dir, "bin")))
+	sum := h.Sum(nil)
+	if want := "sha256:" + hex.EncodeToString(sum)[:16]; first != want {
+		t.Fatalf("identity %q of a small script is not its framed hash %q", first, want)
 	}
 	if st, ok := r.ExecStamp(); !ok || st.Path != bin {
 		t.Fatalf("stamp %+v does not name the resolved file %s", st, bin)
@@ -150,5 +159,124 @@ func TestAServerThatIsNotAChildHasNoExecIdentity(t *testing.T) {
 	}
 	if r.ProcessID() != r.PoolID()+"/" {
 		t.Fatalf("ProcessID %q is not PoolID plus the identity", r.ProcessID())
+	}
+}
+
+// #1532: a script's identity folds in the resolved directory of the real
+// file. Identical script bytes in different directories are different
+// programs; two names in one directory are the same program.
+func TestExecIdentityOfAScriptFoldsInItsDirectory(t *testing.T) {
+	dir := testsupport.TempDir(t)
+	body := "#!/bin/sh\necho same\n"
+	a := filepath.Join(dir, "a", "tool")
+	b := filepath.Join(dir, "b", "tool")
+	writeExec(t, a, body)
+	writeExec(t, b, body)
+	idA := (&Resolved{Server: &Server{Command: a}}).ExecIdentity()
+	if idB := (&Resolved{Server: &Server{Command: b}}).ExecIdentity(); idB == idA {
+		t.Fatalf("identical script bytes in different directories kept identity %q", idA)
+	}
+
+	// Same directory, another name: the same identity.
+	a2 := filepath.Join(dir, "a", "tool2")
+	writeExec(t, a2, body)
+	if got := (&Resolved{Server: &Server{Command: a2}}).ExecIdentity(); got != idA {
+		t.Fatalf("identical script bytes in the same directory changed identity: %q -> %q", idA, got)
+	}
+
+	// A symlink re-pointed across directories moves; within one, it keeps.
+	link := filepath.Join(dir, "tool")
+	if err := os.Symlink(a, link); err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolved{Server: &Server{Command: link}}
+	if got := r.ExecIdentity(); got != idA {
+		t.Fatalf("a link at the script in its own directory has identity %q, want %q", got, idA)
+	}
+	repoint := func(to string) {
+		t.Helper()
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(to, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repoint(b)
+	if got := r.ExecIdentity(); got == idA {
+		t.Fatal("a link re-pointed at an identical script in another directory kept its identity")
+	}
+	repoint(a2)
+	if got := r.ExecIdentity(); got != idA {
+		t.Fatalf("a link re-pointed within the directory changed identity: %q -> %q", idA, got)
+	}
+}
+
+// #1532: a non-script file stays bytes-only — identical bytes in different
+// directories keep one identity, and it is exactly today's bare content
+// hash, so existing binary identities do not move on rollout.
+func TestExecIdentityOfANonScriptIgnoresItsDirectory(t *testing.T) {
+	dir := testsupport.TempDir(t)
+	body := "echo same\n"
+	a := filepath.Join(dir, "a", "tool")
+	b := filepath.Join(dir, "b", "tool")
+	writeExec(t, a, body)
+	writeExec(t, b, body)
+	sum := sha256.Sum256([]byte(body))
+	want := "sha256:" + hex.EncodeToString(sum[:])[:16]
+	for _, path := range []string{a, b} {
+		if got := (&Resolved{Server: &Server{Command: path}}).ExecIdentity(); got != want {
+			t.Fatalf("non-script identity %q at %s is not the bare content hash %q", got, path, want)
+		}
+	}
+}
+
+// #1532: scriptness is a property of the bytes (the #! prefix), so the two
+// branches are compared on one byte string: hashed as a script the bytes
+// take the framed hash; the bare content hash is what the same bytes would
+// identify as without the fold — and a real non-script file's identity is
+// exactly its bare hash (above), so a script and a non-script are told
+// apart even before their directories enter into it.
+func TestExecIdentityOfAScriptIsNotItsBareContentHash(t *testing.T) {
+	dir := testsupport.TempDir(t)
+	body := "#!/bin/sh\necho same\n"
+	bin := filepath.Join(dir, "tool")
+	writeExec(t, bin, body)
+	sum := sha256.Sum256([]byte(body))
+	bare := "sha256:" + hex.EncodeToString(sum[:])[:16]
+	if got := (&Resolved{Server: &Server{Command: bin}}).ExecIdentity(); got == bare {
+		t.Fatalf("script identity %q is its bare content hash; the directory fold did not apply", got)
+	}
+}
+
+// #1532: the framing cannot alias. A script whose content embeds the
+// marker segment plus another directory's path — the strongest boundary
+// shift available, since a real directory cannot contain NUL — still
+// hashes as its own (content, directory) pair, not as the plain script
+// sitting in that other directory.
+func TestExecIdentityScriptFramingDoesNotAlias(t *testing.T) {
+	dir := testsupport.TempDir(t)
+	other := filepath.Join(dir, "other")
+	plain := "#!/bin/sh\necho same\n"
+	writeExec(t, filepath.Join(other, "tool"), plain)
+	idOther := (&Resolved{Server: &Server{Command: filepath.Join(other, "tool")}}).ExecIdentity()
+
+	tricky := "#!/bin/sh\necho \x00mcpx:exec-dir\x00" + other + "\n"
+	mine := filepath.Join(dir, "mine")
+	writeExec(t, filepath.Join(mine, "tool"), tricky)
+	got := (&Resolved{Server: &Server{Command: filepath.Join(mine, "tool")}}).ExecIdentity()
+	if got == idOther {
+		t.Fatalf("a script embedding the framing marker aliased the plain script in %s: %q", other, got)
+	}
+	// And its identity is exactly its own framed hash.
+	h := sha256.New()
+	h.Write([]byte(tricky))
+	h.Write([]byte{0})
+	h.Write([]byte("mcpx:exec-dir"))
+	h.Write([]byte{0})
+	h.Write([]byte(mine))
+	sum := h.Sum(nil)
+	if want := "sha256:" + hex.EncodeToString(sum)[:16]; got != want {
+		t.Fatalf("identity %q is not the framed hash %q of its own (content, directory)", got, want)
 	}
 }

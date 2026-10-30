@@ -169,7 +169,7 @@ export const PROGRAM: ProgramDoc = {
     {
       title: "GitHub comment projection off fixtures",
       detail:
-        "Item pages still render the GitHub comment stream from fixtures — the only fixture left in the building. Dashboard-native comments work; resurrecting the live GitHub comment feed (projector) is a separate build.",
+        "Item pages render the GitHub comment stream live from the projector (deployed 2026-10-27, #1199); dashboard-native comments work too.",
     },
     {
       title: "Project Roadmap dates",

@@ -239,3 +239,34 @@ test('foreign healthy instance is adopted, not duplicated', async (t) => {
 test('module under test is the worktree copy', () => {
   assert.ok(fs.existsSync(path.join(here, 'proxy-supervise.mjs')));
 });
+
+test('CLI entry point still runs when invoked through a symlinked path (#2083)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-supervise-symlink-'));
+  try {
+    const link = path.join(root, 'proxy-supervise-link.mjs');
+    fs.symlinkSync(path.join(here, 'proxy-supervise.mjs'), link);
+    const cfgFile = path.join(root, 'config.json');
+    fs.writeFileSync(
+      cfgFile,
+      JSON.stringify({
+        stateDir: path.join(root, 'state'),
+        endpointDir: path.join(root, 'endpoints'),
+        proxies: [
+          { name: 'ghost-proxy', canonicalPort: 19999, portEnv: 'GHOST_PROXY_PORT', command: ['/bin/true'], hashFiles: [] },
+        ],
+      }),
+    );
+    const out = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [link, '--config', cfgFile, '--only', 'ghost-proxy', '--status']);
+      let buf = '';
+      child.stdout.on('data', (d) => (buf += d));
+      child.on('error', reject);
+      child.on('close', () => resolve(buf));
+    });
+    // With the old string-compare guard, main() never ran through a
+    // symlink and this printed nothing at all.
+    assert.match(out, /"name":"ghost-proxy"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

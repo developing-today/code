@@ -85,6 +85,28 @@ describe("world screen presenter", () => {
     expect(renderWorldSurface(root, makeScreen([{ symbol: "", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
   });
 
+  it("measures emoji-modifier and tag sequences as their base, like Rust unicode-width (#1431)", () => {
+    const root = document.createElement("div");
+    // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
+    // 👍🏽 U+1F44D U+1F3FD (emoji modifier), 🏴󐁧󐁢󐁥󐁮󐁧󐁿 England flag (U+1F3F4 + tag sequence).
+    const sequenceGlyphs = ["\u{1F44D}\u{1F3FD}", "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}"];
+    for (const symbol of sequenceGlyphs) {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      // …and the same glyph at a mismatched columns value must be refused.
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+  });
+
   it("measures astral-plane, ZWJ and variation-selector glyphs as width 2, like Rust unicode-width (#761)", () => {
     const root = document.createElement("div");
     // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:

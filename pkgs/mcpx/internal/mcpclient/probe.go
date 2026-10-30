@@ -182,6 +182,7 @@ func (c *Client) judge(resp *rpcResponse, tried map[string]int) (verdict, string
 	}
 	c.metaVersion = chosen
 	c.Negotiated = chosen
+	c.negotiated.Store(chosen)
 	c.ServerInfo = dr.Meta.ServerInfo
 	c.Capabilities = dr.Capabilities
 	c.Instructions = dr.Instructions
