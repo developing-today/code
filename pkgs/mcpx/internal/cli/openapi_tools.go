@@ -32,7 +32,11 @@ type APIFile struct {
 
 // loadAPIs reads declarations from paths.apis.
 func (a *App) loadAPIs() ([]APISpec, error) {
-	paths := splitPathList(a.Settings().String("paths.apis"))
+	return loadAPIFiles(splitPathList(a.Settings().String("paths.apis")))
+}
+
+// loadAPIFiles reads and validates declarations from these files.
+func loadAPIFiles(paths []string) ([]APISpec, error) {
 	var out []APISpec
 	for _, p := range paths {
 		if p == "" {
@@ -189,8 +193,43 @@ func (a *App) CmdAPI(ctx context.Context, args []string) error {
 			}
 		}
 		return fmt.Errorf("no operation named %q; `mcpx api tools` lists them", tool)
+
+	case "serve":
+		// One declared API as a stdio MCP server. This is what the daemon
+		// spawns for every declared API (see augmentAPIs), so an
+		// OpenAPI-described service is an upstream server like any other.
+		// Files after the name replace paths.apis, so the daemon can say
+		// exactly which declarations it meant whatever the child's
+		// environment or working directory.
+		if len(fs.Args()) < 1 {
+			return fmt.Errorf("usage: mcpx api serve <name> [file...]")
+		}
+		if len(fs.Args()) > 1 {
+			loaded, lerr := loadAPIFiles(fs.Args()[1:])
+			if lerr != nil {
+				return lerr
+			}
+			specs = loaded
+		}
+		for _, sp := range specs {
+			if sp.Name != fs.Arg(0) {
+				continue
+			}
+			srv := mcpserver.New(nil, sp.Name, a.Version)
+			srv.ExtrasOnly = true
+			if sp.Description != "" {
+				srv.OwnInstructions = sp.Description
+			}
+			extras := a.apiExtras(ctx, []APISpec{sp})
+			if len(extras) == 0 {
+				return fmt.Errorf("api %q produced no tools; `mcpx api tools` shows why", sp.Name)
+			}
+			srv = srv.WithExtras(extras)
+			return srv.ServeStdio(ctx, os.Stdin, os.Stdout)
+		}
+		return fmt.Errorf("no api named %q", fs.Arg(0))
 	}
-	return fmt.Errorf("no api subcommand %q; list, tools or call", sub)
+	return fmt.Errorf("no api subcommand %q; list, tools, call or serve", sub)
 }
 
 // apiTools exposes declared APIs through the MCP server.
@@ -199,6 +238,11 @@ func (a *App) apiTools(ctx context.Context) []mcpserver.Extra {
 	if err != nil || len(specs) == 0 {
 		return nil
 	}
+	return a.apiExtras(ctx, specs)
+}
+
+// apiExtras builds the MCP extras for these API declarations.
+func (a *App) apiExtras(ctx context.Context, specs []APISpec) []mcpserver.Extra {
 	var out []mcpserver.Extra
 	for _, s := range specs {
 		api, err := a.buildAPI(ctx, s)

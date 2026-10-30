@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dezren39/mcpx/internal/config"
@@ -58,7 +59,61 @@ func (a *App) augmentConfig(cfg *config.Config) error {
 	if err := a.augmentAdapters(cfg); err != nil {
 		return err
 	}
+	if err := a.augmentAPIs(cfg); err != nil {
+		return err
+	}
 	return a.augmentPlugins(cfg)
+}
+
+// augmentAPIs adds every declared API to cfg as a server of its own:
+// `mcpx api serve <name>`, under the API's name.
+//
+// That is the whole of making an OpenAPI-described service first-class
+// (#2118, split of #1875). Attached only as mcpserver extras, an API's
+// operations reached mcpx's own tools/list and nothing else -- not the
+// pool, so not `mcpx ls`, `types`, `search`, `catalog`, /v1 or the
+// generated client a script calls. As a server they get all of those by
+// the same path a configured server does, which is also where live
+// reload lives: a reload re-runs this, so an API declaration added to a
+// paths.apis file appears with the reload, exactly as an adapter does.
+func (a *App) augmentAPIs(cfg *config.Config) error {
+	specs, err := a.loadAPIs()
+	if err != nil || len(specs) == 0 {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("apis need mcpx's own path to serve them: %w", err)
+	}
+	// The child reads the same files whatever its working directory.
+	var files []string
+	for _, p := range splitPathList(a.Settings().String("paths.apis")) {
+		if p == "" {
+			continue
+		}
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			p = abs
+		}
+		files = append(files, p)
+	}
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = map[string]*config.Server{}
+	}
+	for _, s := range specs {
+		if s.Name == "" {
+			return fmt.Errorf("an api declaration in %s has no name; name it so it can be a namespace", strings.Join(files, ", "))
+		}
+		if _, dup := cfg.MCPServers[s.Name]; dup {
+			return fmt.Errorf("api %q has the same name as a configured server or adapter; rename one", s.Name)
+		}
+		cfg.MCPServers[s.Name] = &config.Server{
+			Name:    s.Name,
+			Command: self,
+			Args:    append([]string{"api", "serve", s.Name}, files...),
+			Mcpx:    &config.Extras{Description: s.Description},
+		}
+	}
+	return nil
 }
 
 // CmdPlugin inspects discovered plugins.
