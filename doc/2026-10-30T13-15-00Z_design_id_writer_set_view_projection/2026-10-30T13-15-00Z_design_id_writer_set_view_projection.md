@@ -992,7 +992,7 @@ enum Tier { Hot, Cold { expires_at: RetentionWindow } }
 ```
 
 Reasons: #2030's storage-exhaustion answer is exactly this, and it must be an *interface* here
-because the numbers are not this spec's to set. Two constraints from the code:
+because the numbers are not this spec's to set. Three constraints from the code:
 
 - **Expiry of uncounted events has no mechanism today.** Grep finds retention only for the
   waiting pool (`waiting.rs:24`, `expire` at `:353`) and auth expiry
@@ -1034,8 +1034,8 @@ are dependencies or active backlinks of surviving events", then repairs `events`
 That changes the shape of slice 6 in §9: the tiering work is not "invent retention", it is
 "give `prune_behind_cut` a policy that distinguishes counted from uncounted, and a caller". The
 reference-holding rule is already the function's stated contract; this spec only adds the
-counted/uncounted dimension to `cut`/`protected`. Recorded here so the implementation does not
-rebuild what exists.
+counted/uncounted dimension **and the configuration-input roots of the third constraint** to
+`cut`/`protected`. Recorded here so the implementation does not rebuild what exists.
 
 **Values deliberately absent.** Window lengths, per-topic and per-author MB caps, quota refusal
 codes and `Retry-After`-equivalent framing all belong to
