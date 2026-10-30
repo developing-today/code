@@ -177,3 +177,34 @@ func TestReadyReportsMissingInterpreter(t *testing.T) {
 		t.Fatalf("run hook on PATH should be ready, got %q", got)
 	}
 }
+
+// Codex P2 on PR #2840: a wildcard hook's subscription must exclude
+// hook.* events before buffering. While the wildcard hook is busy,
+// hook.failed events from other hooks otherwise fill its buffer,
+// inflate Stats.Dropped, and crowd out hookable events.
+func TestWildcardHookDoesNotBufferHookFailedEvents(t *testing.T) {
+	hs, err := hooks.Parse(`[{"name":"wild","on":"*","run":["sleep","1"],"timeoutMs":5000}]`, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(256)
+	r := hooks.NewRunner(bus, hs, nil)
+	r.Start()
+	defer r.Stop()
+	// One hookable event: the worker picks it up and blocks in sleep.
+	bus.Publish(events.Event{Kind: events.Progress})
+	time.Sleep(200 * time.Millisecond)
+	for i := 0; i < 300; i++ {
+		bus.Publish(events.Event{Kind: events.HookFailed})
+	}
+	// Give any (wrongly) buffered drops time to register, then check:
+	// none of the 300 hook.failed events may count against this hook.
+	time.Sleep(300 * time.Millisecond)
+	st := r.Stats()
+	if len(st) != 1 {
+		t.Fatalf("stats for the one hook, got %d", len(st))
+	}
+	if st[0].Dropped != 0 {
+		t.Fatalf("wildcard hook charged %d drops for hook.failed events it never subscribed to", st[0].Dropped)
+	}
+}

@@ -89,7 +89,7 @@ func (r *Runner) Start() {
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	r.subs = make([]*events.Subscription, 0, len(r.hooks))
 	for _, h := range r.hooks {
-		sub, _ := r.bus.Subscribe(h.Filter(), 0)
+		sub, _ := r.bus.Subscribe(h.SubFilter(), 0)
 		r.subs = append(r.subs, sub)
 		r.wg.Add(1)
 		go r.work(h, sub)

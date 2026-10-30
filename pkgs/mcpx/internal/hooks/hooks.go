@@ -82,6 +82,37 @@ func (h Hook) Filter() events.Filter {
 // Matches reports whether the hook fires on e.
 func (h Hook) Matches(e events.Event) bool { return h.Filter().Matches(e) }
 
+// SubFilter is the filter the runner subscribes with: Filter, with any
+// wildcard expanded to the hookable kinds, so the runner's own hook.*
+// events are excluded BEFORE the bus buffers them for this subscription
+// rather than only after dequeueing in work(). Buffered hook.failed
+// events from other hooks otherwise occupy a busy wildcard hook's
+// buffer, inflate its Stats.Dropped, and crowd out hookable events
+// (Codex P2 on PR #2840). Non-wildcard patterns cannot match a hook.*
+// kind — Parse's hookable check already rejects the ones that could —
+// so only the wildcard (and an empty On, which the bus treats as
+// match-all) needs expanding.
+func (h Hook) SubFilter() events.Filter {
+	f := h.Filter()
+	kinds := make([]string, 0, len(f.Kinds))
+	for _, k := range f.Kinds {
+		if k == "*" {
+			for _, hk := range HookableKinds() {
+				kinds = append(kinds, string(hk))
+			}
+			continue
+		}
+		kinds = append(kinds, k)
+	}
+	if len(kinds) == 0 {
+		for _, hk := range HookableKinds() {
+			kinds = append(kinds, string(hk))
+		}
+	}
+	f.Kinds = kinds
+	return f
+}
+
 // decl is the JSON shape of one entry in the `hooks` setting.
 type decl struct {
 	Name   string          `json:"name"`
