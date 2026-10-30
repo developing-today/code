@@ -656,6 +656,27 @@
       "note": "mdBook navigation index for the .#mcpx-docs book (#1939 Approach C); the generator reads it, it is not a chapter"
     },
     {
+      "path": "docs/testing.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 90,
+      "note": "the contributor test policy agents load (#1976): what to run, a test per bug, guards, flakes; states the sibling issues' decisions and links them"
+    },
+    {
+      "path": "docs/testing/inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 123,
+      "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
+    },
+    {
+      "path": "internal/AGENTS.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 20,
+      "note": "the nested agent instruction file (#1976): opencode attaches it when a file under internal/ is read, so contributors get the test rules without loading them for users; points at docs/testing.md"
+    },
+    {
       "path": "internal/mcpspec/schema/README.md",
       "chapter": null,
       "role": "not-compendium",

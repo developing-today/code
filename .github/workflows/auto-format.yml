@@ -31,7 +31,7 @@ permissions:
 # mid-commit.
 concurrency:
   group: auto-format-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   treefmt:
