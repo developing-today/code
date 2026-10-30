@@ -35,8 +35,9 @@ these, and each is checked against the substrate in §1:
 
 1. **Stored ≠ counted.** Storage accepts anything validly signed, attributed to its signer.
 2. **Counting is per view, decided by the view owner, and reversible.**
-3. **Every computed view names its inputs** — *(view config, writer-set version, frontier)* — so two people
-   comparing "the same number" can see whether they compared the same thing (§2.4).
+3. **Every computed view names its inputs** — *(view config, writer-set version, frontier,
+   resolution)* — so two people comparing "the same number" can see whether they compared the same
+   thing (§D2, §3.4).
 4. **Spam is made ineffective, not free.** The cost of uncounted data is paid in storage and
    retention policy (§5), never by quietly re-introducing an authority gate at ingest.
 5. **No silent history rewriting.** Set changes are signed, versioned, reviewable events.
@@ -258,24 +259,33 @@ therefore name a set version as `(set_id, seq, head_hash)` and anyone can verify
 ancestor of the head they hold — no new versioning machinery.
 
 **Rejected:** a mutable "current set" row. There is no mutation path in the substrate
-(`event_store/mod.rs:1-30`, append-only) and a mutable set would make §2.4's "which set version
+(`event_store/mod.rs:1-30`, append-only) and a mutable set would make §D2's "which set version
 produced this number" unanswerable.
 
 ### D3 — Entries are a union of three shapes
 
 ```rust
 enum Entry {
-    Key(AuthorKey),                    // 32-byte verifying key, explicit
-    Group { id: Hash, role_min: Role },// one-level reference into groups/
-    Public,                            // the everyone-sentinel
+    Key { author: AuthorKey, include_history: bool },       // 32-byte verifying key, explicit
+    Group { id: Hash, role_min: Role, include_history: bool }, // one-level reference into groups/
+    Public { include_history: bool },                       // the everyone-sentinel
 }
+
+// include_history is spelled on EVERY shape because §3.1 makes it per entry, and §4.1's
+// `expand_retro` restricts a version's expansion to the entries that carry it. Omitted, it is
+// false — the prospective default — so a config written before the flag existed means exactly
+// what it meant then.
 ```
 
 - **`Key`** matches `author_of(event)` directly (§1.1).
-- **`Group`** resolves through `membership::Members::members(group)`
-  ([`membership/layer.rs:287-289`](../../pkgs/id/src/membership/layer.rs)) and filters by
-  `role_min` against the ordered roles (`groups/mod.rs:64-75`). Resolution is **one level deep**
-  (D4).
+- **`Group`** resolves through frontier-aware expansion (§4.5), filtering by `role_min` against the
+  ordered roles (`groups/mod.rs:64-75`). Resolution is **one level deep** (D4). `include_history`
+  on a `Group` entry applies to every member that expansion yields at that frontier — which is why
+  it is a field on the entry and not a set-wide flag: a group with one flagged member and one
+  unflagged member is expressed as two `Group` entries, distinguished by `role_min` or by splitting
+  the group. That limitation is stated rather than hidden (§8, OQ-8).
+- **`include_history`** is per entry (§3.1), so importing one friend's backlog never imports
+  another's. `expand_retro(v)` (§4.1) is `expand(v)` narrowed to the flagged entries.
 - **`Public`** matches every author. It is deliberately a *distinct entry*, not "the absence of a
   set", so "this metric is public" is a signed, visible choice rather than a default that happens
   when someone forgets to configure anything.
@@ -301,7 +311,7 @@ entry, explicitly.
 **Pinning:** the set object records the frontier it was expanded at (the publishing event's
 `after`, ≤ `MAX_AFTER = 32`), so later group membership changes do **not** silently change an
 old set version. Re-expansion is a new set version. Without pinning, "set version 7" would mean
-different things on two devices, which breaks §2.4.
+different things on two devices, which breaks §D2's "which set version produced this number".
 
 ### D5 — `Public` is not `Join::Open`
 
@@ -385,27 +395,59 @@ gives the walker their answer by default; `rescind` gives me mine, as a signed a
 the set's version history instead of happening invisibly. It is a separate kind, not a flag on
 the set, so its authorship, position and reason are all auditable.
 
-### 3.4 Every computed view names *(view config, set version, frontier)*
+Because §4.1 clause 3 is a term in the predicate, its meaning has to be as precise as the rest:
 
-**Decision:** a projected result carries `{ view_id, config_seq, set_id, set_seq, set_head, frontier }`
-— never just a number. `(set_id, set_seq)` and `frontier` pin *who may count and over what claims*;
-`(view_id, config_seq)` pin *which view computed it*, because two views can share a writer-set
-version and a frontier and still disagree: `subject_scope`, `kind_scope` and `exceptions` are part
-of the view, and §4.4 lets one view count a stranger's claim the other does not. Without the view
-configuration in the provenance, two different totals would carry identical inputs and neither
-could be reproduced or told apart.
+```
+rescinded(S, c)  ⇔  ∃ r ∈ versions(S):                                   // r is a rescind version
+                      r.kind = idset.rescind
+                    ∧ r.target admits author(c)                          // entry-shaped target
+                    ∧ c ∈ causal_past(r)                                 // r saw the claim
+                    ∧ ( r.through is None ∨ c ∈ causal_past(r.through) ) // the optional bound
+                    ∧ r.from_version.seq ≤ S.set_seq
+```
 
-Reasons: a projection is a pure function of *(view configuration, set version, frontier)*. Naming
-only two thirds of the input tuple is what made an earlier draft's provenance insufficient — the
-missing third is the view's own scope and exception list, which changes rarely but *does* change
-without any writer-set event. `config_seq` is the owner's chain position of the latest
-view-configuration event, so it is immutable and comparable the same way `set_seq` is.
+Three things this pins down that the prose left open:
+
+- **It erases only claims `r` had actually seen.** A claim written *after* the rescind is untouched
+  by it, exactly as a removal does not stop claims it never saw (§3.2). Erasing those takes a later
+  rescind — a new signed act, not a silent widening.
+- **`through` bounds the erasure to claims in that event's causal past.** It is the "up to here"
+  form, so an owner can draw a line at a point rather than at a moment — the only option available
+  in a substrate with no timestamps in the envelope (§3.1).
+- **A rescind is a set version but not an admission version.** It can carry no `entries`, so
+  `expand(r)` and `expand_retro(r)` are both empty and §4.1's `admitted_at`/`retro` are unaffected by
+  its presence in `versions(S)`. Only clause 3 reads it. A rescind that tried to add an entry is
+  rejected at decode: the two kinds are separate for exactly this reason.
+
+### 3.4 Every computed view names *(view config, set version, frontier, resolution)*
+
+**Decision:** a projected result carries
+`{ view_id, config_seq, set_id, set_seq, set_head, frontier, resolution }` — never just a number.
+`(set_id, set_seq)` and `frontier` pin *who may count and over what claims*; `(view_id, config_seq)`
+pin *which view computed it*, because two views can share a writer-set version and a frontier and
+still disagree: `subject_scope`, `kind_scope` and `exceptions` are part of the view, and §4.4 lets
+one view count a stranger's claim the other does not. `resolution` names the fork-proof state
+`applied` was evaluated against (§4.6): `APPLIED` is rebuilt against every known fork proof on each
+`refresh` ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)), so a proof
+arriving later would otherwise silently change a saved total with no change to any named input.
+Without the view configuration in the provenance, two different totals would carry identical inputs
+and neither could be reproduced or told apart; without `resolution`, two *different* totals would
+carry identical provenance.
+
+Reasons: a projection is a pure function of *(view configuration, set version, frontier,
+resolution)*. Naming only part of that tuple is what made earlier drafts' provenance insufficient
+twice over: first the view's own scope and exception list was missing, which changes rarely but
+*does* change without any writer-set event; then the resolution state was missing, which changes
+with no act of the owner at all. `config_seq` is the owner's chain position of the latest
+view-configuration event, so it is immutable and comparable the same way `set_seq` is;
+`resolution` is identified by the set of fork proofs it contains, which is likewise immutable and
+hashable (§4.6).
 
 The frontier is the view's own `after` at evaluation
 ([`chain.rs:97-118`](../../pkgs/id/src/chain.rs)), and it is **not decorative**: §4.1's
 `past(view.frontier, claim)` clause makes the claim set closed under it, so re-evaluating the same
-*(set version, frontier)* pair always yields the same total. Pinning only the set version would
-leave the claim set open and the number irreproducible.
+*(set version, frontier, resolution)* triple always yields the same total. Pinning only the set
+version would leave the claim set open and the number irreproducible.
 
 The group layer already made the frontier part of this choice — `is_member_at`/`access_at_position` take an
 `after` and resolve at that position ([`membership/layer.rs:338-364`](../../pkgs/id/src/membership/layer.rs))
@@ -419,88 +461,136 @@ people who trust different sets.
 
 ### 4.1 Counted vs uncounted, computed per view
 
-**Decision:** a **view** is `{ view_id, owner, set: (set_id, set_seq), frontier, subject_scope, kind_scope, exceptions }`.
-Projection evaluates **the set version in force at each claim's own causal position**, and is
-closed under the view's evaluation frontier:
+**Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
+Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
+It is stated once, in full, because five review rounds showed that patching clauses one at a time
+keeps opening a hole somewhere else.
 
 ```
-past(F, claim)         ⇔  claim ∈ causal_past(F)        // closed: no claim after the frontier counts
-v_at(view, claim)      ⇔  max{ v : v ∈ versions(view.set_id), v.seq ≤ view.set_seq,
-                               v ∈ causal_past(claim) }    // the set version the claim's author
-                                                           // had already seen when writing it
-counted(view, claim)   ⇔  applied(claim)                            // 1. store-wide validity gate
-                       ∧  past(view.frontier, claim)                // 2. closed under the frontier
-                       ∧  ¬rescinded(view, claim)                   // 3. explicit rescind
-                       ∧  ( author_of(claim) ∈ expand(v_at(view, claim))   // 4. admission in force
-                            ∨ claim ∈ view.exceptions )                      // 5. one-off exception
-uncounted(view, claim) ⇔  applied(claim) ∧ ¬counted(view, claim)    // stored, attributed, no effect
+// ---- inputs, all immutable, all named in provenance (§3.4) -----------------
+//   C  = view config       (view_id, config_seq, scopes, exceptions)
+//   S  = set version       (set_id, set_seq)  — the selected writer-set version
+//   F  = claim frontier    — no claim after it is eligible
+//   R  = resolution state  — the fork-proof set that fixes applied()
+
+past(F, c)      ⇔  c ∈ causal_past(F)
+
+// versions(S) is NOT "every idset.writer event the store holds". It is the owner's
+// APPLIED PREFIX as of R: a linear sequence, because `chains` stores the applied
+// prefix and `forks` holds the conflicting headers outside it
+// (event_store/mod.rs:90-91). A forked set version is therefore not a version at all,
+// and `max` is a function rather than a set of ties.
+versions(S)     ⇔  the applied prefix of set_id's chain, truncated at S.set_seq, under R
+                    // if S.set_seq is NOT in that prefix, project() is undefined for this view:
+                    // the view's own set version is forked, so there is nothing to project.
+                    // Refusing is the answer; silently projecting the surviving branch would
+                    // attribute a total to an input the owner did not select.
+seen_by(S, c)   ⇔  max{ v ∈ versions(S) : v ∈ causal_past(c) }   // the version IN FORCE at c
+admitted_at(S, c)  ⇔  seen_by(S, c) is defined
+                        ∧ author(c) ∈ expand(seen_by(S, c))   // that version's expansion, not any
+retro(S, c)     ⇔  ∃ v ∈ versions(S):  c ∈ causal_past(v)         // v saw the claim
+                        ∧ author(c) ∈ expand_retro(v)     // only entries marked include_history
+in_scope(C, c)  ⇔  subject(c) ∈ C.subject_scope ∧ kind(c) ∈ C.kind_scope
+                    // exceptions are handled by clause 5, not inside in_scope,
+                    // so there is exactly one place they bypass anything
+
+// ---- the predicate ---------------------------------------------------------
+counted(C, S, F, R, c) ⇔
+      applied(R, c)                                  // 1. validity under the PINNED resolution
+   ∧  past(F, c)                                     // 2. closed under the claim frontier
+   ∧  ¬rescinded(S, c)                               // 3. explicit rescind
+   ∧  (
+        ( in_scope(C, c)
+          ∧ ( admitted_at(S, c) ∨ retro(S, c) )      // 4. admitted in force, or imported history
+        )
+        ∨ c ∈ C.exceptions                           // 5. one-off exception (validity still required)
+      )
+
+uncounted(...) ⇔ applied(R, c) ∧ ¬counted(...)        // stored, attributed, zero effect
 ```
 
-**`v_at` walks the claim's past, not the version's past** — the direction matters and an earlier
-draft of this section had it inverted. The question is "which set version had the claim's author
-seen when they wrote it", so the version must be inside `causal_past(claim)`
-(`v ∈ causal_past(claim)`), not the claim inside the version's past. Written the other way round,
-an ordinary prospective claim could never count: Alice admitted by v1 writes a claim, that claim
-is by definition *not* in v1's causal past, so `v_at` would be undefined and §4.1 would report
-every normal claim as uncounted until the owner happened to publish v2.
+Each clause exists because a review round proved its absence broke something:
 
-That inversion also explains the two legitimate edge cases, which are now distinct:
+1. **`applied(R, c)` — validity under a *pinned* resolution state.** An event at or above a fork
+   point never applies ([`event_store/resolve.rs:7-8`](../../pkgs/id/src/event_store/resolve.rs)),
+   and `R` is part of the input tuple, not the live store: `APPLIED` is rebuilt against **every**
+   known fork proof on each `refresh`
+   ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)), so a conflicting
+   header arriving *later* flips `applied` for an already-saved view. Evaluating against `R`
+   ("the resolution state as of the saved frontier") makes a historical total reproducible;
+   querying live validity is a separate, explicitly-named operation (§4.6). Exceptions do not
+   escape this gate either — they lift scope and the writer-set requirement, never validity.
+2. **`past(F, c)` — the claim set is closed.** Pinning the set version fixes *membership*; only
+   this fixes *which claims* are eligible. Without it, re-evaluating a saved view after new claims
+   arrive returns a different total.
+3. **`¬rescinded(S, c)`** — §3.3's explicit erasure, bounded by the selected set version.
+4. **`admitted_at` OR `retro`** — two distinct admission paths, and conflating them was the
+   round-2/round-3 error. Note the quantifiers differ and that is deliberate:
+   - **`admitted_at`** is the *prospective* path, and it takes the **`max`** version the author had
+     seen, not `∃`: a claim Alice writes after v1 admits her resolves to v1 → counted; a claim she
+     writes after v2 removes her resolves to v2 → not counted. Quantifying existentially here is
+     round 2's finding 7 — v1 stays in her causal past forever, so `∃ v` would keep granting her
+     *new* claims off one old admission. `max` is what makes removal prospective.
+   - **`retro`** is the *retrospective* path: a version whose causal past already contains the
+     claim, whose `expand_retro` admits the author. `expand_retro(v)` is `expand(v)` **restricted to
+     entries carrying `include_history: true`**, because §3.1 makes the flag *per entry*, not per
+     set: a friend added with the flag imports their backlog while a second friend added without it
+     correctly does not. Using plain `expand(v)` here would make one flagged entry import the
+     untagged backlog of every other member too.
+     Existential is correct **here**, because §3.2 says a claim counted under an earlier version
+     stays counted for later ones: a later removal must not un-import a backlog already brought in,
+     only `rescind` (§3.3) may. This is the only way a claim that predates any admission can count —
+     the promise §3.1 makes and that a prospective-only predicate could never keep.
+   - **`seen_by` draws from the *applied* prefix, not from every `idset.writer` event in the
+     store.** `chains` keeps each author's applied prefix and `forks` holds conflicting headers
+     outside it ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)), so the prefix
+     is linear and `max` is a function. Without that restriction a set chain that forked at some
+     `set_seq` would give two versions the same `seq`, `max` would be ambiguous, and §4.1 would stop
+     being a function of *(C, S, F, R)* at all — a forked, never-applied set version could admit an
+     author or satisfy `retro`. This is the same discipline clause 1 applies to claims, applied to
+     the set's own history.
+   - **If `S.set_seq` itself is not in the applied prefix under `R`, `project` is undefined.** The
+     owner selected a set version that a fork proof has since invalidated, so the view's own input is
+     gone; refusing is correct and silently substituting the surviving branch would report a total
+     against an input nobody chose. §4.6's `validity_now` is what tells the owner *why* — the same
+     split that keeps a saved total reproducible keeps an unresolvable one from being invented.
+   - `seen_by` is also bounded by `v.seq ≤ S.set_seq`, so a version the author has seen but the view
+     has **not** selected cannot govern. That is the same pinning as everywhere else: the view names
+     its set version, and `S` — not the author's newer knowledge — decides. §3.2's removal begins at
+     the selected version, which is exactly what "removal stops future counting" means for a view
+     that has not yet advanced.
+   - **`retro` is monotone, and clearing `include_history` later does not un-import.** Because the
+     disjunct is existential over the applied prefix, a later version that drops the flag leaves an
+     already-imported backlog counted. That is intended (§3.2: only `rescind` retracts), but it is
+     worth stating: the flag is an import switch, not a standing filter. An owner who wants the
+     import *undone* uses `rescind` (§3.3), which is visible in the set's version history.
+5. **`in_scope(C, c)`, with one exception path outside it.** A view scoped to one dog must not count
+   the other dog's walks even though the same author wrote both. `subject_scope` and `kind_scope`
+   were in the view configuration from the first draft but were never applied by the predicate
+   (round-4 finding 15); `kind_scope` alone filtered at retrieval, which is not the same thing and
+   did nothing for subjects. Round 5 removed that retrieval filter entirely, so both scopes are
+   decided in one place (§4.2). Exceptions are a **separate** disjunct and deliberately not folded into
+   `in_scope`: they must bypass scope *and* the writer-set requirement alike, and having one
+   bypass point instead of two is what keeps the two from drifting apart. Validity (clause 1) is
+   above both, so an exception still cannot count a fork-invalidated claim.
 
-- **`v_at` is undefined** — the claim predates every set version's existence (its author had seen
-  no set at all). It is **uncounted** by default: no admission was ever in force for it. This is
-  exactly what `include_history: true` exists to override (§3.1) — the version that adds the
-  author carries it, and the retrospective admission makes those older claims count. Prospective
-  and retrospective admission are the same mechanism viewed from two sides.
-- **`v_at` is defined** — some version was already visible to the author, and that version's
-  expansion decides. Removal later (§3.2) makes newer claims resolve to the *newer* version, which
-  is how "removal stops future counting" is expressed.
+**Candidate retrieval must match the predicate's reach, or the predicate never sees the claim.**
+This is the failure mode that produced findings 6, 11, 13 and 14: each round fixed a clause and left
+retrieval behind it. The predicate can count a claim through four routes — current admission (clause
+4's `admitted_at`, a subset of the historical union), historical admission (an author admitted by an
+earlier version and removed since), retrospective admission (clause 4's `retro`), and a named
+exception (clause 5) — and §4.2 specifies retrieval as exactly those sources and nothing narrower.
 
-Each clause answers a specific defect, and the order is load-bearing:
-
-1. **`applied` is the outermost gate.** §4.4's exceptions are a mechanism for counting a
-   *stranger's* claim without admitting their writer — they are **not** a way to override
-   store-wide validity. An event at or above a fork point never applies
-   ([`event_store/resolve.rs:7-8`](../../pkgs/id/src/event_store/resolve.rs)), so it cannot be
-   counted even by a named exception. The first draft put `∨ claim ∈ exceptions` outside this
-   gate, which would have let an exception resurrect a fork-invalidated claim.
-2. **`past(view.frontier, claim)` closes the view.** §3.4 says a result names *(set version,
-   frontier)* so two results can be compared. Without this clause a historical evaluation re-run
-   after a new claim arrived from an admitted writer would silently include it, and identical
-   inputs would produce different totals — defeating the reproducibility §3.4 exists to give.
-   Pinning the set version alone fixes *membership*, not the *claim set*; both must be pinned.
-3. **`v_at` is what makes removal prospective.** A claim counts only if the set version **in force
-   at that claim's causal position** admitted its author. This is the clause that gets §3.2 right
-   in both directions:
-   - Alice wrote a claim while v1 admitted her → `v_at(c) = v1`, v1 admits her → **counted**, under
-     v2 as well, until a `rescind`. (§3.2, abuse case 7, and review round 1 finding 3.)
-   - Alice writes a *new* claim after v2 removed her → `v_at(c) = v2`, v2 does not admit her →
-     **not counted**. (§3.2's "removal stops future counting".)
-
-   Both directions matter, and a test must assert both: round 1's fix restored the first and, by
-   testing only `∃ v. author ∈ expand(v)`, would have broken the second — a removed author's new
-   claims would have kept counting forever off one old admission.
-4. **`expand` is evaluated at that version's pinned frontier** (§4.5), never at head.
-5. **Exceptions are view-level and named**, one claim each (§4.4), not a writer-set change.
-
-**A claim the set has never seen counts for nothing.** If `v_at(view, claim)` is undefined — the
-claim is not in the causal past of any set version up to `view.set_seq` — the author clause is
-false and the claim is uncounted. That is the prospective-by-default rule of §3.1: until a set
-version has actually seen a claim, no admission can be said to have been in force for it.
-
-**Cost.** `v_at` is a lookup in the owner's own version history, which is a bounded, ordered
-prefix of one chain (§D2) and is cached per `(set_id, set_seq)`; `expand(v)` is cached per
-`(group, frontier)` and those entries are permanent because a frontier is immutable (§4.5). The
-per-claim work is then a membership test in a cached set, and the claim iteration is what §4.2's
-author index bounds. Nothing here is O(store).
-
-Note the two predicates use different bases and that is the point: `applied` is the store-wide
-membership resolution (§1.2), `counted` is the view's writer set. A claim can be `applied` and
-`uncounted` — that is the normal case for a stranger's claim.
+Note the two predicates use different bases and that is the point: `applied(R, ·)` is the
+store-wide membership resolution (§1.2) as of the pinned resolution state, `counted` is the view's
+writer set. A claim can be `applied` and `uncounted` — that is the normal case for a stranger's
+claim.
 
 ### 4.2 Cost is proportional to the writer set, not the store
 
-**Decision:** projection reads an **author-keyed event index** restricted to the expanded writer
-set, rather than scanning the store. The precedent for the *shape* is `TagIndex`'s author key; the
+**Decision:** projection reads an **author-keyed event index** restricted to the authors the
+selected set version admits — currently, historically or retroactively — plus the named exception
+IDs, rather than scanning the store. The precedent for the *shape* is `TagIndex`'s author key; the
 precedent for the *scope* is the `events` table's `author‖seq` ordering. Neither is sufficient as
 it stands (see "two gaps" below), so this slice is a **generic author-event index**, not a reuse
 of `TagIndex`.
@@ -539,26 +629,69 @@ mistake:**
    the O(store) scan on every render.
 
 **Decision (corrected):** the index this spec specifies is `AuthorEvents: (author, seq) →
-(event_id, kind, subject?)`, built by ranging the existing `events` table per author in the
-writer set and filtering by `kind_scope`. It is generic over kind, so it serves `tag.*`,
+(event_id, kind, subject?)`, built by ranging the existing `events` table per author over that
+historical writer union, recording `kind` but filtering on none. It is generic over kind, so it serves `tag.*`,
 `didit.*` and any future kind; it is persisted and incrementally maintained; and where a
 kind-specific projection (tags → `TagIndex.by_author`) is cheaper, that becomes an *adapter on
 top* of it rather than the only source. The tracker consequently reads real `didit.record`
 events, which is the test slice 7 exists to prove.
 
-**Exception claims are fetched by ID, not by author range.** §4.4 lets an owner name a
-*stranger's* claim as a one-off exception, and the whole point is that the stranger is **not** in
-the writer set — so an author-range-only query would never retrieve the claim the exception is
-about, and the exception could never fire. §4.2's candidate retrieval is therefore two queries:
-the author-range scan over the expanded writer set, **plus** a direct `event_by_id` lookup for each
-`view.exceptions` entry ([`event_store/mod.rs:488`](../../pkgs/id/src/event_store/mod.rs)), which
-is O(log n) per exception and O(|exceptions|) in total. Exceptions are an owner-authored, bounded
-list, so this is a small constant term — but it must be *specified*, because "touch only
-writer-set authors" read literally would silently disable the feature.
+**Candidate retrieval is three queries covering four admission routes, and it must match the
+predicate's reach.** §4.1 can count a claim through current admission (a subset of historical),
+historical admission, retrospective admission and a named exception:
 
-The cost claim and its test are therefore precise: **candidate retrieval may read only writer-set
-author ranges plus the named exception IDs**, and slice 3's test asserts exactly that — not merely
-the answer, and not a blanket "only writer-set authors" that forbids exceptions.
+1. **Author ranges of every author *historically* admitted up to the selected version** — the union
+   of `expand(v)` over `v.seq ≤ S.set_seq`, not the current expansion alone. A removed author's
+   earlier claims stay counted (§3.2, clause 4's `admitted_at`), so their ranges must still be
+   scanned or the predicate can never preserve them. This is the correction for round-4 finding 13,
+   and it is strictly larger than the set in force today.
+2. **Past claims of a retro-admitting version** (`include_history: true`, §3.1). Those claims are by
+   definition older than the version that admits them and may be authored by someone no version
+   *prospectively* admitted, so they are reachable only through source 1's historical ranges — plus,
+   for a claim that predates every version, through the version's own causal past. This is round-4
+   finding 14: without it `include_history` cannot work at all, because the predicate had no
+   retrospective branch and retrieval had nothing to feed one.
+3. **Exception IDs looked up directly.** §4.4 lets an owner name a *stranger's* claim, and the whole
+   point is that the stranger is **not** in the writer set — so neither author scan would return the
+   claim and the exception could never fire. Each `view.exceptions` entry is fetched by ID
+   ([`event_store/mod.rs:488`](../../pkgs/id/src/event_store/mod.rs)): O(log n) each, O(|exceptions|)
+   in total, a bounded owner-authored list.
+
+**Neither scope is applied at retrieval.** `in_scope` (§4.1 clause 5) owns that decision, and
+applying it a second time in the query is how the two drift apart. This is a correction to an
+earlier draft, which had `kind_scope` narrowing the index *and* `in_scope` filtering again: a
+claim of the wrong kind would then never be a candidate, so `OutOfScope(kind)` could never fire and
+the uncounted side would silently lose every claim the owner filtered out — the exact "uncounted
+must not be a bin" failure §5.1 exists to prevent. The index stores `kind` so the predicate can
+test it cheaply; it does not filter on it.
+
+That leaves the cost claim honest: the index holds rows the predicate may reject, and the rejection
+is a per-row test, not a per-row decode — which is what makes the cost proportional to writer-set
+rows rather than to store size.
+
+The cost claim and its test are therefore precise: **candidate retrieval may read only the
+historical writer-set author ranges, the retro-admitting versions' past claims, and the named
+exception IDs.** Slice 3's test asserts exactly that tuple — not merely the answer, not a blanket
+"only current writer-set authors" that loses removed authors' history, and not a set so tight that
+exceptions or `include_history` are unreachable.
+
+**The cost is O(historically admitted authors × their rows), which is larger than O(current
+writers)** and the difference is stated rather than hidden. The bound is still *set-history-shaped*,
+not store-shaped: an author enters the union only by a signed set version, removal does not shrink
+it, and an owner who wants the set to shrink that far uses `rescind` (§3.3) — which §4.1 clause 3
+honours, so rescinded claims drop out of the *count* even though their ranges are still scanned.
+The alternative, scanning current writers only, is precisely what made removed authors' history
+vanish (finding 13); trading a bounded, owner-controlled growth for correct totals is the right
+side of that trade, and §6's `Tier` policy is where a very long set history would be paged.
+
+**One entry shape breaks that bound, and it is stated rather than glossed.** `Entry::Public`
+(§D3/D5) admits *every* author, so the historical author union is every author — source 1 becomes a
+store-shaped scan and "cost ∝ writer set, not the store" stops being true for that configuration.
+Pagination and the `AuthorEvents` index keep it *linear in rows* rather than quadratic, and the
+index is persisted so it is a scan of indexed rows, not a decode of every event; but the asymptotic
+claim in this section is about keyed and group entries, and a `Public` view is the case OQ-1 asks
+whether that should back a *metric* at all. §7 row 2's compute verdict is quoted against a keyed set for
+the same reason.
 
 ### 4.3 Counted and uncounted are strictly separated in the type system
 
@@ -571,8 +704,35 @@ never displayed from claim-supplied data*. Making it two Rust types means a UI c
 uncounted claim inside the counted collection without a deliberate conversion — the invariant
 survives contact with a careless template.
 
-`WhyNotCounted` is a closed enum: `AuthorNotInSet`, `RescindedSince(version)`,
-`ScopeMismatch(subject|kind)`. A free-text reason would drift.
+`WhyNotCounted` is a closed enum, one variant per clause of §4.1 that can fail *after* `applied`
+succeeded:
+
+```rust
+enum WhyNotCounted {
+    AfterFrontier,                    // clause 2 — written after the view's frontier
+    RescindedSince(SetSeq),           // clause 3 — the rescind version that erased it
+    AuthorRemoved(SetSeq),            // clause 4 — seen_by saw this version, which removed them
+    BackupNotImported,                // clause 4 — predates every version, and no version that
+                                      //            admits the author carries include_history
+    OutOfScope(ScopeMismatch),        // clause 5 — subject or kind
+}
+```
+
+The set is **exactly the failure modes reachable through §4.2's retrieval**, which is why there is
+no `AuthorNotInSet`: an author no version ever admitted is in no historical author range, so their
+claims are never candidates and can never appear in either collection. A variant for that case
+would be an arm a test can never reach. The two clause-4 reasons that *are* reachable stay
+distinct because the user-facing messages differ — "you removed them" (where §3.2's `rescind`
+affordance belongs) is not "you never imported this" (where `include_history` belongs).
+
+A free-text reason would drift, and collapsing these into one code would erase an affordance.
+
+**A fork-invalidated claim is in neither collection**, and that is deliberate: `applied(R, c)` is
+the outermost gate, so such a claim is not `uncounted` — it is *not in force* (§1.2). Folding it
+into `uncounted` would make an enum whose members all explain a counting decision also carry a
+validity verdict, which is the counted/uncounted blurring this section exists to prevent. It is
+reported by `validity_now` (§4.6) instead, which is also the only place a *previously counted* claim
+can be flagged after a later fork proof.
 
 ### 4.4 Exceptions are view-level and separate from set changes
 
@@ -582,6 +742,25 @@ view level (a `view.exception` event). It never edits the writer set.
 Reasons: #2030 draws the line explicitly — *count this claim* and *add this writer* are different
 actions and collapsing them is how writer sets quietly bloat. Keeping them as separate kinds is
 the code-level expression of that paragraph.
+
+An exception is a **disjunct inside** §4.1's predicate, not a bypass of it: it lifts clause 5's
+scope and clause 4's admission, and nothing else. It cannot count a claim after the frontier
+(clause 2), a rescinded claim (clause 3), or a claim that does not apply under the pinned
+resolution (clause 1). It also cannot *hide* the claim it counts: exceptions are per view, so the claim is still
+uncounted — and still listed — for the owner's *other* views that admit its author, and for any
+view of anyone else who has that author in their set. What it cannot do is make a stranger's claim
+visible to a third party for whom the claim is neither admitted nor excepted: §4.2 never fetches it
+there, and no mechanism in this spec should (that would be the ambient leak §5.3 forbids).
+
+`view.exception` is a **view-configuration event**: it advances `config_seq` (§3.4), because
+§4.1's input tuple contains `exceptions` and provenance is only meaningful if every change to `C`
+moves the pin. Recording it as a config event rather than as a loose side-table row is what makes
+"these two totals had the same provenance" a true statement.
+
+An exception for a claim that does **not exist** locally is kept and simply does not fire — the
+view stores the hash, the lookup misses, and the result is identical to not having it yet. That is
+the same forward-reference behaviour set versions already have, and it means the owner can name a
+claim before it syncs without the exception silently vanishing.
 
 ---
 
@@ -604,6 +783,43 @@ historical replay over the group's causal past instead of one snapshot read. For
 group entries this is *g* replays, cached against `(group, frontier)` — the frontier is immutable,
 so every cache entry is permanent. `members(group)` remains correct for *current-state* questions
 (e.g. "who is in this group right now"), and the spec uses it only for those.
+
+### 4.6 Live validity is a separate, explicitly-named query
+
+**Decision:** the pinned evaluation of §4.1 and a *live* validity check are two different operations
+with two different names, and `Projection` says which one produced it.
+
+- `project(view, R)` — §4.1. `R` is the resolution state **as of the view's saved frontier**, so
+  the total is reproducible. This is what a stored, comparable result means.
+- `validity_now(event_id) -> Applies | Forked | Unknown` — evaluates `applied` against the **current**
+  resolution state, and returns a per-event answer rather than a total.
+
+Reasons: `applied` is not a fixed property of an event. `refresh` rebuilds `APPLIED` against **every**
+fork proof the store knows ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)),
+and an event at or above a fork point never applies
+([`event_store/resolve.rs:7-8`](../../pkgs/id/src/event_store/resolve.rs)). So a fork proof that
+arrives *after* a view was computed flips `applied` for claims the view already counted. Two
+consequences, and conflating them was round-4 finding 16:
+
+1. **The saved total must not change.** If it did, §3.4's provenance would name inputs that no longer
+   reproduce the output, which is the failure provenance exists to prevent. `R` is therefore part of
+   the input tuple and §3.4's provenance carries its identifier.
+2. **The reader must still be able to learn that a counted claim is now forked.** Silently serving a
+   stale number would be the "projection lie" §3.2 forbids; recomputing the number silently would
+   break comparability. The answer is to keep the total pinned and expose the divergence as its own
+   query: the UI can mark "3 of these 40 are no longer valid" and the owner can decide to advance the
+   view's frontier, which recomputes under a new `R` and produces a *new* provenance — an explicit
+   act, not a silent rewrite.
+
+`Unknown` is a third answer, not a synonym for `Forked`: for a claim whose resolution cannot be
+determined from the local store (a proof not yet synced), reporting `Forked` would let a missing
+sync masquerade as a proven conflict. §1.2 is explicit that `applied` separates *present* from *in
+force*; `Unknown` is the honest answer for "present, and neither yet".
+
+The two answer spaces stay deliberately distinct. `WhyNotCounted` (§4.3) explains why a claim never
+entered a total; `validity_now` reports on a claim that *may already be* in a total. Merging them
+would put a "counted, but no longer valid" case into an enum whose members all mean "not counted",
+which is exactly the counted/uncounted blurring §4.3 exists to prevent.
 
 ## 5. Discovery query, and how it stays readable under flood
 
@@ -728,13 +944,13 @@ Each case gets: the mechanism in this spec, or an explicitly accepted residual r
 
 | # | Case | Mechanism here | Verdict |
 |---|---|---|---|
-| 1 | **Montana stranger** claims they walked my dog | Signed claim is `applied` (content always applies, `resolve.rs:1-20`) and stored; `counted()` is false because `author_of ∉ expand(set)` (§4.1); discovery shows it attributed (§5.1). Owner may ignore, `view.exception` it, or add the writer (§4.4). | **✅ wholly answered** |
-| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1). Compute: projection is author-indexed, so cost ∝ writer set, not flood (§4.2). Readability: bounded, cursor-paginated discovery with an honest `total_authors`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
+| 1 | **Montana stranger** claims they walked my dog | Signed claim is `applied` (content always applies, `resolve.rs:1-20`) and stored; `counted()` is false because no version in the set's applied prefix ever admitted them, so `admitted_at` and `retro` are both false (§4.1) — *not* because they are absent from the current snapshot, which was finding 3. Discovery still shows the claim where its author is otherwise known (§5.1); a view that neither admits nor names them does not retrieve it at all, and that is deliberate (§5.3). Owner may ignore, `view.exception` it, or add the writer (§4.4). | **✅ wholly answered** |
+| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1) — no version admitted those authors, so they are not even candidates. Compute: projection is author-indexed, so cost ∝ writer-set rows, not flood volume (§4.2) — true for keyed/group sets; a `Public` set is the stated exception. Readability: bounded, cursor-paginated discovery with an honest `total_authors`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
 | 3 | **Storage exhaustion** against a relay | Validity is not a storage entitlement: `Tier::Cold { expires_at }` (§6) plus #2032's per-IP/per-ID/per-topic MB windows. Reference-holding rule (§6) prevents expiry stranding hot dependents. | **⚠️ holds only with #2032 budgets in place — this is the model's real weak point, stated not buried** |
 | 4 | **Confusion attack** — spam crafted to look counted | `Projection.counted` and `.uncounted` are different types (§4.3); counted status is computed from the set, never read from the claim; every uncounted hit renders author + `WhyNotCounted`. | **✅ if the type split and the render rule hold** |
-| 5 | **Writer-set poisoning** — I'm talked into adding an attacker | Set changes are signed `idset.writer` versions (§D1/D2), so the version history is a reviewable list ("your set changed 3× this week"); `rescind` exists (§3.3); per-entry scoping (`Entry::Group{role_min}`, §D3) bounds blast radius. | **⚠️ accepted residual: the model makes an owner decision visible and reversible; it cannot make it wisely** |
+| 5 | **Writer-set poisoning** — I'm talked into adding an attacker | Set changes are signed `idset.writer` versions (§D1/D2), so the version history is a reviewable list ("your set changed 3× this week"); `rescind` exists (§3.3); per-entry scoping (`Entry::Group{role_min, ..}`, §D3) bounds blast radius. | **⚠️ accepted residual: the model makes an owner decision visible and reversible; it cannot make it wisely** |
 | 6 | **Group-reference capture** — a group admin adds a spammer | `Excludes` entries win over group admissions without leaving the group (§D6); group expansion is one level (§D4) so capture does not cascade; the set version names the frontier it was expanded at (§D4), so a later add is a *new version*, not a silent change. | **✅ answered — this is the mechanism the issue's point 1 asks for** |
-| 7 | **Removed writer disputes history** — "my past walks must still count" / "must be erased" | Claims written while the author was admitted stay counted via `v_at` (§4.1), so past walks keep counting; claims written **after** removal do not, so removal is prospective; `rescind` (§3.3) is the owner's explicit erasure, itself a visible version; the walker's stored claims remain their evidence because removal deletes nothing (`resolve.rs:1-20`, "content is kept on removal"). | **✅ both directions answered without silent rewrite — the interval form is what makes both true at once** |
+| 7 | **Removed writer disputes history** — "my past walks must still count" / "must be erased" | Claims written while the author was admitted stay counted via clause 4's `admitted_at` (§4.1), so past walks keep counting; claims written **after** removal do not, so removal is prospective; `rescind` (§3.3) is the owner's explicit erasure, itself a visible version; the walker's stored claims remain their evidence because removal deletes nothing (`resolve.rs:1-20`, "content is kept on removal"). | **✅ both directions answered without silent rewrite — the interval form is what makes both true at once** |
 
 ---
 
@@ -778,6 +994,14 @@ These are routed, not defaulted. Each names why it is not this spec's to answer.
    it belongs with the abuse controls (#2032/#2033), and it needs a decision on whether clustering
    is a *server* signal (which the viewer may not trust) or a *client* heuristic (which the server
    cannot force). **→ #2032 / #2033, with #2028 for where the signal lives.**
+8. **OQ-8 — How does `include_history` apply to a group entry with mixed intent?** §3.1 makes the
+   flag per entry (§D3), and a `Group` entry expands to many authors at a pinned frontier, so the
+   flag cannot distinguish "import Alice's backlog, not Bob's" when both arrive through the same
+   group. Two entries with different `role_min` work only if the group separates them by role;
+   otherwise the owner must split the group or accept all-or-nothing. Whether writer sets should
+   instead carry per-*author* overrides for group-expanded members — which reintroduces exactly the
+   key list a group entry exists to avoid — is a modelling choice that belongs with the view
+   ownership questions. **→ #2028.**
 
 ---
 
@@ -787,29 +1011,57 @@ Sequenced so no slice enables a counting path before the set object and its vers
 Each is independently reviewable and small enough to land alone.
 
 1. **`idset` schema types + canonical body encoding + `chain::sign`/`decode` round-trip tests.**
-   `WriterSet`, `Entry`, `Excludes`, `Rescind`, with golden-header tests in the style of
-   `chain.rs:733-852`. Library only; no projection yet.
-2. **`expand(set_version) -> BTreeSet<AuthorKey>`** — frontier-aware via
+   `WriterSet`, `Entry` (all three shapes, each carrying `include_history`, §D3), `Excludes`,
+   `Rescind`, with golden-header tests in the style of `chain.rs:733-852`. Library only; no
+   projection yet. A decode test asserts an entry written before the flag existed decodes as
+   `include_history: false` — the prospective default — rather than failing.
+2. **`expand(set_version) -> BTreeSet<AuthorKey>`**, plus **`expand_retro(set_version)`** — the
+   same expansion narrowed to entries carrying `include_history` (§3.1), because §4.1's `retro` is
+   per entry and one flagged friend must not import another's backlog. Frontier-aware via
    `is_member_at`/`access_at_position` (**not** `members(group)`, §4.5), one-level flattening and
-   `role_min` filtering (§D3/D4). Property test: expansion is order-independent, frontier-pinned,
-   and **unchanged by a later group-membership event** (the reproducibility guarantee).
+   `role_min` filtering (§D3/D4). Property tests: expansion is order-independent, frontier-pinned,
+   **unchanged by a later group-membership event** (the reproducibility guarantee), and
+   `expand_retro(v) ⊆ expand(v)`.
 3. **`AuthorEvents` index** — kind-generic `(author, seq) → (event_id, kind, subject?)`, persisted
-   and incremental, built by ranging the `events` table per writer (§4.2). Test asserts a view
-   query touches only writer-set authors (the cost claim, not just the answer) **and that
-   non-tag kinds are indexed** — a `didit.record` must come back, which is where `TagIndex` fails.
+   and incremental, built by ranging the `events` table per writer (§4.2). Tests, keyed to §4.2's
+   three queries:
+   - a view query touches **only** the historical writer-set author ranges, the retro-admitting
+     versions' past claims and the named exception IDs (the cost claim, not just the answer);
+   - **non-tag kinds are indexed** — a `didit.record` must come back, which is where `TagIndex` fails;
+   - a **removed** author's earlier claims are still retrieved (their range stays in the historical
+     union), which is retrieval's half of §3.2 — the predicate cannot preserve them if they never
+     reach it.
 4. **`Projection` + `WhyNotCounted` + `UncountedHit` types and the `counted`/`uncounted` split**
-   (§4.1–4.3). Six tests, one per clause of §4.1's predicate — each corresponds to a defect a
-   review round actually found:
+   (§4.1–4.3), plus the separate `validity_now` query (§4.6). Tests below are keyed to specific
+   defects review rounds actually found — clauses 1–5 of §4.1 and the retrieval rules of §4.2:
    - a stranger's `applied` claim is `uncounted`;
    - a claim counted under set v1 **stays** counted under v2 after its author is removed;
    - a **new** claim from a removed author, written after v2, is **not** counted (the interval
-     semantics — this is the one that catches "old admission keeps counting forever");
-   - a fork-invalidated claim is `uncounted` **even when named in `view.exceptions`** (`applied`
-     is the outermost gate);
-   - re-evaluating the same `(view config, set version, frontier)` after new claims arrive
-     returns the **identical** total (frontier closure);
+     semantics — clause 4's `admitted_at`);
+   - a claim that **predates every set version** is uncounted by default, and **counted** once a
+     version admits its author with `include_history: true` (clause 4's `retro` — the branch whose
+     absence made the flag unimplementable);
+   - a claim outside `subject_scope` **or** outside `kind_scope` is uncounted for that view but
+     **still visible on the uncounted side**, while the same author's in-scope claim counts
+     (clause 5 — scope is the predicate's job, not the retrieval filter's; the kind half is what
+     catches the double-filter of finding 19, since a retrieval-side kind filter would make this
+     claim unretrievable and the test would fail on the missing row rather than on the reason);
+   - a fork-invalidated claim is **not counted even when named in `view.exceptions`** (`applied` is
+     the outermost gate), and it appears in **neither** collection — `validity_now` reports it
+     (§4.3), so no enum has to say "uncounted because invalid";
+   - re-evaluating the same `(view config, set version, frontier, resolution)` after new claims
+     arrive returns the **identical** total (frontier closure);
+   - a **later-arriving fork proof** leaves a saved `project(view, R)` total unchanged and flips
+     `validity_now` for the affected events — the pinned/live split of §4.6, so neither the stale
+     total nor the silent rewrite happens;
    - a named exception for a **stranger's** claim is retrieved by ID and counted, even though the
-     stranger is absent from the writer set and from the author-range scan.
+     stranger is absent from the writer set and from the author-range scan;
+   - a **rescind** version erases the claims it saw and leaves later ones alone (§3.3), and a
+     rescind's own presence in `versions(S)` changes nothing about `admitted_at`/`retro` because it
+     carries no entries;
+   - a **forked set version** is not a version: a set chain forked at `set_seq` does not make
+     `seen_by` ambiguous, and a never-applied `idset.writer` cannot admit an author (finding 17 —
+     the set-side counterpart of the fork test above).
 5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
    labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
    **10k distinct keys → 10k clusters, one bounded page, honest `total_authors`** (the one that
@@ -838,7 +1090,7 @@ nothing.
 |---|---|---|
 | 1 | `include_history` was defined as claims **not** in the set version's causal past — the exact inverse of what the option promises. | **Fixed.** §3.1 now says the flag counts claims **in** the past, in addition to everything prospective; the default (no flag) is the future-only set. |
 | 2 | `Excludes(Public)` was described as "everyone except these", but with exclusions winning it produces an **empty** set. | **Fixed.** §D6 now states `entries=[Public], excludes=[Public]` means "count nobody", and the moderated feed is `entries=[Public], excludes=[Key…]` — two configs one entry apart, spelled out. |
-| 3 | Projection tested membership only in the *current* set snapshot, so removing an author un-counted their whole history — contradicting §3.2 and abuse case 7. | **Fixed, and it was the most serious.** §4.1's predicate is now admission-history-aware (`∨ admitted(view, claim)` over the set's version prefix), with a test for it in slice 4. |
+| 3 | Projection tested membership only in the *current* set snapshot, so removing an author un-counted their whole history — contradicting §3.2 and abuse case 7. | **Fixed, and it was the most serious.** §4.1's predicate became admission-history-aware (`∨ admitted(view, claim)` over the set's version prefix, in the round-1 form), with a test for it in slice 4. Rounds 2–4 refined that into `seen_by`/`admitted_at`; the requirement it introduced — retrieval must reach removed authors' claims — was only completed in round 4 (finding 13). |
 | 4 | Group expansion prescribed `Members::members(group)`, a **current-state** query, so a later group change would alter an unchanged set version's expansion. | **Fixed.** New §4.5 requires frontier-aware `is_member_at`/`access_at_position`, states the replay cost honestly, and keeps `members(group)` for current-state questions only. |
 | 5 | Author-grouping was claimed to answer a 10k-**key** flood, but 10k distinct keys yield 10k clusters. | **Fixed by narrowing the claim.** §5.1 now scopes grouping to single-key floods, specifies bounded cursor pagination with an honest `total_authors`, and **retains the multi-key flood as an explicitly unsolved risk** routed to OQ-7 / #2032-#2033. The abuse-case table's row 2 verdict was downgraded accordingly. |
 | 6 | `TagIndex` covers tags only, so the did-it tracker's `didit.record` events would project to nothing. | **Fixed.** §4.2 now specifies a kind-generic `AuthorEvents` index built by ranging `events` per author, with `TagIndex` demoted to a tag-specific adapter on top; slice 3's test asserts a `didit.record` comes back. |
@@ -847,9 +1099,14 @@ nothing.
 the round-1 fix**, all accepted and fixed. Recorded because they are instructive: the round-1
 patch to §4.1 traded one bug for another.
 
+The round 2 and round 3 rows below describe the predicate **as it stood in that round** (`v_at`,
+`∨ admitted(view, claim)`). Round 4 replaced §4.1's formulation wholesale with `admitted_at`/`retro`
+rather than patching it again; the history is kept because it is why the final form is a single
+statement instead of a stack of clauses.
+
 | # | Finding | Disposition |
 |---|---|---|
-| 7 | The round-1 `∃ v. author ∈ expand(v)` form admitted a removed author's **new** claims indefinitely — one old admission kept granting future counting, contradicting §3.2. | **Fixed.** §4.1 now resolves `v_at(view, claim)` — the set version in force **at the claim's own causal position** — instead of existential quantification over all versions. That gets both directions right: old claims stay, new ones stop. |
+| 7 | The round-1 `∃ v. author ∈ expand(v)` form admitted a removed author's **new** claims indefinitely — one old admission kept granting future counting, contradicting §3.2. | **Fixed.** §4.1 was rewritten to resolve `v_at(view, claim)` — the set version in force **at the claim's own causal position** — instead of existential quantification over all versions. That got both directions right: old claims stay, new ones stop. Round 4 restated the same intent as `admitted_at`. |
 | 8 | `∨ claim ∈ exceptions` sat **outside** the `applied` gate, so an exception could count a fork-invalidated claim. | **Fixed.** `applied` is now the outermost conjunct; exceptions can lift the *writer-set* requirement for one claim, never store-wide validity. |
 | 9 | The predicate had no claim-frontier restriction, so re-evaluating a saved `(set version, frontier)` after new claims arrived returned a different total. | **Fixed.** Added `past(view.frontier, claim)`. Pinning the set version fixes membership only; §3.4's `frontier` must also bound the claim set or the pair is not reproducible. §3.4 now says so explicitly. |
 
@@ -858,16 +1115,62 @@ That the spec took three rounds is the honest record of what a projection predic
 
 | # | Finding | Disposition |
 |---|---|---|
-| 10 | `v_at` tested `claim ∈ causal_past(v)` — the causal relation in the **wrong direction** — so an ordinary prospective claim (written *after* the admitting version, therefore not in its past) resolved to `v_at = undefined` and was reported uncounted. | **Fixed.** Inverted to `v ∈ causal_past(claim)`: the set version the author had already seen when writing. §4.1 now also explains the two edge cases this distinguishes — undefined `v_at` = predates every set, uncounted by default and exactly what `include_history` overrides; defined `v_at` = that version's expansion decides. |
+| 10 | `v_at` tested `claim ∈ causal_past(v)` — the causal relation in the **wrong direction** — so an ordinary prospective claim (written *after* the admitting version, therefore not in its past) resolved to `v_at = undefined` and was reported uncounted. | **Fixed.** Inverted to `v ∈ causal_past(claim)`: the set version the author had already seen when writing. §4.1 also explained the two edge cases this distinguishes — `v_at` undefined = predates every set, uncounted by default; defined = that version's expansion decides. Round 4's `admitted_at` keeps the inversion and adds an explicit `retro` branch, so "predates every set but is covered by `include_history`" is a counted case rather than an undefined one. |
 | 11 | Exceptions are deliberately for **strangers**, but candidate retrieval was restricted to writer-set author ranges — so the excepted claim was never fetched and the exception could never fire. | **Fixed.** §4.2 now specifies two retrieval paths: author-range scan over the expanded set **plus** a direct `event_by_id` lookup per `view.exceptions` entry (O(log n) each, bounded by the owner's list). The cost test was restated to permit them rather than forbid the feature. |
-| 12 | Provenance named only *(set version, frontier)*, so two views differing in `subject_scope`/`kind_scope`/`exceptions` could produce different totals under identical provenance. | **Fixed.** §3.4's provenance is now `(view_id, config_seq, set_id, set_seq, set_head, frontier)` — a projection is a pure function of *(view config, set version, frontier)* and all three are named. |
+| 12 | Provenance named only *(set version, frontier)*, so two views differing in `subject_scope`/`kind_scope`/`exceptions` could produce different totals under identical provenance. | **Fixed.** §3.4's provenance became `(view_id, config_seq, set_id, set_seq, set_head, frontier)` in the round-3 fix, making a projection a pure function of *(view config, set version, frontier)*. Round 4 added `resolution` (finding 16) and round 5 established that `view.exception` must advance `config_seq` or the `C` half of the pin is asserted rather than enforced. |
+
+**Review round 4** (Codex, on the round-3 fix commit) found that **retrieval and the predicate had
+drifted apart in three places, and that one input was missing from provenance entirely**. All four
+accepted. This is the round that ended the clause-by-clause patching: §4.1 is now stated once, in
+full, over a named input tuple.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 13 | Candidate retrieval scanned only the **current** expansion, so a removed author's earlier claims — which §3.2 and `admitted_at` say stay counted — were never fetched, and the predicate could not preserve what it never saw. | **Fixed.** §4.2's source 1 is now the **union of `expand(v)` over `v.seq ≤ S.set_seq`**, i.e. every author *historically* admitted. Slice 3 gained a test that a removed author's earlier claims are still retrieved. |
+| 14 | The predicate had **no retrospective-admission branch at all**, so `include_history: true` (§3.1) could not work: a claim predating every set version resolved to "no admission in force" and stayed uncounted no matter what the set said. | **Fixed.** §4.1 now has two explicit paths, `admitted_at` (prospective, at the version the author had seen) and `retro` (a version with `include_history` whose causal past contains the claim and whose expansion admits the author). §4.2 source 2 makes those claims reachable. Slice 4 tests both directions. |
+| 15 | **`subject_scope` was never applied.** It was in the view configuration from the first draft, but only `kind_scope` filtered anything, at retrieval — so a view scoped to one dog counted the other dog's walks from the same author. | **Fixed.** §4.1's clause 5 `in_scope` applies **both** scopes to every candidate. Round 5 found the half-fix left `kind_scope` applied *twice* (index and predicate), which made `OutOfScope(kind)` unreachable and hid filtered claims from the uncounted side; §4.2 now applies neither scope at retrieval. |
+| 16 | **Resolution state was not in the provenance tuple.** `APPLIED` is rebuilt against every known fork proof on each `refresh` ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)), so a fork proof arriving later flips `applied` and silently changes a saved total while `(view config, set version, frontier)` still names the same inputs. | **Fixed.** `resolution` is now an input to `counted` (§4.1) and part of §3.4's provenance, and the new §4.6 separates the pinned `project(view, R)` total from a live `validity_now(event_id)` query, so neither a stale number nor a silent rewrite is the outcome. |
 
 Round 2 is also why §4.1's predicate is presented with a numbered justification per clause rather
-than as bare pseudocode, and why slice 4 lists six tests keyed to specific past defects.
+than as bare pseudocode, and why slice 4's tests are keyed to specific past defects rather than
+to the happy path. Round 4 is why the predicate is now one statement over an explicit input tuple
+`(C, S, F, R)`: three rounds of local patches each left retrieval, or provenance, or one scope,
+behind the part that had just been fixed.
+
+**Round 5** was a self-review of the round-4 rewrite against the substrate, done before pushing it,
+and it found five defects — three of them in code (`chains`/`forks`) the earlier rounds had not
+consulted. All accepted and fixed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 17 | `seen_by` took `max` over **every** `idset.writer` event in the store. A set chain that forked at a `set_seq` gives two versions that `seq`, so `max` was ambiguous and §4.1 stopped being a function — and a forked, never-applied set version could still admit an author or satisfy `retro`, contradicting clause 1's own fork discipline. | **Fixed.** `versions(S)` is now explicitly the owner's **applied prefix under `R`**, which `chains`/`forks` already make linear ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)). `max` is a function again, and the set's history is gated the same way claims are. |
+| 18 | Clause 3's `rescinded(S, c)` was **used but never defined**: §3.3 gave prose and a `through` field but no semantics, so the predicate rested on an undefined term. Relatedly, a rescind is "a new set version", so it would have entered `versions(S)` where `expand(_)` is meaningless for it. | **Fixed.** §3.3 now defines `rescinded` formally — target admits the author, the claim is in the rescind's causal past, `through` bounds it, `from_version` gates it — and states that a rescind carries no entries, so `expand(r)`/`expand_retro(r)` are empty and only clause 3 reads it. |
+| 19 | `kind_scope` was applied **twice** (index filter and `in_scope`), so `OutOfScope(kind)` was unreachable and every claim the owner filtered by kind vanished from the uncounted side — the "uncounted must not be a bin" failure. | **Fixed.** §4.2 applies **neither** scope at retrieval; the index records `kind` so the predicate can test it cheaply. Round 4's finding 15 was half a fix. |
+| 20 | Two `WhyNotCounted` variants were unreachable: `AuthorNotInSet` (such an author is in no historical range, so their claims are never candidates) and `BackupNotImported` as worded. | **Fixed.** `AuthorNotInSet` removed; the two clause-4 reasons that *are* reachable — `AuthorRemoved` and `BackupNotImported` — are re-worded to their actual conditions. An arm a test can never reach is a defect in a closed enum. |
+| 21 | §4.4 claimed an excepted claim "still appears on the uncounted side for any other view that did not name it". Under §4.2 that is false: a stranger's claim is fetched only by an author range or that view's own exception list. | **Fixed by narrowing.** §4.4 now states the true reach — other views that *admit* the author still show it uncounted, and a third party who neither admits nor excepts it never sees it, which is §5.3's whole point rather than a gap. |
+
+Two smaller corrections rode along: §7 row 1 still explained case 1 with the current-snapshot test
+finding 3 had declared a defect (now stated as "no version in the applied prefix admitted them"), and
+§4.2's unconditional cost claim is now qualified for `Entry::Public`, which admits every author and
+so makes source 1 store-shaped.
+
+Round 5 is also why `versions(S)` is spelled out in the pseudocode rather than left as
+`versions(set_id)`: the set's own fork discipline is as load-bearing as the claim's, and three
+rounds of review had only ever examined the latter.
 
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
-`:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All 78
-internal links were checked programmatically and resolve.
+`:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
+links were checked programmatically after every round and resolve.
+
+**A note on what five rounds actually shows.** Every round found a real defect, and rounds 2–5 each
+found one that the round before had *introduced*: an interval predicate patched into a snapshot, an
+exception placed outside a gate, a scope applied twice, a `max` over a non-linear sequence. That is
+the argument for the shape this document settled on — one statement over a fully-named input tuple,
+with retrieval specified to match it — rather than for confidence that the current text is
+defect-free. A reviewer should treat §4.1 as a claim to attack, not as settled: the two places most
+likely to still be wrong are the interaction of `retro` with a set that later revokes an entry
+(§3.1's flag is monotone by design, and only `rescind` retracts), and the cost bound for a `Public`
+set (§4.2), where the complexity claim is explicitly qualified rather than proved.
 
 ---
 
