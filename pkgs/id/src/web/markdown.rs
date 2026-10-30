@@ -2133,6 +2133,33 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
+    // #1044: GFM has no headerless-table representation — comrak emits
+    // the delimiter row only when a row is marked as the header row, and
+    // without one the saved table reparses as a plain paragraph, silently
+    // destroying the table. The editor schema permits rows made only of
+    // table_cell, so when no row is a header row, promote the first row:
+    // a faithful rendering preserving every cell's content, and a one-time
+    // normalization (reparse yields table_header cells in row 0, so the
+    // next save is byte-identical). The table's alignments (#881) are
+    // stored on the table node and apply to the promoted row unchanged.
+    if node_type == "table" {
+        let mut first_row: Option<&AstNode<'a>> = None;
+        let mut has_header_row = false;
+        for child in ast_node.children() {
+            if let NodeValue::TableRow(is_header) = &child.data.borrow().value {
+                if first_row.is_none() {
+                    first_row = Some(child);
+                }
+                if *is_header {
+                    has_header_row = true;
+                }
+            }
+        }
+        if !has_header_row && let Some(row) = first_row {
+            row.data.borrow_mut().value = NodeValue::TableRow(true);
+        }
+    }
+
     // Special case: image needs alt text as child (but NOT for HtmlInline, i.e. sized images)
     // #1417: the stored alt is markdown form (see convert_node's Image
     // arm) - re-parse it into inline nodes so emphasis/strong/code-span
@@ -4221,6 +4248,62 @@ Some text
         let doc = markdown_to_prosemirror(&md);
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "table");
+    }
+
+    #[test]
+    fn test_pm_to_md_table_without_header_row_is_promoted() {
+        // #1044: a PM table whose rows are all table_cell (schema-legal)
+        // must save as a table: the first row is promoted to a header
+        // row so comrak emits the GFM delimiter row, instead of the
+        // table degrading to a plain paragraph on save.
+        let cell = |text: &str| json!({"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]});
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [cell("a"), cell("b")]},
+                    {"type": "table_row", "content": [cell("c"), cell("d")]}
+                ]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert_eq!(md, "| a | b |\n| --- | --- |\n| c | d |\n");
+
+        // The saved output reparses as a table whose first row is a
+        // header row, and a second save is byte-identical (fixpoint).
+        let doc = markdown_to_prosemirror(&md);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "table");
+        let rows = content[0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["content"][0]["type"], "table_header");
+        assert_eq!(rows[1]["content"][0]["type"], "table_cell");
+        let md2 = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md2, md);
+    }
+
+    #[test]
+    fn test_pm_to_md_single_row_table_without_header_is_promoted() {
+        // #1044: single-row headerless table — the only row is promoted.
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "only"}]}]}
+                    ]}
+                ]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert_eq!(md, "| only |\n| --- |\n");
+        let doc = markdown_to_prosemirror(&md);
+        assert_eq!(doc["content"][0]["type"], "table");
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), md);
     }
 
     #[test]
