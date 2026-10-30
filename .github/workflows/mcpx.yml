@@ -180,6 +180,15 @@ jobs:
         with:
           extra-conf: |
             accept-flake-config = true
+            # The default dev shell's closure needs the cgroups
+            # feature at build time. That gate is enforced by the nix
+            # daemon, whose config is written here — a client-side
+            # --extra-experimental-features flag alone does not lift
+            # it (verified on this PR: the flag was accepted and the
+            # build still died). Drew's NixOS machines never see this
+            # because the flake's nixConfig is fed into their system
+            # nix.settings; a stock runner's is not (#1996).
+            experimental-features = nix-command flakes cgroups
 
       # shellcheck reads the repository's .shellcheckrc, which enables every
       # optional check; --severity=warning keeps this leg to findings that
@@ -187,12 +196,10 @@ jobs:
       # treefmt's shfmt job). actionlint checks these workflow files.
       - name: go vet, golangci-lint, gofmt, shellcheck, actionlint
         run: |
-          # --extra-experimental-features cgroups: the default dev
-          # shell's closure needs the cgroups feature, which the
-          # runner's nix does not enable for `nix develop` even with
-          # accept-flake-config (the flake's nixConfig lists it, but
-          # the client does not apply that list here) — without the
-          # flag this step dies with "experimental Nix feature
+          # The cgroups feature is enabled in the installer step's
+          # extra-conf above (the daemon enforces it); the flag here
+          # covers the client side of `nix develop` itself. Without
+          # both, this step dies with "experimental Nix feature
           # 'cgroups' is disabled" before any linter runs (#1996).
           nix develop --extra-experimental-features cgroups --command bash -euo pipefail -c '
             cd pkgs/mcpx
