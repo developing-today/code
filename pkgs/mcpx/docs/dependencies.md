@@ -8,17 +8,17 @@ something breaks without it.
 **Nine**, and `pkgs/mcpx/package.nix` states the trade for each one beside
 the `vendorHash` that pays for them.
 
-| module | what it is for |
-| --- | --- |
-| `modernc.org/sqlite` | the log index |
-| `github.com/charmbracelet/bubbletea` | the full-screen browser, `mcpx tui` |
-| `github.com/charmbracelet/bubbles` | its widgets |
-| `github.com/charmbracelet/lipgloss` | its layout |
-| `gopkg.in/yaml.v3` | OpenAPI documents, which are published as YAML as often as JSON, and which one you get is not the caller's choice |
-| `github.com/santhosh-tekuri/jsonschema/v6` | the JSON Schema validator (`internal/schemaval`): tool input/output schemas and elicitation schemas are checked with a real validator, not by hand |
-| `github.com/tetratelabs/wazero` | the WebAssembly runtime: wasm tooling and the embeddings worker run without a cgo toolchain |
-| `golang.org/x/sys` | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups) |
-| `tailscale.com` | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary |
+| module                                     | what it is for                                                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `modernc.org/sqlite`                       | the log index                                                                                                                                                |
+| `github.com/charmbracelet/bubbletea`       | the full-screen browser, `mcpx tui`                                                                                                                          |
+| `github.com/charmbracelet/bubbles`         | its widgets                                                                                                                                                  |
+| `github.com/charmbracelet/lipgloss`        | its layout                                                                                                                                                   |
+| `gopkg.in/yaml.v3`                         | OpenAPI documents, which are published as YAML as often as JSON, and which one you get is not the caller's choice                                            |
+| `github.com/santhosh-tekuri/jsonschema/v6` | the JSON Schema validator (`internal/schemaval`): tool input/output schemas and elicitation schemas are checked with a real validator, not by hand           |
+| `github.com/tetratelabs/wazero`            | the WebAssembly runtime: wasm tooling and the embeddings worker run without a cgo toolchain                                                                  |
+| `golang.org/x/sys`                         | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups)                                        |
+| `tailscale.com`                            | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary |
 
 The three `charmbracelet` modules are one decision, not three: they cost about
 1.2 MB in the stripped binary and replace raw terminal handling -- escape
@@ -39,7 +39,7 @@ The usual choice, `mattn/go-sqlite3`, is cgo, and cgo would mean:
 - cross-compilation broken, so no building a Linux binary from a Mac;
 - `CGO_ENABLED=0` builds failing outright.
 
-That is a large bill for a database that is only ever an *index*. The JSONL
+That is a large bill for a database that is only ever an _index_. The JSONL
 files remain the source of truth: the index can be deleted at any time and is
 rebuilt on the next query. Paying in build complexity for something
 reconstructible was the wrong trade.
@@ -64,11 +64,11 @@ a tokeniser, a SQLite driver — and the trade should be stated here.
 
 ## External programs
 
-| Program | Needed for | If missing |
-| --- | --- | --- |
-| `git` | `repo` and `worktree` scopes, for repository layouts native discovery does not read | only those layouts degrade to `cwd`, with a log line and a `doctor` warning saying why |
-| `deno`, `bun` or `node` | `mcpx run` and `mcpx exec` | those commands fail; `mcpx call`, `ls`, `types`, `catalog`, `search` still work |
-| the configured MCP servers | their own namespaces | that namespace reports `error` with the server's stderr |
+| Program                    | Needed for                                                                          | If missing                                                                             |
+| -------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `git`                      | `repo` and `worktree` scopes, for repository layouts native discovery does not read | only those layouts degrade to `cwd`, with a log line and a `doctor` warning saying why |
+| `deno`, `bun` or `node`    | `mcpx run` and `mcpx exec`                                                          | those commands fail; `mcpx call`, `ls`, `types`, `catalog`, `search` still work        |
+| the configured MCP servers | their own namespaces                                                                | that namespace reports `error` with the server's stderr                                |
 
 **git** is optional. mcpx finds a repository by reading `.git` itself --
 a port of git's discovery rules, `docs/git-discovery.md` -- and runs `git

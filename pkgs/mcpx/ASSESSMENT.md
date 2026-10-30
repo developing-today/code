@@ -59,13 +59,13 @@ The schema cache that would fix this exists but is disabled:
 Because there is no fast path, the cost of discovery is whatever the process's
 current health happens to be. Measured on the live daemon over one session:
 
-| State | `GET /namespaces` |
-| --- | --- |
-| Long-running daemon, as found | 34.7 s (`lootbox tools`: 42.8 s) |
-| Immediately after `launchctl kickstart` | 15.6 s |
-| Later the same session | 28.6 s |
-| After a second restart, light load | 0.17–0.86 s |
-| From-source build, same config, fresh | 0.42–0.81 s |
+| State                                   | `GET /namespaces`                |
+| --------------------------------------- | -------------------------------- |
+| Long-running daemon, as found           | 34.7 s (`lootbox tools`: 42.8 s) |
+| Immediately after `launchctl kickstart` | 15.6 s                           |
+| Later the same session                  | 28.6 s                           |
+| After a second restart, light load      | 0.17–0.86 s                      |
+| From-source build, same config, fresh   | 0.42–0.81 s                      |
 
 I could not force the 30-second state on demand within one session, so I will
 not claim a single mechanism. What is reproducible is the memory behaviour:
@@ -102,8 +102,8 @@ stdio client means.
 Your fork's `configurable-timeout` branch already tried to address it with
 `McpSessionRegistry` and `McpAutoPortAssigner` — 283 and 187 lines respectively,
 plus a `KNOWN_LIMITATIONS.md` documenting a read-modify-write race, a TOCTOU
-window, and silent registry corruption. All that machinery assigns *ports* to
-*lootbox instances*. But there is only ever one lootbox instance, because it
+window, and silent registry corruption. All that machinery assigns _ports_ to
+_lootbox instances_. But there is only ever one lootbox instance, because it
 runs as a launchd singleton. The abstraction is at the wrong level: the thing
 that needs isolating is the caller, not the process.
 
@@ -133,13 +133,13 @@ you would still own a 158 MB Deno artifact and a dead upstream.
 
 **Adopt a maintained code-mode tool.** I looked at the current field:
 
-| Project | Shape | Why not here |
-| --- | --- | --- |
-| [`mKeRix/toolscript`](https://github.com/mkerix/toolscript) | Deno CLI + gateway, semantic tool search, Claude Code plugin | Closest fit and genuinely good. Optimised for Claude Code plugins/hooks; no per-session server pooling, so the Chrome problem remains |
-| [`tmustier/code-mode-mcp`](https://github.com/tmustier/code-mode-mcp) | stdio MCP server exposing one `exec` tool | It is an MCP server, which is what you are trying to avoid; still puts a tool in context |
-| [`assimelha/cmcp`](https://github.com/assimelha/cmcp) | MCP proxy, `search()` + `execute()`, QuickJS | Same objection; QuickJS sandbox limits what scripts can do |
-| [`mcp-use`](https://docs.mcp-use.com/typescript/client/code-mode) | Node library | A library, not a CLI; no process pooling |
-| [`portofcontext/pctx`](https://github.com/portofcontext/pctx) | early-stage library | Too early |
+| Project                                                               | Shape                                                        | Why not here                                                                                                                          |
+| --------------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| [`mKeRix/toolscript`](https://github.com/mkerix/toolscript)           | Deno CLI + gateway, semantic tool search, Claude Code plugin | Closest fit and genuinely good. Optimised for Claude Code plugins/hooks; no per-session server pooling, so the Chrome problem remains |
+| [`tmustier/code-mode-mcp`](https://github.com/tmustier/code-mode-mcp) | stdio MCP server exposing one `exec` tool                    | It is an MCP server, which is what you are trying to avoid; still puts a tool in context                                              |
+| [`assimelha/cmcp`](https://github.com/assimelha/cmcp)                 | MCP proxy, `search()` + `execute()`, QuickJS                 | Same objection; QuickJS sandbox limits what scripts can do                                                                            |
+| [`mcp-use`](https://docs.mcp-use.com/typescript/client/code-mode)     | Node library                                                 | A library, not a CLI; no process pooling                                                                                              |
+| [`portofcontext/pctx`](https://github.com/portofcontext/pctx)         | early-stage library                                          | Too early                                                                                                                             |
 
 The MCP spec itself now documents this pattern as "programmatic tool calling"
 in the [client best-practices guide](https://modelcontextprotocol.io/docs/2026-07-28/develop/clients/client-best-practices),
@@ -220,7 +220,7 @@ artifact size                             141 MB      9.8 MB
 daemon RSS under load                223-480 MB    14-19 MB
 ```
 
-The lootbox column is its *healthy* state, right after a restart. The
+The lootbox column is its _healthy_ state, right after a restart. The
 as-found numbers were 42.8 s, 34.7 s and 10.3 s for the first three rows.
 
 **No Chrome singleton.** `session` mode. Verified: 12 concurrent runs across 4
