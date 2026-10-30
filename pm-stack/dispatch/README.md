@@ -198,6 +198,63 @@ clear error. For example, with a prompt kept in the calling repo:
           prompt-file: "prompts/nightly-triage.md"
 ```
 
+### pm-dispatch-ci-fix
+
+`.github/actions/pm-dispatch-ci-fix` ("the CI fixer") is a third
+composite action built on the two above — it contains no OIDC or HTTP
+plumbing of its own and dispatches through the starter/queuer as
+`uses:` steps. Give it a failed workflow run (`workflow`, `run-id`,
+`run-url`, `branch`, `sha`, and optionally `pr-number`) and it:
+
+1. Composes a fixer prompt for the run: diagnose from the failed jobs
+   and logs (`gh run view <run-id> --log-failed` in the target repo),
+   fix the root cause on the run's branch, and open or update a PR per
+   the repo's conventions that references the run and the tracking
+   issue. The priority is `high` when the failed branch is the repo's
+   default branch, otherwise `normal`.
+2. Dedupes on the conventional tracking-issue title
+   `ci-fix: <workflow> failing on <branch>`: it searches the target
+   repo's open issues for that exact title.
+3. Dispatches by case:
+   - an open issue with the conventional title already exists — the
+     queuer attaches a new `ci_investigation` task to that issue
+     (`issue_number`), so repeat failures of the same workflow on the
+     same branch do not pile up duplicate issues;
+   - no such issue and the failed branch is the default branch — the
+     starter runs with `wait: "true"`, creating the tracking issue
+     (titled with the conventional title) and launching a session
+     immediately;
+   - no such issue and the failed branch is any other branch — the
+     queuer runs with `issue: "true"`, queueing a `ci_investigation`
+     task and creating the tracking issue.
+
+```yaml
+jobs:
+  ci-fix:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      issues: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
+        with:
+          workflow: ${{ github.event.workflow_run.name }}
+          run-id: ${{ github.event.workflow_run.id }}
+          run-url: ${{ github.event.workflow_run.html_url }}
+          branch: ${{ github.event.workflow_run.head_branch }}
+          sha: ${{ github.event.workflow_run.head_sha }}
+```
+
+On top of the starter/queuer requirement (`permissions: id-token:
+write`), the calling job MUST also provide `GH_TOKEN` in the job
+environment (as above) with issues read permission in the target repo;
+the dedupe search fails loudly without it. The step summary records
+the dedupe mode, the tracking issue and the dispatched task (and the
+session, when the starter ran).
+
 ## Configuration (env)
 | Name | Default | Notes |
 | --- | --- | --- |

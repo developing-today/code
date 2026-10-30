@@ -1,0 +1,235 @@
+name: pm-dispatch-ci-fix
+description: >-
+  Dispatch a pm-dispatch CI fixer for a failed workflow run: compose a
+  root-cause fix prompt for the run, dedupe against an existing open
+  tracking issue, then dispatch through the pm-dispatch-start /
+  pm-dispatch-queue composite actions (no OIDC or HTTP plumbing is
+  duplicated here). The calling job MUST grant
+  `permissions: id-token: write` — the starter/queuer steps mint a GitHub
+  Actions OIDC token (audience pm-dispatch) to authenticate. The calling
+  job MUST also provide a GH_TOKEN in the job environment (for example
+  `GH_TOKEN: ${{ github.token }}`) with issues read permission in the
+  target repo (for example `permissions: issues: read`), which the dedupe
+  step uses to search for an existing open tracking issue.
+inputs:
+  repo:
+    description: "Target repo (owner/name). Any allowlisted repo may target any allowlisted repo."
+    required: false
+    default: ${{ github.repository }}
+  workflow:
+    description: "Name of the failed workflow."
+    required: true
+  run-id:
+    description: "Id of the failed workflow run."
+    required: true
+  run-url:
+    description: "URL of the failed workflow run."
+    required: true
+  branch:
+    description: "Head branch of the failed run."
+    required: true
+  sha:
+    description: "Head SHA of the failed run."
+    required: true
+  pr-number:
+    description: "Optional number of the pull request associated with the failed run."
+    required: false
+    default: ""
+  default-branch:
+    description: "Default branch of the target repo. Failures on this branch dispatch at high priority via pm-dispatch-start; failures on any other branch are queued via pm-dispatch-queue."
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+outputs:
+  mode:
+    description: "Dedupe mode: attach (an open tracking issue with the conventional title already existed) or fresh."
+    value: ${{ steps.dedupe.outputs.mode }}
+  task_id:
+    description: "pm-dispatch queue task id from whichever dispatch step ran."
+    value: ${{ steps.dispatch_attach.outputs.task_id || steps.dispatch_start.outputs.task_id || steps.dispatch_queue.outputs.task_id }}
+  session_id:
+    description: "OpenCode session id (only set when pm-dispatch-start ran, i.e. a fresh failure on the default branch)."
+    value: ${{ steps.dispatch_start.outputs.session_id }}
+  issue_number:
+    description: "Tracking issue number (attached, or created by the dispatch step)."
+    value: ${{ steps.dispatch_attach.outputs.issue_number || steps.dispatch_start.outputs.issue_number || steps.dispatch_queue.outputs.issue_number || steps.dedupe.outputs.issue_number }}
+  issue_url:
+    description: "Tracking issue URL."
+    value: ${{ steps.dispatch_attach.outputs.issue_url || steps.dispatch_start.outputs.issue_url || steps.dispatch_queue.outputs.issue_url }}
+runs:
+  using: composite
+  steps:
+    - name: Compose the CI-fix prompt
+      id: compose
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_RUN_URL: ${{ inputs.run-url }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+        INPUT_DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      run: |
+        set -euo pipefail
+        title="ci-fix: ${INPUT_WORKFLOW} failing on ${INPUT_BRANCH}"
+        if [ -n "$INPUT_DEFAULT_BRANCH" ] && [ "$INPUT_BRANCH" = "$INPUT_DEFAULT_BRANCH" ]; then
+          priority="high"
+          is_default_branch="true"
+        else
+          priority="normal"
+          is_default_branch="false"
+        fi
+        pr_block=""
+        if [ -n "$INPUT_PR_NUMBER" ]; then
+          pr_block="Pull request associated with the failed run: #${INPUT_PR_NUMBER}"
+        fi
+        prompt="$(cat <<EOF
+        A CI workflow failed. Diagnose the failure and fix its root cause.
+
+        Failed workflow: ${INPUT_WORKFLOW}
+        Failed run: ${INPUT_RUN_URL} (run id: ${INPUT_RUN_ID})
+        Repository: ${INPUT_REPO}
+        Branch (head branch of the failed run): ${INPUT_BRANCH}
+        Head SHA: ${INPUT_SHA}
+        ${pr_block}
+        Tracking issue title: ${title}
+
+        Instructions:
+        - Start from the failed run's evidence. In the target repository (${INPUT_REPO}), inspect the failed jobs and logs of run ${INPUT_RUN_ID}, for example with: gh run view ${INPUT_RUN_ID} --repo ${INPUT_REPO} --log-failed
+        - Fix the ROOT CAUSE of the failure on the run's branch (${INPUT_BRANCH}). Do not merely re-run the workflow, and do not disable, skip or delete failing tests or checks to make it green.
+        - Open or update a pull request for the fix following the target repository's conventions. The pull request must reference the failed run (${INPUT_RUN_URL}) and reference the tracking issue (titled "${title}" — the issue this task is attached to, or the one created for it).
+        - In the pull request description, summarize the diagnosis (the root cause you found in the failed logs) and the fix you applied.
+        EOF
+        )"
+        {
+          echo "prompt<<PM_DISPATCH_CI_FIX_PROMPT_EOF"
+          echo "$prompt"
+          echo "PM_DISPATCH_CI_FIX_PROMPT_EOF"
+          echo "title=$title"
+          echo "priority=$priority"
+          echo "is_default_branch=$is_default_branch"
+        } >> "$GITHUB_OUTPUT"
+        echo "pm-dispatch-ci-fix: title=$title priority=$priority is_default_branch=$is_default_branch"
+
+    - name: Dedupe against an existing open tracking issue
+      id: dedupe
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_TITLE: ${{ steps.compose.outputs.title }}
+      run: |
+        set -euo pipefail
+        if [ -z "${GH_TOKEN:-}" ]; then
+          echo "::error::pm-dispatch-ci-fix: GH_TOKEN is not set in the job environment. The calling job must provide GH_TOKEN (its GitHub token) with issues read permission in the target repo so the dedupe search can list open issues." >&2
+          exit 1
+        fi
+        issues_json="$(gh issue list --repo "$INPUT_REPO" --state open --search "\"$INPUT_TITLE\" in:title" --json number,title)"
+        if ! printf '%s' "$issues_json" | jq -e 'type == "array"' > /dev/null; then
+          echo "::error::pm-dispatch-ci-fix: dedupe search returned unexpected output (expected a JSON array): $issues_json" >&2
+          exit 1
+        fi
+        issue_number="$(printf '%s' "$issues_json" | jq -r --arg title "$INPUT_TITLE" '[.[] | select(.title == $title)] | first | .number // empty')"
+        if [ -n "$issue_number" ]; then
+          mode="attach"
+        else
+          mode="fresh"
+        fi
+        {
+          echo "mode=$mode"
+          echo "issue_number=$issue_number"
+        } >> "$GITHUB_OUTPUT"
+        echo "pm-dispatch-ci-fix dedupe: mode=$mode issue_number=${issue_number:-none} title=$INPUT_TITLE"
+
+    - name: Dispatch (attach to existing tracking issue)
+      id: dispatch_attach
+      if: steps.dedupe.outputs.mode == 'attach'
+      uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+      with:
+        repo: ${{ inputs.repo }}
+        issue_number: ${{ steps.dedupe.outputs.issue_number }}
+        title: ${{ steps.compose.outputs.title }}
+        prompt: ${{ steps.compose.outputs.prompt }}
+        kind: ci_investigation
+        priority: ${{ steps.compose.outputs.priority }}
+
+    - name: Dispatch (fresh failure on the default branch — start a session now)
+      id: dispatch_start
+      if: steps.dedupe.outputs.mode == 'fresh' && steps.compose.outputs.is_default_branch == 'true'
+      uses: developing-today/code/.github/actions/pm-dispatch-start@main
+      with:
+        repo: ${{ inputs.repo }}
+        title: ${{ steps.compose.outputs.title }}
+        prompt: ${{ steps.compose.outputs.prompt }}
+        priority: ${{ steps.compose.outputs.priority }}
+        wait: "true"
+
+    - name: Dispatch (fresh failure on a non-default branch — queue with a new tracking issue)
+      id: dispatch_queue
+      if: steps.dedupe.outputs.mode == 'fresh' && steps.compose.outputs.is_default_branch != 'true'
+      uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+      with:
+        repo: ${{ inputs.repo }}
+        issue: "true"
+        title: ${{ steps.compose.outputs.title }}
+        prompt: ${{ steps.compose.outputs.prompt }}
+        kind: ci_investigation
+        priority: ${{ steps.compose.outputs.priority }}
+
+    - name: Write job summary
+      id: summary
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_RUN_ID: ${{ inputs.run-id }}
+        INPUT_RUN_URL: ${{ inputs.run-url }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        MODE: ${{ steps.dedupe.outputs.mode }}
+        DEDUPE_ISSUE_NUMBER: ${{ steps.dedupe.outputs.issue_number }}
+        ATTACH_TASK_ID: ${{ steps.dispatch_attach.outputs.task_id }}
+        ATTACH_ISSUE_NUMBER: ${{ steps.dispatch_attach.outputs.issue_number }}
+        ATTACH_ISSUE_URL: ${{ steps.dispatch_attach.outputs.issue_url }}
+        START_TASK_ID: ${{ steps.dispatch_start.outputs.task_id }}
+        START_SESSION_ID: ${{ steps.dispatch_start.outputs.session_id }}
+        START_ISSUE_NUMBER: ${{ steps.dispatch_start.outputs.issue_number }}
+        START_ISSUE_URL: ${{ steps.dispatch_start.outputs.issue_url }}
+        QUEUE_TASK_ID: ${{ steps.dispatch_queue.outputs.task_id }}
+        QUEUE_ISSUE_NUMBER: ${{ steps.dispatch_queue.outputs.issue_number }}
+        QUEUE_ISSUE_URL: ${{ steps.dispatch_queue.outputs.issue_url }}
+      run: |
+        set -euo pipefail
+        task_id=""
+        for candidate in "$ATTACH_TASK_ID" "$START_TASK_ID" "$QUEUE_TASK_ID"; do
+          if [ -z "$task_id" ] && [ -n "$candidate" ]; then task_id="$candidate"; fi
+        done
+        issue_number=""
+        for candidate in "$ATTACH_ISSUE_NUMBER" "$START_ISSUE_NUMBER" "$QUEUE_ISSUE_NUMBER" "$DEDUPE_ISSUE_NUMBER"; do
+          if [ -z "$issue_number" ] && [ -n "$candidate" ]; then issue_number="$candidate"; fi
+        done
+        issue_url=""
+        for candidate in "$ATTACH_ISSUE_URL" "$START_ISSUE_URL" "$QUEUE_ISSUE_URL"; do
+          if [ -z "$issue_url" ] && [ -n "$candidate" ]; then issue_url="$candidate"; fi
+        done
+        if [ -z "$issue_url" ] && [ -n "$issue_number" ]; then
+          issue_url="https://github.com/${INPUT_REPO}/issues/${issue_number}"
+        fi
+        {
+          echo "## pm-dispatch-ci-fix"
+          echo ""
+          echo "- Mode: $MODE"
+          echo "- Repository: $INPUT_REPO"
+          echo "- Failed workflow: $INPUT_WORKFLOW"
+          echo "- Failed run: $INPUT_RUN_URL (run id: $INPUT_RUN_ID)"
+          echo "- Branch: $INPUT_BRANCH"
+          if [ -n "$issue_number" ]; then
+            echo "- Tracking issue: #$issue_number ($issue_url)"
+          else
+            echo "- Tracking issue: none"
+          fi
+          echo "- Task id: ${task_id:-none}"
+          if [ -n "$START_SESSION_ID" ]; then
+            echo "- Session id: $START_SESSION_ID"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "pm-dispatch-ci-fix: mode=$MODE issue_number=${issue_number:-none} issue_url=${issue_url:-none} task_id=${task_id:-none} session_id=${START_SESSION_ID:-none}"
