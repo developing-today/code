@@ -3169,17 +3169,16 @@
         "nixpkgs": "nixpkgs_20"
       },
       "locked": {
-        "lastModified": 1793366858,
-        "narHash": "sha256-bLFqk2rj0zoL9DxhoKwksSErJNvDM1ploAWwGqhhP5o=",
+        "lastModified": 1793364298,
+        "narHash": "sha256-uZg7zE6QM6vBVAsH+1zw5xkVKxxkWbqjpLAVvj1ITrU=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "195bdae185d92ef377bee7a54ad6bc77e96b10da",
+        "rev": "a8dfb81801ad3704035544c82f94ed9620a97de3",
         "type": "github"
       },
       "original": {
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "195bdae185d92ef377bee7a54ad6bc77e96b10da",
         "type": "github"
       }
     },
