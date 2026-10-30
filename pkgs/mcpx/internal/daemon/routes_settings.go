@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dezren39/mcpx/internal/adapter"
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/settings"
 )
@@ -39,6 +40,8 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/servers/{name}", s.handleServerGet)
 	mux.HandleFunc("POST /v1/servers", s.handleServersAdd)
 	mux.HandleFunc("DELETE /v1/servers/{name}", s.handleServersRemove)
+	mux.HandleFunc("POST /v1/adapters", s.handleAdaptersAdd)
+	mux.HandleFunc("DELETE /v1/adapters/{name}", s.handleAdaptersRemove)
 }
 
 // Settings exposes the daemon's resolved configuration.
@@ -795,4 +798,101 @@ func (s *Server) reloadConfig() (added, removed []string, err error) {
 	s.cfgMu.Unlock()
 	s.logger.Printf("config reloaded: %d added, %d removed", len(added), len(removed))
 	return added, removed, nil
+}
+
+// ---- live adapter add/remove (#2118) ----
+//
+// Servers got live add first because they live in the configuration file
+// the daemon already edits. Adapters live one step away, in the
+// declaration files paths.adapters names, so the same persist + reload
+// shape needs a different writer (config.AddAdapterEntry) and a rule for
+// which file receives a new declaration: the first file paths.adapters
+// names, mirroring how augmentAdapters reads them in order. When no file
+// is configured there is nowhere a reload would find a new declaration,
+// so the request is refused with the remedy rather than written to a
+// file nothing reads.
+
+type addAdapterReq struct {
+	adapter.Spec
+	Replace bool `json:"replace"`
+}
+
+func (s *Server) adapterFiles() []string {
+	var out []string
+	for _, p := range splitPathList(s.set.String("paths.adapters")) {
+		if p != "" && p != settings.NullMarker {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
+	var req addAdapterReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
+		s.set.Bytes("http.bodyLimit"))).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := req.Spec.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	files := s.adapterFiles()
+	if len(files) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf(
+			"no adapters file is configured: set paths.adapters to a declaration file first "+
+				"(for example `mcpx settings set paths.adapters .mcpx/adapters.json`), "+
+				"so the declaration written here is one a reload will find"))
+		return
+	}
+	raw, err := json.Marshal(req.Spec)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	path := files[0]
+	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": req.Spec.Name, "written": path, "added": added, "removed": removed,
+	})
+}
+
+func (s *Server) handleAdaptersRemove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	path, found, err := config.AdapterDefinedIn(s.adapterFiles(), name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf(
+			"no configured adapters file declares %q", name))
+		return
+	}
+	if _, err := config.RemoveAdapterEntry(path, name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	added, removed, rerr := s.reloadConfig()
+	if rerr != nil {
+		writeErr(w, http.StatusInternalServerError, rerr)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "written": path, "added": added, "removed": removed,
+	})
 }
