@@ -82,6 +82,7 @@ import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -4866,6 +4867,14 @@ export function renderProjects(
       "/projects",
     );
   }
+  const areaWeights = areas
+    .map((a) => {
+      const items = pool.filter((p) => p.area === a);
+      const w = summarizeWeights(items);
+      return `<div class="card"><strong>${esc(a)}</strong> — ${esc(weightedLine(w))}<br><span class="muted">${esc(handsLine(w))}</span></div>`;
+    })
+    .join("");
+  const shownWeights = summarizeWeights(shown);
   const cards = shown
     .map((p) => {
       const derived = derivedProjectState(p, opts.orchestration);
@@ -4895,6 +4904,8 @@ export function renderProjects(
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+<p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
+${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
@@ -4963,7 +4974,7 @@ function projectCard(s: ProjectSummary): string {
   const poolLine =
     s.poolArea === null
       ? `<span class="muted">No dedicated Project Area yet.</span>`
-      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
+      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
   const roadmapLine =
     s.roadmapArea === null
       ? `<span class="muted">No Grist roadmap area yet.</span>`
@@ -5076,7 +5087,19 @@ export function renderProgramProject(
       detail.poolItems.length > POOL_ITEM_CAP
         ? `<p class="muted">Showing ${POOL_ITEM_CAP} of ${detail.poolItems.length} — the full set is on <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects</a>.</p>`
         : "";
-    poolHtml = `<p class="muted"><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${cards}${more}`;
+    const allW = summarizeWeights(detail.poolItems);
+    const epics = detail.poolItems.filter((p) => p.kind === "Epic");
+    const epicW = summarizeWeights(epics);
+    const epicRows = epics
+      .map((p) => {
+        const w = effortWeight(p.labels);
+        return `<div class="card"><strong>${esc(p.title)}</strong><br><span class="muted">weight: ${w === null ? "unsized" : w} · issue ${esc(p.state)}${p.status ? ` · status: ${esc(p.status)}` : ""} · <a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a></span></div>`;
+      })
+      .join("");
+    const epicHtml = epics.length
+      ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
+      : "";
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${cards}${more}`;
   }
 
   let roadmapHtml: string;
