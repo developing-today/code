@@ -486,6 +486,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 	showDefaults := fs.Bool("defaults", false, "print the built-in default layer that underlies every config")
 	showSchema := fs.Bool("schema", false, "print every setting, with its flag and variable")
 	withPlumbing := fs.Bool("plumbing", false, "include internal settings in --schema")
+	schemaFormat := fs.String("format", "", "output format for --schema: text, json or markdown (default text, or json with --json)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -500,13 +501,22 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		if serr != nil {
 			return serr
 		}
-		if a.JSON {
-			fmt.Println(sch.JSON(*withPlumbing))
-			return nil
+		format := *schemaFormat
+		if format == "" && a.JSON {
+			format = "json"
 		}
-		fmt.Print(sch.Describe(*withPlumbing))
-		if !*withPlumbing {
-			fmt.Println("\n(--plumbing also lists internal settings)")
+		switch format {
+		case "", "text":
+			fmt.Print(sch.Describe(*withPlumbing))
+			if !*withPlumbing {
+				fmt.Println("\n(--plumbing also lists internal settings)")
+			}
+		case "json":
+			fmt.Println(sch.JSON(*withPlumbing))
+		case "markdown":
+			fmt.Print(sch.Markdown(settings.MarkdownOptions{Plumbing: *withPlumbing}))
+		default:
+			return fmt.Errorf("unknown --format %q for --schema: want text, json or markdown", format)
 		}
 		return nil
 	}

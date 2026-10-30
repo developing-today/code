@@ -325,6 +325,7 @@ var handFlagsMeaningOther = map[string]map[string]bool{
 	"exec":   {"keep": true},    // likewise
 	"api":    {"include": true}, // operations to include, not logging.include
 	"schema": {"format": true},  // output schema format, not logging.format
+	"config": {"format": true},  // --schema output format, not logging.format
 }
 
 // unknownKeysError turns the collected unknown keys into one message naming
