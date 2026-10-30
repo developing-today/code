@@ -54,6 +54,15 @@ from `binding_id` (§5.1) — never moves when the key changes.
   "iroh_id": "<Iroh root public key, current>",
   "bound_at": "<RFC 3339>",
   "challenge_id": "<the ceremony challenge this binding was proven with>",
+  "challenge_transcript": {
+    "challenge_id": "<same challenge_id>",
+    "sub": "<google sub>",
+    "iroh_id": "<Iroh root public key>",
+    "service_id": "<service identifier>",
+    "nonce": "<the challenge's 32 random bytes, base64>",
+    "issued_at": "<RFC 3339>",
+    "expires_at": "<RFC 3339>"
+  },
   "key_signature": "<Iroh root key signature over the canonical ceremony transcript (§3.2)>",
   "service_attestation": "<service key signature over SHA-256 of the canonical record without this field>",
   "status": "active | rebind_pending | superseded",
@@ -70,9 +79,22 @@ Rules:
 - Exactly one `active` binding per `sub`, and one `sub` per `iroh_id`, at any
   time. A ceremony that would violate either is a conflict (§3.4), never an
   overwrite.
+- A binding in `rebind_pending` (§4.2) still **reserves** the account: it
+  counts as the account's binding for every conflict check in §3.2 and
+  §3.4. No fresh ceremony may complete while a rebind is pending — a
+  replacement key reaches the binding only through §4 (old-key
+  cancellation, early approval, or the delay elapsing), never by starting
+  a new initial binding that overwrites `account.binding_id`.
 - The record is valid only with **both** signatures: the key's (proof of
   possession at ceremony time) and the service's (attestation that the
   ceremony ran against an authenticated session for `sub`).
+- The complete `challenge_transcript` is persisted **in the record**, not
+  only in the service's challenge store: the signed message in §3.2 is
+  reconstructed from `challenge_id`, `sub`, `iroh_id`, `nonce`, and
+  `expires_at`, so a record stripped of its transcript cannot be verified
+  offline. The transcript travels with the record everywhere the record
+  goes — in particular in exports (§6.1) — so an importer (§6.2) verifies
+  `key_signature` with no access to the hosted service.
 - `history` is append-only. A superseded key's entries are never deleted;
   they are how an importer (§6) verifies the chain.
 
@@ -113,7 +135,9 @@ device is a groups-layer operation and never touches the binding record.
 3. **Submit proof.** Client returns `{challenge_id, key_signature}`.
 4. **Verify.** Service checks, in order: challenge exists and is unexpired;
    challenge is unconsumed; session `sub` == challenge `sub`; signature
-   verifies against `iroh_id`; no active binding conflicts (§1.2 rules).
+   verifies against `iroh_id`; no binding conflicts (§1.2 rules) — an
+   existing binding in `active` **or** `rebind_pending` status both
+   conflict, and the pending case is routed to §4, never completed here.
    **The challenge is consumed on first presentation, success or failure** —
    a failed attempt can never be retried against the same challenge.
 5. **Attest and store.** Service writes the binding record (§1.2) with its
@@ -148,6 +172,7 @@ single-use, expire with the challenge, and are rate-limited per account
 | Challenge replay (already consumed) | None; rejected and logged | Fresh challenge |
 | `iroh_id` already bound to another `sub` | None; conflict error naming the rebind path (§4) | Not retryable as a fresh binding |
 | `sub` already has an active binding (different key) | None; conflict error naming §4 | Rebind protocol, not the ceremony |
+| `sub` has a binding in `rebind_pending` | None; conflict error naming §4 | §4 only: old-key cancel/approve, or wait out the delay — a fresh ceremony never bypasses it |
 | Two ceremonies race for one `sub` | First completed wins | Loser receives the conflict error |
 
 No failure path creates a partial binding, a DO, or any claim on the key.
@@ -178,7 +203,10 @@ account takeover into an ID takeover — #2045).
    effective_at = requested_at + waiting_period, status: pending}` and sets
    the binding's `status` to `rebind_pending`.
 3. During the wait: the **old key keeps full control**; the new key has
-   none; the account's data and DO are untouched.
+   none; the account's data and DO are untouched. The pending binding
+   continues to reserve the account (§1.2): any fresh binding ceremony
+   for this `sub` is rejected as a conflict (§3.4) for the whole wait, so
+   the delay cannot be bypassed by re-running §3 with another key.
 
 The waiting period's length is a #2046 parameter (§8). #2045 bounds it only
 as *days, not minutes*; this spec deliberately states no number.
@@ -247,11 +275,21 @@ the next request retries the bootstrap from the recorded version.
 Each DO meters its own usage in its storage, so metering survives
 hibernation and needs no external pipeline per request:
 
-- Counters: request count, WebSocket session-seconds, SQLite bytes, R2
-  referenced bytes, R2 egress bytes, ephemeral-job seconds (§5.5).
-- Counters are monotonic per DO, snapshotted daily into the account
-  record's `meter_rollup` (§1.1). Billing/ceiling decisions read the
-  rollup plus the live DO counter, never a third source.
+- Two kinds of metric, kept distinct:
+  - **Current-usage gauges** — SQLite bytes and R2 referenced bytes.
+    These measure what is stored *now* and **decrease** when the user
+    deletes data (a blob's referenced bytes drop when its last reference
+    from this DO is removed). Storage ceilings (§5.4) read only these.
+  - **Monotonic consumption counters** — request count, WebSocket
+    session-seconds, R2 egress bytes, ephemeral-job seconds (§5.5).
+    These measure cumulative consumption over the billing period and
+    never decrease within it.
+- Both kinds are snapshotted daily into the account record's
+  `meter_rollup` (§1.1), each labelled with its kind. Billing/ceiling
+  decisions read the rollup plus the live DO values, never a third
+  source. Conflating the kinds is a defect: monotonic storage accounting
+  would make the §5.4 recovery path (free space, resume writes)
+  impossible, since deleted data would never return allowance.
 - Tenant ceilings from the platform (per-DO storage and request-rate caps,
   #2044) are a blast-radius property, not a metering input: one runaway
   user degrades their own DO, not the fleet. Fleet-level abuse controls
@@ -271,8 +309,9 @@ Behaviour at a ceiling is specified here and is not tier-dependent:
   *perform an export* are exempt from the ceiling — leaving must always be
   possible.
 - **Recovery:** raising the tier (or freeing space by export + explicit
-  user-confirmed delete) returns the store to read-write automatically at
-  the next request; no support action is part of the mechanism.
+  user-confirmed delete — which lowers the current-usage gauges in §5.3)
+  returns the store to read-write automatically at the next request; no
+  support action is part of the mechanism.
 
 ### 5.5 Ephemeral containers
 
@@ -291,9 +330,10 @@ An export is a set of signed objects plus a manifest, producible on demand
 1. **Objects:** every signed graph object in the user's DO, in canonical
    (hash) order — self-authenticating by construction.
 2. **Blobs:** every R2 blob referenced by those objects, by hash.
-3. **Records:** the binding record (§1.2) including full `history`, any
-   rebind records (§4.4), and the account metadata needed to re-establish
-   the binding claim (`sub` assertion as attested by the service).
+3. **Records:** the binding record (§1.2) including full `history` and
+   the complete `challenge_transcript` (§1.2), any rebind records (§4.4),
+   and the account metadata needed to re-establish the binding claim
+   (`sub` assertion as attested by the service).
 4. **Manifest:** `{export_id, binding_id, iroh_id, created_at,
    object_count, blob_count, sha256 of the concatenated object hashes}`,
    signed by the user's Iroh root key when available.
@@ -311,11 +351,22 @@ The importing node verifies before ingesting anything:
    `iroh_id` it names; an `unkeyed_export` manifest is accepted only as an
    explicitly confirmed untrusted-source import by the node's operator.
 2. Binding chain: the binding record's key signature and service
-   attestation verify (§1.2), and every `history` step is backed by its
-   rebind record (§4.4) or an old-key fast-path signature.
+   attestation verify (§1.2) — the §3.2 transcript is reconstructed from
+   the exported record's own `challenge_transcript` (`nonce` and
+   `expires_at` included), never fetched from the hosted service — and
+   every `history` step is backed by its rebind record (§4.4) or an
+   old-key fast-path signature.
 3. Integrity: every object's hash and signature verify; the manifest's
    counts and concatenated-hash digest match the received set exactly.
-   A partial or tampered export imports nothing.
+   **Blob contents are verified too, before anything is ingested:**
+   every received blob is hashed, and its hash must equal the content
+   hash referenced by the signed object(s) that cite it. Object
+   signatures and the object-hash digest do not cover blob bytes (graph
+   ingest treats `document.put` content as a separate blob referenced by
+   hash, not an event body), so without this step a corrupted or
+   substituted blob would pass every other check. A blob whose hash
+   mismatches, or that no verified object references, fails the whole
+   import. A partial or tampered export imports nothing.
 4. Ingest then follows the platform's normal rules (#2030: validity at
    ingest, counting at view) — import is not a privileged write path, and
    hosted-origin objects are indistinguishable from self-hosted ones at
