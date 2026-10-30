@@ -716,6 +716,13 @@ in
   # reproduced: a switch that changes a unit's ExecStart restarts that
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
+  # CLI proxy workroots (muse / commandcode / claude-code): the three
+  # units below point their *_PROXY_WORKDIR overrides at the shared
+  # state dir ~/.local/state/cli-proxies, so runtime session state
+  # (warm-session maps, per-conversation workdirs) lives outside the
+  # checkout. The scripts' default (bin/work inside ~/code) dirtied
+  # the primary checkout with every session and blocked pm-git-sync.
+
   # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
   # Provider API rejects the Go plan, so OpenCode talks to the CLI via
   # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
@@ -747,6 +754,7 @@ in
       Environment = [
         "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
         "COMMANDCODE_PROXY_HOST=127.0.0.1"
+        "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
         "COMMANDCODE_PROXY_MAX_TURNS=1"
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
@@ -775,6 +783,7 @@ in
       Environment = [
         "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
         "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
+        "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -811,6 +820,7 @@ in
       Environment = [
         "MUSE_PROXY_PORT=${toString museProxyPort}"
         "MUSE_PROXY_HOST=127.0.0.1"
+        "MUSE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
       ];
     };
     Install.WantedBy = [ "default.target" ];
