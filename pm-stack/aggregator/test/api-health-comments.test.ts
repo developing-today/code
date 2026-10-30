@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 interface HealthBody {
   status: string;
+  version?: string;
   comments?: { pendingMessages: number; pendingGithub: number; total: number };
 }
 
@@ -82,6 +83,7 @@ beforeAll(async () => {
       ...Bun.env,
       PM_AGG_PORT: String(port),
       PM_AGG_SOURCE: "live",
+      PM_AGG_BUILD_VERSION: "test-build-1150",
       PM_AGG_FEED_FILE: feedFile,
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: commentsFile,
@@ -112,6 +114,12 @@ beforeAll(async () => {
 
 afterAll(() => {
   proc?.kill();
+});
+
+describe("/api/health build version (#1150)", () => {
+  test("the API body carries the deployed build marker from PM_AGG_BUILD_VERSION", () => {
+    expect(health?.version).toBe("test-build-1150");
+  });
 });
 
 describe("/api/health comment counts (#1145)", () => {

@@ -25,6 +25,11 @@ export type GhKind = "issue" | "pr";
 export type GhState = "open" | "closed" | "merged";
 
 /** Live state of one GitHub issue or PR, as the projector projects it. */
+/** Per-item resolution source (#1141): which tier of Source.items()
+ *  produced a GhItem. "pool" and "projector" are live data; "fixture"
+ *  is invented fallback state and must never render as if it were live. */
+export type ItemResolution = "pool" | "projector" | "fixture";
+
 export interface GhItem {
   ref: RefKey;
   kind: GhKind;
@@ -42,6 +47,10 @@ export interface GhItem {
   projectArea?: string | null;
   projectHorizon?: string | null;
   projectKind?: string | null;
+  /** How this item was resolved (#1141). Absent = the source did not
+   *  say (e.g. whole-source fixtures mode, whose provenance already
+   *  reports fixtures for every facet). */
+  resolution?: ItemResolution;
 }
 
 /**
@@ -153,6 +162,8 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Grist UI link for this row's document (#1136), when known. */
+  gristUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
@@ -436,7 +447,10 @@ export type OrchestrationSource =
   | "claude"
   | "backlog"
   | "tracked"
-  | "github";
+  | "github"
+  /** Aggregator-synthesized watchdog items (#1148): derived live from
+   *  health/probe diagnoses, never published by the orchestrator. */
+  | "watchdog";
 
 /** A prerequisite: "blocked by X; X is being worked by session S". */
 export interface DependencyRef {
@@ -1259,7 +1273,7 @@ export interface SnapshotRecord {
   serviceId: string;
   metricId: string;
   value: number | { low: number; high: number };
-  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est";
+  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
   limit?: number | null;
   resetsAt?: string | null;
   source: UsageSourceClass;
