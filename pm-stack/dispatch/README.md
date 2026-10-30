@@ -130,8 +130,10 @@ actor, workflow_ref}`) is recorded in the task payload.
 
 ## GitHub Actions (reusable)
 
-Two composite actions in this repo wrap the dispatch endpoints so
-call sites do not hand-roll the OIDC + curl plumbing:
+Three composite actions in this repo wrap dispatch so call sites do
+not hand-roll the OIDC + curl plumbing. Two are low-level primitives
+that wrap the dispatch endpoints directly; the third is the
+task-level entry point built on top of them:
 
 - `.github/actions/pm-dispatch-start` ("the starter") — POSTs to
   `/v1/sessions`; outputs `task_id`, `session_id`, `issue_number`
@@ -139,6 +141,12 @@ call sites do not hand-roll the OIDC + curl plumbing:
 - `.github/actions/pm-dispatch-queue` ("the queuer") — POSTs to
   `/v1/tasks`, including the `issue` / `issue_number` inputs;
   outputs `task_id`, `issue_number` and `issue_url`.
+- `.github/actions/pm-dispatch-task` ("the task action") — dispatches
+  a named, recurring task (`bolt`, `palette`, `suggestions`,
+  `ci-fix`, …) through the starter/queuer as `uses:` steps, using the
+  prompt library bundled with the action. It contains no OIDC or HTTP
+  plumbing of its own. Outputs `task_id`, `session_id`,
+  `issue_number` and `issue_url`, whichever apply to the path taken.
 
 Usage, pinned to `@main` so fleet call sites pick up central updates:
 
@@ -147,7 +155,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # required — the actions mint an OIDC token (aud pm-dispatch)
+      id-token: write
       contents: read
     steps:
       - uses: developing-today/code/.github/actions/pm-dispatch-start@main
@@ -168,8 +176,10 @@ under the grants mesh any allowlisted repo may target any
 allowlisted repo. See `examples/dispatch-workflow.yml` for a
 complete workflow.
 
-Both actions take the prompt from one of three inputs. `prompt` is
-not required at the YAML level (a composite action cannot express
+### Prompt sources (the primitives)
+
+Both primitives take the prompt from one of three inputs. `prompt`
+is not required at the YAML level (a composite action cannot express
 one-of); the action's step enforces that one source yields text.
 The sources are resolved in this order:
 
@@ -198,35 +208,98 @@ clear error. For example, with a prompt kept in the calling repo:
           prompt-file: "prompts/nightly-triage.md"
 ```
 
-### pm-dispatch-ci-fix
+The primitives keep these overrides unchanged. The task action
+below uses the same three overrides and adds its prompt library as
+a fourth, final source.
 
-`.github/actions/pm-dispatch-ci-fix` ("the CI fixer") is a third
-composite action built on the two above — it contains no OIDC or HTTP
-plumbing of its own and dispatches through the starter/queuer as
-`uses:` steps. Give it a failed workflow run (`workflow`, `run-id`,
-`run-url`, `branch`, `sha`, and optionally `pr-number`) and it:
+### pm-dispatch-task — the task-level entry point
 
-1. Composes a fixer prompt for the run: diagnose from the failed jobs
-   and logs (`gh run view <run-id> --log-failed` in the target repo),
-   fix the root cause on the run's branch, and open or update a PR per
-   the repo's conventions that references the run and the tracking
-   issue. The priority is `high` when the failed branch is the repo's
-   default branch, otherwise `normal`.
+`.github/actions/pm-dispatch-task` is the entry point callers
+should normally use. A call names a task and a target repo, and the
+action supplies the prompt from its bundled library:
+
+```yaml
+jobs:
+  bolt:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: bolt
+          repo: developing-today/code
+```
+
+Inputs: `task` (required), `repo` (default: the caller's
+repository), `title`, `model`, `priority`, the prompt overrides
+`prompt` / `prompt-file` / `prompt-url`, the ci-fix context inputs
+below, and `default-branch` (default: the caller's repository's
+default branch). `task` accepts ANY string: the name selects the
+library prompt, so a future library entry works with no change to
+the action. For non-ci-fix tasks an empty `title` defaults to
+`Scheduled <Task> — <repo>`, and the task is dispatched through the
+starter with `wait: "true"`.
+
+#### The prompt library
+
+The library lives in `.github/actions/pm-dispatch-task/prompts/`,
+one Markdown file per task:
+
+- `bolt.md` — one small, measurable performance improvement, with
+  before/after evidence.
+- `palette.md` — one micro-UX / accessibility improvement.
+- `suggestions.md` — a verified code-review pass (Cleanup /
+  Performance / Security / Code Health / Testing) that files at
+  most 5 issues with file/line evidence.
+- `ci-fix.md` — the ci-fix prompt template (see "ci-fix mode"
+  below); it carries `{{workflow}}`, `{{run_id}}`, `{{run_url}}`,
+  `{{branch}}`, `{{sha}}` and `{{pr}}` placeholders that the action
+  substitutes from the ci-fix context inputs before dispatching.
+
+Prompt resolution in the task action follows the primitives' order
+and adds the library as the final fallback:
+
+1. `prompt-file` (relative to the caller's workspace),
+2. `prompt-url` (`curl -fsS`),
+3. `prompt` (inline),
+4. the library file `prompts/<task>.md`.
+
+The first non-empty source wins. If none yields text — an unknown
+task with no override — the step fails with
+`no library prompt for task '<task>'`.
+
+To add a common task: drop a `prompts/<task>.md` file into the
+library in this repo, and add one step/call for it in the caller.
+No change to the action itself is needed.
+
+#### ci-fix mode (`task: ci-fix`)
+
+`task: ci-fix` replaces the old standalone `pm-dispatch-ci-fix`
+action (removed; no caller ever used it). Give the task action the
+failed run's context — `workflow`, `run-id`, `run-url`, `branch`,
+`sha`, and optionally `pr` — and it:
+
+1. Resolves the prompt (normally the `ci-fix.md` library template)
+   and substitutes the run-context placeholders.
 2. Dedupes on the conventional tracking-issue title
    `ci-fix: <workflow> failing on <branch>`: it searches the target
    repo's open issues for that exact title.
-3. Dispatches by case:
+3. Dispatches by case, with priority `high` when the failed branch
+   is the repo's default branch and `normal` otherwise (unless the
+   caller passes an explicit `priority`):
    - an open issue with the conventional title already exists — the
      queuer attaches a new `ci_investigation` task to that issue
-     (`issue_number`), so repeat failures of the same workflow on the
-     same branch do not pile up duplicate issues;
-   - no such issue and the failed branch is the default branch — the
-     starter runs with `wait: "true"`, creating the tracking issue
-     (titled with the conventional title) and launching a session
-     immediately;
+     (`issue_number`), so repeat failures of the same workflow on
+     the same branch do not pile up duplicate issues;
+   - no such issue and the failed branch is the default branch —
+     the starter runs with `wait: "true"`, creating the tracking
+     issue (titled with the conventional title) and launching a
+     session immediately;
    - no such issue and the failed branch is any other branch — the
-     queuer runs with `issue: "true"`, queueing a `ci_investigation`
-     task and creating the tracking issue.
+     queuer runs with `issue: "true"`, queueing a
+     `ci_investigation` task and creating the tracking issue.
 
 ```yaml
 jobs:
@@ -239,8 +312,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
+      - uses: developing-today/code/.github/actions/pm-dispatch-task@main
         with:
+          task: ci-fix
           workflow: ${{ github.event.workflow_run.name }}
           run-id: ${{ github.event.workflow_run.id }}
           run-url: ${{ github.event.workflow_run.html_url }}
@@ -249,11 +323,20 @@ jobs:
 ```
 
 On top of the starter/queuer requirement (`permissions: id-token:
-write`), the calling job MUST also provide `GH_TOKEN` in the job
-environment (as above) with issues read permission in the target repo;
-the dedupe search fails loudly without it. The step summary records
-the dedupe mode, the tracking issue and the dispatched task (and the
-session, when the starter ran).
+write`), a ci-fix calling job MUST also provide `GH_TOKEN` in the
+job environment (as above) with issues read permission in the
+target repo; the dedupe search fails loudly without it. The step
+summary records the task, the path taken, and the dispatched task /
+session / issue ids.
+
+#### Design note
+
+Every call carries `repo` and `task` explicitly, and the prompt
+library is central (it lives with the action in this repo, not in
+the callers). Because of that, repo- or time-based filtering — for
+example "only run `suggestions` on repos X and Y", or "skip `bolt`
+overnight" — can later be added inside the task action without
+touching any caller.
 
 ## Configuration (env)
 | Name | Default | Notes |
