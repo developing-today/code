@@ -655,6 +655,12 @@ func TestSplitEnvStringUsesEnvSemantics(t *testing.T) {
 		{`MODE=prod echo ${MODE}`, []string{"MODE=prod", "echo", "prod"}},
 		{`echo a\_b`, []string{"echo", "a b"}},
 		{"echo 'single quoted'", []string{"echo", "single quoted"}},
+		// Inside single quotes only \' and \\ are escapes; every other
+		// backslash is literal, or a regexp like r"\d" loses its
+		// backslash and matches something else (#2611 review).
+		{`python3 -c 'import re; print(bool(re.search(r"\d", "5")))'`,
+			[]string{"python3", "-c", `import re; print(bool(re.search(r"\d", "5")))`}},
+		{`echo 'it\'s'`, []string{"echo", "it's"}},
 	}
 	for _, c := range cases {
 		got, err := SplitEnvString(c.payload)

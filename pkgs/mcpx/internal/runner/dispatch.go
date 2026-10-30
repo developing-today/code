@@ -373,6 +373,18 @@ func SplitEnvString(s string) ([]string, error) {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
+		case c == '\\' && quoted == '\'':
+			// env's manual: inside single quotes only \' and \\ are
+			// escapes; every other backslash stays literal. Decoding
+			// them turned python3 -c '…re.search(r"\d", "5")…' into
+			// r"d" and changed the program's answer (#2611 review).
+			if i+1 < len(s) && (s[i+1] == '\'' || s[i+1] == '\\') {
+				i++
+				word.WriteByte(s[i])
+			} else {
+				word.WriteByte(c)
+			}
+			started = true
 		case c == '\\':
 			if i+1 >= len(s) {
 				return nil, fmt.Errorf("trailing backslash in env -S payload %q", s)
