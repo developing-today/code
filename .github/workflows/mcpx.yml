@@ -514,6 +514,18 @@ jobs:
           # Every measurement is tagged with its run attempt; re-run
           # attempts reuse run_started_at (the current attempt), so a
           # re-run never inherits the first attempt's timings.
+          def owned_durations(job_list):
+              out = []
+              for j in job_list:
+                  if (j.get("conclusion") or "") == "skipped":
+                      continue
+                  if j.get("name") not in OWNED_LEGS:
+                      continue
+                  s, e = ts(j.get("started_at")), ts(j.get("completed_at"))
+                  if s and e:
+                      out.append((e - s).total_seconds())
+              return out
+
           median5, sample = None, []
           if is_main:
               page = 1
@@ -529,15 +541,25 @@ jobs:
                       if str(r["id"]) == str(run_id):
                           continue
                       jr = api(f"repos/{repo}/actions/runs/{r['id']}/jobs?per_page=100").get("jobs", [])
-                      ds = []
-                      for j in jr:
-                          if (j.get("conclusion") or "") == "skipped":
-                              continue
-                          if j.get("name") not in OWNED_LEGS:
-                              continue
-                          s, e = ts(j.get("started_at")), ts(j.get("completed_at"))
-                          if s and e:
-                              ds.append((e - s).total_seconds())
+                      ds = owned_durations(jr)
+                      if not ds:
+                          # Same retained-result trap as the current
+                          # run above: a budget-only re-run ("Re-run
+                          # failed jobs" after the budget job failed)
+                          # leaves the latest attempt holding no owned
+                          # leg, while the retained test result sits in
+                          # an earlier attempt — filter=latest would
+                          # drop that run from the median entirely.
+                          # Fall back to all attempts, keeping each
+                          # job's most recently completed entry
+                          # (Codex P2 on #2708).
+                          all_jr = api(f"repos/{repo}/actions/runs/{r['id']}/jobs?filter=all&per_page=100").get("jobs", [])
+                          by_name = {}
+                          for j in all_jr:
+                              e = ts(j.get("completed_at"))
+                              if e and (j["name"] not in by_name or e > ts(by_name[j["name"]]["completed_at"])):
+                                  by_name[j["name"]] = j
+                          ds = owned_durations(list(by_name.values()))
                       if ds:
                           sample.append(max(ds))
                       if len(sample) == 5:
