@@ -304,6 +304,13 @@ describe("dialog input interaction", () => {
     ["0", "zero"],
     ["-3", "negative"],
     ["2.9", "fractional"],
+    // #2776: non-decimal spellings that Number() reinterprets as the
+    // in-range line 2 — out-of-range spellings could not distinguish
+    // acceptance from rejection on this 3-line fixture.
+    ["0x2", "hex for line 2"],
+    ["0b10", "binary for line 2"],
+    ["2.0", "decimal point for line 2"],
+    ["+2", "signed line 2"],
     ["999", "out of range"],
     ["", "empty"],
   ])(
