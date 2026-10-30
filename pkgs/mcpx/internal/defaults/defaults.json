@@ -146,6 +146,11 @@
     "remoteOutput": "structured",
     "delivery": "reference"
   },
+  "cache": {
+    "maxBytes": "1GiB",
+    "maxAge": "720h",
+    "leaseStaleAge": "1h"
+  },
   "artifacts": {
     "ttl": "24h",
     "maxBytes": "64MiB",
