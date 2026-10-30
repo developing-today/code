@@ -333,26 +333,6 @@
         "type": "github"
       }
     },
-    "devshell": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs-unstable"
-        ]
-      },
-      "locked": {
-        "lastModified": 1791490533,
-        "narHash": "sha256-5lEbHDDZa9WV6nMSZoN2MHrh/kOFgqKIChVoBYx/fS8=",
-        "owner": "numtide",
-        "repo": "devshell",
-        "rev": "7f669063c38ed44f55931ce8c8e04b235bc4e13d",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "devshell",
-        "type": "github"
-      }
-    },
     "dezren39-nix": {
       "inputs": {
         "bdwgc": "bdwgc",
@@ -1121,26 +1101,6 @@
       "original": {
         "owner": "cachix",
         "repo": "git-hooks.nix",
-        "type": "github"
-      }
-    },
-    "gitignore": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs-unstable"
-        ]
-      },
-      "locked": {
-        "lastModified": 1762808025,
-        "narHash": "sha256-XmjITeZNMTQXGhhww6ed/Wacy2KzD6svioyCX7pkUu4=",
-        "owner": "hercules-ci",
-        "repo": "gitignore.nix",
-        "rev": "cb5e3fdca1de58ccbc3ef53de65bd372b48f567c",
-        "type": "github"
-      },
-      "original": {
-        "owner": "hercules-ci",
-        "repo": "gitignore.nix",
         "type": "github"
       }
     },
@@ -3320,7 +3280,6 @@
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",
-        "devshell": "devshell",
         "dezren39-nix": "dezren39-nix",
         "disko": "disko_2",
         "esp-dev": "esp-dev",
@@ -3329,7 +3288,6 @@
         "flake-parts": "flake-parts_4",
         "flake-utils": "flake-utils_5",
         "git-hooks": "git-hooks",
-        "gitignore": "gitignore",
         "helium": "helium",
         "hercules-ci-effects": "hercules-ci-effects",
         "home-manager": "home-manager_2",
