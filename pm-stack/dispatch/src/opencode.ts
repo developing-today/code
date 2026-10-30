@@ -40,7 +40,13 @@ export class OpenCodeClient {
     if (!res.ok) {
       throw new OpenCodeError(`opencode ${method} ${path} failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
-    return text.trim() ? JSON.parse(text) : null;
+    if (!text.trim()) return null;
+    const parsed: unknown = JSON.parse(text);
+    // The v2 API wraps responses in a {data: …} envelope.
+    if (typeof parsed === "object" && parsed !== null && "data" in parsed) {
+      return (parsed as { data: unknown }).data;
+    }
+    return parsed;
   }
 
   async createSession(opts: {
