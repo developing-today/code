@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import net from 'node:net';
-import { spawn, execSync, execFile } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,8 +45,24 @@ const publishEndpoint = () => {
   } catch {}
 };
 
-// Synchronize freshly refreshed ChatGPT OAuth tokens from Codex to OpenCode SQLite DB
+// Synchronize freshly refreshed ChatGPT OAuth tokens from Codex to OpenCode SQLite DB.
+// This sync was silently dead from the day it shipped, for two independent
+// reasons (#2533):
+//  1. It built its Python child as a shell string, `python3 -c` +
+//     JSON.stringify(script). JSON.stringify encodes newlines as literal
+//     backslash-n, which the shell does not expand inside double quotes, so
+//     Python received one line full of literal \n and died with a SyntaxError
+//     on every call; stdio:'ignore' plus an empty catch swallowed it.
+//  2. In the deployed service environment there is no python3 on PATH at all
+//     (NixOS: python3 lives in the user profile, which the proxy unit's PATH
+//     does not include), so the child could not even have spawned.
+// The sync therefore runs in-process via node:sqlite — no shell, no child
+// process, no interpreter on PATH, no token interpolation. Only the ACTIVE
+// base `openai` credential row is ever touched (never the inactive second
+// row, never `openai.alternate`), and both outcomes are logged: a failed sync
+// must never again be indistinguishable from a successful one.
 const syncCodexTokensToOpenCode = () => {
+  let db = null;
   try {
     const codexAuthPath = `${process.env.HOME}/.codex/auth.json`;
     const dbPath = `${process.env.HOME}/.local/share/opencode/opencode.db`;
@@ -55,26 +72,41 @@ const syncCodexTokensToOpenCode = () => {
     const tokens = codexAuth.tokens;
     if (!tokens || !tokens.access_token) return;
 
-    const script = `import sqlite3, json, time
-conn = sqlite3.connect('${dbPath}')
-c = conn.cursor()
-c.execute('SELECT id, value FROM credential WHERE integration_id="openai"')
-for row in c.fetchall():
-    val = json.loads(row[1])
-    if val.get('type') == 'oauth':
-        val['access'] = ${JSON.stringify(tokens.access_token)}
-        if ${JSON.stringify(tokens.refresh_token || '')}:
-            val['refresh'] = ${JSON.stringify(tokens.refresh_token || '')}
-        if ${JSON.stringify(tokens.account_id || '')}:
-            val['metadata'] = val.get('metadata') or {}
-            val['metadata']['accountID'] = ${JSON.stringify(tokens.account_id || '')}
-        val['expires'] = int(time.time() * 1000) + 30 * 86400 * 1000
-        c.execute('UPDATE credential SET value = ?, time_updated = ? WHERE id = ?', (json.dumps(val), int(time.time() * 1000), row[0]))
-conn.commit()
-`;
-    execSync(`python3 -c ${JSON.stringify(script)}`, { stdio: 'ignore' });
+    // Lazy require: if node:sqlite is ever unavailable, the sync logs a
+    // visible failure instead of taking the whole proxy down at import time.
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+    db = new DatabaseSync(dbPath, { timeout: 5000 });
+    const rows = db
+      .prepare("SELECT id, value FROM credential WHERE integration_id = 'openai' AND active = 1")
+      .all();
+    const update = db.prepare('UPDATE credential SET value = ?, time_updated = ? WHERE id = ?');
+    const now = Date.now();
+    let updated = 0;
+    for (const row of rows) {
+      let val;
+      try {
+        val = JSON.parse(row.value);
+      } catch {
+        continue;
+      }
+      if (!val || val.type !== 'oauth') continue;
+      val.access = tokens.access_token;
+      if (tokens.refresh_token) val.refresh = tokens.refresh_token;
+      if (tokens.account_id) {
+        val.metadata = val.metadata || {};
+        val.metadata.accountID = tokens.account_id;
+      }
+      val.expires = now + 30 * 86400 * 1000;
+      update.run(JSON.stringify(val), now, row.id);
+      updated += 1;
+    }
+    console.log(`[codex-proxy] codex-token-sync: updated ${updated} credential row(s)`);
   } catch (err) {
-    // Non-fatal background sync
+    console.error(`[codex-proxy] codex-token-sync FAILED: ${(err && err.message) || err}`);
+  } finally {
+    try {
+      if (db) db.close();
+    } catch {}
   }
 };
 
