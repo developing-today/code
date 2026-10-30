@@ -37,19 +37,34 @@ a review round.
 
 ## Verdict
 
-The premise is **sound and the primitives already exist; the attestation
-layer does not**. Verified against `pkgs/id` (wave 1, 2026-10-29;
-re-verified 2026-10-30 on `main` c90fcbc7):
+The premise is **sound: the signed-object substrate exists, but the
+attestation layer does not — and one substrate prerequisite,
+player-signed move capture for world games, is also missing** (third
+bullet). Verified against `pkgs/id` (wave 1, 2026-10-29; re-verified
+2026-10-30 on `main` c90fcbc7):
 
-- Every object in the system is a signed, chained event (`src/chain.rs`:
-  canonical encoding, `verify_strict` signatures, per-author
-  sequence/backlink chains). A match played over ID is therefore already
-  two signed move-chains — exactly the evidence base attestation needs.
+- Every object in the event store is a signed, chained event
+  (`src/chain.rs`: canonical encoding, `verify_strict` signatures,
+  per-author sequence/backlink chains) — the substrate attestation
+  objects (agreement, claims, decisions, objections) are built from.
 - The event store already treats **equivocation as provable**: a fork
   (two events at one sequence number) produces a kept fork proof and
   voids the author's events from the fork point
-  (`src/event_store/ingest.rs`). A player who rewrites their match
-  history manufactures their own cheating evidence.
+  (`src/event_store/ingest.rs`). A player who rewrites a signed chain
+  manufactures their own cheating evidence.
+- **Missing prerequisite — player-signed move capture (found in review,
+  2026-10-30):** the world/game path does *not* produce player-signed
+  move chains today. `WorldEvent` (`src/world/mod.rs`) carries only a
+  host sequence, a server-assigned participant ID, and a payload — no
+  signature, no chain link — and the actor persists game inputs as
+  `JournalEntry::Committed` (`src/world/actor.rs`) without signing
+  through `chain.rs`. The tic-tac-toe example uses this path. So the
+  move-evidence guarantees below (witness replay over *signed* logs,
+  fork-proofs voiding a rewritten move history) hold only once game
+  inputs are captured as player-signed chained events and integrated
+  with the event store. That capture layer is a buildable prerequisite
+  of this design, not existing functionality; it is filed as follow-up
+  **#2814** and is an explicit input to #2039.
 - No attestation, concession, witness, or result object exists in
   `pkgs/id/src` today (code search, 2026-10-30: `witness` — 0 hits in
   `src/`; `attestation` — a single unrelated comment about build
@@ -71,10 +86,24 @@ re-verified 2026-10-30 on `main` c90fcbc7):
    author asserts it, final-state hash, frontier hashes of both chains}`
    signed by the author. Each player files one; neither player's claim
    alone is a result.
-3. **Witness decision** — `{match, both result claims + both move-log
-   hashes, logic hash, outcome}` signed by the witness named in the
-   agreement, issued after running the agreed logic over both submitted
-   logs.
+3. **Witness decision** — `{match, logic hash, outcome, evidence}`
+   signed by the witness named in the agreement, where `evidence` is
+   one of:
+   - `complete {claim_a, claim_b, log_hash_a, log_hash_b}` — the normal
+     case: issued after running the agreed logic over both submitted
+     logs; or
+   - `partial {received: [the claim/log hashes actually submitted],
+     missing_from: <player>, basis: <the genesis agreement's
+     non-submission clause + the submission deadline + the witness's
+     signed non-receipt statement>}` — the non-submission case (below):
+     the decision rests on the submitted evidence plus the recorded
+     absence of the rest.
+   A decision whose `evidence` is `partial` is only valid if its
+   `basis` checks out against the genesis agreement; that is what keeps
+   silence from blocking adjudication without letting a witness invent
+   a no-evidence decision (review fix, 2026-10-30: as first written,
+   the decision required both claims and both logs, so the
+   non-submission rule could never actually be exercised).
 4. **Objection** — `{target: claim or decision, grounds, author's
    frontier}` signed by either player within the window. An objection
    never edits anything; it moves the result to *disputed*.
@@ -148,10 +177,25 @@ metaphysical truth — registries set their own bar on top.
   in-window if (a) signed within the window after the decision, **or**
   (b) the objector's chain frontier shows the objection was among their
   first actions after first syncing the decision — i.e. they objected
-  promptly *once they could have seen it*. (b) is checkable from causal
-  frontiers, needs no trusted clock, and cannot be gamed by delaying
-  one's own sync indefinitely *if* registries additionally apply an
-  outer wall-clock cap (e.g. objections after 30 days never reopen a
+  promptly *once they could have seen it*.
+- **Honesty limit on (b) (found in review, 2026-10-30):** a frontier
+  proves the causal order of what its author *chose to include*, not
+  when the author first saw an object. Frontiers are self-authored: a
+  player who received the decision on day 1 can omit it from every
+  subsequent frontier and first reference it in an objection on day 20,
+  and nothing in frontier validation (`ChainExt::validate` checks
+  frontier structure, not completeness of the author's knowledge)
+  detects the omission. So (b) cannot by itself enforce the short
+  window against an online-but-dishonest objector — it protects the
+  genuinely-offline player, which is its actual purpose, but it does
+  not prove promptness. The synthesis (#2039) must pick one of two
+  honest positions: (i) accept objections for the whole outer-cap
+  period (the short window becomes a social norm/template default, the
+  cap the enforceable bound), or (ii) add independently verifiable
+  receipt evidence — e.g. sync receipts countersigned by the peer or
+  gatherer who served the decision — so first-receipt is checkable by
+  someone other than the objector. Either way, registries should apply
+  an outer wall-clock cap (e.g. objections after 30 days never reopen a
   `final` result — finality must eventually be final).
 - An objection's only automatic effect is `disputed`. Resolution of a
   dispute is the audit path (#2038): replay decides who is right, and
@@ -282,6 +326,9 @@ ungated from this side. Open decisions it inherits from here:
 
 - Wire format and template defaults (window lengths, outer cap,
   adverse-inference wording).
+- Objection-window enforcement: accept objections through the outer
+  cap, or add countersigned sync-receipt evidence so the short window
+  is enforceable (see the honesty limit on the frontier rule, above).
 - Witness non-response/fallback timing.
 - How registries express "acceptable witness/logic" policy (likely a
   #2030 writer-set cousin — a *witness set* on the registry's view).
@@ -294,10 +341,21 @@ ungated from this side. Open decisions it inherits from here:
   example — genesis agreement + dual result claims + agreed/final
   states, played and synced offline. It is a **proof of concept** under
   the program rule: it validates the object shapes; no permanent feature
-  is built on it unreviewed.
+  is built on it unreviewed. Note the prerequisite below: played through
+  the world path, its "signed move log" evidence currently rests on
+  host-journaled inputs, so the PoC either builds on #2814 or scopes
+  its claims to the attestation objects alone.
+- **Prerequisite issue #2814** (filed in this pass, from the Codex
+  review of this document's PR): player-signed move capture for world
+  games — capture each player's input as a player-signed chained event
+  and integrate it with the event store, so witness replay and
+  fork-proof guarantees have signed move evidence to stand on. It is a
+  permanent-feature prerequisite and gets its own review round; it is
+  not folded silently into the PoC.
 - No other buildable piece is identified ahead of the #2039 synthesis:
   object wire formats and template defaults are synthesis decisions, so
-  implementation issues beyond the PoC wait for #2039 by design (a
-  design with no implementation link would be a gap — here the link is
-  #2248 for validation and #2039 for the v1 design that spawns the real
+  implementation issues beyond the PoC and its prerequisite wait for
+  #2039 by design (a design with no implementation link would be a
+  gap — here the links are #2248 for validation, #2814 for the
+  prerequisite, and #2039 for the v1 design that spawns the remaining
   implementation issues).
