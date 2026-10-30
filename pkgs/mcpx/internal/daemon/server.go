@@ -24,6 +24,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
+	"github.com/dezren39/mcpx/internal/hooks"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/logstore"
 	"github.com/dezren39/mcpx/internal/mcpclient"
@@ -64,6 +65,12 @@ type Server struct {
 
 	// Events carries everything the daemon notices, to every subscriber.
 	Events *events.Bus
+
+	// hookRunner runs the config-declared hooks (the `hooks` setting)
+	// over Events. Nil when none are declared, or when the declaration
+	// failed to parse -- doctor reports that case, and a daemon that
+	// refuses to start over an observer's typo helps nobody.
+	hookRunner *hooks.Runner
 
 	// Origins decides which browser origins may use the daemon at all; see
 	// refuseBrowserPages. The zero value allows loopback origins only.
@@ -244,6 +251,17 @@ func NewServer(opts Options) (*Server, error) {
 	}
 	reg.UseSettings(opts.Settings)
 	reg.InstallHooks(srv.Events, broker, nil)
+	if raw := opts.Settings.String("hooks"); raw != "" {
+		declared, herr := hooks.Parse(raw, opts.Settings.Duration("hooks.timeout"))
+		if herr != nil {
+			opts.Logger.Printf("hooks: %v (no hooks installed)", herr)
+		} else if len(declared) > 0 {
+			srv.hookRunner = hooks.NewRunner(srv.Events, declared, func(f string, a ...any) {
+				opts.Logger.Printf(f, a...)
+			})
+			srv.hookRunner.Start()
+		}
+	}
 	srv.initConsumer()
 	srv.tokenStore, _ = logstore.NewTokenStore(filepath.Join(opts.Paths.State, "tokens.db"))
 	if opts.Config != nil {
@@ -256,6 +274,10 @@ func NewServer(opts Options) (*Server, error) {
 
 // Registry exposes the pool registry (used by the in-process fast path).
 func (s *Server) Registry() *Registry { return s.reg }
+
+// HookRunner exposes the declared-hook runner, for status and tests.
+// Nil when no hooks are declared.
+func (s *Server) HookRunner() *hooks.Runner { return s.hookRunner }
 
 // Endpoint is the loopback base URL once Listen has run.
 func (s *Server) Endpoint() string { return s.endpoint }
@@ -775,6 +797,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/restart", s.handleRestart)
 	mux.HandleFunc("GET /dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /v1/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /dashboard/", s.handleDashboardAsset)
+	mux.HandleFunc("GET /v1/dashboard/", s.handleDashboardAsset)
 	mux.HandleFunc("GET /v1/metrics/tokens", s.handleMetricsTokens)
 	mux.HandleFunc("GET /v1/metrics/tools", s.handleMetricsTools)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)

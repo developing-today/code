@@ -89,7 +89,8 @@ pub const DEFAULT_SAVE_COOLDOWN: Duration = Duration::from_secs(5);
 ///
 /// Tracks the last save time for each file (by name) and rejects saves
 /// that happen within the cooldown period. This prevents rapid-fire saves
-/// from creating excessive archive entries.
+/// from creating excessive archive entries. Entries are dropped once
+/// their cooldown lapses, so the map holds only files saved recently.
 #[derive(Debug, Clone)]
 pub struct SaveRateLimiter {
     /// Map of filename → last save time.
@@ -112,7 +113,7 @@ impl SaveRateLimiter {
     /// Returns `Ok(())` if the save is allowed, or `Err(remaining)` with
     /// the time remaining until the next save is allowed.
     pub async fn check(&self, name: &str) -> Result<(), Duration> {
-        let map = self.last_save.lock().await;
+        let mut map = self.last_save.lock().await;
         if let Some(last) = map.get(name) {
             let elapsed = last.elapsed();
             if elapsed < self.cooldown {
@@ -120,6 +121,9 @@ impl SaveRateLimiter {
                 // ZERO is the unreachable fallback (no time remaining).
                 return Err(self.cooldown.checked_sub(elapsed).unwrap_or(Duration::ZERO));
             }
+            // The cooldown has lapsed, so the entry can no longer refuse a
+            // save; drop it instead of keeping the name forever (#1713).
+            map.remove(name);
         }
         Ok(())
     }
@@ -127,6 +131,10 @@ impl SaveRateLimiter {
     /// Record a successful save for the given filename.
     pub async fn record(&self, name: &str) {
         let mut map = self.last_save.lock().await;
+        // Sweep entries whose cooldown has lapsed: they can no longer
+        // refuse a save, and keeping them would grow the map by one entry
+        // for every filename ever saved (#1713).
+        map.retain(|_, last| last.elapsed() < self.cooldown);
         map.insert(name.to_owned(), Instant::now());
     }
 }
@@ -374,6 +382,37 @@ fn finish_router(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_save_limiter_refuses_within_the_cooldown_only_for_that_file() {
+        let limiter = SaveRateLimiter::new(Duration::from_secs(5));
+        limiter.record("a.txt").await;
+        let remaining = limiter.check("a.txt").await.unwrap_err();
+        assert!(remaining <= Duration::from_secs(5) && !remaining.is_zero());
+        assert!(limiter.check("b.txt").await.is_ok(), "other files are not limited");
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_record_sweeps_expired_entries() {
+        let limiter = SaveRateLimiter::new(Duration::from_millis(60));
+        limiter.record("a.txt").await;
+        limiter.record("b.txt").await;
+        assert_eq!(limiter.last_save.lock().await.len(), 2);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        limiter.record("c.txt").await;
+        let map = limiter.last_save.lock().await;
+        assert_eq!(map.len(), 1, "only the fresh entry remains: {map:?}");
+        assert!(map.contains_key("c.txt"));
+    }
+
+    #[tokio::test]
+    async fn test_save_limiter_check_drops_the_expired_entry_it_finds() {
+        let limiter = SaveRateLimiter::new(Duration::from_millis(60));
+        limiter.record("a.txt").await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(limiter.check("a.txt").await.is_ok(), "the cooldown has lapsed");
+        assert!(limiter.last_save.lock().await.is_empty());
+    }
 
     #[test]
     fn test_load_asset_urls_from_manifest() {

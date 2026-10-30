@@ -19,7 +19,7 @@
 import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
 import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
-import type { ProvenanceDetail } from "./model.ts";
+import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 
@@ -118,6 +118,29 @@ export interface PageHealth {
   ageMs: number | null;
 }
 
+/** Item resolution coverage (#1141): of the items one resolution pass
+ *  served, how many came from live data (project pool + projector) and
+ *  how many from fixtures. Untagged items (the source did not say) are
+ *  counted in neither bucket — health never invents a source. */
+export interface ItemsCoverage {
+  resolvedLive: number;
+  fixture: number;
+  total: number;
+  /** resolvedLive / total; null when nothing tagged was resolved. */
+  ratio: number | null;
+}
+
+export function summarizeItemCoverage(items: Map<RefKey, GhItem>): ItemsCoverage {
+  let resolvedLive = 0;
+  let fixture = 0;
+  for (const item of items.values()) {
+    if (item.resolution === "fixture") fixture++;
+    else if (item.resolution === "pool" || item.resolution === "projector") resolvedLive++;
+  }
+  const total = resolvedLive + fixture;
+  return { resolvedLive, fixture, total, ratio: total ? resolvedLive / total : null };
+}
+
 export interface HealthView {
   /** The aggregator process itself is up if it assembled this view. */
   status: "ok";
@@ -152,6 +175,8 @@ export interface HealthView {
   };
   pages: PageHealth[];
   facets: ProvenanceDetail | null;
+  /** #1141: resolved-live vs fixture counts from the priming pass. */
+  itemsCoverage: ItemsCoverage | null;
   /** Dashboard comment loops (#1145): pending triage/posting counts,
    *  so an unworked comment queue is visible on /health. */
   comments: PendingCommentCounts;
@@ -227,6 +252,7 @@ export interface HealthInputs {
   feedFileMtimeMs: number | null;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
+  itemsCoverage?: ItemsCoverage | null;
   comments?: PendingCommentCounts;
 }
 
@@ -366,6 +392,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     facets: inputs.detail ?? null,
+    itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
   };
 }

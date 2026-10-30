@@ -195,6 +195,6 @@ describe("renderBoard in-flight lane", () => {
     expect(html).toContain(GENERATED.slice(0, 10)); // the lane header carries the section's date
     expect(html).toContain('href="https://github.com/developing-today/code/issues/944"');
     expect(html).toContain("completion history");
-    expect(html.indexOf("in flight — orchestrator")).toBeLessThan(html.indexOf("done ("));
+    expect(html.indexOf("in flight — orchestrator")).toBeLessThan(html.indexOf("Done recently ("));
   });
 });

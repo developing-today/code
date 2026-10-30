@@ -208,7 +208,7 @@ func TestTTLRemainingNeverGoesNegative(t *testing.T) {
 }
 
 func TestItemReadRenewsButCollectionReadDoesNot(t *testing.T) {
-	// The convention (docs/decisions/0005-ttl-touch-on-read.md): an item
+	// The convention (docs/decisions/0006-ttl-touch-on-read.md): an item
 	// read is use and renews; a collection read is a listing and does not.
 	b := open(t)
 	b.Configure(2*time.Second, time.Hour)

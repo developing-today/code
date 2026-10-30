@@ -178,4 +178,19 @@ describe("renderProjects", () => {
     expect(filtered).toContain("EPIC: Basement cluster");
     expect(filtered).not.toContain("Stage 5");
   });
+
+  test("shows the (unset) bucket for Area-unset items and filters to it (#1143)", () => {
+    const pool = parseProjectItems(GQL);
+    // The fixture's Stage 5 item carries no Area; the EPIC carries lab-cluster.
+    const html = renderProjects(pool, PROV, {});
+    expect(html).toContain("(unset) (1)");
+    expect(html).toContain(`/projects?area=${encodeURIComponent("(unset)")}`);
+    expect(html).toContain("carry no Area");
+    const unsetOnly = renderProjects(pool, PROV, { area: "(unset)" });
+    expect(unsetOnly).toContain("Stage 5");
+    expect(unsetOnly).not.toContain("EPIC: Basement cluster");
+    // No unset items -> no empty unset bucket or banner.
+    const noUnset = renderProjects([pool[0]], PROV, {});
+    expect(noUnset).not.toContain("(unset)");
+  });
 });

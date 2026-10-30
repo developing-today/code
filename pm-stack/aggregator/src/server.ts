@@ -13,10 +13,11 @@ import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -92,12 +93,16 @@ const source = pickSource();
  * which is precisely what health exists to report.
  */
 let lastPrimedAt = 0;
+/** #1141: item coverage measured by the latest priming pass (below),
+ *  from the same board items() resolution that sets facet provenance. */
+let lastItemsCoverage: ItemsCoverage | null = null;
 let priming: Promise<void> | null = null;
 async function ensureProvenancePrimed(): Promise<void> {
   if (Date.now() - lastPrimedAt < 60_000) return;
   priming ??= (async () => {
     try {
       const { items } = await boardContext();
+      lastItemsCoverage = summarizeItemCoverage(items);
       const refs = [...items.keys()];
       await Promise.allSettled([
         source.roadmap(),
@@ -150,6 +155,7 @@ async function healthContext(prime = true): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
@@ -241,8 +247,34 @@ async function boardContext() {
 async function roadmapContext() {
   const rows = await source.roadmap();
   const refs = allRefs(rows);
-  const items = await source.items(refs);
-  return { rows, items };
+  const [items, poolResult] = await Promise.all([
+    source.items(refs),
+    source.projects().then(
+      (pool) => ({ pool, failed: false }),
+      () => ({ pool: [] as ProjectPoolItem[], failed: true }),
+    ),
+  ]);
+  // #1144: reconcile the Grist rows against the Project's Kind=Epic
+  // pool items on every roadmap read, so the page flag and the JSON
+  // drift report always describe the same pass as the rows themselves.
+  // Codex P2 on PR 2428: an unread source is NOT an empty source — in
+  // live mode, a Grist fixtures fallback or a fleet feed with no
+  // projects section means reconciliation is unavailable, and no
+  // drift may be asserted from it.
+  let reconciliation: RoadmapReconciliation;
+  if (cfg.source === "live") {
+    const reasons: string[] = [];
+    const roadmapProv = source.provenance().roadmap;
+    if (!roadmapProv.startsWith("live")) reasons.push(`Grist roadmap read unavailable (${roadmapProv})`);
+    if (poolResult.failed) reasons.push("Project pool read failed");
+    const feed = await loadFeed(cfg.feedFile).catch(() => null);
+    if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
+    else if (feed.projects === undefined) reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length ? unavailableRoadmapReconciliation(reasons.join("; ")) : reconcileRoadmap(rows, poolResult.pool);
+  } else {
+    reconciliation = reconcileRoadmap(rows, poolResult.pool);
+  }
+  return { rows, items, reconciliation };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -537,10 +569,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/roadmap") {
-    const { rows, items } = await roadmapContext();
+    const { rows, items, reconciliation } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail()));
+    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation));
   }
 
   if (path === "/quota") {
@@ -709,8 +741,8 @@ async function handler(req: Request): Promise<Response> {
     return json({ board, items: [...items.values()] });
   }
   if (path === "/api/roadmap.json") {
-    const { rows, items } = await roadmapContext();
-    return json({ rows, items: [...items.values()] });
+    const { rows, items, reconciliation } = await roadmapContext();
+    return json({ rows, items: [...items.values()], drift: roadmapDriftReport(reconciliation) });
   }
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
@@ -860,15 +892,10 @@ async function handler(req: Request): Promise<Response> {
  * #1147's render registry: every successful HTML page render is
  * recorded against its manifest route (subroutes count toward their
  * parent page), so /health can report each page's real last-render
- * time — measured from actual traffic, never self-probed.
+ * time — measured from actual traffic, never self-probed. The mapping
+ * lives with the manifest (#1135) so nav reachability and render
+ * attribution can never disagree.
  */
-function manifestRouteFor(path: string): string | null {
-  const exact = PAGES.find((p) => p.route === path);
-  if (exact) return exact.route;
-  if (path.startsWith("/program/")) return "/program";
-  if (path.startsWith("/quota/service/")) return "/quota";
-  return null;
-}
 
 async function fetchHandler(req: Request): Promise<Response> {
   const res = await handler(req);

@@ -327,6 +327,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
+	a.daemonSocket = paths.Socket
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,
@@ -469,7 +470,7 @@ func (a *App) CmdCompletion(_ context.Context, args []string) error {
 	if shell == "" {
 		return errors.New("usage: mcpx completion <bash|zsh|fish>")
 	}
-	text, err := Completion(shell)
+	text, err := Completion(shell, a.Version)
 	if err != nil {
 		return err
 	}

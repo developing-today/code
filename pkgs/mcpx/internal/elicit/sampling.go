@@ -43,9 +43,12 @@ type sampleMessage struct {
 // decodeSampleContent reads a message's or result's content as blocks.
 //
 // arrayOK is false for a revision that allows only a single block; an array
-// there is a shape the era does not have. Everything else about a block is
-// left to the schema: this checks that content decodes as blocks at all, not
-// that every block type is the one a particular revision introduced.
+// there is a shape the era does not have. A block must also carry the fields
+// its type requires, of the right JSON type: {"type":"text","text":42}
+// decodes into a struct that never looks at text, and an answer shaped like
+// that would otherwise be relayed upstream as a CreateMessageResult nobody
+// sent. Block types this code does not know are left to the schema of the
+// revision that introduced them.
 func decodeSampleContent(raw json.RawMessage, arrayOK bool) ([]sampleBlock, error) {
 	b := bytes.TrimSpace(raw)
 	if len(b) == 0 || string(b) == "null" {
@@ -55,20 +58,98 @@ func decodeSampleContent(raw json.RawMessage, arrayOK bool) ([]sampleBlock, erro
 		if !arrayOK {
 			return nil, fmt.Errorf("content is an array, which this revision does not allow")
 		}
-		var blocks []sampleBlock
-		if err := json.Unmarshal(b, &blocks); err != nil {
+		var raws []json.RawMessage
+		if err := json.Unmarshal(b, &raws); err != nil {
 			return nil, fmt.Errorf("content is not a list of content blocks: %w", err)
+		}
+		blocks := make([]sampleBlock, 0, len(raws))
+		for _, r := range raws {
+			blk, err := decodeSampleBlock(r)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, blk)
 		}
 		return blocks, nil
 	}
 	if b[0] != '{' {
 		return nil, fmt.Errorf("content is neither a content block nor a list of them")
 	}
-	var one sampleBlock
-	if err := json.Unmarshal(b, &one); err != nil {
-		return nil, fmt.Errorf("content is not a content block: %w", err)
+	blk, err := decodeSampleBlock(b)
+	if err != nil {
+		return nil, err
 	}
-	return []sampleBlock{one}, nil
+	return []sampleBlock{blk}, nil
+}
+
+func decodeSampleBlock(raw json.RawMessage) (sampleBlock, error) {
+	var blk sampleBlock
+	if err := json.Unmarshal(raw, &blk); err != nil {
+		return blk, fmt.Errorf("content is not a content block: %w", err)
+	}
+	if err := validateSampleBlockFields(raw, blk.Type); err != nil {
+		return blk, err
+	}
+	return blk, nil
+}
+
+// validateSampleBlockFields checks the fields a block's type requires: a
+// text block's text, an image or audio block's data and mimeType, a
+// tool_use block's name and object input, a tool_result block's content
+// list when it carries one. Type mismatches fail the decode into the typed
+// field, which is the point: presence in the JSON is not presence of a
+// string.
+func validateSampleBlockFields(raw json.RawMessage, typ string) error {
+	switch typ {
+	case "":
+		return fmt.Errorf("a content block carries no type")
+	case "text":
+		var b struct {
+			Text *string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("a text block's text is not a string: %w", err)
+		}
+		if b.Text == nil {
+			return fmt.Errorf("a text block carries no text")
+		}
+	case "image", "audio":
+		var b struct {
+			Data     *string `json:"data"`
+			MimeType *string `json:"mimeType"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("an %s block's data or mimeType is not a string: %w", typ, err)
+		}
+		if b.Data == nil || b.MimeType == nil {
+			return fmt.Errorf("an %s block must carry data and mimeType", typ)
+		}
+	case "tool_use":
+		var b struct {
+			Name  *string         `json:"name"`
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("a tool_use block's name is not a string: %w", err)
+		}
+		if b.Name == nil || *b.Name == "" {
+			return fmt.Errorf("a tool_use block carries no name")
+		}
+		if len(b.Input) == 0 || b.Input[0] != '{' {
+			return fmt.Errorf("a tool_use block's input must be an object")
+		}
+	case "tool_result":
+		var b struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("a tool_result block is malformed: %w", err)
+		}
+		if len(b.Content) > 0 && b.Content[0] != '[' {
+			return fmt.Errorf("a tool_result block's content must be a list of blocks")
+		}
+	}
+	return nil
 }
 
 // ValidateSampleRequest checks a CreateMessageRequest's messages against the

@@ -1,7 +1,7 @@
-# 0005 — TTLs renew by touch-on-read, bounded by a maxAge ceiling
+# 0006 — TTLs renew by touch-on-read, bounded by a maxAge ceiling
 
 ```
-number:   0005
+number:   0006
 status:   accepted
 date:     2026-10-29
 issues:   #1884 · touches #309 #1887 #1893

@@ -107,7 +107,7 @@ type Request struct {
 	// LastTouched is when a pending question was last looked at: its
 	// creation, or the latest item read that renewed it. It is the
 	// anchor of the idle deadline under the touch-on-read convention
-	// (docs/decisions/0005-ttl-touch-on-read.md).
+	// (docs/decisions/0006-ttl-touch-on-read.md).
 	LastTouched time.Time `json:"lastTouched"`
 	// TTLRemainingMs is ExpiresAt minus the moment this representation
 	// was produced, in milliseconds, never negative. It is the shared

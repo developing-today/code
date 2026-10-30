@@ -6,6 +6,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
@@ -36,6 +37,7 @@ import {
   type Comment,
   type DnsSection,
   type GhItem,
+  type ItemResolution,
   type Link,
   type OrchestrationSection,
   type ProjectPoolItem,
@@ -84,6 +86,7 @@ interface KaneoTask {
   status: string;
   priority?: string;
   createdAt?: string;
+  updatedAt?: string;
   externalLinks?: {
     resourceType: string;
     externalId: string;
@@ -128,11 +131,18 @@ async function kaneoProjects(
 async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
   const projects = await kaneoProjects(cfg, cookie);
   const out: BoardItem[] = [];
+  // A task read that fails on every project is a failed fetch, not a
+  // successfully empty board (Codex review, PR #2430): board() must
+  // reach its catch path and serve fixtures with that provenance,
+  // while a successful read the done policy filters to empty stays
+  // live. Partial data (at least one page read) is still served.
+  let anyTaskPageRead = false;
   for (const p of projects) {
     const all: KaneoColumn[] = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${cfg.kaneo.baseUrl}/api/task/tasks/${p.id}?page=${page}`, { Cookie: cookie });
       if (!r.ok) break;
+      anyTaskPageRead = true;
       const body = r.json as { data?: { columns?: KaneoColumn[] }; pagination?: { totalPages: number } };
       const cols = body.data?.columns ?? [];
       all.push(...cols);
@@ -141,10 +151,15 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     }
     // The curated in-flight set, not every open issue: in-progress,
     // in-review, and done (recent) columns only. To-do is the backlog.
+    // "Done (recent)" is enforced, not just commented (#1146): done
+    // cards older than 7 days drop off below via applyBoardDonePolicy,
+    // and the retired ROADMAP Done-table bookkeeping class is filtered
+    // here at the aggregator (the board provenance states the filter).
     const wipStatuses = new Set(["in-progress", "in-review", "done"]);
     for (const col of all) {
       if (!wipStatuses.has(col.id)) continue;
       for (const t of col.tasks) {
+        if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
           .map((l) => {
@@ -160,14 +175,15 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
       }
     }
   }
-  return out;
+  if (projects.length > 0 && !anyTaskPageRead) throw new Error("kaneo task reads failed for every project");
+  return applyBoardDonePolicy(out);
 }
 
 // --- Grist --------------------------------------------------------------
@@ -665,33 +681,36 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       try {
         const cookie = await kaneoCookie();
         const board = await kaneoBoard(cfg, cookie);
-        if (board.length > 0) {
-          provenance.board = "live (Kaneo)";
-          let merged = board;
-          if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-            provenance.board = "live (Kaneo + projector links)";
-          }
-          // In-flight lane (see inFlightBoardItems above): synthetic
-          // entries from the fleet feed's orchestration section — the
-          // same feed read this source already uses for quota and
-          // orchestration — merged ahead of the Kaneo cards. The lane
-          // fails soft: no feed / no section = the Kaneo board alone.
-          try {
-            const feed = await getFeed();
-            const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
-            if (orchSection) {
-              const inFlight = inFlightBoardItems(orchSection, merged);
-              if (inFlight.length) {
-                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
-                merged = [...inFlight, ...merged];
-              }
-            }
-          } catch {
-            /* the Kaneo board still renders without the lane */
-          }
-          return merged;
+        // A successfully fetched board is live data even when the
+        // done policy (#1146) filters it to empty: falling through to
+        // fixtures would replace the real (empty) board with
+        // illustrative work and hide the orchestrator in-flight lane
+        // merged below. Fixtures are only for a failed fetch (catch).
+        provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+        let merged = board;
+        if (cfg.projector.baseUrl) {
+          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
+        // In-flight lane (see inFlightBoardItems above): synthetic
+        // entries from the fleet feed's orchestration section — the
+        // same feed read this source already uses for quota and
+        // orchestration — merged ahead of the Kaneo cards. The lane
+        // fails soft: no feed / no section = the Kaneo board alone.
+        try {
+          const feed = await getFeed();
+          const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
+          if (orchSection) {
+            const inFlight = inFlightBoardItems(orchSection, merged);
+            if (inFlight.length) {
+              provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
+              merged = [...inFlight, ...merged];
+            }
+          }
+        } catch {
+          /* the Kaneo board still renders without the lane */
+        }
+        return merged;
       } catch (err) {
         provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
       }
@@ -726,7 +745,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const byRef = new Map(pool.map((p) => [p.ref, p] as const));
         for (const ref of refs) {
           const p = byRef.get(ref);
-          if (p) out.set(ref, poolItemToGhItem(p));
+          if (p) out.set(ref, { ...poolItemToGhItem(p), resolution: "pool" });
         }
       }
       const remaining = refs.filter((r) => !out.has(r));
@@ -737,8 +756,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           rest = await projectorItems(cfg.projector.baseUrl, remaining).catch(() => null);
           if (rest && rest.size > 0) projectorServed = true;
         }
-        if (!rest || rest.size === 0) rest = await fix.items(remaining);
-        for (const [k, v] of rest) out.set(k, v);
+        // #1141: every served item carries its resolution source, so
+        // fixture state can render as unverified and health can publish
+        // the live-vs-fixture coverage ratio from the same pass.
+        let restSource: ItemResolution = "projector";
+        if (!rest || rest.size === 0) {
+          rest = await fix.items(remaining);
+          restSource = "fixture";
+        }
+        for (const [k, v] of rest) out.set(k, { ...v, resolution: restSource });
       }
       const poolServed = refs.length - remaining.length;
       if (poolServed > 0 && feed) {

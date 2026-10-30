@@ -87,7 +87,7 @@ func consumerSettings() []Setting {
 			Name:  "Question time to live",
 			Short: "how long a question waits for an answer, renewed by use",
 			Long: "The idle deadline on a broker question, under the touch-on-read " +
-				"convention (docs/decisions/0005-ttl-touch-on-read.md): an item " +
+				"convention (docs/decisions/0006-ttl-touch-on-read.md): an item " +
 				"read of a pending question renews its deadline to now plus this " +
 				"long, bounded by elicit.maxAge from its creation. A question " +
 				"nobody looks at expires this long after it was last touched. " +
