@@ -3375,7 +3375,7 @@ mod tests {
         );
         // …while the router-wide limit for the other routes stays at 10 MiB.
         assert_eq!(DEFAULT_BODY_LIMIT, 10 * 1024 * 1024);
-        assert!(UPLOAD_BODY_LIMIT > DEFAULT_BODY_LIMIT);
+        const { assert!(UPLOAD_BODY_LIMIT > DEFAULT_BODY_LIMIT) };
     }
 
     #[test]

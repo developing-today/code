@@ -21,8 +21,53 @@
   //   Claude plan and are unaffected. To re-enable: delete "claude-code"
   //   from disabled_providers and restore the "default" below.
   // To re-enable a provider: delete its id from disabled_providers.
+  // That list is the PROVIDER SWITCHBOARD — see the comment block directly
+  // above it for the full mechanism.
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
+  // ==========================================================================
+  // PROVIDER SWITCHBOARD — the ONE place providers are turned on and off.
+  //
+  // A provider is ON unless its id appears in disabled_providers below.
+  // To turn a provider OFF: add its id to the list. To turn it back ON:
+  // delete its id from the list. That one-line edit is the whole job —
+  // nothing else in this file needs to change.
+  //
+  // Every fleet provider keeps its FULL definition (models, options) in the
+  // "provider" block below at all times, disabled or not, so re-enabling
+  // never requires reconstructing config. The only step beyond the flip is
+  // the provider's own sign-in / credential, which lives outside this file.
+  //
+  // Providers with NO definition below (google-vertex, nvidia, vercel,
+  // huggingface, opencode, github-copilot) are opencode built-ins: the app
+  // ships their catalogs, so the list alone switches them — no definition
+  // is missing.
+  //
+  // Route pools need no edits either: a pool leaf pointing at an OFF
+  // provider simply yields nothing until that provider is flipped back on
+  // (the pools below already ship that way — haiku-plan seats claude-code
+  // while it is off).
+  //
+  // WORKED EXAMPLE — Claude: "claude-code" sits in the list today because
+  // the Claude plan is on the free tier (see the header note). The day it
+  // comes back, delete the "claude-code" line from the list and Claude is
+  // live: its definition, model catalog, and haiku-plan seat are already in
+  // place, and every tier that consumes haiku-plan (scout, workhorse,
+  // speed, luna-haiku-100k) picks it up on its own. The only remaining step
+  // is the claude.ai sign-in. (Restoring "default" to
+  // claude-code/claude-haiku-5-5 is an optional preference, NOT part of
+  // enabling — the workhorse default works either way.)
+  //
+  // PERMANENT EXCEPTION: "muse" NEVER leaves this list. It is a banned
+  // duplicate door into the same single Meta pool as "meta" (see the
+  // warning at its definition) — "meta" is the only Meta door.
+  //
+  // KNOWN EXCEPTION: the design-code / code-design / open-design proxy
+  // blocks further down stay commented out (preserved legacy: four blocks,
+  // three ids, two keyed "design-code"). They are off via this list too,
+  // but re-enabling one needs a dedupe decision first. Their live door is
+  // "opendesign" (on).
+  // ==========================================================================
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -41,13 +86,37 @@
     "code-design",
     "design-code",
     "open-design",
-    "claude-code"
+    "claude-code",
+    "muse"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
-  // what agent configs already default to; restore the Haiku default when
+  // what agent configs already default to; restoring the Haiku default
+  // when claude-code is re-enabled is an optional preference, not part of
+  // enabling it (see the PROVIDER SWITCHBOARD above).
   // claude-code is re-enabled.
   "default": "opencode-route/workhorse",
+  // The v2 default-model key is "model" (config normalize.ts reads only
+  // input.model; the "default" key above is not consumed by the 2.x schema
+  // and the server otherwise falls back to its first-available model —
+  // which was commandcode/gpt-5.6-terra, failing over to gpt-6-luna.
+  // Verified 2026-10-29 against /api/model/default. Drew’s ruling: a
+  // session with no model chosen resolves to the workhorse route.
+  "model": "opencode-route/workhorse",
+  // Small-model slot (2026-10-29, Drew): the route `speed`, never a direct
+  // provider leaf. OpenChamber’s small-model resolver reads this key (or
+  // the title agent’s model) when no settings override applies; a capable
+  // route is deliberate — compaction and summaries have to read a lot, so
+  // the slot is a real tier, not the cheapest model on any plan.
+  "small_model": "opencode-route/speed",
+  // Messaging embeddings OFF (2026-10-29, Drew): the messaging.embedding
+  // tier defaults to a local Qwen3-Embedding llama-server that autostarts
+  // with every OpenCode process (standing server + OpenChamber managed
+  // instance). Tier off disables it; semantic message search degrades to
+  // the fuzzy FTS fallback. Re-enable by removing this key.
+  "messaging": {
+    "embedding": "off"
+  },
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
@@ -206,475 +275,475 @@
         }
       }
     },
-    // DISABLED 2026-10-25 per Drew: "cloudflare-gateway" provider section commented out + in disabled_providers. Commented out per fleet rule, not deleted.
-//    "cloudflare-gateway": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "Cloudflare Workers AI (via AI Gateway)",
-//      "options": {
-//        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
-//        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
-//      },
-//      "models": {
-//        "@cf/deepseek-ai/deepseek-v4-flash-0731": {
-//          "name": "DeepSeek V4 Flash (1M Context, Agentic)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 1048576,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/deepseek-ai/deepseek-v4-pro-0813": {
-//          "name": "DeepSeek V4 Pro (1M Context, Deep Reasoning)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            },
-//            "max": {
-//              "options": {
-//                "reasoning_effort": "high",
-//                "max_tokens": 16384
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 1048576,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
-//          "name": "DeepSeek R1 Distill Qwen 32B (Reasoning)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/zai-org/glm-5.3-flash": {
-//          "name": "GLM 5.3 Flash (1M Context, Fast Agentic)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 1048576,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/zai-org/glm-5.3": {
-//          "name": "GLM 5.3 Flagship (1.3M Context, Multimodal)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 1310720,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/meta/llama-4-scout-17b-16e-instruct": {
-//          "name": "Llama 4 Scout 17B-16E (MoE, 131k Context)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "temperature": 0.2
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "temperature": 0.5
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "temperature": 0.7
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
-//          "name": "Llama 3.3 70B Instruct Fast (24k Context, FP8)",
-//          "limit": {
-//            "context": 24000,
-//            "output": 8192
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "temperature": 0.2
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "temperature": 0.5
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "temperature": 0.7
-//              }
-//            }
-//          }
-//        },
-//        "@cf/meta/llama-3.2-11b-vision-instruct": {
-//          "name": "Llama 3.2 11B Vision Instruct (Multimodal)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 8192
-//          }
-//        },
-//        "@cf/google/gemma-4-26b-a4b-it": {
-//          "name": "Gemma 4 26B-A4B Instruct (Google Open Weights)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 8192
-//          }
-//        },
-//        "@cf/qwen/qwen3.8-27b": {
-//          "name": "Qwen 3.8 27B (262k Context)",
-//          "limit": {
-//            "context": 262144,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/qwen/qwen3-30b-a3b-fp8": {
-//          "name": "Qwen 3 MoE 30B-A3B (Edge Speed)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/qwen/qwen2.5-coder-32b-instruct": {
-//          "name": "Qwen 2.5 Coder 32B (Code Specialist)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/qwen/qwq-32b": {
-//          "name": "QwQ 32B (Thinking / Math & Architecture)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/moonshotai/kimi-k2.7-code": {
-//          "name": "Kimi K2.7 Code (262k Context, Repo Analysis)",
-//          "limit": {
-//            "context": 262144,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/mistralai/mistral-small-3.1-24b-instruct": {
-//          "name": "Mistral Small 3.1 24B Instruct",
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/openai/gpt-oss-120b": {
-//          "name": "GPT-OSS 120B (Open-Weight Flagship)",
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          },
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/openai/gpt-oss-20b": {
-//          "name": "GPT-OSS 20B (Open-Weight Latency Tier)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 16384
-//          }
-//        },
-//        "@cf/cloudflare/clef": {
-//          "name": "Cloudflare Clef 27B (Typed Classifier)",
-//          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
-//          "limit": {
-//            "context": 32768,
-//            "output": 4096
-//          }
-//        },
-//        "@cf/cloudflare/clef-flash": {
-//          "name": "Cloudflare Clef Flash 9B (Edge Classifier)",
-//          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
-//          "limit": {
-//            "context": 32768,
-//            "output": 4096
-//          }
-//        },
-//        "@cf/meta/llama-guard-3-8b": {
-//          "name": "Llama Guard 3 8B",
-//          "limit": {
-//            "context": 131072,
-//            "output": 131072
-//          }
-//        },
-//        "@cf/meta/llama-3.1-8b-instruct-fp8": {
-//          "name": "Llama 3.1 8B Instruct fp8",
-//          "limit": {
-//            "context": 32000,
-//            "output": 32000
-//          }
-//        },
-//        "@cf/meta/llama-3.2-1b-instruct": {
-//          "name": "Llama 3.2 1B Instruct",
-//          "limit": {
-//            "context": 60000,
-//            "output": 60000
-//          }
-//        },
-//        "@cf/meta/llama-3.2-3b-instruct": {
-//          "name": "Llama 3.2 3B Instruct",
-//          "limit": {
-//            "context": 80000,
-//            "output": 80000
-//          }
-//        },
-//        "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
-//          "name": "Gemma Sea Lion V4 27B It",
-//          "limit": {
-//            "context": 128000,
-//            "output": 128000
-//          }
-//        },
-//        "@cf/ibm-granite/granite-4.0-h-micro": {
-//          "name": "Granite 4.0 H Micro",
-//          "limit": {
-//            "context": 131000,
-//            "output": 131000
-//          }
-//        },
-//        "@cf/moonshotai/kimi-k2.6": {
-//          "name": "Kimi K2.6",
-//          "limit": {
-//            "context": 262144,
-//            "output": 256000
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          }
-//        },
-//        "@cf/zai-org/glm-4.7-flash": {
-//          "name": "GLM-4.7-Flash",
-//          "limit": {
-//            "context": 131072,
-//            "output": 131072
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          }
-//        },
-//        "@cf/zai-org/glm-5.2": {
-//          "name": "Glm 5.2",
-//          "limit": {
-//            "context": 262144,
-//            "output": 256000
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          }
-//        },
-//        "@cf/nvidia/nemotron-3-120b-a12b": {
-//          "name": "Nemotron 3 Super 120B",
-//          "limit": {
-//            "context": 256000,
-//            "output": 256000
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          }
-//        },
-//        "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
-//          "name": "Deepseek V4.1 Flash 1017",
-//          "limit": {
-//            "context": 1048576,
-//            "output": 1048576
-//          },
-//          "variants": {
-//            "low": {
-//              "options": {
-//                "reasoning_effort": "low"
-//              }
-//            },
-//            "medium": {
-//              "options": {
-//                "reasoning_effort": "medium"
-//              }
-//            },
-//            "high": {
-//              "options": {
-//                "reasoning_effort": "high"
-//              }
-//            }
-//          }
-//        }
-//      }
-//    },
-    // DISABLED 2026-10-25 per Drew: "cloudflare-workers-ai" provider section commented out + in disabled_providers. Commented out per fleet rule, not deleted.
-//    "cloudflare-workers-ai": {},
+    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file). Definition kept complete so the flip is the only step.
+    "cloudflare-gateway": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cloudflare Workers AI (via AI Gateway)",
+      "options": {
+        "baseURL": "https://gateway.ai.cloudflare.com/v1/234b866b99ce2b142d7963d8d139cbfa/opencode-gateway/workers-ai/v1",
+        "apiKey": "{env:CLOUDFLARE_API_TOKEN}"
+      },
+      "models": {
+        "@cf/deepseek-ai/deepseek-v4-flash-0731": {
+          "name": "DeepSeek V4 Flash (1M Context, Agentic)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/deepseek-ai/deepseek-v4-pro-0813": {
+          "name": "DeepSeek V4 Pro (1M Context, Deep Reasoning)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "high",
+                "max_tokens": 16384
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": {
+          "name": "DeepSeek R1 Distill Qwen 32B (Reasoning)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/zai-org/glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (1M Context, Fast Agentic)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 16384
+          }
+        },
+        "@cf/zai-org/glm-5.3": {
+          "name": "GLM 5.3 Flagship (1.3M Context, Multimodal)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1310720,
+            "output": 16384
+          }
+        },
+        "@cf/meta/llama-4-scout-17b-16e-instruct": {
+          "name": "Llama 4 Scout 17B-16E (MoE, 131k Context)",
+          "variants": {
+            "low": {
+              "options": {
+                "temperature": 0.2
+              }
+            },
+            "medium": {
+              "options": {
+                "temperature": 0.5
+              }
+            },
+            "high": {
+              "options": {
+                "temperature": 0.7
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/meta/llama-3.3-70b-instruct-fp8-fast": {
+          "name": "Llama 3.3 70B Instruct Fast (24k Context, FP8)",
+          "limit": {
+            "context": 24000,
+            "output": 8192
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "temperature": 0.2
+              }
+            },
+            "medium": {
+              "options": {
+                "temperature": 0.5
+              }
+            },
+            "high": {
+              "options": {
+                "temperature": 0.7
+              }
+            }
+          }
+        },
+        "@cf/meta/llama-3.2-11b-vision-instruct": {
+          "name": "Llama 3.2 11B Vision Instruct (Multimodal)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "@cf/google/gemma-4-26b-a4b-it": {
+          "name": "Gemma 4 26B-A4B Instruct (Google Open Weights)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "@cf/qwen/qwen3.8-27b": {
+          "name": "Qwen 3.8 27B (262k Context)",
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwen3-30b-a3b-fp8": {
+          "name": "Qwen 3 MoE 30B-A3B (Edge Speed)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwen2.5-coder-32b-instruct": {
+          "name": "Qwen 2.5 Coder 32B (Code Specialist)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/qwen/qwq-32b": {
+          "name": "QwQ 32B (Thinking / Math & Architecture)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/moonshotai/kimi-k2.7-code": {
+          "name": "Kimi K2.7 Code (262k Context, Repo Analysis)",
+          "limit": {
+            "context": 262144,
+            "output": 16384
+          }
+        },
+        "@cf/mistralai/mistral-small-3.1-24b-instruct": {
+          "name": "Mistral Small 3.1 24B Instruct",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/openai/gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Open-Weight Flagship)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/openai/gpt-oss-20b": {
+          "name": "GPT-OSS 20B (Open-Weight Latency Tier)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "@cf/cloudflare/clef": {
+          "name": "Cloudflare Clef 27B (Typed Classifier)",
+          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        },
+        "@cf/cloudflare/clef-flash": {
+          "name": "Cloudflare Clef Flash 9B (Edge Classifier)",
+          "system": "You are a deterministic classification engine. Output strictly raw JSON conforming to the requested schema. Do not generate conversational text, markdown formatting, or preamble.",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        },
+        "@cf/meta/llama-guard-3-8b": {
+          "name": "Llama Guard 3 8B",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          }
+        },
+        "@cf/meta/llama-3.1-8b-instruct-fp8": {
+          "name": "Llama 3.1 8B Instruct fp8",
+          "limit": {
+            "context": 32000,
+            "output": 32000
+          }
+        },
+        "@cf/meta/llama-3.2-1b-instruct": {
+          "name": "Llama 3.2 1B Instruct",
+          "limit": {
+            "context": 60000,
+            "output": 60000
+          }
+        },
+        "@cf/meta/llama-3.2-3b-instruct": {
+          "name": "Llama 3.2 3B Instruct",
+          "limit": {
+            "context": 80000,
+            "output": 80000
+          }
+        },
+        "@cf/aisingapore/gemma-sea-lion-v4-27b-it": {
+          "name": "Gemma Sea Lion V4 27B It",
+          "limit": {
+            "context": 128000,
+            "output": 128000
+          }
+        },
+        "@cf/ibm-granite/granite-4.0-h-micro": {
+          "name": "Granite 4.0 H Micro",
+          "limit": {
+            "context": 131000,
+            "output": 131000
+          }
+        },
+        "@cf/moonshotai/kimi-k2.6": {
+          "name": "Kimi K2.6",
+          "limit": {
+            "context": 262144,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/zai-org/glm-4.7-flash": {
+          "name": "GLM-4.7-Flash",
+          "limit": {
+            "context": 131072,
+            "output": 131072
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/zai-org/glm-5.2": {
+          "name": "Glm 5.2",
+          "limit": {
+            "context": 262144,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/nvidia/nemotron-3-120b-a12b": {
+          "name": "Nemotron 3 Super 120B",
+          "limit": {
+            "context": 256000,
+            "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+          "name": "Deepseek V4.1 Flash 1017",
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        }
+      }
+    },
+    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file).
+    "cloudflare-workers-ai": {},
     "cloudflare-ai-gateway": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Cloudflare AI Gateway (Unified Routing)",
@@ -5026,30 +5095,30 @@
 
       }
     },
-    // DISABLED 2026-10-25 per Drew: "openrouter" provider section commented out + in disabled_providers (its configured :free models were retired 2026-10-22). Commented out per fleet rule, not deleted.
-//    "openrouter": {
-//      "npm": "@ai-sdk/openai-compatible",
-//      "name": "OpenRouter (Free Tier)",
-//      "options": {
-//        "baseURL": "https://openrouter.ai/api/v1"
-//      },
-//      "models": {
-//        "minimax/minimax-m3.1-flash:free": {
-//          "name": "MiniMax M3.1 Flash (Free)",
-//          "limit": {
-//            "context": 204800,
-//            "output": 131072
-//          }
-//        },
-//        "poolside/laguna-s-2.1:free": {
-//          "name": "Poolside Laguna S 2.1 (Free)",
-//          "limit": {
-//            "context": 131072,
-//            "output": 32768
-//          }
-//        }
-//      }
-//    },
+    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file). Definition kept complete so the flip is the only step. (Its configured :free models were retired 2026-10-22; refresh the model list when re-enabling.)
+    "openrouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenRouter (Free Tier)",
+      "options": {
+        "baseURL": "https://openrouter.ai/api/v1"
+      },
+      "models": {
+        "minimax/minimax-m3.1-flash:free": {
+          "name": "MiniMax M3.1 Flash (Free)",
+          "limit": {
+            "context": 204800,
+            "output": 131072
+          }
+        },
+        "poolside/laguna-s-2.1:free": {
+          "name": "Poolside Laguna S 2.1 (Free)",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        }
+      }
+    },
     "groq": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Groq (Free Cloud)",
@@ -5167,28 +5236,28 @@
       }
     },
 // DISABLED 2026-10-25 per Drew — NEVER route sessions to the "muse" provider. It is a second, wasteful door into the SAME single Meta pool as "meta" — the Muse API High Usage plan — reached through the muse terminal program's OAuth login via muse-proxy (the proxy strips META_API_KEY so calls take the OAuth plan route, not the PAYG key route). It is NOT the assistant Muse's Power subscription (the assistant exists only in the app/website and is never a session pool) and NOT a separate pool or "muse plan allowance". The ONLY door sessions may use into the High Usage pool is the "meta" provider. Commented out per fleet rule (disable, never delete).
-//     "muse": {
-//       "npm": "@ai-sdk/openai-compatible",
-//       "name": "Muse (CLI via muse-proxy)",
-//       "options": {
-//         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
-//         "apiKey": "muse-local"
-//       },
-//       "models": {
-//         "muse-spark-1.3": {
-//           "name": "Muse Spark 1.3 (muse)"
-//         },
-//         "muse-wonder-1.0": {
-//           "name": "Muse Wonder 1.0 (muse)"
-//         },
-//         "muse-spark-1.3-low": {
-//           "name": "Muse Spark 1.3 Low (muse)"
-//         },
-//         "muse-wonder-1.0-low": {
-//           "name": "Muse Wonder 1.0 Low (muse)"
-//         }
-//       }
-//     },
+     "muse": {
+       "npm": "@ai-sdk/openai-compatible",
+       "name": "Muse (CLI via muse-proxy)",
+       "options": {
+         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
+         "apiKey": "muse-local"
+       },
+       "models": {
+         "muse-spark-1.3": {
+           "name": "Muse Spark 1.3 (muse)"
+         },
+         "muse-wonder-1.0": {
+           "name": "Muse Wonder 1.0 (muse)"
+         },
+         "muse-spark-1.3-low": {
+           "name": "Muse Spark 1.3 Low (muse)"
+         },
+         "muse-wonder-1.0-low": {
+           "name": "Muse Wonder 1.0 Low (muse)"
+         }
+       }
+     },
     // deduped 2026-10-27 (#1308): a byte-identical duplicate of this block sat
     // earlier in the file; under the loader's last-wins JSONC parsing it was
     // shadowed by this copy, so removing it changes nothing at runtime.
@@ -5235,18 +5304,21 @@
           "id": "cline-pass/muse-spark-1.3-contributor",
           "name": "Muse Spark 1.3 Contributor (ClinePass)"
         },
-        "qwen3.8-max": {
-          "id": "cline-pass/qwen3.8-max",
-          "name": "Qwen3.8 Max (ClinePass)"
-        },
-        "qwen3.7-max": {
-          "id": "cline-pass/qwen3.7-max",
-          "name": "Qwen3.7 Max (ClinePass)"
-        },
-        "qwen3.7-plus": {
-          "id": "cline-pass/qwen3.7-plus",
-          "name": "Qwen3.7 Plus (ClinePass)"
-        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.8-max": {
+//          "id": "cline-pass/qwen3.8-max",
+//          "name": "Qwen3.8 Max (ClinePass)"
+//        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.7-max": {
+//          "id": "cline-pass/qwen3.7-max",
+//          "name": "Qwen3.7 Max (ClinePass)"
+//        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.7-plus": {
+//          "id": "cline-pass/qwen3.7-plus",
+//          "name": "Qwen3.7 Plus (ClinePass)"
+//        },
         "glm-5.2": {
           "id": "cline-pass/glm-5.2",
           "name": "GLM-5.2 (ClinePass)"
@@ -5382,36 +5454,46 @@
                 "xiaomi/mimo-v2.5": {
                       "name": "Mimo v2.5 (Command Code)"
                 },
-                "qwen/qwen3.8-omni-flash": {
-                      "name": "qwen3.8 Omni Flash (Command Code)"
-                },
-                "qwen/qwen3.8-max-0902": {
-                      "name": "qwen3.8 Max 0902 (Command Code)"
-                },
-                "qwen/qwen3.8-max": {
-                      "name": "qwen3.8 Max (Command Code)"
-                },
-                "qwen/qwen3.8-27b": {
-                      "name": "qwen3.8 27b (Command Code)"
-                },
-                "qwen/qwen3.8-flash": {
-                      "name": "qwen3.8 Flash (Command Code)"
-                },
-                "qwen/qwen3.7-max": {
-                      "name": "qwen3.7 Max (Command Code)"
-                },
-                "qwen/qwen3.7-plus": {
-                      "name": "qwen3.7 Plus (Command Code)"
-                },
-                "qwen/qwen3.7-flash": {
-                      "name": "qwen3.7 Flash (Command Code)"
-                },
-                "qwen/qwen3.6-max-preview": {
-                      "name": "qwen3.6 Max Preview (Command Code)"
-                },
-                "qwen/qwen3.6-plus": {
-                      "name": "qwen3.6 Plus (Command Code)"
-                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-omni-flash": {
+//                      "name": "qwen3.8 Omni Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max-0902": {
+//                      "name": "qwen3.8 Max 0902 (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max": {
+//                      "name": "qwen3.8 Max (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-27b": {
+//                      "name": "qwen3.8 27b (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-flash": {
+//                      "name": "qwen3.8 Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-max": {
+//                      "name": "qwen3.7 Max (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-plus": {
+//                      "name": "qwen3.7 Plus (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-flash": {
+//                      "name": "qwen3.7 Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.6-max-preview": {
+//                      "name": "qwen3.6 Max Preview (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.6-plus": {
+//                      "name": "qwen3.6 Plus (Command Code)"
+//                },
                 "meituan/longcat-2.0": {
                       "name": "LongCat 2.0 (Command Code)"
                 },
@@ -5589,9 +5671,10 @@
                 "ornith/ornith-1.5-122b": {
                       "name": "Ornith 1.5 122b (Command Code)"
                 },
-                "qwen/qwen3.8-max-prime": {
-                      "name": "qwen3.8 Max Prime (Command Code)"
-                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max-prime": {
+//                      "name": "qwen3.8 Max Prime (Command Code)"
+//                },
                 "reflection/beam:free": {
                       "name": "beam:free (Command Code)"
                 },
@@ -6543,7 +6626,11 @@
         // { name, invert: true } for the inverse). DeepSeek deductions
         // double in the peak windows — Mon-Fri 01:00-04:00 +
         // 06:00-10:00 UTC — on Go, and ClinePass's DeepSeek reference
-        // rates split the same way, so during peak this chain leads
+        // rates split the same way (verified against DeepSeek's own
+        // pricing page 2026-10-29; the one clause not encoded is the
+        // Chinese-public-holiday exclusion — see the
+        // model_route_windows comment below and opencode#821), so
+        // during peak this chain leads
         // with MiMo and keeps Flash as the fallback, and off-peak it
         // leads with Flash. The shipped Window schema holds ONE
         // daily range per named window, so the two peak ranges are
@@ -6584,6 +6671,55 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "workhorse-primary": {
+        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Argon round-robin",
+        // TEMPORARY (2026-10-29, Drew, code#2173): workhorse's primary
+        // slot round-robins between the DeepSeek plan route
+        // (deepseek-flash#high — the standard operating procedure's
+        // primary, unchanged) and the direct Meta door
+        // meta/muse-spark-1.3 — that exact model on the Muse Spark
+        // plan (Meta Muse Code High Usage), deliberately NOT the
+        // contributor pool: the point is to wear down that specific
+        // plan's quota, which was pacing to strand ~half its weekly
+        // allowance at the 2026-11-02 reset while DeepSeek burned
+        // alone. Equal weights = ordinary round-robin alternation.
+        // Spark ALSO keeps its existing later seat in this tier
+        // (workhorse-weighted -> spark-plan#xhigh); this wrapper is
+        // additive and changes nothing else.
+        // 2026-10-29 (Drew, code#2173): a THIRD leg joins the burn —
+        // antigravity-agy/gemini-4-argon#high, Gemini 4 Argon through
+        // the Antigravity agy door. The Antigravity GEMINI weekly
+        // pool read 5% used against a hard reset Fri 2026-10-31
+        // 13:11Z — ~95% of it would strand unused. Probe-verified
+        // before this edit (2026-10-29): a live call landed in the
+        // route_attempt ledger as provider antigravity-agy, model
+        // gemini-4-argon, variant high, outcome success, and every
+        // gemini-* model reads the same shared weekly pool in the
+        // quota gatherer, so Argon draws that pool. Weights below:
+        // Argon takes 2 of 4 picks (~half of primary traffic — the
+        // largest share that does not starve the other two burns);
+        // DeepSeek and Spark keep 1 each, Spark still burning toward
+        // its 2026-11-02 reset; if the Gemini 5-hour window walls,
+        // quota demotion sheds overflow back to the other legs by
+        // itself. TO UNDO JUST THE GEMINI LEG: delete the argon
+        // target and the "weights" map — this wrapper returns to the
+        // DeepSeek/Spark two-way shape above.
+        // TO REVERT to the all-DeepSeek standard operating procedure:
+        // delete (or comment out) this route and point workhorse's
+        // first target back at "opencode-route/deepseek-flash#high".
+        "targets": [
+          "opencode-route/deepseek-flash#high",
+          "meta/muse-spark-1.3",
+          "antigravity-agy/gemini-4-argon#high"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-route/deepseek-flash": 1,
+          "meta/muse-spark-1.3": 1,
+          "antigravity-agy/gemini-4-argon": 2
+        }
+      },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
         // 2026-10-27 pool redesign (Drew's structure): incremental —
@@ -6604,8 +6740,13 @@
         // The relief pool's members are unchanged in kind from the
         // balance pass (AA v4.3.2): Haiku #high 38 / 26.7s TTFT; Terra
         // #medium 41.3 / 1.43s; Spark #xhigh 45 / 19.1s / ~300 t/s.
+        // 2026-10-29 (code#2173): the primary target below is the
+        // TEMPORARY workhorse-primary wrapper (round-robin of
+        // deepseek-flash#high, meta/muse-spark-1.3, and
+        // antigravity-agy/gemini-4-argon#high) — see that route's
+        // comment for the revert steps.
         "targets": [
-          "opencode-route/deepseek-flash#high",
+          "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted"
         ],
         "selection": "ordered",
@@ -6769,6 +6910,26 @@
       // schema holds one daily range per named window, so the two
       // ranges are two windows; the background route composes them
       // (see its comment for the position-by-position reading).
+      // VERIFIED 2026-10-29 against DeepSeek's own pricing page
+      // (https://api-docs.deepseek.com/quick_start/pricing/): "Off-peak
+      // rates are half of the peak rates. Peak hours are 01:00 - 04:00
+      // and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese
+      // public holidays. All other hours are off-peak, including
+      // weekends and Chinese public holidays in full." So the times
+      // and the weekend treatment below are exactly right (weekends
+      // are off-peak in full — Chinese make-up workdays on a weekend
+      // do NOT become peak), but one clause is NOT encoded: a Chinese
+      // public holiday that falls Mon-Fri is off-peak for the whole
+      // day, and these windows still treat it as peak. The Window
+      // schema has no calendar dates, date ranges, or holiday lists
+      // and a gate cannot exclude one window from another, so the
+      // holiday exclusion cannot be expressed today — tracked in
+      // developing-today/opencode#821 (date-aware windows). Until
+      // that lands these two windows are the closest correct
+      // approximation: on weekday Chinese public holidays the
+      // background route leads with MiMo and treats Flash as
+      // peak-priced when it is actually off-peak — lost value on
+      // those days, never overspend.
       "deepseek-peak-early": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "01:00",

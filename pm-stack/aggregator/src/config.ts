@@ -24,6 +24,10 @@ export interface Config {
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
+  cloudflareExportFile: string;
+  /** The Supabase usage exporter's document (#1050): the gathered live read
+   * preferred over the quota view's Supabase prose when fresh. */
+  supabaseExportFile: string;
   /** The provider quota registry; the hub's second dated-read source
    * (billing incidents) for the same fallback path. */
   quotaRegistryFile: string;
@@ -77,6 +81,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         homedir(),
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
+    ),
+    cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
+    supabaseExportFile: s(
+      env.PM_AGG_SUPABASE_EXPORT,
+      join(homedir(), "atlas/supabase-export/latest.json"),
     ),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,

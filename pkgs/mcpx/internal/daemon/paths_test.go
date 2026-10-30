@@ -421,3 +421,41 @@ func TestWriteInfoDoesNotMirrorTheEnvDefaultDaemon(t *testing.T) {
 	}
 	cp.RemoveInfo()
 }
+
+// #1866: the info file's two digests have distinct names. The schema-cache
+// digest is "schemaHash"; the daemon key (the /v1/resolve configHash) is
+// "daemonKey". Neither may appear under the old shared "configHash" name.
+func TestInfoFileNamesBothDigests(t *testing.T) {
+	dir := t.TempDir()
+	paths := daemon.Paths{State: dir, Cache: dir, Info: filepath.Join(dir, "daemon-k.json")}
+	want := daemon.Info{
+		PID: 42, Socket: "/tmp/sock", Endpoint: "http://127.0.0.1:1",
+		ConfigPath: "/proj/.mcpx.json",
+		SchemaHash: "schema-digest", DaemonKey: "daemon-key",
+		Version: "test", StartedAt: "2026-10-29T00:00:00Z",
+	}
+	if err := paths.WriteInfo(want); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(paths.Info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["configHash"]; ok {
+		t.Fatalf("info file still carries the ambiguous configHash field: %s", b)
+	}
+	if raw["schemaHash"] != "schema-digest" || raw["daemonKey"] != "daemon-key" {
+		t.Fatalf("info file digests = schemaHash %v, daemonKey %v", raw["schemaHash"], raw["daemonKey"])
+	}
+	got, err := paths.ReadInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SchemaHash != want.SchemaHash || got.DaemonKey != want.DaemonKey {
+		t.Fatalf("round trip = %+v, want schemaHash/daemonKey preserved", got)
+	}
+}

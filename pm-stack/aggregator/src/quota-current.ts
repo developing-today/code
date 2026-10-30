@@ -28,6 +28,9 @@ import type {
   QuotaPool,
   QuotaView,
   QuotaWindow,
+  SaasService,
+  UsageMetric,
+  UsageUnit,
 } from "./model.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
@@ -173,5 +176,71 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
 
   const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
   if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
+  return out;
+}
+
+/** Turso window name -> SaaS card metric shape (labels mirror saas-extract). */
+const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit: number }> = {
+  databases: { label: "Databases", unit: "count", limit: 100 },
+  storage: { label: "Storage", unit: "gb", limit: 5 },
+  "rows-read": { label: "Rows read / month", unit: "rows", limit: 500_000_000 },
+  "rows-written": { label: "Rows written / month", unit: "rows", limit: 10_000_000 },
+  sync: { label: "Sync / month", unit: "gb", limit: 3 },
+};
+
+/**
+ * Apply the gatherer's Turso entry (#1049) to the SaaS services —
+ * the usage() counterpart of overlayQuotaCurrent, with the same
+ * semantics: a fresh ok read replaces the Turso card's metrics,
+ * measuredAt, and cycle end; an error or stale read leaves the
+ * card's dated values standing and adds a dated conflict flag, so
+ * the failure is loud without faking a fresh zero. Services without
+ * a Turso card, and files without a Turso entry, pass through
+ * unchanged (same array reference).
+ */
+export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFile, now = new Date()): SaasService[] {
+  const entries = file.providers.filter((e) => e.serviceId === "turso");
+  if (entries.length === 0) return services;
+  const idx = services.findIndex((s) => s.id === "turso");
+  if (idx < 0) return services;
+  const nowMs = now.getTime();
+  const svc = services[idx];
+  const freshOk = entries
+    .filter((e) => entryState(e, nowMs) === "ok")
+    .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+  const out = [...services];
+  if (freshOk.length > 0) {
+    const entry = freshOk[0];
+    const prev = new Map(svc.metrics.map((m) => [m.id, m]));
+    const metrics: UsageMetric[] = [];
+    for (const w of entry.windows) {
+      const meta = TURSO_WINDOW_META[w.name];
+      if (!meta || w.value == null) continue;
+      metrics.push({
+        id: w.name,
+        label: prev.get(w.name)?.label ?? meta.label,
+        used: w.value,
+        limit: meta.limit,
+        unit: meta.unit,
+        ...(w.pctOfLimit != null ? { percent: w.pctOfLimit } : {}),
+        highlight: prev.get(w.name)?.highlight ?? true,
+      });
+    }
+    if (metrics.length === 0) return services;
+    const resetsAt = entry.windows.find((w) => w.resetsAt)?.resetsAt ?? null;
+    out[idx] = {
+      ...svc,
+      metrics,
+      measuredAt: entry.measuredAt,
+      sourceClass: "api",
+      sourceNote: `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}`,
+      ...(resetsAt ? { nextDate: `cycle ends ${resetsAt.slice(0, 10)}` } : {}),
+    };
+    return out;
+  }
+  const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];
+  const flag = `quota gatherer turso read ${entryState(newest, nowMs)} at ${newest.measuredAt}: ${errorText(newest)} — card keeps its last dated read`;
+  if (svc.conflicts.includes(flag)) return services;
+  out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };
   return out;
 }

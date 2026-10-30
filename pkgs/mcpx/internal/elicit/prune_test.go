@@ -24,8 +24,14 @@ func seedAnswered(t *testing.T, b *elicit.Broker, id string, mode elicit.Mode, a
 	if err != nil {
 		t.Fatal(err)
 	}
+	content := `{"v":1}`
+	if mode == elicit.Sample {
+		// A sampling answer must be a CreateMessageResult (role, model,
+		// content) since the sampling validation landed on main.
+		content = `{"role":"assistant","model":"m","content":{"type":"text","text":"hi"},"stopReason":"endTurn"}`
+	}
 	if err := b.Respond(elicit.Answer{
-		ID: id, Action: elicit.Accept, Content: json.RawMessage(`{"v":1}`), At: at,
+		ID: id, Action: elicit.Accept, Content: json.RawMessage(content), At: at,
 	}); err != nil {
 		t.Fatal(err)
 	}
