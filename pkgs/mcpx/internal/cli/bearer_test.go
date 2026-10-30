@@ -145,6 +145,31 @@ func TestTargetBearerTokenResolvesTheTargetDaemon(t *testing.T) {
 		t.Errorf("scoped targetBearerToken = %q, %v; want the invocation token", tok, ok)
 	}
 
+	// Inherited token: the recorded file carries no token, but a
+	// parent directory's .mcpx.json does -- the daemon found by
+	// discovery inherits it, and so must the client (Codex on
+	// d02a018d).
+	parent := t.TempDir()
+	sub := filepath.Join(parent, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	docB, err := json.Marshal(map[string]any{"transport": map[string]any{"bearerToken": targetTok}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".mcpx.json"), docB, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	near := filepath.Join(sub, ".mcpx.json")
+	if err := os.WriteFile(near, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := settings.NewSet(sch)
+	if tok, ok := targetBearerToken(near, empty); !ok || tok != targetTok {
+		t.Errorf("inherited targetBearerToken = %q, %v; want the parent config's token", tok, ok)
+	}
+
 	// And a client built for the recorded daemon authorizes with the
 	// target token end to end.
 	c := NewClientAt(daemon.Paths{}, target, "unix:///nonexistent")

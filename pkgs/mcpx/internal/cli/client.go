@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -150,11 +151,16 @@ func (c *Client) authorize(req *http.Request) {
 // live daemon, and daemons reports it stopped.
 //
 // Resolution mirrors the daemon's own: the target's configuration
-// files, then the environment. An invocation-scoped token in the
-// client's own settings (environment, preset, flag or runtime layer
-// -- anything but a file) still wins: it is the token this process
-// was told to use. A token only the invoking project's file carries
-// is NOT sent: the target daemon never saw it.
+// CHAIN, then the environment. The chain matters: a daemon started
+// with ordinary discovery inherits the setting from a parent or user
+// config when its nearest file does not carry it, so resolving only
+// the recorded file would miss the inherited token and 401 the
+// daemon's own ordinary clients (Codex on PR #2711, round on
+// d02a018d). An invocation-scoped token in the client's own settings
+// (environment, preset, flag or runtime layer -- anything but a
+// file) still wins: it is the token this process was told to use. A
+// token only the invoking project's file carries is NOT sent: the
+// target daemon never saw it.
 //
 // Best effort by design: an unreadable target file resolves to no
 // token rather than failing a fleet-wide listing or stop.
@@ -168,10 +174,7 @@ func targetBearerToken(configPath string, own *settings.Set) (string, bool) {
 		return "", false
 	}
 	set := settings.NewSet(sch)
-	files, ferr := configFilesFarthestFirst(configPath)
-	if ferr != nil {
-		return "", false
-	}
+	files := targetConfigFiles(configPath)
 	for i, path := range files {
 		doc, rerr := readJSONFile(path)
 		if rerr != nil {
@@ -185,6 +188,32 @@ func targetBearerToken(configPath string, own *settings.Set) (string, bool) {
 		return "", false
 	}
 	return daemon.BearerToken(set), true
+}
+
+// targetConfigFiles is the farthest-first file list a target daemon's
+// settings resolve from: the discovery chain of the recorded file's
+// directory (the walk the daemon itself was found by), with the
+// recorded file appended as the nearest layer when discovery cannot
+// see it (an MCPX_CONFIG bypass names a file outside the walk).
+func targetConfigFiles(configPath string) []string {
+	var files []string
+	if chain, _, err := config.ResolveChainFrom(filepath.Dir(configPath)); err == nil {
+		for i := len(chain) - 1; i >= 0; i-- {
+			if _, serr := os.Stat(chain[i]); serr == nil {
+				files = append(files, chain[i])
+			}
+		}
+	}
+	found := false
+	for _, f := range files {
+		if f == configPath {
+			found = true
+		}
+	}
+	if !found {
+		files = append(files, configPath)
+	}
+	return files
 }
 
 // NewClient builds a socket-backed API client.
