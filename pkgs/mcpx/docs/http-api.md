@@ -48,7 +48,7 @@ that had been removed — are recorded in the header of
 > per-tool paths. The `/v1` half of `mcpx openapi` describes the
 > same daemon surface as compiled into the binary, without the
 > live catalogue. `mcpx schema
-> --format openapi` describes **the tools** of your configured MCP
+--format openapi` describes **the tools** of your configured MCP
 > servers, as operations for a client generator. Feed the wrong one
 > to a generator and you get a working client for the wrong thing.
 
@@ -78,6 +78,7 @@ The daemon listens in two places at once:
   The host name is a placeholder — over a unix socket it names
   nothing; the socket is the address. The OpenAPI document's first
   `servers` entry (`http://mcpx`) is written for exactly this call.
+
 - **Loopback TCP**, on `daemon.port`. The default port is 0, which
   means the daemon chooses one at start-up; `GET /v1/health`
   reports the port this daemon chose, and the daemon writes its
@@ -178,12 +179,12 @@ the table, and keeping it correct is exactly the failure the table
 exists to prevent. Generate with the standard tool for your
 language:
 
-| language | tool |
-| --- | --- |
-| TypeScript | `openapi-typescript` (types) with `openapi-fetch` (client) |
-| Go | `oapi-codegen` |
-| Python | `openapi-python-client` |
-| most others | `openapi-generator` |
+| language    | tool                                                       |
+| ----------- | ---------------------------------------------------------- |
+| TypeScript  | `openapi-typescript` (types) with `openapi-fetch` (client) |
+| Go          | `oapi-codegen`                                             |
+| Python      | `openapi-python-client`                                    |
+| most others | `openapi-generator`                                        |
 
 The flow is the same everywhere:
 
