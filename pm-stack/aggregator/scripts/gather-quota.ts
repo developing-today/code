@@ -16,6 +16,8 @@
 //      the selected one. Environment-variable keys are not store
 //      rows and never appear here — stored credentials win, which
 //      is the order OpenCode itself uses.
+//   3. The Turso org usage API (#1049): usage + subscription over
+//      the verified route, token from Bitwarden by name.
 //   2. File exports (the Meta Phase-1 convention, #1301): producers
 //      the module cannot reach write latest.json documents on the
 //      laptop (v1: Meta, ~/atlas/meta-quota-export/latest.json);
@@ -49,10 +51,16 @@
 //      QUOTA_CURRENT_PATH, QUOTA_HEARTBEAT_PATH,
 //      QUOTA_GATHERER_STATE_PATH, QUOTA_SNAPSHOTS_DIR (./snapshots),
 //      USAGE_SNAPSHOT_OUTBOX_PATH, META_QUOTA_EXPORT_PATH,
-//      QUOTA_GATHER_TIMEOUT_MS (15000).
+//      QUOTA_GATHER_TIMEOUT_MS (15000), TURSO_API_TOKEN (else the
+//      Bitwarden secret turso.platform-api-token-muse-cli, resolved
+//      by name via ~/tools/bws-env conventions — BWS_BIN and
+//      BWS_ACCESS_TOKEN_FILE override its plumbing),
+//      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
+//      (https://api.turso.tech).
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,9 +69,12 @@ import {
   GATHERER_SOURCE,
   entryFromResult,
   entryFromFileExport,
+  entryFromTurso,
   recordsFromEntries,
   type FileExportDoc,
   type QuotaProviderResult,
+  type TursoSubscriptionDoc,
+  type TursoUsageDoc,
 } from "../src/quota-gather-map.ts";
 import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 
@@ -184,6 +195,118 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
   }
 }
 
+/** Bitwarden secret NAME for the Turso platform token (#1049).
+ * The value is resolved at tick time and never logged or stored. */
+const TURSO_SECRET_NAME = "turso.platform-api-token-muse-cli";
+
+/**
+ * Resolve one Bitwarden Secrets Manager secret by key, without ever
+ * logging its value (the collect-fleet-feed.ts pattern). Plumbing:
+ * bws at BWS_BIN, ~/tools/bin/bws, ~/.local/bin/bws, or PATH; the
+ * machine-account access token at BWS_ACCESS_TOKEN_FILE, else
+ * ~/.config/bws/access-token (laptop) or
+ * ~/.config/bitwarden/access-token (sandbox). Null when the route
+ * yields nothing.
+ */
+async function resolveBwsSecret(key: string): Promise<string | null> {
+  const bwsCandidates = [
+    process.env.BWS_BIN,
+    join(HOME, "tools/bin/bws"),
+    join(HOME, ".local/bin/bws"),
+    "bws",
+  ].filter((d): d is string => typeof d === "string" && d !== "");
+  let bwsBin: string | null = null;
+  for (const cand of bwsCandidates) {
+    if (!cand.includes("/")) { bwsBin = cand; break; }
+    try { await access(cand); bwsBin = cand; break; } catch { /* next */ }
+  }
+  if (!bwsBin) return null;
+  const tokenFiles = [
+    process.env.BWS_ACCESS_TOKEN_FILE,
+    join(HOME, ".config/bws/access-token"),
+    join(HOME, ".config/bitwarden/access-token"),
+  ].filter((d): d is string => typeof d === "string" && d !== "");
+  let accessToken: string | null = null;
+  for (const f of tokenFiles) {
+    try {
+      const v = (await readFile(f, "utf8")).trim();
+      if (v) { accessToken = v; break; }
+    } catch { /* next */ }
+  }
+  if (!accessToken) return null;
+  const run = (args: string[]): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile(
+        bwsBin as string,
+        args,
+        { env: { ...process.env, BWS_ACCESS_TOKEN: accessToken as string }, maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+        (err, stdout) => (err ? reject(err) : resolve(stdout)),
+      );
+    });
+  try {
+    const list = JSON.parse(await run(["secret", "list"])) as { id?: string; key?: string }[];
+    const found = list.find((s) => s.key === key);
+    if (!found?.id) return null;
+    const got = JSON.parse(await run(["secret", "get", found.id])) as { value?: string };
+    return got.value && got.value.trim() ? got.value.trim() : null;
+  } catch {
+    return null; // bws unreachable/unreadable — fail soft, no details logged
+  }
+}
+
+/**
+ * Turso org usage (#1049): usage + subscription reads over the
+ * verified org route, mapped by entryFromTurso. Any failure (no
+ * token, HTTP error, timeout) degrades to this run's error entry —
+ * per-provider fail-soft like every other source; never zeros.
+ */
+async function runTurso(tickIso: string): Promise<ProviderRun> {
+  const t0 = Date.now();
+  const done = (entry: QuotaCurrentEntry): ProviderRun => ({
+    id: "turso",
+    state: entry.state === "ok" ? "ok" : "error",
+    ms: Date.now() - t0,
+    entries: [entry],
+    ...(entry.error ? { error: entry.error } : {}),
+  });
+  const token = process.env.TURSO_API_TOKEN?.trim() || (await resolveBwsSecret(TURSO_SECRET_NAME));
+  if (!token) {
+    return done(entryFromTurso(null, null, {
+      measuredAt: tickIso,
+      error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
+    }));
+  }
+  const base = process.env.TURSO_API_BASE ?? "https://api.turso.tech";
+  const slug = process.env.TURSO_ORG_SLUG ?? "dezren39";
+  try {
+    const get = async (path: string): Promise<unknown> => {
+      // Fetch AND body parse inside the timeout, with an abort
+      // signal: a body that stalls after prompt headers must not
+      // hang the tick (Codex review, PR #2366).
+      return withTimeout(
+        (async () => {
+          const res = await fetch(`${base}/v1/organizations/${slug}${path}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!res.ok) throw new Error(`turso ${path} HTTP ${res.status}`);
+          return res.json();
+        })(),
+        timeoutMs,
+        `turso ${path}`,
+      );
+    };
+    const usage = (await get("/usage")) as TursoUsageDoc;
+    const subscription = (await get("/subscription")) as TursoSubscriptionDoc;
+    return done(entryFromTurso(usage, subscription, { measuredAt: tickIso }));
+  } catch (err) {
+    return done(entryFromTurso(null, null, {
+      measuredAt: tickIso,
+      error: err instanceof Error ? err.message : String(err),
+    }));
+  }
+}
+
 interface ProviderRun {
   id: string;
   state: "ok" | "error";
@@ -286,6 +409,7 @@ async function main(): Promise<number> {
 
   const runs = await Promise.all(providerIds.map((id) => runProvider(quota, id, tickAt)));
   for (const fx of FILE_EXPORTS) runs.push(await runFileExport(fx));
+  runs.push(await runTurso(tickAt));
   const entries = runs.flatMap((r) => r.entries);
 
   const perProvider: QuotaGatherHeartbeat["perProvider"] = {};

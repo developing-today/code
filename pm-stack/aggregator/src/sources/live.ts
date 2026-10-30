@@ -23,7 +23,7 @@ import { summarizeDns } from "../dns.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
-import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -44,6 +44,7 @@ import {
   type QuotaView,
   type RefKey,
   type RoadmapRow,
+  type SaasService,
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
@@ -512,6 +513,22 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  */
 const FEED_STALE_MS = 15 * 60_000;
 
+/**
+ * The gatherer's Turso entry (#1049) overlaid onto usage() services,
+ * fail-soft like quota(): a missing or malformed quota-current file
+ * leaves the base services untouched.
+ */
+async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
+  try {
+    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return overlayTursoUsage(services, file);
+  } catch {
+    /* no gatherer file (or unreadable): base services stand */
+  }
+  return services;
+}
+
 export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
@@ -820,6 +837,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // first-time unmatched SaaS/AI charges (the collector's
         // surfaced-state guarantees exactly-once), so each becomes
         // an attention flag here and never repeats on later feeds.
+        partial.services = await tursoOverlay(cfg, partial.services);
         const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
           kind: "unmatched-charge",
           label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -848,6 +866,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),
         };
+        partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
         return {
           ...partial,
