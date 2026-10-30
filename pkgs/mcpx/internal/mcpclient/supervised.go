@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 )
 
 // Supervised stdio transport — Phase 1 of the mcpx supervisor design
@@ -233,7 +234,19 @@ func RunSupervisor(opts SupervisorOptions) error {
 // plain os.Pipes, stderr into a 64 KiB ring.
 func (s *supervisor) spawnChild() error {
 	opts := s.opts
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, exactly as on
+	// the direct stdio path (progspec, #1921): the child is the built
+	// store path, never a nix process and never the literal spec string
+	// handed to exec (which could only fail not-found).
+	command := opts.Command
+	if progspec.IsNix(command) {
+		resolved, err := progspec.ResolvePathInDir(context.Background(), command, opts.Cwd)
+		if err != nil {
+			return fmt.Errorf("supervise: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 	env := []string{}
 	if opts.InheritEnv {
@@ -510,6 +523,10 @@ type SupervisedOptions struct {
 	BufferSize int
 	// SpawnTimeout bounds waiting for a spawned supervisor's socket.
 	SpawnTimeout time.Duration
+	// Context, when set, bounds the fail-fast nix: program-spec check
+	// before a supervisor is spawned. The supervisor itself resolves the
+	// spec again when it spawns the child. Nil means context.Background.
+	Context context.Context
 }
 
 // SupervisedTransport speaks to a stdio child through its supervisor.
@@ -546,6 +563,19 @@ type spawnFunc func(sock string, opts SupervisedOptions) error
 func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTransport, error) {
 	if opts.Command == "" {
 		return nil, errors.New("supervised transport: empty command")
+	}
+	if progspec.IsNix(opts.Command) {
+		// Fail fast, in this process, when the spec cannot resolve at
+		// all; the supervisor resolves it again at child spawn (the
+		// memo is in-process, and the store path is the child's, not
+		// this process's to hand over).
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if _, err := progspec.ResolvePathInDir(ctx, opts.Command, opts.Cwd); err != nil {
+			return nil, fmt.Errorf("supervised transport: %w", err)
+		}
 	}
 	if opts.StateDir == "" {
 		opts.StateDir = StateDir()

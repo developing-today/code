@@ -196,3 +196,33 @@ func TestToInstallNixPackageBecomesAProgramSpec(t *testing.T) {
 		}
 	}
 }
+
+func TestToInstallNixPackageKeepsPackageMetadata(t *testing.T) {
+	// A nix package's declared arguments, environment defaults and
+	// required variables belong to the install exactly as they do for a
+	// launcher-run package (Codex finding on #2585: the nix early return
+	// used to discard them).
+	s := registry.Server{Name: "a/b", Packages: []registry.Package{{
+		RegistryType: "nix", Identifier: "github:owner/repo#tool",
+		PackageArguments: []registry.Argument{
+			{Type: "named", Name: "--mode", Value: "mcp"},
+		},
+		EnvironmentVars: []registry.Variable{
+			{Name: "REGION", Default: "us-east-1"},
+			{Name: "API_KEY", IsRequired: true, IsSecret: true},
+		},
+	}}}
+	in, err := s.ToInstall(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Args) != 2 || in.Args[0] != "--mode" || in.Args[1] != "mcp" {
+		t.Errorf("Args = %v, want [--mode mcp]", in.Args)
+	}
+	if in.Env["REGION"] != "us-east-1" {
+		t.Errorf("Env = %v, want REGION default kept", in.Env)
+	}
+	if len(in.Needs) != 1 || in.Needs[0].Name != "API_KEY" {
+		t.Errorf("Needs = %v, want [API_KEY]", in.Needs)
+	}
+}

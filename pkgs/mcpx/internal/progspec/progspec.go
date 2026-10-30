@@ -102,6 +102,16 @@ var (
 
 // Resolve turns a program specification into the executable to spawn.
 func Resolve(ctx context.Context, raw string) (Resolved, error) {
+	return ResolveInDir(ctx, raw, "")
+}
+
+// ResolveInDir is Resolve for a caller that runs the program in a
+// configured working directory: a nix spec naming a relative flake ref
+// (nix:. , nix:./sub) must be built in that directory, not in the
+// daemon's, and the memo keys relative refs by the directory they were
+// resolved in -- the same relative ref in another directory is a
+// different program.
+func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	spec, err := Parse(raw)
 	if err != nil {
 		return Resolved{}, err
@@ -118,19 +128,23 @@ func Resolve(ctx context.Context, raw string) (Resolved, error) {
 		return Resolved{Spec: raw, Path: path}, nil
 	}
 
+	key := raw
+	if dir != "" {
+		key = raw + "\x00dir:" + dir
+	}
 	memoMu.Lock()
-	if r, ok := memo[raw]; ok {
+	if r, ok := memo[key]; ok {
 		memoMu.Unlock()
 		return r, nil
 	}
 	memoMu.Unlock()
 
-	r, err := resolveNix(ctx, spec)
+	r, err := resolveNix(ctx, spec, dir)
 	if err != nil {
 		return Resolved{}, err
 	}
 	memoMu.Lock()
-	memo[raw] = r
+	memo[key] = r
 	memoMu.Unlock()
 	return r, nil
 }
@@ -141,7 +155,14 @@ func ResolvePath(ctx context.Context, raw string) (string, error) {
 	return r.Path, err
 }
 
-func resolveNix(ctx context.Context, spec Spec) (Resolved, error) {
+// ResolvePathInDir is ResolveInDir for callers that only need the
+// executable.
+func ResolvePathInDir(ctx context.Context, raw, dir string) (string, error) {
+	r, err := ResolveInDir(ctx, raw, dir)
+	return r.Path, err
+}
+
+func resolveNix(ctx context.Context, spec Spec, dir string) (Resolved, error) {
 	nix, err := exec.LookPath("nix")
 	if err != nil {
 		return Resolved{}, fmt.Errorf("progspec: %q requires the nix binary, which is not on PATH: %w", spec.Raw, err)
@@ -152,6 +173,11 @@ func resolveNix(ctx context.Context, spec Spec) (Resolved, error) {
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, nix, "build", "--no-link", "--print-out-paths", spec.Installable())
+	if dir != "" {
+		// A relative flake ref means the project in the server's
+		// configured directory, not the daemon's.
+		cmd.Dir = dir
+	}
 	// A timed-out build's children can hold the output pipes open after
 	// the kill; WaitDelay bounds how long Run waits for them to close,
 	// so the timeout the caller set is the timeout they get.

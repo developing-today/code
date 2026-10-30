@@ -146,3 +146,29 @@ func TestResolvePlainSpec(t *testing.T) {
 		t.Errorf("err = %v, want an error naming the missing program", err)
 	}
 }
+
+func TestResolveNixSpecInDirBuildsThereAndMemoisesPerDir(t *testing.T) {
+	out := stubNix(t)
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	ctx := context.Background()
+	// The stub records its working directory instead of the usual call
+	// count when MCPX_STUB_PWD is set; here the plain calls file still
+	// counts invocations, which is what the per-dir memo is judged by.
+	if _, err := progspec.ResolveInDir(ctx, "nix:.#faketool", dirA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := progspec.ResolveInDir(ctx, "nix:.#faketool", dirA); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := progspec.ResolveInDir(ctx, "nix:.#faketool", dirB); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(out)), "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(strings.Fields(string(calls))); n != 2 {
+		t.Errorf("nix ran %d times for one spec in two directories (repeat in dir A memoised), want 2", n)
+	}
+}

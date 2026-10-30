@@ -377,13 +377,34 @@ func (s Server) ToInstall(preferLocal bool) (*Install, error) {
 			if !strings.ContainsAny(p.Identifier, "#/:") {
 				spec = "nix:nixpkgs#" + p.Identifier
 			}
-			return &Install{
+			in := &Install{
 				Namespace: ns,
 				Command:   spec,
 				Env:       map[string]string{},
 				How: "nix package " + p.Identifier + " via program spec " + spec +
 					" (resolves once to a store path at launch)",
-			}, nil
+			}
+			// The package's own metadata applies exactly as it does
+			// for a launcher-run package below: declared package
+			// arguments are the resolved program's arguments,
+			// environment defaults are set, required variables are
+			// reported as needs, and a non-stdio transport is kept.
+			// Dropping them here wrote an incomplete server config.
+			in.Args = append(in.Args, renderArgs(p.PackageArguments)...)
+			for _, v := range p.EnvironmentVars {
+				if v.Default != "" && !v.IsSecret {
+					in.Env[v.Name] = v.Default
+					continue
+				}
+				if v.IsRequired {
+					in.Needs = append(in.Needs, v)
+				}
+			}
+			if p.Transport != nil && p.Transport.Type != "" && p.Transport.Type != "stdio" {
+				in.Transport = p.Transport.Type
+				in.URL = p.Transport.URL
+			}
+			return in, nil
 		}
 		rt, ok := Runtimes[strings.ToLower(p.RegistryType)]
 		if !ok {
