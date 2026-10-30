@@ -325,7 +325,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				preflight.DynamicImportMode(opts.ImportsOnDynamic))
 		} else {
 			denoBin := ""
-			if strings.Contains(filepath.Base(rt.Bin), "deno") {
+			// The kind, not the binary's name: a declared runtime such
+			// as {"kind":"deno","bin":"/opt/js"} is Deno whatever its
+			// executable is called (Codex review, PR #2575).
+			if rt.Kind == KindDeno {
 				denoBin = rt.Bin
 			} else if found, lerr := exec.LookPath("deno"); lerr == nil {
 				// The graph is a property of the source, not of the
@@ -336,7 +339,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				rt.ConfigArgs)
+				rt.ConfigArgs, opts.Dir)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err

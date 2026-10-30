@@ -343,7 +343,7 @@ func ResolutionArgs(args []string) []string {
 var isolationArgs = []string{"--no-lock", "--node-modules-dir=none"}
 
 func CheckImports(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration) *Report {
-	return CheckImportsResolved(ctx, denoBin, entry, mode, dynamicMode, timeout, nil)
+	return CheckImportsResolved(ctx, denoBin, entry, mode, dynamicMode, timeout, nil, filepath.Dir(entry))
 }
 
 // CheckImportsResolved is CheckImports with the executing runtime's
@@ -352,7 +352,17 @@ func CheckImports(ctx context.Context, denoBin, entry string, mode ImportsMode, 
 // actually execute -- an import map that redirects ./dep.ts to a real
 // module must not be reported as a missing import (Codex review, PR
 // #2575).
-func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration, runtimeArgs []string) *Report {
+//
+// execDir is the directory the script will execute in (runner's
+// Options.Dir). It matters because the runtime resolves a relative
+// configuration path -- `--config ./deno.json` in the declared runtime
+// arguments -- against its working directory, and deno info looks for
+// configuration from there too. Computing the graph beside the entry
+// file instead would check a different configuration from the one the
+// script runs under, and report a valid import as missing (Codex
+// review, PR #2575). An empty execDir inherits the caller's working
+// directory, which is exactly what the execution does.
+func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration, runtimeArgs []string, execDir string) *Report {
 	r := &Report{}
 	if mode == ImportsOff || mode == "" {
 		return r
@@ -376,7 +386,10 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 	argv = append(argv, isolationArgs...)
 	argv = append(argv, entry)
 	cmd := exec.CommandContext(cctx, denoBin, argv...)
-	cmd.Dir = filepath.Dir(entry)
+	// Execute in the directory the script will execute in, not beside
+	// the entry file: relative --config paths and configuration discovery
+	// resolve from the working directory (Codex review, PR #2575).
+	cmd.Dir = execDir
 	out, err := cmd.Output()
 	if err != nil {
 		if cctx.Err() != nil {
@@ -562,7 +575,7 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 			word, next := readIdentIn(src, i)
 			if (word == "import" || word == "require") && !precededByDot(src, i) {
 				j := skipSpaceAndCommentsIn(src, next)
-				if j < len(src) && src[j] == '(' && !isMethodDefinition(src, j) {
+				if j < len(src) && src[j] == '(' && !isMethodDefinition(src, i, j, prevWord) {
 					line, char := pos(i)
 					dyn, lit, after := scanCallArg(src, j, word, line, char)
 					if dyn != nil {
@@ -600,19 +613,65 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 
 // isMethodDefinition reports whether the parenthesised list at open is
 // a method or function parameter list rather than a call's argument
-// list: the token after its closing paren is '{' (the body). In valid
-// code a call cannot be followed directly by a block, so
-// `require(value) { ... }` only parses as a definition (Codex review,
-// PR #2575: `class Loader { require(value) { return value; } }` was
+// list. The body brace after the closing paren is necessary but not
+// sufficient: automatic semicolon insertion makes a valid call statement
+// followed by a block look identical -- `await import(name)\n{ ... }`
+// parses as a call and a block, not a method (Codex review, PR #2575).
+// So the name must also stand in declaration position: right after a
+// member-list opening brace, a separator or a previous member, or after
+// a declaration modifier. In valid code a call cannot be followed on the
+// same line by a block, so a brace with no line terminator before it is
+// always a body (`class Loader { require(value) { return value; } }` was
 // reported as a computed require and rejected under
 // script.importsOnDynamic=fail).
-func isMethodDefinition(src string, open int) bool {
+func isMethodDefinition(src string, ident, open int, prevWord string) bool {
 	close := matchingParenIn(src, open)
 	if close < 0 {
 		return false
 	}
 	k := skipSpaceAndCommentsIn(src, close+1)
-	return k < len(src) && src[k] == '{'
+	if k >= len(src) || src[k] != '{' {
+		return false
+	}
+	if !hasLineTerminator(src[close+1 : k]) {
+		return true
+	}
+	return inDeclarationPosition(src, ident, prevWord)
+}
+
+// inDeclarationPosition reports whether the identifier at ident can begin
+// a class or object-literal member: after the member-list brace, a comma
+// or the end of the previous member, or after static/async/get/set (and
+// after function for a declaration). After an expression keyword such as
+// await, return or typeof the name is always an operand, so a brace that
+// follows its argument list is a separate block.
+func inDeclarationPosition(src string, ident int, prevWord string) bool {
+	switch prevWord {
+	case "static", "async", "get", "set", "function":
+		return true
+	}
+	if prevWord != "" && expressionKeyword(prevWord) {
+		return false
+	}
+	k := ident - 1
+	for k >= 0 && isSpaceIn(src[k]) {
+		k--
+	}
+	if k < 0 {
+		return false
+	}
+	switch src[k] {
+	case '{', ',', '}':
+		return true
+	}
+	return false
+}
+
+// hasLineTerminator reports whether s contains a JavaScript line
+// terminator, the condition under which automatic semicolon insertion
+// can separate a call statement from the block that follows it.
+func hasLineTerminator(s string) bool {
+	return strings.ContainsAny(s, "\n\r")
 }
 
 // matchingParenIn returns the index of the ')' matching the '(' at

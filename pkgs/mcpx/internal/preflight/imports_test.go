@@ -317,7 +317,7 @@ func TestCheckImportsPreservesGraphStderr(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep := preflight.CheckImportsResolved(context.Background(), stub, entry,
-		preflight.ImportsReport, preflight.DynamicWarn, 10*time.Second, nil)
+		preflight.ImportsReport, preflight.DynamicWarn, 10*time.Second, nil, dir)
 	err := rep.Err()
 	if err == nil {
 		t.Fatal("want a fatal report from the failing graph subprocess")
@@ -344,5 +344,56 @@ func TestScanDynamicImportsFindsImportAfterRegexInTemplate(t *testing.T) {
 	dyn := preflight.ScanDynamicImports("a.ts", src)
 	if len(dyn) != 1 {
 		t.Fatalf("the regex's } must not close the interpolation early, got %v", dyn)
+	}
+}
+
+// Codex round (PR #2575): ASI separates a call statement from the block
+// that follows it, so a brace alone does not make `import(name)` a method
+// definition -- the call must still be reported.
+func TestScanDynamicImportsCallBeforeAsiSeparatedBlock(t *testing.T) {
+	src := "await import(name)\n{ console.log('block'); }\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 1 {
+		t.Fatalf("a call before an ASI-separated block is not a method, got %v", dyn)
+	}
+	// The inverse must still hold: a method whose body opens on the next
+	// line is a declaration, not a call.
+	src2 := "class Loader {\n  require(value)\n  { return value; }\n}\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src2); len(dyn) != 0 {
+		t.Fatalf("a method body on the next line is still a declaration, got %v", dyn)
+	}
+}
+
+// Codex round (PR #2575): the graph subprocess runs where the script will
+// run, so a relative --config in the runtime arguments resolves against
+// the same directory at preflight as at execution.
+func TestCheckImportsRunsInExecutionWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	execDir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("import \"./dep.ts\";\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "cwd")
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\npwd -P > '" + marker + "'\necho '{\"modules\":[]}'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep := preflight.CheckImportsResolved(context.Background(), stub, entry,
+		preflight.ImportsReport, preflight.DynamicWarn, 10*time.Second, nil, execDir)
+	if err := rep.Err(); err != nil {
+		t.Fatalf("unexpected report: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(execDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("graph subprocess ran in %q, want the execution directory %q",
+			strings.TrimSpace(string(got)), want)
 	}
 }
