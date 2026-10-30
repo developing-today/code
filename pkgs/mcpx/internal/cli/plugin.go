@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,7 +113,16 @@ func (a *App) augmentAPIs(cfg *config.Config) error {
 			Name:    s.Name,
 			Command: self,
 			Args:    append([]string{"api", "serve", s.Name}, files...),
-			Mcpx:    &config.Extras{Description: s.Description},
+			// The declaration's fingerprint rides in the environment
+			// because PoolID hashes the environment: editing the
+			// declaration (baseUrl, headers, spec, filters) and
+			// reloading then replaces this API's pool instead of
+			// silently keeping the child that was started for the old
+			// declaration (Codex review, PR #2514). Adapters have the
+			// same shape of staleness via their files; that is #2118
+			// follow-up material, not hidden here.
+			Env:  map[string]string{"MCPX_API_DECLARATION_SHA256": apiDeclarationFingerprint(s)},
+			Mcpx: &config.Extras{Description: s.Description},
 		}
 	}
 	return nil
@@ -157,4 +169,21 @@ func (a *App) CmdPlugin(ctx context.Context, args []string) error {
 		return nil
 	}
 	return fmt.Errorf("no plugin subcommand %q; list", sub)
+}
+
+// apiDeclarationFingerprint hashes the effective declaration of one API:
+// its fields as written (headers carry ${VAR} references, never values),
+// plus the spec document's bytes when the spec is a local file, so editing
+// either replaces the API's pool on reload.
+func apiDeclarationFingerprint(s APISpec) string {
+	h := sha256.New()
+	raw, err := json.Marshal(s)
+	if err == nil {
+		h.Write(raw)
+	}
+	if b, err := os.ReadFile(s.Spec); err == nil {
+		h.Write([]byte{0})
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
 }

@@ -82,6 +82,9 @@ func TestAugmentAPIsAddsServer(t *testing.T) {
 	if s.Command == "" {
 		t.Fatal("server has no command; it must be mcpx itself")
 	}
+	if s.Env["MCPX_API_DECLARATION_SHA256"] == "" {
+		t.Fatal("server env lacks the declaration fingerprint; a declaration edit would not replace the pool on reload")
+	}
 }
 
 // A name already taken by a configured server is a refusal, not a

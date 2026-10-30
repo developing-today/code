@@ -110,6 +110,18 @@ func (a *App) CmdAPI(ctx context.Context, args []string) error {
 			Include: splitCSV(*include), Exclude: splitCSV(*exclude),
 			Methods: splitCSV(*methods), IncludeDeprecated: *deprecated,
 		}}
+	} else if sub == "serve" && len(fs.Args()) > 1 {
+		// Explicit declaration files select the declarations, full stop:
+		// the daemon passes them precisely so the child's own discovered
+		// configuration (which may name other, missing or invalid
+		// paths.apis files) cannot prevent the requested API from
+		// serving. Loading the defaults first would fail before the
+		// override is ever reached (Codex review, PR #2514).
+		loaded, err := loadAPIFiles(fs.Args()[1:])
+		if err != nil {
+			return err
+		}
+		specs = loaded
 	} else {
 		declared, err := a.loadAPIs()
 		if err != nil {
@@ -203,13 +215,6 @@ func (a *App) CmdAPI(ctx context.Context, args []string) error {
 		// environment or working directory.
 		if len(fs.Args()) < 1 {
 			return fmt.Errorf("usage: mcpx api serve <name> [file...]")
-		}
-		if len(fs.Args()) > 1 {
-			loaded, lerr := loadAPIFiles(fs.Args()[1:])
-			if lerr != nil {
-				return lerr
-			}
-			specs = loaded
 		}
 		for _, sp := range specs {
 			if sp.Name != fs.Arg(0) {
