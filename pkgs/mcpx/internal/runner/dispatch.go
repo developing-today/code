@@ -149,71 +149,156 @@ type shebangEnv struct {
 // A -S/--split-string payload is re-split with shell quoting rules,
 // because the kernel hands env the line already flattened: without
 // that, `#!/usr/bin/env -S sh -c "printf hello"` would run sh with
-// the two words '"printf' and 'hello"' and fail on the quotes.
+// the two words '"printf' and 'hello"' and fail on the quotes. The
+// payload reaches the splitter UNTOUCHED (the raw remainder of the
+// line after the -S token), not re-joined from pre-split fields:
+// fieldsplitting first discards whitespace inside quotes, so
+// `sh -c 'printf "<%s>" "a  b"'` would silently run with "a b"
+// (#2611 review).
+//
+// "--" ends option processing but not assignment processing: env's
+// grammar is [OPTION]... [NAME=VALUE]... COMMAND, and assignments
+// after the terminator still apply, so "#!/usr/bin/env -- MODE=prod
+// sh" runs sh with MODE=prod set instead of trying to execute a
+// program named MODE=prod (#2611 review).
 func parseShebang(line string) (shebangEnv, bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if !strings.HasPrefix(line, "#!") {
 		return shebangEnv{}, false
 	}
-	fields := strings.Fields(strings.TrimSpace(line[2:]))
-	if len(fields) == 0 {
+	rest := strings.TrimSpace(line[2:])
+	if rest == "" {
 		return shebangEnv{}, true
 	}
+	fields := strings.Fields(rest)
 	var sp shebangEnv
-	if filepath.Base(fields[0]) == "env" {
-		fields = fields[1:]
-	options:
-		for len(fields) > 0 {
-			f := fields[0]
-			switch {
-			case f == "-i" || f == "--ignore-environment" || f == "-":
-				sp.clear = true
-				fields = fields[1:]
-			case f == "--":
-				fields = fields[1:]
-				break options
-			case f == "-u" || f == "--unset" || f == "-C" || f == "--chdir":
-				if len(fields) < 2 {
-					fields = nil
-					break options
-				}
-				if f == "-u" || f == "--unset" {
-					sp.unset = append(sp.unset, fields[1])
-				} else {
-					sp.chdir = fields[1]
-				}
-				fields = fields[2:]
-			case strings.HasPrefix(f, "--unset="):
-				sp.unset = append(sp.unset, strings.TrimPrefix(f, "--unset="))
-				fields = fields[1:]
-			case strings.HasPrefix(f, "-u") && len(f) > 2:
-				sp.unset = append(sp.unset, f[2:])
-				fields = fields[1:]
-			case f == "-S" || f == "--split-string":
-				fields = sp.resplit(strings.Join(fields[1:], " "))
-			case strings.HasPrefix(f, "--split-string="):
-				fields = sp.resplit(strings.TrimPrefix(f, "--split-string=") + " " + strings.Join(fields[1:], " "))
-			case strings.HasPrefix(f, "-S") && len(f) > 2:
-				fields = sp.resplit(f[2:] + " " + strings.Join(fields[1:], " "))
-			case strings.HasPrefix(f, "-C") && len(f) > 2:
-				sp.chdir = f[2:]
-				fields = fields[1:]
-			case strings.HasPrefix(f, "--chdir="):
-				sp.chdir = strings.TrimPrefix(f, "--chdir=")
-				fields = fields[1:]
-			case strings.HasPrefix(f, "-"):
-				// The other operand-free options.
-				fields = fields[1:]
-			case strings.Contains(f, "="):
-				sp.set = append(sp.set, f)
-				fields = fields[1:]
-			default:
-				break options
+	if filepath.Base(fields[0]) != "env" {
+		sp.tokens = fields
+		return sp, true
+	}
+	// env shebang: consume tokens from the raw remainder of the line,
+	// so a -S payload can still be recovered verbatim; tokens produced
+	// by a re-split queue in pending instead.
+	raw := strings.TrimSpace(rest[len(fields[0]):])
+	var pending []string
+	next := func() (string, bool) {
+		if len(pending) > 0 {
+			t := pending[0]
+			pending = pending[1:]
+			return t, true
+		}
+		raw = strings.TrimLeft(raw, " \t")
+		if raw == "" {
+			return "", false
+		}
+		if i := strings.IndexAny(raw, " \t"); i >= 0 {
+			t := raw[:i]
+			raw = raw[i:]
+			return t, true
+		}
+		t := raw
+		raw = ""
+		return t, true
+	}
+	unread := func(t string) { pending = append([]string{t}, pending...) }
+	peek := func() (string, bool) {
+		t, ok := next()
+		if ok {
+			unread(t)
+		}
+		return t, ok
+	}
+	// remaining returns first plus everything not yet consumed, as
+	// the command and its arguments.
+	remaining := func(first string) []string {
+		out := []string{first}
+		out = append(out, pending...)
+		if strings.TrimSpace(raw) != "" {
+			out = append(out, strings.Fields(raw)...)
+		}
+		return out
+	}
+	// payloadFor builds a -S payload: with nothing queued the raw
+	// remainder is the payload, verbatim; with tokens queued by an
+	// earlier re-split it falls back to joining what remains.
+	payloadFor := func(head string) string {
+		if len(pending) == 0 {
+			tail := strings.TrimLeft(raw, " \t")
+			raw = ""
+			if head == "" {
+				return tail
 			}
+			if tail == "" {
+				return head
+			}
+			return head + " " + tail
+		}
+		parts := append([]string{}, pending...)
+		if strings.TrimSpace(raw) != "" {
+			parts = append(parts, strings.Fields(raw)...)
+		}
+		pending = nil
+		raw = ""
+		if head == "" {
+			return strings.Join(parts, " ")
+		}
+		return head + " " + strings.Join(parts, " ")
+	}
+	for {
+		f, ok := next()
+		if !ok {
+			return sp, true
+		}
+		switch {
+		case f == "-i" || f == "--ignore-environment" || f == "-":
+			sp.clear = true
+		case f == "--":
+			// Options are over; NAME=VALUE assignments are not.
+			for {
+				t, ok := peek()
+				if !ok || strings.HasPrefix(t, "-") || !strings.Contains(t, "=") {
+					break
+				}
+				next()
+				sp.set = append(sp.set, t)
+			}
+			if t, ok := next(); ok {
+				sp.tokens = remaining(t)
+			}
+			return sp, true
+		case f == "-u" || f == "--unset" || f == "-C" || f == "--chdir":
+			operand, ok := next()
+			if !ok {
+				return sp, true
+			}
+			if f == "-u" || f == "--unset" {
+				sp.unset = append(sp.unset, operand)
+			} else {
+				sp.chdir = operand
+			}
+		case strings.HasPrefix(f, "--unset="):
+			sp.unset = append(sp.unset, strings.TrimPrefix(f, "--unset="))
+		case strings.HasPrefix(f, "-u") && len(f) > 2:
+			sp.unset = append(sp.unset, f[2:])
+		case f == "-S" || f == "--split-string":
+			pending = sp.resplit(payloadFor(""))
+		case strings.HasPrefix(f, "--split-string="):
+			pending = sp.resplit(payloadFor(strings.TrimPrefix(f, "--split-string=")))
+		case strings.HasPrefix(f, "-S") && len(f) > 2:
+			pending = sp.resplit(payloadFor(f[2:]))
+		case strings.HasPrefix(f, "-C") && len(f) > 2:
+			sp.chdir = f[2:]
+		case strings.HasPrefix(f, "--chdir="):
+			sp.chdir = strings.TrimPrefix(f, "--chdir=")
+		case strings.HasPrefix(f, "-"):
+			// The other operand-free options.
+		case strings.Contains(f, "="):
+			sp.set = append(sp.set, f)
+		default:
+			sp.tokens = remaining(f)
+			return sp, true
 		}
 	}
-	sp.tokens = fields
-	return sp, true
 }
 
 // resplit parses an env -S payload the way env(1) would: honouring
@@ -453,34 +538,41 @@ func childBaseEnv(set, unset []string, clear bool) []string {
 // interpreter against anything else runs a different interpreter than
 // the one the script's first line names -- or none, when the executable
 // exists only in the assigned PATH (#2611 review).
+//
+// Absence and emptiness are different states and are tracked as such:
+// an ABSENT PATH (cleared with -i, unset with -u, or never inherited)
+// gets execvp's default (/bin:/usr/bin), while an explicitly EMPTY
+// PATH (PATH= in the shebang) stays empty, which execvp reads as
+// "search the effective directory only" -- substituting the default
+// for it would run a system executable the shebang did not name, or
+// miss the one in the run's directory (#2611 review).
 func shebangPath(sp *shebangEnv) string {
-	path := os.Getenv("PATH")
+	path, present := os.LookupEnv("PATH")
 	if sp.clear {
-		path = ""
+		path, present = "", false
 	}
 	for _, u := range sp.unset {
 		if u == "PATH" {
-			path = ""
+			path, present = "", false
 		}
 	}
 	for _, kv := range sp.set {
 		if k, v, ok := strings.Cut(kv, "="); ok && k == "PATH" {
-			path = v
+			path, present = v, true
 		}
 	}
-	if path == "" {
+	if !present {
 		// env(1) runs the command through execvp, which falls back to
 		// a default path (confstr _CS_PATH: /bin:/usr/bin) when PATH is
-		// absent from the environment it builds -- the -i case. An
-		// empty effective PATH therefore means that default, not
-		// "nothing is findable".
-		path = "/bin:/usr/bin"
+		// absent from the environment it builds -- the -i case.
+		return "/bin:/usr/bin"
 	}
 	return path
 }
 
 // lookPathInDir is exec.LookPath against one explicit PATH value,
-// with entries resolved against dir: an empty entry means the run's
+// with entries resolved against dir: an empty PATH value means the
+// effective directory alone, and an empty entry means the run's
 // effective directory (not mcpx's own), and so does any other relative
 // entry, the way execvp resolves them after env(1) has applied -C. The
 // result is absolute, so the later exec cannot reinterpret it against
@@ -490,7 +582,13 @@ func lookPathInDir(bin, path, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, entry := range filepath.SplitList(path) {
+	entries := filepath.SplitList(path)
+	if path == "" {
+		// An explicitly empty PATH is a single empty entry: the
+		// effective directory, and nothing else.
+		entries = []string{""}
+	}
+	for _, entry := range entries {
 		if entry == "" {
 			entry = abs
 		} else if !filepath.IsAbs(entry) {

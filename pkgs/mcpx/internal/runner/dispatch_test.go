@@ -548,3 +548,77 @@ func TestRunShebangRelativePathEntryResolvesPostChdir(t *testing.T) {
 		t.Errorf("res=%+v stdout=%q; want the interpreter from the -C directory", res, stdout.String())
 	}
 }
+
+// Assignments after env's "--" terminator still apply: the terminator
+// ends options, not the [NAME=VALUE]... part of env's grammar, so
+// "-- MODE=prod sh" runs sh with MODE=prod set rather than trying to
+// execute a program named MODE=prod (#2611 review).
+func TestParseShebangAssignmentsAfterTerminator(t *testing.T) {
+	for _, line := range []string{
+		"#!/usr/bin/env -- MODE=prod sh",
+		"#!/usr/bin/env -S -- MODE=prod sh",
+	} {
+		sp, ok := parseShebang(line)
+		if !ok || strings.Join(sp.tokens, " ") != "sh" || strings.Join(sp.set, " ") != "MODE=prod" {
+			t.Errorf("parseShebang(%q) = %v set=%v, %v; want [sh] set=[MODE=prod], true", line, sp.tokens, sp.set, ok)
+		}
+	}
+}
+
+// A -S payload reaches the splitter untouched: whitespace inside
+// quotes is part of the argument, so 'a  b' must not collapse to
+// 'a b' on the way through fields-splitting (#2611 review).
+func TestParseShebangSplitStringPreservesQuotedWhitespace(t *testing.T) {
+	line := `#!/usr/bin/env -S sh -c 'printf "<%s>" "a  b"'`
+	want := []string{"sh", "-c", `printf "<%s>" "a  b"`}
+	got, ok := ParseShebang(line)
+	if !ok || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Errorf("ParseShebang(%q) = %q, %v; want %q, true", line, got, ok, want)
+	}
+}
+
+// An explicitly empty PATH (PATH=) is not an absent PATH: it stays
+// empty (search the effective directory only), while -i and -u PATH
+// make PATH absent and earn execvp's /bin:/usr/bin default
+// (#2611 review).
+func TestShebangPathEmptyVersusAbsent(t *testing.T) {
+	t.Setenv("PATH", "/ inherited")
+	if got := shebangPath(&shebangEnv{}); got != "/ inherited" {
+		t.Errorf("shebangPath(inherit) = %q, want the inherited PATH", got)
+	}
+	if got := shebangPath(&shebangEnv{set: []string{"PATH="}}); got != "" {
+		t.Errorf("shebangPath(PATH=) = %q, want empty (effective directory only)", got)
+	}
+	if got := shebangPath(&shebangEnv{clear: true}); got != "/bin:/usr/bin" {
+		t.Errorf("shebangPath(-i) = %q, want the execvp default", got)
+	}
+	if got := shebangPath(&shebangEnv{unset: []string{"PATH"}}); got != "/bin:/usr/bin" {
+		t.Errorf("shebangPath(-u PATH) = %q, want the execvp default", got)
+	}
+	if got := shebangPath(&shebangEnv{clear: true, set: []string{"PATH="}}); got != "" {
+		t.Errorf("shebangPath(-i PATH=) = %q, want empty: the assignment re-establishes PATH, empty", got)
+	}
+}
+
+// End to end on the empty-PATH rule: an interpreter that exists only
+// in the run's effective directory is found through PATH=, where the
+// /bin:/usr/bin default would have missed it (#2611 review).
+func TestRunShebangExplicitEmptyPathUsesEffectiveDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "only-here-interp"),
+		[]byte("#!/bin/sh\necho empty-path-resolved\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := writeScript(t, dir, "empty-path.sh",
+		"#!/usr/bin/env -S PATH= only-here-interp\necho unreachable\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, CwdPolicy: "script", Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run(PATH= shebang): %v", err)
+	}
+	if res.Runtime != "only-here-interp" || !strings.Contains(stdout.String(), "empty-path-resolved") {
+		t.Errorf("res=%+v stdout=%q; want the interpreter from the effective directory", res, stdout.String())
+	}
+}
