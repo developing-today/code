@@ -436,6 +436,11 @@ rescinded(S, c)  ⇔  ∃ r ∈ versions(S):                                   /
                     ∧ c ∈ causal_past(r)                                 // r saw the claim
                     ∧ ( r.through is None ∨ c ∈ causal_past(r.through) ) // the optional bound
                     ∧ r.from_version.seq ≤ S.set_seq
+                    ∧ gov(S, c) is defined ∧ gov(S, c).seq ≥ r.from_version.seq
+                                                       // the claim-side lower bound: the version
+                                                       // that governs c (§4.1) sits at or after
+                                                       // from_version — claims governed by an
+                                                       // earlier version are preserved
 ```
 
 Three things this pins down that the prose left open:
@@ -449,6 +454,17 @@ Three things this pins down that the prose left open:
 - **`through` bounds the erasure to claims in that event's causal past.** It is the "up to here"
   form, so an owner can draw a line at a point rather than at a moment — the only option available
   in a substrate with no timestamps in the envelope (§3.1).
+- **`from_version` bounds the erasure on the claim side, not only on the set side.** The last
+  conjunct is what makes "from `from_version`'s position" (this section's first paragraph) true:
+  a claim is erased only when the version that *governs* it — `seen_by` on the prospective path,
+  the earliest importing version on the `retro` path (§4.1's `gov`) — sits at or after
+  `from_version`. A rescind "from v2" therefore preserves Alice's v1-governed claims even though
+  the rescind saw them; erasing those takes a rescind whose `from_version` names v1 (or earlier).
+  Without the conjunct, `r.from_version.seq ≤ S.set_seq` compared `from_version` only with the
+  *selected set version*, so for any ordinary rescind the check was already satisfied and changing
+  `from_version` changed nothing (round-9 finding 28). A claim counted only by a view exception
+  (clause 5) has no governing version, so no bounded rescind erases it — the owner withdraws the
+  exception in the view config, which is the act that created it.
 - **A rescind is a set version but not an admission version.** It carries no `entries`, so
   `expand(r)` and `expand_retro(r)` are empty. That is exactly why §4.1's `seen_by` and `retro`
   quantify over `adm_versions(S)` — the `idset.writer` versions only — rather than over
@@ -501,7 +517,7 @@ people who trust different sets.
 
 **Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
 Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
-It is stated once, in full, because eight review rounds showed that patching clauses one at a time
+It is stated once, in full, because nine review rounds showed that patching clauses one at a time
 keeps opening a hole somewhere else.
 
 ```
@@ -547,6 +563,16 @@ admitted_at(S, c)  ⇔  seen_by(S, c) is defined
                         ∧ author(c) ∈ expand(seen_by(S, c))   // that version's expansion, not any
 retro(S, c)     ⇔  ∃ v ∈ adm_versions(S):  c ∈ causal_past(v)     // v saw the claim
                         ∧ author(c) ∈ expand_retro(v)     // only entries marked include_history
+gov(S, c)       ⇔  seen_by(S, c)                          if admitted_at(S, c)
+                   min{ v ∈ adm_versions(S) : c ∈ causal_past(v)
+                        ∧ author(c) ∈ expand_retro(v) }   else if retro(S, c)
+                   undefined                              otherwise
+                    // the version that GOVERNS c — when its counting began. §3.3's rescind
+                    // bound is stated over gov, so "from version X" means "claims whose
+                    // counting began at X or later", on either admission path. The retro
+                    // branch takes the EARLIEST importing version: a claim first imported
+                    // before a rescind's from_version stays preserved even if a later
+                    // version also imports it, because its counting began earlier.
 expand(v)       ⇔  { author(a) : a ∈ v.entries } \ { author(x) : x ∈ v.excludes }
                     // D6's rule, in one place: exclusions win over entries, including Public.
                     // expand_retro(v) is the same expression over the entries carrying
@@ -584,7 +610,10 @@ Each clause exists because a review round proved its absence broke something:
 2. **`past(F, c)` — the claim set is closed.** Pinning the set version fixes *membership*; only
    this fixes *which claims* are eligible. Without it, re-evaluating a saved view after new claims
    arrive returns a different total.
-3. **`¬rescinded(S, c)`** — §3.3's explicit erasure, bounded by the selected set version.
+3. **`¬rescinded(S, c)`** — §3.3's explicit erasure, bounded on both sides: above by the selected
+   set version (`r ∈ versions(S)`, `from_version.seq ≤ S.set_seq`) and below, on the claim side,
+   by `gov(S, c).seq ≥ from_version.seq` — a rescind from v2 does not reach claims whose counting
+   began under v1 (round-9 finding 28).
 4. **`admitted_at` OR `retro`** — two distinct admission paths, and conflating them was the
    round-2/round-3 error. Note the quantifiers differ and that is deliberate:
    - **`admitted_at`** is the *prospective* path, and it takes the **`max`** version the author had
@@ -810,7 +839,8 @@ the outermost gate, so such a claim is not `uncounted` — it is *not in force* 
 into `uncounted` would make an enum whose members all explain a counting decision also carry a
 validity verdict, which is the counted/uncounted blurring this section exists to prevent. It is
 reported by `validity_now` (§4.6) instead, which is also the only place a *previously counted* claim
-can be flagged after a later fork proof.
+can be flagged after a later fork proof — or after a later-arriving removal voids the authority
+the claim stood on (`Voided`, §4.6).
 
 ### 4.4 Exceptions are view-level and separate from set changes
 
@@ -885,7 +915,7 @@ with two different names, and `Projection` says which one produced it.
 
 - `project(view, R)` — §4.1. `R` is the resolution state **as of the view's saved frontier**, so
   the total is reproducible. This is what a stored, comparable result means.
-- `validity_now(event_id) -> Applies | Forked | Unknown` — evaluates `applied` against the **current**
+- `validity_now(event_id) -> Applies | Forked | Voided | Unknown` — evaluates `applied` against the **current**
   resolution state, and returns a per-event answer rather than a total.
 
 Reasons: `applied` is not a fixed property of an event. `refresh` rebuilds `APPLIED` against **every**
@@ -909,6 +939,23 @@ consequences, and conflating them was round-4 finding 16:
 determined from the local store (a proof not yet synced), reporting `Forked` would let a missing
 sync masquerade as a proven conflict. §1.2 is explicit that `applied` separates *present* from *in
 force*; `Unknown` is the honest answer for "present, and neither yet".
+
+`Voided` is a fourth answer, and collapsing it into `Forked` was round-9 finding 29. `applied`
+fails for two different local reasons in `resolve.rs`'s own statement of its rules
+([`event_store/resolve.rs:1-20`](../../pkgs/id/src/event_store/resolve.rs)): rule 1 (an event at
+or above **its author's** fork point — that is `Forked`) and rules 2–3 (a membership operation,
+or content depending on one, that does not take effect because its author **lost authority at
+its position** — a dependent of a voided operation). The second is fully known locally: B grants
+D manage access, A's removal of B arrives, and D's content written after the grant does not
+apply — with no fork anywhere in D's chain (`pkgs/id/tests/voiding_scenarios.rs`,
+`test_s2_content_by_a_removed_author_after_a_voided_add_is_voided`: D's step is expected
+`false`, while C's content on the same dependency applies). Reporting `Forked` for D would
+accuse D's chain of a conflict it does not have; reporting `Unknown` would deny evidence the
+store has already resolved. So `Voided` names it: *present, resolved, and not in force because
+the authority it stood on was voided*. The distinction is user-visible — "your grantor was
+removed" and "your key forked" demand different responses — and it is the same cause-not-instance
+discipline as §4.3's variant naming: an enum that cannot say a reachable state forces the
+implementation to lie about which state occurred.
 
 The two answer spaces stay deliberately distinct. `WhyNotCounted` (§4.3) explains why a claim never
 entered a total; `validity_now` reports on a claim that *may already be* in a total. Merging them
@@ -1174,6 +1221,17 @@ Each is independently reviewable and small enough to land alone.
      writer the rescind did not target.** `seen_by` quantifies over `adm_versions`, so a rescind is
      never mistaken for the admission state in force, and its empty `expand` cannot reject the
      world's claims;
+   - a **bounded rescind preserves what precedes its bound** (finding 28): Alice admitted at v1
+     writes claims, v2 changes the set, and a `rescind` with `from_version = v2` erases her
+     v2-governed claims but **leaves her v1-governed claims counted**, even though the rescind
+     saw both. The negative control is the same fixture with the `gov` conjunct removed: the
+     v1 claims are erased too and the test fails — so the bound is exercised, not assumed. The
+     `retro` twin: a backlog claim first imported at v1 survives a rescind from v2 and is
+     erased by one from v1;
+   - **`validity_now` can say `Voided`** (finding 29): the `voiding_scenarios.rs` shape — B
+     grants D, A removes B, D's post-grant content — returns `Voided`, not `Forked` (no fork
+     in D's chain) and not `Unknown` (the store has resolved it); a genuinely forked event in
+     the same store returns `Forked`, so the two not-applied answers stay distinct;
    - the **emergency stop takes two acts** (finding 24): `entries=[Public], excludes=[Public]` in v2
      leaves v1-admitted claims counted, and a `target: Public` rescind then erases them — the test
      asserts the intermediate total is *not* zero, because an earlier draft claimed it was;
@@ -1331,11 +1389,26 @@ view*, and a view's inputs are not claims it counts. The retention model needs `
 pinned ∪ excepted ∪ config inputs`, and the fourth term is the one that only appears when you try
 to re-derive a served number after pruning.
 
+**Round 9** (Codex, on the round-8 fix commit `57e7c331`) found two more P2s. Neither was
+introduced by a fix; both are places the earlier rounds never reached — a bound stated in prose
+and enforced on only one of its two sides, and a result enum missing one of the substrate's own
+outcomes. Accepted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 28 | §3.3's `rescinded` compared `from_version` only with the selected set version (`r.from_version.seq ≤ S.set_seq`), never with the claim — so for any ordinary rescind the check was already satisfied once `r ∈ versions(S)`, changing `from_version` changed nothing, and a rescind "from v2" also erased the target's v1-governed claims it happened to see, contradicting §3.3's own "from `from_version`'s position". | **Fixed.** §4.1 now defines `gov(S, c)` — the version a claim's counting began under (`seen_by` prospectively, the earliest importing version on the `retro` path) — and §3.3's predicate requires `gov(S, c).seq ≥ r.from_version.seq`. Exception-only claims have no governing version and are not erasable by a bounded rescind; the owner withdraws the exception instead. Slice 4 gained the bounded-rescind test with its negative control, on both admission paths. |
+| 29 | §4.6's `validity_now` returned `Applies \| Forked \| Unknown`, but `applied` also fails by **authority voiding** with no fork anywhere: B grants D access, A's removal of B arrives later, and D's post-grant content does not apply (`tests/voiding_scenarios.rs` tests exactly this shape). `Forked` would falsely report a conflict in D's own chain; `Unknown` would deny fully resolved local evidence. | **Fixed.** `validity_now` now returns `Applies \| Forked \| Voided \| Unknown`: `Forked` is narrowed to `resolve.rs` rule 1 (the author's own fork point) and `Voided` covers rules 2–3 (a dependent of a voided operation; an author who lost authority at its position). §4.3's pointer was updated, and slice 4 gained the test that keeps the two not-applied answers distinct. |
+
+Round 9 is why a bound has to name both of its sides and an enum has to be checked against the
+substrate's own outcome list: §3.3 said "from `from_version`" in prose for eight rounds while
+the predicate enforced it against the wrong operand, and §4.6 enumerated `applied`'s failures
+from the fork rule alone because that was the rule the section was written about.
+
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what eight rounds actually shows.** Every round found a real defect, and rounds 2–8 each
+**A note on what nine rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
@@ -1356,8 +1429,9 @@ completeness:
    store-shaped scan.
 3. **The interaction between "in force at the claim" and "what the owner says now"** (§3.2, §3.3,
    §4.1, §D6). Every round from 2 onward produced a finding in this seam: an interval predicate, a
-   removal that did not stop new claims, a rescind mistaken for an admission, and an emergency stop
-   that stopped admitting without erasing. The rule is consistent — the claim is judged by the state
+   removal that did not stop new claims, a rescind mistaken for an admission, an emergency stop
+   that stopped admitting without erasing, and a rescind bound enforced against the set version
+   instead of the claim. The rule is consistent — the claim is judged by the state
    *it* saw, and changing the past takes an explicit `rescind` — but that rule has more visible
    consequences than any other in the document, and each one was found by a reviewer rather than by
    the author.
