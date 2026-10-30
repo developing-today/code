@@ -77,7 +77,7 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES } from "./pages.ts";
+import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
@@ -106,9 +106,14 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-nav { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-nav a { color: #58a6ff; text-decoration: none; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
+.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
 nav a.active, nav a:hover { background: #21262d; }
+nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
+.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
 main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
 h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
@@ -274,7 +279,10 @@ body.xp-plan .xpl-costcol { display: none; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
-  nav { padding: 8px 10px; }
+  nav { padding: 7px 10px; gap: 2px 8px; }
+  .navgroup + .navgroup { padding-left: 8px; }
+  .navlabel { font-size: 10px; margin-right: 2px; }
+  nav a { padding: 5px 7px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -465,6 +473,31 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
 }
 
+/**
+ * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
+ * bar order, marking the active page's section. /pages itself stays out
+ * of the bar (it is the full manifest) but is in the dropdown.
+ */
+export function navLinks(active: string, activeGroup?: string): string {
+  // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
+  // reaches it, so the bar always shows where you are (#1135).
+  const activeRoute = manifestRouteFor(active) ?? active;
+  const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
+  return groupedPages()
+    .filter((g) => g.pages.some((p) => p.id !== "pages"))
+    .map(({ group, pages }) => {
+      const anchors = pages
+        .filter((p) => p.id !== "pages")
+        .map((p) =>
+          `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
+        )
+        .join("");
+      const current = group.id === groupOfActive ? ' data-current="true"' : "";
+      return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
+    })
+    .join("");
+}
+
 function layout(
   title: string,
   body: string,
@@ -475,10 +508,10 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either.
-  const links = PAGES.filter((p) => p.id !== "pages")
-    .map((p) => `<a href="${p.route}"${p.route === active ? ' class="active"' : ""}>${esc(p.title)}</a>`)
-    .join("");
+  // in either. The bar groups its links by section (#1135) so ten pages
+  // wrap onto a second row at phone width instead of scrolling
+  // sideways, and the page's own section stays marked.
+  const links = navLinks(active);
   const options = PAGES.map(
     (p) =>
       `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,

@@ -14,8 +14,8 @@ import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
-import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
@@ -865,15 +865,10 @@ async function handler(req: Request): Promise<Response> {
  * #1147's render registry: every successful HTML page render is
  * recorded against its manifest route (subroutes count toward their
  * parent page), so /health can report each page's real last-render
- * time — measured from actual traffic, never self-probed.
+ * time — measured from actual traffic, never self-probed. The mapping
+ * lives with the manifest (#1135) so nav reachability and render
+ * attribution can never disagree.
  */
-function manifestRouteFor(path: string): string | null {
-  const exact = PAGES.find((p) => p.route === path);
-  if (exact) return exact.route;
-  if (path.startsWith("/program/")) return "/program";
-  if (path.startsWith("/quota/service/")) return "/quota";
-  return null;
-}
 
 async function fetchHandler(req: Request): Promise<Response> {
   const res = await handler(req);
