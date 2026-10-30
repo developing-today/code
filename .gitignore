@@ -160,3 +160,11 @@ codedb.snapshot
 /*.log
 .opencode/antigravity-accounts.json
 .opencode/opencode-notifier-state.json
+
+# Runtime residue from fleet sessions and local tooling (2026-10-29):
+# local state, session working dirs, config backups, stray redirect captures.
+/.local/
+/bin/work/sessions/
+.opencode/*.bak-*
+/r.out
+/r.err
