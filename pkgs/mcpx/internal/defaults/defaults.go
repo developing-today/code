@@ -50,6 +50,7 @@ type Defaults struct {
 		ReapInterval   string `json:"reapInterval"`
 		SaveInterval   string `json:"saveInterval"`
 		TSNetUpTimeout string `json:"tsnetUpTimeout"`
+		SSHWaitDelay   string `json:"sshWaitDelay"`
 	} `json:"daemon"`
 	Secrets struct {
 		RequestRetention string `json:"requestRetention"`
@@ -480,7 +481,10 @@ var (
 	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
 	// TSNetUpTimeout bounds how long a tsnet node may take to authenticate
 	// and reach Running before its listener is believed.
-	TSNetUpTimeout         = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
+	TSNetUpTimeout = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
+	// SSHWaitDelay bounds how long Cmd.Wait may spend draining an ssh
+	// process's stderr after it exits or is killed.
+	SSHWaitDelay           = mustDur(builtin.Daemon.SSHWaitDelay, "daemon.sshWaitDelay")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")

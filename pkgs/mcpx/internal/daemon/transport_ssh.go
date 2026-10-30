@@ -37,7 +37,7 @@ const SSHDefaultBin = "mcpx"
 
 // sshWaitDelay bounds Cmd.Wait's stderr draining after ssh exits or is
 // killed; see DialContext.
-const sshWaitDelay = 3 * time.Second
+var sshWaitDelay = defaults.SSHWaitDelay
 
 // SSHProxyCommand is the subcommand run on the remote host: it connects
 // its stdin/stdout to that host's daemon socket. It is a public command
