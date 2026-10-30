@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/dezren39/mcpx/internal/recipes"
 	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/dezren39/mcpx/internal/scriptresolve"
 	"github.com/dezren39/mcpx/internal/searchpath"
 	"github.com/dezren39/mcpx/internal/settings"
 	"github.com/dezren39/mcpx/internal/source"
@@ -21,70 +21,47 @@ import (
 // ScriptsDirNames are the per-project directories mcpx looks in for named
 // scripts, most specific first. `.config/mcpx` wins over `.mcpx` because it is
 // the more explicit spelling and nests with other tools' config.
-var ScriptsDirNames = recipes.DirNames
+// The list itself lives in internal/scriptresolve (#2168), shared with the
+// daemon path.
+var ScriptsDirNames = scriptresolve.DirNames
 
 // ScriptsDirName is the directory mcpx suggests creating.
 var ScriptsDirName = ScriptsDirNames[0]
 
 // ScriptExt is the extension a named script must carry on disk.
-const ScriptExt = ".ts"
+const ScriptExt = scriptresolve.Ext
 
-// scriptSearchDirs returns the ordered list of directories that can hold named
-// scripts: every `.mcpx/scripts` from the working directory up to the
-// filesystem root (nearest wins, so a repo overrides a parent), then the user
-// directory. It mirrors how the config file is discovered, so a project can
-// keep its scripts and its server list together.
-// ScriptExtensions are tried in order for a name given without one. The
-// order is deliberate: a project holding both foo.ts and foo.js is almost
-// always compiling one into the other, and the source is what someone means
-// to run.
-var ScriptExtensions = []string{".ts", ".mts", ".js", ".mjs"}
+// ScriptExtensions are tried in order for a name given without one.
+var ScriptExtensions = scriptresolve.Extensions
 
-// scriptPath resolves the configured search path, splicing the built-in list
-// wherever the user left a null.
-func scriptPath() searchpath.Resolved {
-	wd, _ := os.Getwd()
-	// The resolved settings carry the configured list, wherever it was set.
-	// The environment variable is read directly as well, because script
-	// resolution happens on paths that do not always have an App -- notably
-	// inside the daemon.
+// scriptResolver builds the shared resolver from this process's settings.
+//
+// The resolved settings carry the configured paths.scripts list, wherever
+// it was set. When there is no App -- or it configured nothing -- the
+// resolver falls back to the MCPX_PATHS_SCRIPTS environment variable, which
+// is also what the daemon's resolver sees.
+func scriptResolver() scriptresolve.Resolver {
 	var configured []string
 	if plumbingApp != nil {
 		configured = splitPathList(plumbingApp.Settings().String("paths.scripts"))
 	}
-	if len(configured) == 0 {
-		configured = splitPathList(os.Getenv("MCPX_PATHS_SCRIPTS"))
+	return scriptresolve.Resolver{
+		Configured:   configured,
+		AllowOverlap: allowOverlap(),
+		WarnBoth:     warnBothScriptDirs,
 	}
-	return searchpath.Resolve(configured, settings.NullMarker, searchpath.Options{
-		Dir:     wd,
-		Builtin: builtinScriptDirs(),
-	})
 }
 
-// builtinScriptDirs is recipes.Dirs plus the warning.
-//
-// The list itself lives in internal/recipes because the daemon serves
-// recipes from the same directories and two copies would drift the moment
-// one of them gained a spelling. The warning stays here: a package that
-// prints is a package a daemon cannot use.
-func builtinScriptDirs() []string {
-	wd, _ := os.Getwd()
-	home, _ := os.UserHomeDir()
-	dirs, both := recipes.Dirs(wd, home, os.Getenv("XDG_CONFIG_HOME"))
-	for _, dir := range both {
-		warnBothScriptDirs(dir)
-	}
-	return dirs
+// scriptPath resolves the configured search path, splicing the built-in list
+// wherever the user left a null.
+func scriptPath() searchpath.Resolved {
+	return scriptResolver().Path()
 }
 
 // scriptSearchDirs is the flat list, kept for the environment variable the
 // runner passes to scripts.
 func scriptSearchDirs() []string {
-	var out []string
-	for _, e := range scriptPath().Entries {
-		out = append(out, e.Path)
-	}
-	return out
+	return scriptResolver().SearchDirs()
 }
 
 // plumbingApp is the App whose settings the free functions in this file
@@ -206,69 +183,25 @@ func builtinPlaceholderDirs() []string {
 // splitPathList accepts either a JSON array, as a configuration file holds
 // it, or a separator-joined string, as an environment variable must. "-" and
 // "null" both stand for the built-in list, because one of them is what
-// somebody will type.
+// somebody will type. The implementation lives in internal/scriptresolve,
+// shared with the daemon path (#2168).
 func splitPathList(v string) []string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return nil
-	}
-	var parts []string
-	if strings.HasPrefix(v, "[") {
-		var arr []any
-		if json.Unmarshal([]byte(v), &arr) == nil {
-			for _, e := range arr {
-				if e == nil {
-					parts = append(parts, settings.NullMarker)
-					continue
-				}
-				parts = append(parts, fmt.Sprint(e))
-			}
-			return parts
-		}
-	}
-	for _, part := range strings.Split(v, string(os.PathListSeparator)) {
-		part = strings.TrimSpace(part)
-		switch part {
-		case "":
-		case "-", "null":
-			parts = append(parts, settings.NullMarker)
-		default:
-			parts = append(parts, part)
-		}
-	}
-	return parts
+	return scriptresolve.SplitPathList(v)
 }
 
 // looksLikePath reports whether an argument should be used verbatim rather
 // than resolved as a script name.
 func looksLikePath(arg string) bool {
-	return strings.ContainsRune(arg, filepath.Separator) ||
-		strings.HasSuffix(arg, ScriptExt) ||
-		strings.HasSuffix(arg, ".js") ||
-		strings.HasSuffix(arg, ".mts") ||
-		arg == "-"
+	return scriptresolve.LooksLikePath(arg)
 }
 
 // resolveScript turns `mcpx run report` into a concrete file. A name that
 // already looks like a path is returned unchanged so existing usage and
-// absolute paths keep working.
+// absolute paths keep working. The rule itself lives in
+// internal/scriptresolve, so the daemon resolves /v1/exec's file field
+// exactly the same way (#2168).
 func resolveScript(arg string) (string, error) {
-	if looksLikePath(arg) {
-		return arg, nil
-	}
-	path := scriptPath()
-	found, _, err := path.Find(arg, searchpath.FindOptions{
-		Extensions:   ScriptExtensions,
-		AllowOverlap: allowOverlap(),
-	})
-	if err != nil {
-		return "", err
-	}
-	if found != "" {
-		return found, nil
-	}
-	return "", fmt.Errorf("no script named %q; looked in:\n%s\nCreate one with:\n  mkdir -p %s && $EDITOR %s",
-		arg, path.Describe(), ScriptsDirName, filepath.Join(ScriptsDirName, arg+ScriptExt))
+	return scriptResolver().Resolve(arg)
 }
 
 // paramDeclHead matches the head of one `@param` declaration line, the

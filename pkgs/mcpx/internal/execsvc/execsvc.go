@@ -35,6 +35,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/dezren39/mcpx/internal/scriptresolve"
 )
 
 // Delivery says how artifact bodies reach the caller.
@@ -315,6 +316,13 @@ type Service struct {
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
+	// Scripts resolves a Request's File when it names a script rather than
+	// a path (#2168). The zero value resolves against the process working
+	// directory, the MCPX_PATHS_SCRIPTS environment variable and the
+	// built-in search path. The daemon sets Configured from its own
+	// resolved paths.scripts setting — the same setting the CLI reads,
+	// not a daemon-specific one.
+	Scripts scriptresolve.Resolver
 }
 
 // Request is one execution.
@@ -337,9 +345,38 @@ type Sink func(Frame) error
 // This is the /v1 and MCP entry point: everything the caller can ask for
 // arrives as Options and nothing is inherited from a terminal that is not
 // there.
+// resolveFile applies the one script-resolution rule to a request's File
+// (#2168): a bare name is searched on the script search path exactly as the
+// CLI searches it, and a miss names every directory searched. A path-shaped
+// file passes through unchanged. The search is rooted at the caller's
+// working directory when the request names one (Options.Cwd), and at this
+// process's working directory otherwise — for the daemon, that is the
+// project it was started for.
+func (s *Service) resolveFile(req Request) (string, error) {
+	r := s.Scripts
+	if req.Opts.Cwd != "" {
+		r.Dir = req.Opts.Cwd
+	}
+	return r.Resolve(req.File)
+}
+
 func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, error) {
 	if req.Source == "" && req.File == "" {
 		return nil, errors.New("exec: need source or a file")
+	}
+	if req.Source == "" && req.File != "" {
+		// Resolve here, before anything is built: /v1/exec's file field
+		// used to pass straight into runner.Options.File unresolved, so
+		// the same name that `mcpx run report` found was a missing raw
+		// path on the daemon (#2168). Resolving the file (rather than
+		// reading its text) is also what makes Options.Export work on
+		// this path: the runner's launcher imports the resolved file
+		// and calls the named export there, as it does locally.
+		resolved, err := s.resolveFile(req)
+		if err != nil {
+			return nil, err
+		}
+		req.File = resolved
 	}
 	if s.Limits.SetupErr != nil {
 		return nil, s.Limits.SetupErr

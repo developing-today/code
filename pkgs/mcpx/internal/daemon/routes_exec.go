@@ -20,6 +20,7 @@ import (
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/dezren39/mcpx/internal/scriptresolve"
 	"github.com/dezren39/mcpx/internal/settings"
 	"github.com/dezren39/mcpx/internal/tasks"
 )
@@ -185,7 +186,13 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
 	return &execsvc.Service{
-		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
+		Src: registrySource{reg: s.reg, endpoint: s.endpoint},
+		// Daemon-side script resolution (#2168) reads the same
+		// paths.scripts setting the CLI reads, resolved from this
+		// daemon's configuration file and environment — there is no
+		// daemon-specific list (the #1919 scope question, answered on
+		// #2168).
+		Scripts:  s.execFileResolver(""),
 		Store:    store,
 		Endpoint: s.endpoint,
 		Socket:   s.paths.Socket,
@@ -276,6 +283,18 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// execFileResolver is the script resolver for /v1/exec requests, built from
+// this daemon's resolved settings. cwd, when the request names one, roots
+// the search there; otherwise the daemon's own working directory does.
+func (s *Server) execFileResolver(cwd string) scriptresolve.Resolver {
+	set := s.execSettings()
+	return scriptresolve.Resolver{
+		Configured:   scriptresolve.SplitPathList(set.String("paths.scripts")),
+		AllowOverlap: set.Bool("plumbing.allowTsJsOverlap"),
+		Dir:          cwd,
+	}
+}
+
 // refuseUnreadyScript runs the preflight on the script a request names, and
 // returns the refusal when a server it reaches cannot run. A file is read the
 // way the runner will read it, from where the daemon runs, so the check and
@@ -284,7 +303,15 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 func (s *Server) refuseUnreadyScript(req execReq) *SecretRequired {
 	src := req.Source
 	if src == "" && req.File != "" {
-		b, err := os.ReadFile(req.File)
+		// A bare name is resolved the way the run will resolve it (#2168),
+		// so the preflight reads the same text the runner will. An
+		// unresolvable name is left to the run, which reports the
+		// resolution error itself.
+		file := req.File
+		if resolved, rerr := s.execFileResolver(req.Options.Cwd).Resolve(req.File); rerr == nil {
+			file = resolved
+		}
+		b, err := os.ReadFile(file)
 		if err != nil {
 			return nil
 		}
