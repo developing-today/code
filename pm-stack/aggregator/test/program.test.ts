@@ -226,6 +226,35 @@ describe("project registry", () => {
 
     const cloud = projectConfigById("cloud-program")!;
     expect(cloud.roadmapArea).toBe("Cloud program");
+    // #1128 area decision: links+refs for the pool, Grist area kept.
+    expect(cloud.poolArea).toBeNull();
+    const cloudNext = (cloud.editorial?.next ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudNext).toContain("OCI signup resolution");
+    expect(cloudNext).toContain("CPCOE-29381");
+    expect(cloudNext).toContain("Free-services pass");
+    // The 2026-10-26 SaaS review list must stay named in the entry.
+    for (const svc of [
+      "boats.cloud",
+      "quic.cloud",
+      "Backblaze B2",
+      "OVHcloud",
+      "Railway",
+      "Render",
+      "DigitalOcean",
+      "Hetzner",
+      "Heroku",
+      "GCP",
+      "AWS",
+    ]) {
+      expect(cloudNext).toContain(svc);
+    }
+    // boats.cloud caveat (CodeRabbit nitpick on PR #2406): it stays unverified and untouched.
+    expect(cloudNext).toContain("unverified");
+    expect(cloudNext).toContain("untouched");
+    const cloudLongTerm = (cloud.editorial?.longTerm ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(cloudLongTerm).toContain("Egress offload");
+    expect(cloudLongTerm).toContain("zero-egress");
+    expect(cloudLongTerm).toContain("Always-free maximization");
   });
 
   test("validation catches duplicates and malformed entries", () => {
