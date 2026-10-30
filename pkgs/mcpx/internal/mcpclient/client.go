@@ -106,6 +106,14 @@ type Client struct {
 	toolValidators map[string]*toolSchemas
 	// onElicit answers server-initiated requests.
 	onElicit ElicitHandler
+	// Rate limits on server-initiated requests (ratelimit.go): the
+	// resolved limits, this session's sampling counter, and the shared
+	// per-server counters (nil when the session names no server).
+	reqLimits       RequestLimits
+	serverName      string
+	reqMu           sync.Mutex
+	sessionSampling *windowCounter
+	server          *ServerRequestLimiter
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
@@ -362,6 +370,7 @@ func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	if c.probeTimeout <= 0 {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
+	c.setupRequestLimits(o)
 	go c.recvLoop()
 
 	pref := o.Preference
@@ -1432,6 +1441,9 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	var raw json.RawMessage
 	if err := c.call(ctx, "prompts/get", params, &raw); err != nil {
 		return nil, err
+	}
+	if err := ValidatePromptResult(raw); err != nil {
+		return nil, fmt.Errorf("prompts/get %q: invalid result from upstream: %w", name, err)
 	}
 	return raw, nil
 }

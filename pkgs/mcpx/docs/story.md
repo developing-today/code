@@ -586,7 +586,7 @@ through untouched.
 | `compact` | `INFO fetched 3 pages` |
 | `bare` | `fetched 3 pages` |
 
-`--log-level` sets the threshold; `MCPX_FORMAT` and `MCPX_LOG_LEVEL` set
+`--log-level` sets the threshold; `MCPX_LOGGING_FORMAT` and `MCPX_LOG_LEVEL` set
 defaults. The daemon renders through the same writer, so one choice governs
 everything.
 
@@ -2882,6 +2882,12 @@ operations. Turning one into a namespace would compose with pools exactly as
 MCP servers do, and is a large amount of reach for a contained amount of code.
 
 2026-09-27T05:05:00-05:00
+
+*Correction, 2026-10-30: this landed. OpenAPI documents are callable
+tools today — the daemon merges a server's OpenAPI operations into its
+tool surface and `mcpx openapi` prints the generated document — so the
+`proposed` status above is the record of the decision, not the state
+of the code.*
 
 ---
 

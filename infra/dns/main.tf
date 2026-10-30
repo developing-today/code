@@ -2,12 +2,12 @@ terraform {
   backend "local" {}
   required_providers {
     porkbun = {
-      source = "cullenmcdermott/porkbun"
-      # source  = "registry.terraform.io/developing-today-forks/porkbun"
-      # version = "1.2.8"
+      source  = "cullenmcdermott/porkbun"
+      version = "0.3.0"
     }
     sops = {
-      source = "carlpett/sops"
+      source  = "carlpett/sops"
+      version = "1.1.1"
     }
   }
 }

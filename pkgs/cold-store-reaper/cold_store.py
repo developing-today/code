@@ -162,6 +162,14 @@ def _parse_s3_list_page(body: bytes):
                     stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
                 except ValueError:
                     stamp = None
+                if stamp is not None and stamp.tzinfo is None:
+                    # Offset-less = zone unknown = unparseable (the
+                    # aware-or-None contract above): never reinterpret
+                    # it as UTC, because eviction deletes objects and
+                    # must not act on a stamp whose zone is unknown.
+                    # None reads as oldest/too-young downstream, which
+                    # is non-evictable by construction (#2110).
+                    stamp = None
             objects.append(
                 {
                     "key": fields.get("Key") or "",

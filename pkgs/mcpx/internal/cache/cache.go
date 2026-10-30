@@ -89,11 +89,46 @@ type Cache struct {
 // Open returns the cache rooted at root (<root>/<kind>/<key>).
 func Open(root string) *Cache { return &Cache{Root: root} }
 
-// Dir returns the directory holding one kind's entries.
-func (c *Cache) Dir(kind string) string { return filepath.Join(c.Root, kind) }
+// validSegment reports whether name may be used as one path segment
+// naming a kind or an entry key: non-empty, not a dot component, and
+// containing no path separator. Keys are content hashes and kinds are
+// fixed names, so anything else is a caller bug or an attack — a raw
+// "../" key once flowed from the CLI into Remove's os.RemoveAll and
+// could delete recursively outside the cache root (#2566 finding 1).
+func validSegment(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		!strings.ContainsAny(name, "/\\") && !strings.ContainsRune(name, 0)
+}
 
-// Path returns the path of one entry.
+// validateNames rejects a kind/key pair that cannot name exactly one
+// entry inside the cache root.
+func validateNames(kind, key string) error {
+	if !validSegment(kind) {
+		return fmt.Errorf("cache: invalid kind %q", kind)
+	}
+	if !validSegment(key) {
+		return fmt.Errorf("cache: invalid key %q", key)
+	}
+	return nil
+}
+
+// Dir returns the directory holding one kind's entries. It returns ""
+// for an invalid kind (see validSegment); operations on the cache
+// reject such kinds instead of resolving a path outside the root.
+func (c *Cache) Dir(kind string) string {
+	if !validSegment(kind) {
+		return ""
+	}
+	return filepath.Join(c.Root, kind)
+}
+
+// Path returns the path of one entry. It returns "" for an invalid
+// kind or key (see validSegment) rather than a path that could escape
+// the cache root.
 func (c *Cache) Path(kind, key string) string {
+	if !validSegment(kind) || !validSegment(key) {
+		return ""
+	}
 	return filepath.Join(c.Root, kind, key)
 }
 
@@ -101,6 +136,9 @@ func (c *Cache) Path(kind, key string) string {
 // time so age eviction measures use, not creation.
 func (c *Cache) Get(kind, key string) (string, bool) {
 	p := c.Path(kind, key)
+	if p == "" {
+		return "", false
+	}
 	if _, err := os.Stat(p); err != nil {
 		return "", false
 	}
@@ -115,6 +153,9 @@ func (c *Cache) Get(kind, key string) (string, bool) {
 // exists, fill is not called and the existing path is returned with
 // hit=true. After a store, Evict runs for the kind with lim.
 func (c *Cache) Put(kind, key string, lim Limits, fill func(dir string) error) (path string, hit bool, err error) {
+	if err := validateNames(kind, key); err != nil {
+		return "", false, err
+	}
 	if p, ok := c.Get(kind, key); ok {
 		return p, true, nil
 	}
@@ -138,7 +179,11 @@ func (c *Cache) Put(kind, key string, lim Limits, fill func(dir string) error) (
 		}
 		return "", false, err
 	}
-	_ = c.Evict(kind, lim)
+	// Evict, but never the entry just stored: with keep == "" an entry
+	// larger than MaxBytes was evicted by its own Put, which still
+	// returned success (#2566 finding 2). The new entry stays even if
+	// it alone exceeds a bound; older entries are evicted first.
+	_ = c.evict(kind, lim, dest)
 	return dest, false, nil
 }
 
@@ -207,6 +252,9 @@ func Leased(path string, staleAge time.Duration) bool {
 
 // List returns every entry of a kind, oldest use first.
 func (c *Cache) List(kind string, staleAge time.Duration) ([]Entry, error) {
+	if !validSegment(kind) {
+		return nil, fmt.Errorf("cache: invalid kind %q", kind)
+	}
 	return Scan(c.Dir(kind), kind, staleAge, nil)
 }
 
@@ -270,11 +318,15 @@ func dirSize(root string) int64 {
 // Evict enforces lim over one kind, removing oldest unleased entries
 // until every bound holds. It returns the entries removed.
 func (c *Cache) Evict(kind string, lim Limits) []Entry {
+	return c.evict(kind, lim, "")
+}
+
+func (c *Cache) evict(kind string, lim Limits, keep string) []Entry {
 	entries, err := c.List(kind, lim.LeaseStaleAge)
 	if err != nil {
 		return nil
 	}
-	return removeAll(SelectVictims(entries, lim, ""))
+	return removeAll(SelectVictims(entries, lim, keep), lim.LeaseStaleAge)
 }
 
 // Prune enforces lim over an arbitrary directory of entries — the form
@@ -286,12 +338,20 @@ func Prune(dir string, lim Limits, keep string, match func(name string) bool) []
 	if err != nil {
 		return nil
 	}
-	return removeAll(SelectVictims(entries, lim, keep))
+	return removeAll(SelectVictims(entries, lim, keep), lim.LeaseStaleAge)
 }
 
-func removeAll(victims []Entry) []Entry {
+// removeAll deletes victims, re-checking the lease state of each one
+// immediately before its removal: victims were selected from a Scan
+// snapshot, and an entry leased in the window between the scan and the
+// removal must not be deleted out from under its holder (#2566
+// finding 3).
+func removeAll(victims []Entry, staleAge time.Duration) []Entry {
 	var removed []Entry
 	for _, v := range victims {
+		if Leased(v.Path, staleAge) {
+			continue
+		}
 		if err := os.RemoveAll(v.Path); err == nil {
 			removed = append(removed, v)
 		}
@@ -329,7 +389,15 @@ func SelectVictims(entries []Entry, lim Limits, keep string) []Entry {
 
 // Remove deletes one entry, refusing while it is leased.
 func (c *Cache) Remove(kind, key string, staleAge time.Duration) error {
+	if err := validateNames(kind, key); err != nil {
+		return err
+	}
 	p := c.Path(kind, key)
+	// Defense in depth beyond the segment checks: the resolved target
+	// must be exactly one entry directly inside the kind directory.
+	if filepath.Dir(p) != c.Dir(kind) || filepath.Base(p) != key {
+		return fmt.Errorf("cache: %s/%s does not resolve inside the cache root", kind, key)
+	}
 	if Leased(p, staleAge) {
 		return fmt.Errorf("cache: %s/%s is leased by a running process", kind, key)
 	}

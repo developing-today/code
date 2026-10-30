@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 )
 
 // Supervised stdio transport — Phase 1 of the mcpx supervisor design
@@ -233,7 +234,19 @@ func RunSupervisor(opts SupervisorOptions) error {
 // plain os.Pipes, stderr into a 64 KiB ring.
 func (s *supervisor) spawnChild() error {
 	opts := s.opts
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, exactly as on
+	// the direct stdio path (progspec, #1921): the child is the built
+	// store path, never a nix process and never the literal spec string
+	// handed to exec (which could only fail not-found).
+	command := opts.Command
+	if progspec.IsNix(command) {
+		resolved, err := progspec.ResolvePathInDir(context.Background(), command, opts.Cwd)
+		if err != nil {
+			return fmt.Errorf("supervise: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 	env := []string{}
 	if opts.InheritEnv {
@@ -510,6 +523,10 @@ type SupervisedOptions struct {
 	BufferSize int
 	// SpawnTimeout bounds waiting for a spawned supervisor's socket.
 	SpawnTimeout time.Duration
+	// Context, when set, bounds the fail-fast nix: program-spec check
+	// before a supervisor is spawned. The supervisor itself resolves the
+	// spec again when it spawns the child. Nil means context.Background.
+	Context context.Context
 }
 
 // SupervisedTransport speaks to a stdio child through its supervisor.
@@ -566,11 +583,40 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 		return nil, err
 	}
 	// Not live: remove a possible stale socket and spawn on demand.
+	spawnOpts := opts
+	if progspec.IsNix(opts.Command) {
+		// Fail fast, in this process, when the spec cannot resolve at
+		// all — and hand the resolved store path to the supervisor
+		// being spawned, in place of the spec. The supervisor runs
+		// with the SERVER's environment (opts.Env rides along), whose
+		// PATH may exclude nix entirely, so a supervisor left to
+		// resolve the spec again at child spawn can fail where this
+		// process succeeded (Codex review, PR #2585). A store path is
+		// immutable and self-contained, so handing it over is safe,
+		// and the supervisor's own restarts of the child stop
+		// depending on nix being findable. The resolution is FRESH
+		// (no memo read): a memoized path names whatever an earlier
+		// context resolved, which another process cannot trust.
+		// This check belongs HERE,
+		// not before the attach attempt above: a live supervisor with
+		// a healthy child needs no build, and a daemon reattaching
+		// after a restart must not be failed by a nix that has since
+		// left PATH or a flake that no longer resolves.
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resolved, err := progspec.ResolvePathFreshInDir(ctx, opts.Command, opts.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("supervised transport: %w", err)
+		}
+		spawnOpts.Command = resolved
+	}
 	_ = os.Remove(sock)
 	if spawn == nil {
 		spawn = spawnSupervisorProcess
 	}
-	if serr := spawn(sock, opts); serr != nil {
+	if serr := spawn(sock, spawnOpts); serr != nil {
 		return nil, fmt.Errorf("supervised transport for %s: spawn supervisor: %w", opts.Name, serr)
 	}
 	deadline := time.Now().Add(opts.SpawnTimeout)

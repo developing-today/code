@@ -7,6 +7,23 @@ import "github.com/dezren39/mcpx/internal/defaults"
 func transportSettings() []Setting {
 	return []Setting{
 		{
+			Path: "transport.bearerToken", Scope: ScopeDaemon, Kind: KindString, Default: "",
+			Commands: []string{"daemon"},
+			Name:     "Bearer token",
+			Short:    "when set, every /v1 and /mcp request must carry this token as a Bearer credential",
+			Long: "Optional shared-secret auth for the daemon's HTTP surfaces. Unset (the " +
+				"default), the daemon behaves exactly as it always has: the socket's file " +
+				"permissions are the access control. Set, every /v1 and /mcp request -- on the " +
+				"socket and the loopback listeners alike -- must carry 'Authorization: Bearer " +
+				"<token>' or is refused 401; the comparison is constant-time. First-party " +
+				"callers (the CLI, and through it scripts and the plugin) read the same setting " +
+				"and attach the header. Source it from the environment " +
+				"(MCPX_TRANSPORT_BEARER_TOKEN) so the token need not live in a configuration " +
+				"file. A token shorter than 32 characters is refused at daemon startup. The " +
+				"value is never logged or echoed in an error. This is a static shared token by " +
+				"design -- not OAuth (#1950) and not per-server upstream auth (#1926).",
+		},
+		{
 			Path: "transport.allowedOrigins", Scope: ScopeDaemon, Kind: KindList,
 			Default: defaults.CSV(defaults.TransportAllowedOrigins), Repeatable: true,
 			Commands: []string{"daemon"},

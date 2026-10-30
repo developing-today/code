@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/dezren39/mcpx/internal/settings"
 )
 
 func TestHandleChatCompletionsSemanticToolInjection(t *testing.T) {
@@ -77,6 +78,60 @@ func TestHandleChatCompletionsSemanticToolInjection(t *testing.T) {
 	}
 	if sum.TotalTurns != 1 {
 		t.Errorf("expected 1 turn in token store, got %d", sum.TotalTurns)
+	}
+}
+
+func TestProxyKeepsUpstreamKeyWhenBearerSet(t *testing.T) {
+	// #1975: with daemon bearer auth on, the Authorization header the
+	// gate verified is the daemon credential -- the upstream must still
+	// get the configured provider key, not the daemon token. Fixture
+	// values only, never real credentials.
+	const providerKey = "provider-key-fixture-0123456789ab"
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-mock",
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+		})
+	}))
+	defer upstream.Close()
+
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// NOTE: proxy.maxTools and proxy.upstreamUrl are not declared in the
+	// settings schema (pre-existing gap: a schema-built set without these
+	// overrides panics on the typed readers in handleChatCompletions --
+	// filed as a follow-up). WithOverrides resolves undeclared paths, so
+	// the test pins exactly the values under test.
+	set := settings.NewSet(sch).WithOverrides(map[string]string{
+		BearerTokenSetting:  fixtureToken,
+		"proxy.apiKey":      providerKey,
+		"proxy.maxTools":    "5",
+		"proxy.upstreamUrl": "",
+	}, "test")
+	reg := &Registry{
+		testTools: []ToolInfo{
+			{Namespace: "browser", Tool: "click", Function: "browser.click", Description: "Click button or link on web page"},
+		},
+	}
+	s := &Server{reg: reg, set: set}
+
+	reqBody := []byte(`{"model": "gpt-4o", "messages": [{"role": "user", "content": "click the button"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBody))
+	req.Header.Set("X-Upstream-Url", upstream.URL)
+	req.Header.Set("Authorization", "Bearer "+fixtureToken)
+	w := httptest.NewRecorder()
+
+	s.handleChatCompletions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if want := "Bearer " + providerKey; gotAuth != want {
+		t.Fatalf("upstream got %q, want provider key %q (daemon token must not leak upstream)", gotAuth, want)
 	}
 }
 

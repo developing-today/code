@@ -432,6 +432,17 @@ and a switch to turn the report off would have kept it quiet.
 | `mcp.pageSize` | int | `100` | client | no | `--mcp-page-size` | `MCPX_MCP_PAGE_SIZE` | how many items one tools/list reply carries |
 | `mcp.passthrough` | string | *(empty)* | client | no | `--mcp-passthrough`, `--passthrough` | `MCPX_MCP_PASSTHROUGH` | serve upstreams' tools, prompts and resources under their own names |
 
+### model
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `model.apiKeyEnv` | string | *(empty)* | daemon | no | `--model-api-key-env` | `MCPX_MODEL_API_KEY_ENV` | the environment variable holding the configured provider's API key |
+| `model.baseURL` | string | *(empty)* | daemon | no | `--model-base-url` | `MCPX_MODEL_BASE_URL` | the OpenAI-compatible endpoint the configured provider calls |
+| `model.budget` | int | `0` | daemon | no | `--model-budget` | `MCPX_MODEL_BUDGET` | hard ceiling on the tokens one generation through the layer may ask for; 0 is no ceiling |
+| `model.default` | string | *(empty)* | daemon | no | `--model-default` | `MCPX_MODEL_DEFAULT` | the model id used when an operation names none, as provider/model |
+| `model.provider` | enum | `none` | daemon | no | `--model-provider` | `MCPX_MODEL_PROVIDER` | where mcpx's own generation gets a model: a configured provider, sampling through the caller, or none |
+| `model.timeout` | duration | `1m30s` | daemon | no | `--model-timeout` | `MCPX_MODEL_TIMEOUT` | how long one generation through the layer may take |
+
 ### output
 
 | setting | kind | default | scope | hot | flag | variable | governs |
@@ -526,8 +537,11 @@ and a switch to turn the report off would have kept it quiet.
 | `proto.askRounds` | int | `8` | daemon | no | `--proto-ask-rounds` | `MCPX_PROTO_ASK_ROUNDS` | how many times one request may come back asking for more |
 | `proto.askTTL` | duration | `15m` | daemon | no | `--proto-ask-ttl` | `MCPX_PROTO_ASK_TTL` | *(plumbing)* how long the daemon keeps a call waiting for an answer |
 | `proto.askTimeout` | duration | `10m` | daemon | no | `--proto-ask-timeout` | `MCPX_PROTO_ASK_TIMEOUT` | how long one request may be held while a question goes unanswered |
+| `proto.elicitationPerMinute` | int | `30` | daemon | no | `--proto-elicitation-per-minute` | `MCPX_PROTO_ELICITATION_PER_MINUTE` | max elicitation requests one upstream server may make per minute, across all its sessions |
 | `proto.mcpPath` | string | `/mcp` | daemon | no | `--proto-mcp-path` | `MCPX_PROTO_MCP_PATH` | where the daemon serves MCP |
 | `proto.native` | bool | `true` | daemon | no | `--proto-native` | `MCPX_PROTO_NATIVE` | put an upstream server's questions to mcpx's own MCP client |
+| `proto.samplingPerMinute` | int | `60` | daemon | no | `--proto-sampling-per-minute` | `MCPX_PROTO_SAMPLING_PER_MINUTE` | max sampling requests one upstream server may make per minute, across all its sessions |
+| `proto.samplingSessionPerMinute` | int | `20` | daemon | no | `--proto-sampling-session-per-minute` | `MCPX_PROTO_SAMPLING_SESSION_PER_MINUTE` | max sampling requests one upstream server may make within a single session per minute |
 | `proto.serveMCP` | bool | `true` | daemon | no | `--proto-serve-mcp` | `MCPX_PROTO_SERVE_MCP` | mount mcpx's own MCP server on the daemon's listeners |
 | `proto.sessionIdle` | duration | `30m` | daemon | no | `--proto-session-idle` | `MCPX_PROTO_SESSION_IDLE` | *(plumbing)* how long an unused Streamable HTTP session is kept |
 | `proto.stateTTL` | duration | `30m` | daemon | no | `--proto-state-ttl` | `MCPX_PROTO_STATE_TTL` | *(plumbing)* how long a client may resume an interrupted request with |
@@ -643,6 +657,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp |
+| `transport.bearerToken` | string | *(empty)* | daemon | no | `--transport-bearer-token` | `MCPX_TRANSPORT_BEARER_TOKEN` | when set, every /v1 and /mcp request must carry this token as a Bearer credential |
 | `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins |
 | `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line |
 | `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes |
