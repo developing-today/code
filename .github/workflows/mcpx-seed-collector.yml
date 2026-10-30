@@ -101,7 +101,10 @@ jobs:
               continue
             fi
 
-            attempt="$(gh run view "$id" --json attemptCount --jq .attemptCount)"
+            # `attempt` is the run's latest attempt number (gh has no
+            # `attemptCount` field); default 1 so an old run without one
+            # still yields a valid record instead of failing the batch.
+            attempt="$(gh run view "$id" --json attempt --jq '.attempt // 1')"
             mkdir -p "$(dirname "$path")"
             jq -cn \
               --arg seed "$seed" \
