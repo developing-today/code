@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -234,6 +236,25 @@ func handCommands() []Command {
 		{
 			Name: "status", Group: "daemon",
 			Summary: "show the daemon, its servers and their instances",
+			Detail: "Status never starts a daemon. Unlike the commands that use " +
+				"one, it only reports: with no daemon running it prints " +
+				"\"daemon: not running\" (or {\"running\": false} as JSON) and exits. " +
+				"That is a decision, not an oversight (#1866) — a status check " +
+				"must be safe to poll. Start a daemon with a command that " +
+				"needs one, or `mcpx serve`.",
+		},
+		{
+			Name: "cache", Group: "daemon",
+			Local:   "Reads and prunes the cache directory on this machine; no daemon is involved.",
+			Usage:   "[prune | remove <kind> <key>]",
+			Summary: "list, prune or remove entries in the shared cache",
+			Detail: "The one cache mechanism (#1908) keeps every kind of cached " +
+				"state under the cache root as <kind>/<key>. With no arguments " +
+				"this lists each entry with its size and whether a running " +
+				"process leases it; prune runs eviction against the configured " +
+				"byte and age bounds (cache.maxBytes, cache.maxAge); remove " +
+				"deletes one entry and refuses while it is leased. Like status, " +
+				"this never starts a daemon.",
 		},
 		{
 			Name: "daemons", Group: "daemon",
@@ -424,6 +445,19 @@ func handCommands() []Command {
 				"leaves the reader where they started.",
 		},
 		{
+			Name: "hook", Group: "inspection",
+			Local: "Reads the resolved `hooks` setting from the configuration chain on this machine.",
+			Usage: "ls", Summary: "list the config-declared hooks in force",
+			Detail: "Hooks are declared in the `hooks` setting (docs/decisions/0001): " +
+				"a JSON array of {name, on, run | module, when, timeoutMs, failure}. " +
+				"Every hook is an observer over the daemon's event bus -- it runs " +
+				"after the fact, under a hard timeout, and cannot change what it " +
+				"watched. `ls` shows each hook, its filter, its executor and " +
+				"whether that executor can actually run on this machine. The table " +
+				"is configuration, not runtime state: there is no subcommand that " +
+				"changes it on a running daemon.",
+		},
+		{
 			Name: "prompts", Group: "discovery",
 			Usage: "[<ns>.<name> key=value...]", Summary: "list or render a server's prompts",
 			Detail: "Prompts are the half of MCP that is not tools: a server saying " +
@@ -552,6 +586,24 @@ func handCommands() []Command {
 			},
 		},
 		{
+			Name: "stdio-proxy", Group: "daemon",
+			Local:   "It is a byte pipe: it dials the daemon's unix socket on this host and copies stdin/stdout to it, which no /v1 operation can express.",
+			Usage:   "[--sock <path>]",
+			Summary: "serve the daemon's API on stdin/stdout, for an ssh tunnel",
+			Detail: "The remote half of an ssh:// daemon endpoint: `ssh host mcpx " +
+				"stdio-proxy` turns that ssh session's pipes into an HTTP connection " +
+				"to the daemon on the host. The socket is resolved here, by this " +
+				"process, from mcpx's own paths and configuration file, so the client " +
+				"needs no knowledge of the remote filesystem; --sock names a socket " +
+				"explicitly, for a host running more than one daemon. Public rather " +
+				"than hidden because the ssh command line a client runs names it. " +
+				"See docs/protocol.md for the MCP-over-ssh form.",
+			Examples: []string{
+				"ssh buildbox mcpx stdio-proxy",
+				"ssh buildbox mcpx stdio-proxy --sock /run/user/1000/mcpx/daemon.sock",
+			},
+		},
+		{
 			Name: "openapi", Group: "discovery",
 			Usage:   "[-o file]",
 			Summary: "print an OpenAPI document for mcpx",
@@ -571,6 +623,21 @@ func handCommands() []Command {
 			Examples: []string{
 				"mcpx adapter check",
 				`mcpx adapter call jq.run '{"filter":"."}'`,
+			},
+		},
+		{
+			Name: "plugin", Group: "configuration",
+			Local:   "Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own.",
+			Usage:   "[list]",
+			Summary: "plugins discovered under paths.plugins -- each one an MCP server",
+			Detail: "A plugin is an MCP server (#1870). list shows what discovery found: " +
+				"a directory under paths.plugins holding mcpx-plugin.json, a bare " +
+				"executable in one of those directories, or an mcpx-plugin-<name> " +
+				"executable on PATH. The daemon adds every discovered plugin as a " +
+				"server of its own, so it is pooled and appears in mcpx ls, types, " +
+				"search, catalog and the generated client like any configured server.",
+			Examples: []string{
+				"mcpx plugin list",
 			},
 		},
 		{
@@ -597,6 +664,24 @@ func handCommands() []Command {
 	}
 }
 
+// manDateFallback is stamped into the man page when SOURCE_DATE_EPOCH is
+// unset. A wall-clock date would make two builds of the same source differ,
+// so the page carries a fixed date instead; bump it with a release.
+const manDateFallback = "2026-10-30"
+
+// manDate is the date in the man page header. SOURCE_DATE_EPOCH
+// (https://reproducible-builds.org/specs/source-date-epoch/) wins when it is
+// set and parseable, which is how a pinned Nix build reproduces the page byte
+// for byte; otherwise the fixed fallback is used, never the clock.
+func manDate() string {
+	if raw := os.Getenv("SOURCE_DATE_EPOCH"); raw != "" {
+		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return time.Unix(secs, 0).UTC().Format("2006-01-02")
+		}
+	}
+	return manDateFallback
+}
+
 // ManPage renders a roff man page.
 //
 // Generated from the same command table and setting registry the program
@@ -605,7 +690,7 @@ func handCommands() []Command {
 // wrong only if the code is.
 func ManPage(version string) string {
 	var b strings.Builder
-	date := time.Now().UTC().Format("2006-01-02")
+	date := manDate()
 
 	fmt.Fprintf(&b, ".TH MCPX 1 %q %q \"mcpx manual\"\n", date, "mcpx "+version)
 	b.WriteString(".SH NAME\nmcpx \\- expose MCP servers to the shell\n")

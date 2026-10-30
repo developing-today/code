@@ -11,9 +11,11 @@ import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, type HealthView } from "./health.ts";
-import { PAGES } from "./pages.ts";
+import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import { manifestRouteFor } from "./pages.ts";
+import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
@@ -35,11 +37,14 @@ import {
   renderAttentionShell,
   renderBoard,
   renderBoardBody,
-  renderBoardShell,
   renderDiscuss,
   renderDns,
   renderHealth,
   renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -88,12 +93,16 @@ const source = pickSource();
  * which is precisely what health exists to report.
  */
 let lastPrimedAt = 0;
+/** #1141: item coverage measured by the latest priming pass (below),
+ *  from the same board items() resolution that sets facet provenance. */
+let lastItemsCoverage: ItemsCoverage | null = null;
 let priming: Promise<void> | null = null;
 async function ensureProvenancePrimed(): Promise<void> {
   if (Date.now() - lastPrimedAt < 60_000) return;
   priming ??= (async () => {
     try {
       const { items } = await boardContext();
+      lastItemsCoverage = summarizeItemCoverage(items);
       const refs = [...items.keys()];
       await Promise.allSettled([
         source.roadmap(),
@@ -124,8 +133,15 @@ async function ensureProvenancePrimed(): Promise<void> {
  * 60 s inside health.ts). Page and API read this same view, so they
  * cannot disagree.
  */
-async function healthContext(): Promise<HealthView> {
-  await ensureProvenancePrimed();
+async function healthContext(prime = true): Promise<HealthView> {
+  // Priming exercises every facet so /health provenance never depends
+  // on request order. Callers that only need the feed snapshot and the
+  // cached probes (the attention path's watchdog assembly, #1148) pass
+  // prime=false: a stalled unrelated facet (e.g. Grist's roadmap API
+  // and its 8s timeout) must not delay attention rendering (Codex P2
+  // on PR #2431). The registry age the watchdog reads comes from the
+  // live source's lastFeed, which attention's own reads already load.
+  if (prime) await ensureProvenancePrimed();
   const [feed, feedFileMtimeMs] = await Promise.all([
     loadFeed(cfg.feedFile).catch(() => null),
     stat(cfg.feedFile)
@@ -139,6 +155,7 @@ async function healthContext(): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
@@ -260,12 +277,37 @@ async function roadmapContext() {
   return { rows, items, reconciliation };
 }
 
+// #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
+// current diagnoses (feed age + probes via the health assembly —
+// its probe cache keeps this cheap — plus the orchestration
+// diagnosis and registry facet age). Live mode only: fixtures mode
+// has no real inputs to watch. Derived per request, never stored,
+// so recovery clears the cards on the next render. The health
+// assembly here is deliberately UNPRIMED (see healthContext): the
+// watchdog needs only the feed file, the cached probes, and the
+// registry age from the source's already-loaded feed.
+async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
+  if (cfg.source !== "live") return [];
+  const health = await healthContext(false);
+  return watchdogTierItems({
+    now: Date.now(),
+    feedAgeMs: health.feed.ageMs,
+    feedGeneratedAt: health.feed.generatedAt,
+    ...(diagnosis ? { orchestration: diagnosis } : {}),
+    ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
+    probes: health.services
+      .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
+      .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+  });
+}
+
 async function attentionContext() {
   const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
+  const watchdog = await deriveWatchdogItems(diagnosis);
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
 }
 
 /**
@@ -338,6 +380,21 @@ async function todayContext() {
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+}
+
+/** The render inputs the overview (front door, #1134) assembles:
+ *  the attention view, the Project pool, quota, the health view, and
+ *  the board — the same contexts the dedicated pages render from. */
+async function overviewContext() {
+  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+    attentionContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.quota(),
+    healthContext(),
+    boardContext(),
+    actionsStore.byObject().catch(() => new Map()),
+  ]);
+  return { attention: view, pool, quota, health, board, actionsByObject };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -474,12 +531,21 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  if (path === "/" || path === "/board") {
-    // #1444: the board is the heaviest page — shell first, board as a
-    // fragment. ?full=1 (and the /board alias) keep the full render.
-    if (path === "/" && url.searchParams.get("full") !== "1") {
-      return html(renderBoardShell(prov(), provDetail()));
+  if (path === "/") {
+    // #1134: the front door is the overview — shell first, the
+    // summary streams in as a fragment (#1444 pattern). ?full=1
+    // keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderOverviewShell(prov(), provDetail()));
     }
+    return html(renderOverview(await overviewContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/overview") {
+    const data = await overviewContext();
+    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    return sseResponse(ssePatch("#overview-main", wrapped));
+  }
+  if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
     return html(renderBoard(board, items, prov(), counts, provDetail(), act));
   }
@@ -667,6 +733,9 @@ async function handler(req: Request): Promise<Response> {
     return html(renderDiscuss(objectRef, title, thread, await commentFormOpts(githubRefs), prov()));
   }
 
+  if (path === "/api/overview.json") {
+    return json(deriveOverview(await overviewContext()));
+  }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
     return json({ board, items: [...items.values()] });
@@ -705,9 +774,13 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
-    // orchestratorNote, source, parentId).
+    // orchestratorNote, source, parentId). #1148: the derived watchdog
+    // tier items are appended in their TierItem shape (tier-annotated
+    // needs-orchestrator) so machine consumers see the same queue the
+    // HTML renders — the array shape itself is unchanged (Codex P2
+    // on PR #2431).
     const { view } = await attentionContext();
-    return json(view.all);
+    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -719,9 +792,19 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
-    // means "not measured yet" — never an empty queue.
+    // means "not measured yet" — never an empty queue. #1148: the
+    // aggregator-derived watchdog items ride along as an additive
+    // field (the published section itself stays verbatim) so JSON
+    // consumers can see derived queue items next to the published
+    // tiers (Codex P2 on PR #2431).
     const section = await source.orchestration();
-    return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
+    const diagnosis = source.diagnostics?.().orchestration;
+    const derivedWatchdogItems = await deriveWatchdogItems(diagnosis);
+    return json(
+      section
+        ? { ...section, derivedWatchdogItems }
+        : { status: "absent", reason: "no orchestration run has published yet", derivedWatchdogItems },
+    );
   }
   if (path === "/sw.js") {
     // Kill switch for the opencode service worker stranded on this
@@ -736,7 +819,7 @@ async function handler(req: Request): Promise<Response> {
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
     const view = await healthContext();
-    const body: Record<string, unknown> = { status: "ok", source: prov() };
+    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
@@ -783,6 +866,7 @@ async function handler(req: Request): Promise<Response> {
       const extras = {
         dashComments,
         formRef: id,
+        serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),
         sessions,
         actions: allActions.filter((a) => wanted.has(a.objectRef)),
@@ -808,15 +892,10 @@ async function handler(req: Request): Promise<Response> {
  * #1147's render registry: every successful HTML page render is
  * recorded against its manifest route (subroutes count toward their
  * parent page), so /health can report each page's real last-render
- * time — measured from actual traffic, never self-probed.
+ * time — measured from actual traffic, never self-probed. The mapping
+ * lives with the manifest (#1135) so nav reachability and render
+ * attribution can never disagree.
  */
-function manifestRouteFor(path: string): string | null {
-  const exact = PAGES.find((p) => p.route === path);
-  if (exact) return exact.route;
-  if (path.startsWith("/program/")) return "/program";
-  if (path.startsWith("/quota/service/")) return "/quota";
-  return null;
-}
 
 async function fetchHandler(req: Request): Promise<Response> {
   const res = await handler(req);

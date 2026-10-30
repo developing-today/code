@@ -135,6 +135,59 @@ impl SharedEventStore {
         Ok(store.ingest_batch(batch, now_ms)?)
     }
 
+    /// The range sync set of the store, under the read lock, taken for this one call.
+    /// See [`EventStore::sync_entries`]. This is one step of the range session seam
+    /// (`event_store::sync::RangeStore`, #179): the lock is never held across an await.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_entries(
+        &self,
+    ) -> Result<
+        Vec<(
+            crate::event_store::range::Key,
+            crate::event_store::range::Id,
+        )>,
+        TraitStoreError,
+    > {
+        self.read(|store| Ok(store.sync_entries()?))
+    }
+
+    /// The bytes of the event with this ID, under the read lock, taken for this one
+    /// call. See [`EventStore::sync_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_bytes(
+        &self,
+        id: &crate::event_store::range::Id,
+    ) -> Result<Option<Vec<u8>>, TraitStoreError> {
+        self.read(|store| Ok(store.sync_bytes(id)?))
+    }
+
+    /// Decides a batch of received events in one write transaction, under the write
+    /// lock, taken for this one call. See [`EventStore::ingest_events`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Store`] for the first mismatch, or a redb error, and
+    /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
+    pub(crate) fn range_ingest_events(
+        &self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, TraitStoreError> {
+        let mut store = self
+            .inner
+            .write()
+            .map_err(|_err| TraitStoreError::Poisoned)?;
+        Ok(store.ingest_events(events, now_ms)?)
+    }
+
     /// Checks the store's own rows. See [`EventStore::check_invariants`].
     ///
     /// # Errors

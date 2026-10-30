@@ -844,7 +844,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(crate::access::blobs_events(access.clone())),
     );
 
-    // The node's own event store, shared between the web layer and /id-sync/1
+    // The node's own event store, shared between the web layer and /id-range-sync/1
     // range sync (#792). Serve opens it once, on the same directory the web
     // state would open (the `events` sibling of the identity database), and
     // hands the one instance to both: the store admits a single opener, and a
@@ -993,11 +993,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Offer a sync session to every discovered peer, on an interval: a save on
     // either node is discoverable on the other after the next session (#792).
-    // Peers that do not serve /id-sync/1 fail the dial, which is logged at debug
+    // Peers that do not serve /id-range-sync/1 fail the dial, which is logged at debug
     // and otherwise ignored — accepting sessions above is what serves the rest.
     #[cfg(feature = "web")]
     let _event_sync_handle = event_events.clone().map(|events| {
-        status!("event sync: /id-sync/1 enabled (the web event store)");
+        status!("event sync: /id-range-sync/1 enabled (the web event store)");
         let endpoint = router.endpoint().clone();
         let discovery = peer_discovery.clone();
         let gate = crate::event_sync::open_gate();
