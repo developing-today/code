@@ -2,8 +2,11 @@ package preflight_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dezren39/mcpx/internal/preflight"
 )
@@ -276,5 +279,50 @@ func TestResolutionArgsForwardsOnlyResolutionFlags(t *testing.T) {
 	}
 	if got := preflight.ResolutionArgs(nil); len(got) != 0 {
 		t.Fatalf("ResolutionArgs(nil) = %v, want empty", got)
+	}
+}
+
+// Codex round (PR #2575): a string followed by anything that continues
+// the expression is computed, not a static edge -- only ')' or ','
+// (import options) terminate the argument.
+func TestScanDynamicImportsComputedBeyondConcatenation(t *testing.T) {
+	dyn := preflight.ScanDynamicImports("a.ts", "const m = await import(\"./\".concat(name));\n")
+	if len(dyn) != 1 {
+		t.Fatalf("import(\"./\".concat(name)): got %+v, want 1 dynamic import", dyn)
+	}
+	dyn = preflight.ScanDynamicImports("a.ts", "const m = await import(\"./part\".slice(1));\n")
+	if len(dyn) != 1 {
+		t.Fatalf("import(\"./part\".slice(1)): got %+v, want 1 dynamic import", dyn)
+	}
+	// A literal with an options argument is still a static edge.
+	if dyn := preflight.ScanDynamicImports("a.ts", "const m = await import(\"./x.ts\", { with: { type: \"json\" } });\n"); len(dyn) != 0 {
+		t.Fatalf("import with options: got %+v, want no dynamic imports", dyn)
+	}
+	if dyn := preflight.ScanDynamicImports("a.ts", "const m = await import(\"./x.ts\");\n"); len(dyn) != 0 {
+		t.Fatalf("plain literal: got %+v, want no dynamic imports", dyn)
+	}
+}
+
+// Codex round (PR #2575): when the graph subprocess fails, its stderr
+// explanation must reach the caller, not just "exit status 1".
+func TestCheckImportsPreservesGraphStderr(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ts")
+	if err := os.WriteFile(entry, []byte("import \"./dep.ts\";\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(dir, "deno-stub")
+	script := "#!/bin/sh\necho 'stub graph failure: the module is not listed' >&2\nexit 1\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rep := preflight.CheckImportsResolved(context.Background(), stub, entry,
+		preflight.ImportsReport, preflight.DynamicWarn, 10*time.Second, nil)
+	err := rep.Err()
+	if err == nil {
+		t.Fatal("want a fatal report from the failing graph subprocess")
+	}
+	if !strings.Contains(err.Error(), "the module is not listed") {
+		t.Fatalf("error = %q, want the subprocess stderr preserved", err.Error())
 	}
 }

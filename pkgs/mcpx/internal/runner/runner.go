@@ -312,7 +312,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		var rep *preflight.Report
 		if opts.File == "" && opts.Source != "" {
-			rep = preflight.CheckImportsText("the script", opts.Source,
+			// Scan the launcher's executable content as well as the
+			// script: writeLauncher injects the phase snippets (and a
+			// custom launcher replaces the shim entirely), and a phase
+			// containing a computed import executes exactly like the
+			// script does -- the file-backed path sees it because its
+			// graph is computed on the launcher (Codex review, PR
+			// #2575). scriptPath at this point IS the launcher (or,
+			// with launcher "none", the script file itself, whose
+			// prelude + source only repeats this scan harmlessly).
+			rep = preflight.CheckImportsText("the script", textScanSource(opts, scriptPath),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic))
 		} else {
 			denoBin := ""
@@ -484,6 +493,21 @@ const ClientFileName = clientFileName
 
 // GlobalsFileName holds ambient declarations for the installed globals.
 const GlobalsFileName = "mcpx-globals.d.ts"
+
+// textScanSource is what the text-mode import scan reads: the script
+// itself plus the generated launcher's content, because the launcher's
+// phase snippets (and a custom launcher) are executable code that runs
+// with the script -- a computed import in a phase must be seen by the
+// scan exactly as one in the script is (Codex review, PR #2575).
+// scriptPath names the launcher at scan time; an unreadable file
+// degrades to the script alone rather than failing the run here.
+func textScanSource(opts Options, scriptPath string) string {
+	scan := opts.Source
+	if b, err := os.ReadFile(scriptPath); err == nil {
+		scan += "\n" + string(b)
+	}
+	return scan
+}
 
 // writeLauncher emits a shim that imports the user's module and calls its
 // entry point if it has one.

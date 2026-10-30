@@ -25,6 +25,7 @@ package preflight
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -386,8 +387,20 @@ func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode Impor
 			})
 			return r
 		}
+		// Preserve the subprocess's own explanation: cmd.Output
+		// captures it in ExitError.Stderr, and "exit status 1" alone
+		// tells the caller nothing about why the graph failed
+		// (Codex review, PR #2575). The type-check path already
+		// surfaces its subprocess output the same way.
+		what := "the import graph could not be computed: " + err.Error()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				what += ": " + stderr
+			}
+		}
 		r.Add(Problem{
-			What:  "the import graph could not be computed: " + err.Error(),
+			What:  what,
 			Where: "script.imports",
 			Fatal: true,
 		})
@@ -714,12 +727,16 @@ func scanCallArg(src string, open int, kind string, line, char int) (dyn *Dynami
 	switch src[j] {
 	case '\'', '"', '`':
 		end, content := readStringIn(src, j)
-		// A literal followed by + is a concatenation -- computed, not a
-		// static edge -- and a template with interpolation is computed
-		// wherever it stands.
+		// A string is a literal argument only when the token after it
+		// terminates the argument -- ')' ends the call, ',' starts the
+		// import-options argument. Anything else continues the
+		// expression: '+' concatenates, '.concat(...)'/'.slice(...)'
+		// compute on it, a template with interpolation is computed
+		// wherever it stands (Codex review, PR #2575: import("./".concat(name))
+		// was misread as a static edge and skipped).
 		k := skipSpaceAndCommentsIn(src, end)
 		computed := src[j] == '`' && strings.Contains(content, "${")
-		if k < len(src) && src[k] == '+' {
+		if !computed && (k >= len(src) || (src[k] != ')' && src[k] != ',')) {
 			computed = true
 		}
 		if !computed {
