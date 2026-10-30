@@ -78,7 +78,33 @@ fs.mkdirSync(WORKROOT, { recursive: true });
 // the 2026-10-25 snapshot (85 models, CLI v1.88.0). typesafe/jev is
 // deliberately omitted everywhere (including the live parse): it is a
 // headless-only decision model taking a JSON state/questions payload,
-// not a chat model.
+// not a chat model. This is the documented-impossibility exception to
+// the live-model rule, re-verified with evidence 2026-10-28:
+//   - Upstream `commandcode --list-models` (CLI v1.88.0) segregates it
+//     itself: the banner reads "Available models · 94 models" and jev
+//     appears only afterwards, under a separate "Decision models
+//     (headless only)" heading: "typed questions in, probabilities
+//     out". Vendor docs (Available Models / Provider API / Headless)
+//     agree: "not a chat model", "not available in /model and can't
+//     drive a session", served on the Provider API only via a separate
+//     `v1/systemone` endpoint because "its request is not a chat
+//     message, and it never streams".
+//   - Demonstrated live through this proxy (2026-10-28, while the CLI
+//     login was expired): a chat-completions request for typesafe/jev
+//     ("Reply with exactly: PROBE-OK") failed 502 with a jev-specific
+//     error BEFORE any auth check — "a decision model takes a JSON
+//     request, not a prompt. Expected: {\"state\": <text or JSON>,
+//     \"questions\": {...}}" — while the identical request for
+//     gpt-6.1-sol reached the upstream and failed only on auth
+//     ("POST /alpha/generate → 401 error: Invalid 'Authorization'
+//     header or token."). A direct CLI run with a well-formed JSON
+//     state/questions payload reached the auth boundary instead
+//     ("Authentication failed. Please run \"cmd login\" first."), so
+//     the request SHAPE, not auth, is the discriminator.
+// Serving jev in /v1/models would advertise it as a chat model this
+// bridge cannot serve chat traffic for; callers that need jev must
+// use the CLI headless JSON form or the Provider API systemone
+// endpoint directly.
 const STATIC_MODELS = [
   'deepseek/deepseek-v4-pro',
   'deepseek/deepseek-v4-flash',
