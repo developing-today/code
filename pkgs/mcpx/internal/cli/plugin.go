@@ -42,11 +42,19 @@ func (a *App) augmentPlugins(cfg *config.Config) error {
 	if cfg.MCPServers == nil {
 		cfg.MCPServers = map[string]*config.Server{}
 	}
+	// The socket the hosting daemon actually listens on, recorded by
+	// CmdDaemon / inlineDaemon when they resolved it; Paths.Socket is
+	// only the un-keyed default and would send a plugin's back-channel
+	// calls to the wrong daemon (or none).
+	socket := a.daemonSocket
+	if socket == "" {
+		socket = a.Paths.Socket
+	}
 	for _, p := range plugins {
 		if _, dup := cfg.MCPServers[p.Name]; dup {
 			return fmt.Errorf("plugin %q (from %s) has the same name as a configured server; rename one", p.Name, p.Source)
 		}
-		cfg.MCPServers[p.Name] = p.Server(a.Paths.Socket, "plugin-"+p.Name)
+		cfg.MCPServers[p.Name] = p.Server(socket, "plugin-"+p.Name)
 	}
 	return nil
 }

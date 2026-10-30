@@ -327,6 +327,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
+	a.daemonSocket = paths.Socket
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,

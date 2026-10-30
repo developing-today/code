@@ -101,3 +101,28 @@ func TestAugmentPluginsNoneConfiguredIsQuiet(t *testing.T) {
 		t.Fatalf("no plugins should mean no servers, got %v", cfg.MCPServers)
 	}
 }
+
+// Regression (Codex P1 on #2481): the socket handed to a plugin server
+// is the one the hosting daemon resolved (config-keyed or inline
+// private), not the un-keyed Paths default.
+func TestAugmentPluginsUsesDaemonSocket(t *testing.T) {
+	dir := t.TempDir()
+	writePlugin(t, dir)
+	a := pluginApp(t, dir)
+	a.daemonSocket = filepath.Join(dir, "keyed.sock")
+
+	cfg := &config.Config{MCPServers: map[string]*config.Server{}}
+	if err := a.augmentPlugins(cfg); err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.MCPServers["weather"]
+	if s == nil {
+		t.Fatalf("plugin not added: %v", cfg.MCPServers)
+	}
+	if s.Env["MCPX_SOCKET"] != a.daemonSocket {
+		t.Fatalf("plugin got socket %q, want the daemon's resolved %q", s.Env["MCPX_SOCKET"], a.daemonSocket)
+	}
+	if s.Env["MCPX_SOCKET"] == a.Paths.Socket {
+		t.Fatal("plugin got the un-keyed Paths.Socket default")
+	}
+}

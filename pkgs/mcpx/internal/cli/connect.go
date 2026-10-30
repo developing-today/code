@@ -238,6 +238,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 	}
 	paths := a.Paths
 	paths.Socket = filepath.Join(dir, "d.sock")
+	a.daemonSocket = paths.Socket
 
 	// A discarding logger. A daemon's operational chatter belongs in its
 	// log file; in-process it would land in the middle of the command's own
