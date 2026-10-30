@@ -112,7 +112,7 @@ this document's).
 | # | Object | Signer | Content (semantic fields) | Counting rule |
 | --- | --- | --- | --- | --- |
 | 1 | Currency definition | Issuer | Name/symbol, scale, supply policy (`capped{max}` \| `open`), binding (`graph-native` \| `ledger-anchored`) | Canonical record of the currency; registry indexes it (#2062 §2.4) |
-| 2 | Issuance | Issuer | Currency, amount, recipient, memo | Counts iff issuer's chain is unforked at that position and cumulative issuance ≤ cap |
+| 2 | Issuance | Issuer | Currency, amount, recipient, memo | A signed Issuance is an authorized *intent*. Graph-native: counts iff the issuer's chain is unforked at that position and cumulative issuance ≤ cap. Anchored: counts toward issued supply only on confirmed ledger execution (§5) — an intent the gateway rejects mints nothing |
 | 3 | Transfer | Sender | Currency, amount, recipient, sender's chain position | Counts iff sender's chain is unforked and funded at that position (§3) |
 | 4 | Burn | Holder | A transfer to the issuer or a dedicated burn identity | Reduces counted supply |
 | 5 | Rate offer | Offerer (issuer or any liquidity holder) | From-currency, to-currency, exact rational rate, per-tx and total caps, expiry, eligible takers (`public` \| named set) | Live iff not superseded/revoked at the offerer's current chain frontier |
@@ -204,9 +204,17 @@ is a hash over holder balances at that frontier (construction is
 TigerBeetle — account counters/history at a ledger position (#2040
 §6.3; the control plane's reconciliation and supply audit, #2062 §7.3,
 is the scheduled checker) — and publishes it as a graph object signed by
-the service ID. The graph fold of issuance/transfer *intents* and the
-ledger's executed transfers must agree up to the stamped `user_data_128`
-links. A snapshot that disagrees with either side is provably false, and
+the service ID. The fold that a snapshot is checked against
+counts, for an anchored currency, only graph objects with a confirmed
+ledger execution at or below the snapshot's ledger watermark — the
+stamped ledger record is the confirmation. A valid signed intent need
+not execute: the gateway may reject it before submission (abuse
+controls, #2062 §4.3), and an in-flight intent has simply not executed
+yet. Unexecuted intents are neither supply nor transfers; a correct
+snapshot excludes them, and reconciliation (#2062 §7.3) reports them
+as pending/rejected, never as disagreements. Subject to that rule, the
+graph fold and the ledger's executed transfers must agree up to the
+stamped `user_data_128` links. A snapshot that disagrees with either side is provably false, and
 which side is wrong is mechanically determinable: **the ledger wins for
 balances; the graph wins for who authorized what.**
 
@@ -352,8 +360,8 @@ variant differs only where noted.
    (issuer `A`, definition `D`) — displayed as "alice-credits (Alice)",
    never merged with anyone else's "credits". `balance(currency, B)`
    returns 100.00 from the ledger; `supply(currency)` returns 100.00,
-   and anyone can cross-check: fold of `A`'s issuance objects (100.00)
-   = issuer-account debits on the ledger (the #2062 §7.3 supply audit
+   and anyone can cross-check: fold of `A`'s *executed* issuance objects
+   (100.00) = issuer-account debits on the ledger (the #2062 §7.3 supply audit
    join, via `I`'s stamp).
 7. **Snapshot.** The next service snapshot for the currency records
    frontier ⊇ {`D`, `I`}, issued 100.00, burned 0, balance root over
