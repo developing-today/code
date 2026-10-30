@@ -21,6 +21,7 @@ let
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
@@ -862,6 +863,26 @@ in
           "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
         ];
       }
+      {
+        name = "opencode-route-proxy";
+        # swap, not the supervisor default "ab": OpenClaw's provider
+        # base URL is the literal canonical port (18750) and nothing
+        # consumes the endpoint record to follow an ab roll to 19750,
+        # so the door would strand. swap validates the new build on
+        # the alternate port, then restarts it on the canonical port.
+        strategy = "swap";
+        canonicalPort = opencodeRouteProxyPort;
+        portEnv = "OPENCODE_ROUTE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/opencode-route-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/opencode-route-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/opencode-route-proxy.build-stamp"
+        ];
+      }
       # Enrolled 2026-10-27. The let block reserved claudeCodeProxyPort
       # and the session variables already export CLAUDE_CODE_PROXY_PORT
       # (opencode.jsonc dials it), but the proxy was never added to this
@@ -920,6 +941,29 @@ in
         "COMMANDCODE_PROXY_HOST=127.0.0.1"
         "COMMANDCODE_PROXY_MAX_TURNS=1"
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
+      ];
+    };
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
+  };
+
+  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
+  # opencode-route pool models (workhorse et al.) in the chat-completions
+  # shape OpenClaw providers use (code#2229). Runs the repo start script,
+  # shared with the proxy-supervisor's transient unit. Manual fallback
+  # only, like every other proxy unit here.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${../../bin}/opencode-route-proxy-start.sh";
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
       ];
     };
     # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
