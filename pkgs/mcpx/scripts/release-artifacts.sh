@@ -82,7 +82,13 @@ done
 
 (
   cd "$out"
-  sha256sum mcpx-*.tar.gz >SHA256SUMS
+  # sha256sum is GNU; macOS ships shasum instead. The workflow runs on Linux,
+  # but a person on a laptop runs this same script, so pick whichever exists.
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum mcpx-*.tar.gz >SHA256SUMS
+  else
+    shasum -a 256 mcpx-*.tar.gz >SHA256SUMS
+  fi
 )
 
 echo "==> artifacts in $out"
