@@ -197,7 +197,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 	case opts.WorkRoot != "":
-		sum := sha256.Sum256([]byte(opts.ClientSource))
+		// The key hashes the dependency set's fingerprint beside the
+		// client source: runs sharing a client but resolving different
+		// packages get different directories, so materialised
+		// package.json / deno.json / lockfiles / node_modules from one
+		// set can never leak into another set's run -- or into a run
+		// with no set at all (Codex review, PR #2589).
+		sum := sha256.Sum256([]byte(opts.ClientSource + "\x00" + opts.Deps.fingerprint()))
 		workDir = filepath.Join(opts.WorkRoot, hex.EncodeToString(sum[:])[:16])
 		if err := os.MkdirAll(workDir, 0o700); err != nil {
 			return nil, err
@@ -291,6 +297,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			if out, cerr := ci.CombinedOutput(); cerr != nil {
 				return nil, fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
 					cerr, strings.TrimSpace(string(out)))
+			}
+		}
+		// A file script resolves bare imports from its own directory
+		// upward, never from the exec workdir, so an installed set was
+		// invisible to it (ERR_MODULE_NOT_FOUND after a successful
+		// install). Link the materialised modules beside the script --
+		// beside is where this runner already places the client and
+		// the launcher; nothing is installed into the project itself
+		// (Codex review, PR #2589).
+		if opts.File != "" && (rt.Kind == KindNode || rt.Kind == KindBun) {
+			if lerr := linkNodeModules(filepath.Dir(scriptPath), workDir); lerr != nil {
+				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
 			}
 		}
 	}
@@ -489,6 +507,26 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		return res, nil
 	}
+}
+
+// linkNodeModules symlinks workDir/node_modules beside a file script
+// so the script's bare imports resolve to the materialised dependency
+// set. Anything already at that path -- a real install, a directory, a
+// live link -- is the project's own and wins untouched; a dangling
+// link (its content-addressed target was pruned) is replaced.
+func linkNodeModules(scriptDir, workDir string) error {
+	modules := filepath.Join(workDir, "node_modules")
+	if st, err := os.Stat(modules); err != nil || !st.IsDir() {
+		return nil
+	}
+	link := filepath.Join(scriptDir, "node_modules")
+	if _, err := os.Stat(link); err == nil {
+		return nil
+	}
+	if _, err := os.Lstat(link); err == nil {
+		_ = os.Remove(link)
+	}
+	return os.Symlink(modules, link)
 }
 
 // writeIfChanged avoids touching mtime when content is identical, which keeps

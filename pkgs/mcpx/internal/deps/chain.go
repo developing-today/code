@@ -486,12 +486,37 @@ func (m *Manifest) JSON() ([]byte, error) {
 // an error, not an absence: returning empty would silently drop the frozen
 // resolution the discovery above recorded (Codex review, PR #2589).
 func (m *Manifest) LockfileText() (name string, text []byte, err error) {
-	if len(m.Lockfiles) == 0 {
+	locks, err := m.LockfilesText()
+	if err != nil {
+		return "", nil, err
+	}
+	if len(locks) == 0 {
 		return "", nil, nil
 	}
-	b, err := os.ReadFile(m.Lockfiles[0])
-	if err != nil {
-		return "", nil, fmt.Errorf("deps: reading lockfile %s: %w", m.Lockfiles[0], err)
+	return locks[0].Name, locks[0].Text, nil
+}
+
+// Lockfile is one lockfile's name and content.
+type Lockfile struct {
+	Name string
+	Text []byte
+}
+
+// LockfilesText reads EVERY lockfile beside the manifest. Which one
+// governs a run depends on the runtime that executes it -- a project
+// holding both bun.lock and package-lock.json freezes a bun run one
+// way and a node run the other -- so selecting only the first here
+// would decide that question before the runtime is known (Codex
+// review, PR #2589). Transport carries them all; the runner selects.
+// A read error on any of them propagates, as in LockfileText.
+func (m *Manifest) LockfilesText() ([]Lockfile, error) {
+	out := make([]Lockfile, 0, len(m.Lockfiles))
+	for _, path := range m.Lockfiles {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("deps: reading lockfile %s: %w", path, err)
+		}
+		out = append(out, Lockfile{Name: filepath.Base(path), Text: b})
 	}
-	return filepath.Base(m.Lockfiles[0]), b, nil
+	return out, nil
 }

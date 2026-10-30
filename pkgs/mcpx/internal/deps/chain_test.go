@@ -407,3 +407,30 @@ func TestLockfileTextPropagatesReadErrors(t *testing.T) {
 		t.Fatalf("no lockfile = (%q, %q, %v), want empty and nil error", name, text, err)
 	}
 }
+
+// TestLockfilesTextReturnsEveryLockfile is the transport half of the
+// Codex finding on PR #2589 (chain.go): LockfileText returned only
+// the first discovered lockfile (bun.lock, by discovery order), so a
+// node run's package-lock.json never left the caller's machine.
+func TestLockfilesTextReturnsEveryLockfile(t *testing.T) {
+	dir := t.TempDir()
+	bun := filepath.Join(dir, "bun.lock")
+	npm := filepath.Join(dir, "package-lock.json")
+	if err := os.WriteFile(bun, []byte("bun"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(npm, []byte("npm"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &deps.Manifest{Lockfiles: []string{bun, npm}}
+	locks, err := m.LockfilesText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locks) != 2 || locks[0].Name != "bun.lock" || locks[1].Name != "package-lock.json" {
+		t.Fatalf("lockfiles = %+v", locks)
+	}
+	if string(locks[0].Text) != "bun" || string(locks[1].Text) != "npm" {
+		t.Fatalf("lockfile contents = %+v", locks)
+	}
+}

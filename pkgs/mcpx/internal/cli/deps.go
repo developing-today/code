@@ -83,12 +83,18 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 				out.ManifestName = "package.json"
 			}
 		}
-		name, text, err := m.LockfileText()
+		locks, err := m.LockfilesText()
 		if err != nil {
 			return nil, err
 		}
-		if name != "" {
-			out.LockfileName, out.Lockfile = name, text
+		for i, l := range locks {
+			out.Lockfiles = append(out.Lockfiles,
+				execsvc.DepsLockfile{Name: l.Name, Content: l.Text})
+			if i == 0 {
+				// The singular fields stay the first lockfile for
+				// consumers that predate the list.
+				out.LockfileName, out.Lockfile = l.Name, l.Text
+			}
 		}
 	}
 	return out, nil

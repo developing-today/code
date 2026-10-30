@@ -2,6 +2,8 @@ package runner
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +34,11 @@ type Deps struct {
 	Lockfile []byte
 	// LockfileName is the filename to write it as, such as bun.lock.
 	LockfileName string
+	// Lockfiles carries every lockfile found beside the manifest. The
+	// one that governs is selected per runtime at materialisation
+	// time (see selectedLockfile); the singular fields above stay the
+	// transport's first entry for callers that predate the list.
+	Lockfiles []Lockfile
 	// Source is the resolved deps.source.
 	Source string
 	// AutoInstall is the resolved deps.autoInstall: off, fallback or
@@ -39,11 +46,93 @@ type Deps struct {
 	AutoInstall string
 }
 
+// Lockfile is one lockfile's name and content, as transported.
+type Lockfile struct {
+	Name    string
+	Content []byte
+}
+
+// lockfilePreference names, per runtime kind, the lockfiles that
+// runtime honours frozen, most specific first.
+var lockfilePreference = map[string][]string{
+	KindBun:  {"bun.lock", "bun.lockb"},
+	KindNode: {"package-lock.json", "npm-shrinkwrap.json"},
+	KindDeno: {"deno.lock"},
+}
+
+// selectedLockfile returns the lockfile that governs a run of kind.
+// A project may carry several (bun.lock beside package-lock.json);
+// picking the first transported regardless of runtime froze bun runs
+// correctly and node runs not at all (Codex review, PR #2589). With
+// no kind-preferred candidate the first transported file wins, which
+// is the behaviour sets transported before the list existed had.
+func (d *Deps) selectedLockfile(kind string) (string, []byte, bool) {
+	type cand struct {
+		name    string
+		content []byte
+	}
+	var cands []cand
+	seen := map[string]bool{}
+	for _, l := range d.Lockfiles {
+		if l.Name == "" || len(l.Content) == 0 || seen[l.Name] {
+			continue
+		}
+		seen[l.Name] = true
+		cands = append(cands, cand{l.Name, l.Content})
+	}
+	if len(d.Lockfile) > 0 && d.LockfileName != "" && !seen[d.LockfileName] {
+		cands = append(cands, cand{d.LockfileName, d.Lockfile})
+	}
+	if len(cands) == 0 {
+		return "", nil, false
+	}
+	for _, want := range lockfilePreference[kind] {
+		for _, c := range cands {
+			if c.name == want {
+				return c.name, c.content, true
+			}
+		}
+	}
+	return cands[0].name, cands[0].content, true
+}
+
+// fingerprint identifies the set's content for the execution-directory
+// key: two runs sharing a generated client but resolving different
+// packages must not share a materialised environment (Codex review,
+// PR #2589). Nil and empty sets fingerprint alike ("").
+func (d *Deps) fingerprint() string {
+	if d == nil {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "packages:%q\nmanifest:%q:%s\nsource:%s auto:%s\n",
+		d.Packages, d.ManifestName, d.Manifest, d.Source, d.AutoInstall)
+	writeLock := func(name string, content []byte) {
+		sum := sha256.Sum256(content)
+		fmt.Fprintf(h, "lock:%s:%s\n", name, hex.EncodeToString(sum[:]))
+	}
+	if len(d.Lockfile) > 0 {
+		writeLock(d.LockfileName, d.Lockfile)
+	}
+	for _, l := range d.Lockfiles {
+		writeLock(l.Name, l.Content)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // splitSpecifier splits "name@version" (or "@scope/name@version") into
 // name and version; the version is "" for a bare name.
+//
+// The split is at the first non-leading "@", the same rule deps.Parse
+// applies at the resolution boundary: an npm alias specifier such as
+// "alias@npm:@scope/pkg@2.0.0" has version "npm:@scope/pkg@2.0.0",
+// and splitting at the LAST "@" corrupted it into a package literally
+// named "alias@npm:@scope/pkg" (Codex review, PR #2589).
 func splitSpecifier(spec string) (name, version string) {
-	if i := strings.LastIndex(spec, "@"); i > 0 {
-		return spec[:i], spec[i+1:]
+	for i := 1; i < len(spec); i++ {
+		if spec[i] == '@' {
+			return spec[:i], spec[i+1:]
+		}
 	}
 	return spec, ""
 }
@@ -134,16 +223,23 @@ func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
 		}
 	}
 
-	if len(d.Lockfile) > 0 && d.LockfileName != "" {
-		name := filepath.Base(d.LockfileName)
+	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
+		name := filepath.Base(lockName)
 		if name == "" || name == "." || name == ".." {
-			return nil, fmt.Errorf("deps: lockfile name %q is not a file name", d.LockfileName)
+			return nil, fmt.Errorf("deps: lockfile name %q is not a file name", lockName)
 		}
-		if err := writeBytesIfChanged(filepath.Join(dir, name), d.Lockfile); err != nil {
+		if err := writeBytesIfChanged(filepath.Join(dir, name), lockContent); err != nil {
 			return nil, fmt.Errorf("deps: write lockfile: %w", err)
 		}
 	}
 
+	if kind == KindDeno && len(deps) == 0 {
+		// An imports map is written only by this function, so one
+		// sitting in a shared workdir belongs to an earlier, different
+		// set; leaving it would keep that set's pins in force for a
+		// run that resolved none.
+		_ = os.Remove(filepath.Join(dir, "deno.json"))
+	}
 	if kind == KindDeno && len(deps) > 0 {
 		imports := map[string]string{}
 		for name, version := range deps {
@@ -182,7 +278,7 @@ func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
 // node never installs from the runner; a frozen npm set is installed by
 // the npm-ci step in Run, not by a flag.
 func depsFlags(kind string, d *Deps) []string {
-	frozen := len(d.Lockfile) > 0
+	_, _, frozen := d.selectedLockfile(kind)
 	switch kind {
 	case KindBun:
 		if frozen {
@@ -197,7 +293,7 @@ func depsFlags(kind string, d *Deps) []string {
 			return []string{"--no-install"}
 		}
 	case KindDeno:
-		if frozen && d.LockfileName == "deno.lock" {
+		if name, _, ok := d.selectedLockfile(kind); ok && name == "deno.lock" {
 			return []string{"--frozen"}
 		}
 	}
@@ -210,7 +306,11 @@ func depsFlags(kind string, d *Deps) []string {
 // fails when the lockfile and manifest disagree, which is what frozen
 // means; it runs in the exec workdir, never a user's project.
 func (d *Deps) frozenNPM(kind string) bool {
-	return kind == KindNode && len(d.Lockfile) > 0 && d.LockfileName == "package-lock.json"
+	if kind != KindNode {
+		return false
+	}
+	name, _, ok := d.selectedLockfile(kind)
+	return ok && name == "package-lock.json"
 }
 
 // writeBytesIfChanged is writeIfChanged for byte content (a lockfile
