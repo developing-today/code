@@ -37,7 +37,11 @@ FROM ${GO_IMAGE} AS build
 # and the resolver stops honouring nsswitch.conf. Neither matters inside this
 # image; both matter to somebody. docs/container.md has the measurements.
 ARG CGO_ENABLED=1
-ARG VERSION=0.1.0
+# The version's single source is pkgs/mcpx/VERSION (decision 0005 §3);
+# the release workflow passes its contents as --build-arg VERSION=...
+# The default here is the dev sentinel, matching cmd/mcpx/main.go, so
+# a plain `docker build` does not impersonate a release.
+ARG VERSION=0.0.0-dev
 ENV CGO_ENABLED=${CGO_ENABLED}
 
 WORKDIR /src
