@@ -88,6 +88,16 @@
   // Per the switchboard rule the full definition stays in the
   // provider block; deleting this line re-enables it if Meta ever
   // serves this client again.
+  // 2026-10-30 (Drew, direct order — supersedes the two notes above):
+  // "muse" joins the list too, and "muse-direct" replaces BOTH older
+  // Meta doors. muse-proxy's direct mode (#2753) exchanges the Muse
+  // CLI account token for the plan's minted key and speaks the
+  // Responses API — the route that accepts that key — so the fleet no
+  // longer needs the CLI-harness door ("muse") or the attestation-dead
+  // direct door ("meta"). muse-direct is the ONLY enabled Meta-family
+  // provider; both older definitions stay FULL below per the
+  // switchboard rule, and the routes' Meta leaves were retargeted to
+  // muse-direct contributor models in the same pass.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -108,7 +118,8 @@
     "open-design",
     "deepseek",
     "claude-code",
-    "meta"
+    "meta",
+    "muse"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -5310,7 +5321,9 @@
 // apiKey below is the local placeholder the proxy ignores — the real
 // key never leaves the proxy and no auth.json entry is needed. A call
 // costs ~10 input tokens through this door vs ~26k through the CLI
-// harness.
+// harness. The provider's models are the contributor variants — the
+// ids the routes seat — with the effort variants the "meta" block
+// defines for its contributor models.
      "muse-direct": {
        "npm": "@ai-sdk/openai",
        "name": "Meta Muse Direct (proxy)",
@@ -5319,8 +5332,8 @@
          "apiKey": "muse-local"
        },
        "models": {
-         "muse-spark-1.3": {
-           "name": "Muse Spark 1.3 (muse-direct)",
+         "muse-spark-1.3-contributor": {
+           "name": "Muse Spark 1.3 Contributor (muse-direct)",
            "variants": {
              "minimal": { "options": { "reasoning_effort": "minimal" } },
              "low": { "options": { "reasoning_effort": "low" } },
@@ -5330,8 +5343,8 @@
              "max": { "options": { "reasoning_effort": "max" } }
            }
          },
-         "muse-wonder-1.0": {
-           "name": "Muse Wonder 1.0 (muse-direct)",
+         "muse-wonder-1.0-contributor": {
+           "name": "Muse Wonder 1.0 Contributor (muse-direct)",
            "variants": {
              "minimal": { "options": { "reasoning_effort": "minimal" } },
              "low": { "options": { "reasoning_effort": "low" } },
@@ -6537,9 +6550,14 @@
       },
       "spark-plan": {
         "name": "Muse Spark 1.3 Contributor - plan providers",
-        // 2026-10-30: the reserve leaf now reaches the Meta plan through
+        // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
-        // (attestation; see the "muse" provider note). Same last position.
+        // (attestation; see the "muse" provider note).
+        // 2026-10-30 (amendment, Drew): the leaf now seats
+        // muse-direct/muse-spark-1.3-contributor — muse-direct (the
+        // proxy's Responses direct mode) replaced both older Meta
+        // doors, and the seated id is the contributor model like
+        // every other leaf in this pool. Same last position.
         // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
         // contributor door — meta direct, ClinePass (live completion
         // probed 2026-10-28), Command Code (live :18748 list), and
@@ -6567,7 +6585,7 @@
           "opencode-go/muse-spark-1.3-contributor",
           "commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
-          "muse/muse-spark-1.3-contributor"
+          "muse-direct/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -6788,10 +6806,13 @@
       },
       "workhorse-primary": {
         "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Flash / Sonnet round-robin",
-        // 2026-10-30: the Spark leg now runs through muse-proxy
+        // 2026-10-30: the Spark leg ran through muse-proxy
         // (provider "muse", muse/muse-spark-1.3) — the direct meta
         // door is dead (attestation; see the "muse" provider note).
-        // Same weight 1, same round-robin position.
+        // 2026-10-30 (amendment, Drew): the leg now seats
+        // muse-direct/muse-spark-1.3-contributor (Responses direct
+        // mode replaced both older Meta doors). Same weight 1, same
+        // round-robin position.
         // TEMPORARY (2026-10-29, Drew, code#2173): workhorse's primary
         // slot round-robins between the DeepSeek plan route
         // (deepseek-flash#high — the standard operating procedure's
@@ -6847,7 +6868,9 @@
         // it route traffic (direct sessions work) — that defect lives
         // in the opencode router, not in this config.
         // 2026-10-30 (Drew): two leg changes. (1) The Spark leg moves
-        // to the contributor SKU, muse/muse-spark-1.3-contributor --
+        // to the contributor SKU (seated as
+        // muse-direct/muse-spark-1.3-contributor after the amendment
+        // above) --
         // probe-verified through the muse program 2026-10-30 (usage
         // recorded against the contributor id), and muse-proxy's
         // resolver passes the contributor id upstream verbatim since
@@ -6862,7 +6885,7 @@
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "muse/muse-spark-1.3-contributor",
+          "muse-direct/muse-spark-1.3-contributor",
           "opencode-route/gemini-flash-plan#high",
           "opencode-route/sonnet-plan#high"
         ],
@@ -6870,7 +6893,7 @@
         "autonomy": "rules",
         "weights": {
           "opencode-route/deepseek-flash": 1,
-          "muse/muse-spark-1.3-contributor": 1,
+          "muse-direct/muse-spark-1.3-contributor": 1,
           "opencode-route/gemini-flash-plan": 2,
           "opencode-route/sonnet-plan": 1
         }
@@ -6962,10 +6985,14 @@
       },
       "summit": {
         "name": "Summit - very complex design only, deliberate use",
-        // 2026-10-30: the Wonder leaf now runs through muse-proxy
+        // 2026-10-30: the Wonder leaf ran through muse-proxy
         // (provider "muse", muse/muse-wonder-1.0#max) — the direct
         // meta door is dead (attestation; see the "muse" provider
-        // note). Same position in the ordered chain.
+        // note).
+        // 2026-10-30 (amendment, Drew): the leaf now seats
+        // muse-direct/muse-wonder-1.0-contributor#max (Responses
+        // direct mode replaced both older Meta doors; the #max
+        // variant is preserved). Same position in the ordered chain.
         // 2026-10-26: Sol addressed through sol-plan (four doors) instead of a single direct
         // OpenAI leaf; Wonder runs the contributor model (always cheaper on the Meta plan).
         // 2026-10-27 pool redesign: Argon #high inserts at #2 and Sol
@@ -6978,7 +7005,7 @@
         "targets": [
           "opencode-route/opus-plan#high",
           "opencode-route/argon-plan#high",
-          "muse/muse-wonder-1.0#max",
+          "muse-direct/muse-wonder-1.0-contributor#max",
           "opencode-route/sol-plan#xhigh"
         ],
         "selection": "ordered",
