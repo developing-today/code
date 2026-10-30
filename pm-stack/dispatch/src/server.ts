@@ -123,7 +123,10 @@ async function launchSession(
   await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
   // Assign immediately: PATCH the exact row the enqueue created (the
-  // claim RPC claims the next task in a queue, not a specific one).
+  // claim RPC claims the next task in a queue, not a specific one). The
+  // worker identity must exist in agent.workers first (worker_id is an
+  // FK), so register it idempotently.
+  await requireQueue().ensureWorker();
   const now = new Date();
   await requireQueue().patchTask(task.id, {
     status: "claimed",

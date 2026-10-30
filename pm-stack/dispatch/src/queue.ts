@@ -116,4 +116,32 @@ export class QueueClient {
   async cancelTask(id: number, reason: string, worker = "dispatch"): Promise<void> {
     await this.rpc("cancel_repo_task", { p_task_id: id, p_worker: worker, p_reason: reason });
   }
+
+  private workerEnsured: Promise<void> | null = null;
+
+  /** agent.tasks.worker_id is an FK into agent.workers, so the dispatch
+   * worker identity must exist as a row before a task can be claimed
+   * under it. Idempotent upsert (ignore-duplicates on the id PK). */
+  ensureWorker(): Promise<void> {
+    this.workerEnsured ??= (async () => {
+      const res = await fetch(`${this.baseUrl}/rest/v1/workers`, {
+        method: "POST",
+        headers: {
+          ...this.headers(true),
+          Prefer: "resolution=ignore-duplicates,return=minimal",
+        },
+        body: JSON.stringify({
+          id: "dispatch-opencode",
+          role: "build",
+          display_name: "PM dispatch — OpenCode session launcher",
+          status: "working",
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new QueueError(`worker registration failed (HTTP ${res.status}): ${text.slice(0, 200)}`, res.status);
+      }
+    })();
+    return this.workerEnsured;
+  }
 }
