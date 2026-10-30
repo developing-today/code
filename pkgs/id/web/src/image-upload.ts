@@ -156,7 +156,6 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
             const widget = Decoration.widget(action.pos, createPlaceholderWidget, {
               key: `placeholder-${action.id}`,
               id: action.id,
-              key: `image-upload-${action.id}`,
             });
             mapped = mapped.add(tr.doc, [widget]);
           } else if (action.type === "remove") {
