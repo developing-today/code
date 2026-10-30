@@ -82,7 +82,8 @@ function removeTypeAliases(src) {
 // console.log("copy as script") is data, not an `as` cast. segmentize()
 // splits the source into code and protected segments; the passes run on
 // code segments only and the result is reassembled in order. Template
-// ${...} interpolations are code and are segmented recursively.
+// ${...} interpolations are code and are segmented recursively. Regex
+// literals are protected too (see regexAllowedHere).
 
 function skipQuoted(src, i, quote) {
   // i is at the opening quote; return the index just past the closer.
@@ -133,18 +134,68 @@ function skipTemplate(src, i) {
   return src.length;
 }
 
+// A '/' opens a regex literal only where a value cannot stand: at the
+// start, after an operator or opener, or after a keyword like return.
+// After an operand (identifier, number, ')', ']', a string) it is
+// division. segmentize() tracks just enough history for that call —
+// regex literals are protected segments, like strings, because a
+// pattern can contain text the stripping passes would otherwise eat
+// (/ as string / lost its pattern to the `as` pass).
+const REGEX_KEYWORDS = new Set([
+  "return", "typeof", "instanceof", "in", "of", "new", "delete",
+  "void", "case", "do", "else", "yield", "await", "throw",
+]);
+
+function regexAllowedHere(history) {
+  const tail = history.replace(/\s+$/, "");
+  if (tail === "") return true;
+  const last = tail[tail.length - 1];
+  if (/[\w$]/.test(last)) {
+    const word = /([A-Za-z_$][\w$]*)$/.exec(tail)?.[1] ?? "";
+    return REGEX_KEYWORDS.has(word);
+  }
+  // Operand enders: a value just ended, so '/' divides.
+  if (last === ")" || last === "]" || last === "}" || last === '"') return false;
+  return true;
+}
+
+function scanRegexEnd(src, i) {
+  // i is at the opening '/'; return the index just past the flags, or
+  // -1 if this is not a well-formed literal on one line.
+  let inClass = false;
+  let j = i + 1;
+  while (j < src.length) {
+    const c = src[j];
+    if (c === "\\") j += 2;
+    else if (c === "\n") return -1;
+    else if (c === "[") { inClass = true; j++; }
+    else if (c === "]") { inClass = false; j++; }
+    else if (c === "/" && !inClass) {
+      j++;
+      while (j < src.length && /[a-z]/.test(src[j])) j++;
+      return j;
+    } else j++;
+  }
+  return -1;
+}
+
 function segmentize(src) {
   const segs = [];
   let code = "";
+  // The recent code history, for the regex/division decision: code
+  // characters as scanned, '"' as the marker for a just-ended operand
+  // segment (string, template, regex), ' ' for a comment.
+  let history = "";
   const flushCode = () => {
     if (code) {
       segs.push({ code: true, text: code });
       code = "";
     }
   };
-  const prot = (text) => {
+  const prot = (text, marker = '"') => {
     flushCode();
     if (text) segs.push({ code: false, text });
+    history += marker;
   };
   let i = 0;
   while (i < src.length) {
@@ -153,13 +204,23 @@ function segmentize(src) {
     if (c === "/" && n === "/") {
       let j = src.indexOf("\n", i);
       if (j < 0) j = src.length;
-      prot(src.slice(i, j));
+      prot(src.slice(i, j), " ");
       i = j;
     } else if (c === "/" && n === "*") {
       let j = src.indexOf("*/", i + 2);
       j = j < 0 ? src.length : j + 2;
-      prot(src.slice(i, j));
+      prot(src.slice(i, j), " ");
       i = j;
+    } else if (c === "/" && regexAllowedHere(history)) {
+      const j = scanRegexEnd(src, i);
+      if (j > 0) {
+        prot(src.slice(i, j));
+        i = j;
+      } else {
+        code += c;
+        history += c;
+        i++;
+      }
     } else if (c === '"' || c === "'") {
       const j = skipQuoted(src, i, c);
       prot(src.slice(i, j));
@@ -191,6 +252,7 @@ function segmentize(src) {
       i = j;
     } else {
       code += c;
+      history += c;
       i++;
     }
   }

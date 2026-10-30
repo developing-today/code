@@ -41,7 +41,7 @@ console.log("demo.echo:", String(echoed));</code></pre>
   <pre class="mcpx-home-example-output" aria-live="polite" hidden></pre>
 
   <script type="module">
-    import { tools } from "./client.browser.js";
+    import * as client from "./client.browser.js";
     import { runExample } from "./run-example.js";
     import { execCommand, asScript } from "./copy-command.js";
 
@@ -87,7 +87,7 @@ console.log("demo.echo:", String(echoed));</code></pre>
         try {
           output.hidden = false;
           output.textContent = "";
-          await runExample(textarea.value, tools, (line) => {
+          await runExample(textarea.value, client, (line) => {
             output.textContent += line + "\n";
           });
         } finally {

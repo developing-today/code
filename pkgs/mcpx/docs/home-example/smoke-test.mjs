@@ -20,6 +20,7 @@
 
 import { execCommand, scriptCommands } from "./copy-command.js";
 import { installFakeDaemon } from "./fake-daemon.js";
+import { formatRecordLine, installScriptGlobals } from "./run-example.js";
 import { stripTypes } from "./strip-types.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -112,6 +113,66 @@ const check = (name, ok, detail = "") => {
     stripTypes("function h(o = { a: 1, b: 2 }, n: number): void {}") ===
       "function h(o = { a: 1, b: 2 }, n) {}",
     stripTypes("function h(o = { a: 1, b: 2 }, n: number): void {}"),
+  );
+}
+
+// --- 1d. strip-types: regex literals are protected, division is not -------
+{
+  check(
+    "strip: a regex containing annotation-shaped text is preserved",
+    stripTypes("console.log(/ as string /.source);") ===
+      "console.log(/ as string /.source);",
+  );
+  check(
+    "strip: division still reads as code",
+    stripTypes("const x: number = a / b / c;") === "const x = a / b / c;",
+  );
+  check(
+    "strip: a regex after a keyword is preserved, flags included",
+    stripTypes("function t(s: string): boolean { return /a: string/i.test(s); }") ===
+      "function t(s) { return /a: string/i.test(s); }",
+    stripTypes("function t(s: string): boolean { return /a: string/i.test(s); }"),
+  );
+}
+
+// --- 1e. run-example: script globals + client record lines ------------------
+{
+  const fakeClient = { log: () => {}, emit: () => {}, describe: () => "" };
+  const restore = installScriptGlobals(fakeClient);
+  check(
+    "run: script globals are installed for the run",
+    globalThis.log === fakeClient.log && globalThis.emit === fakeClient.emit,
+  );
+  restore();
+  check(
+    "run: script globals are removed afterwards",
+    !("log" in globalThis) && !("emit" in globalThis),
+  );
+  globalThis.log = "page's own";
+  const restore2 = installScriptGlobals(fakeClient);
+  check(
+    "run: a pre-existing global is left alone (installGlobals semantics)",
+    globalThis.log === "page's own",
+  );
+  restore2();
+  delete globalThis.log;
+
+  const sentinel = "\u001emcpx\u001e";
+  check(
+    "run: an emit record renders its value",
+    formatRecordLine(sentinel + JSON.stringify({ kind: "result", value: "hi" })) ===
+      "hi",
+  );
+  check(
+    "run: a log record renders message and args",
+    formatRecordLine(
+      sentinel +
+        JSON.stringify({ kind: "log", msg: "starting", attrs: { args: [42] } }),
+    ) === "starting 42",
+  );
+  check(
+    "run: a non-record console.error line is not a record",
+    formatRecordLine("some plain error") === null,
   );
 }
 
