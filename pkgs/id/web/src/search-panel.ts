@@ -111,6 +111,7 @@ function createPanel(container: HTMLElement): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "search-panel";
   panel.setAttribute("role", "search");
+  panel.setAttribute("aria-label", "Find and replace");
 
   panel.innerHTML = `
     <div class="search-panel-row">
@@ -129,7 +130,7 @@ function createPanel(container: HTMLElement): HTMLElement {
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
       <button class="search-btn" id="replace-one" title="Replace">Replace</button>
-      <button class="search-btn" id="replace-all" title="Replace all">All</button>
+      <button class="search-btn" id="replace-all" title="Replace all" aria-label="Replace all">All</button>
     </div>
   `;
 
