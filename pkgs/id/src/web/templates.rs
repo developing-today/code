@@ -1082,6 +1082,9 @@ mod tests {
         assert!(html.contains("data-world-view"));
         assert!(html.contains("href=\"/files\""));
         assert!(html.contains("ProseMirror collaborative editor/viewer"));
+        assert!(html.contains("aria-label=\"Display name\""));
+        assert!(html.contains("aria-label=\"World name\""));
+        assert!(html.contains("aria-label=\"Guest capability\""));
     }
 
     #[test]
