@@ -65,6 +65,9 @@ in
   # commandcode-proxy unit crash-loops on its already-taken port (#883).
   # The gateway reaches the proxies by port, not by unit; only mcpx and
   # the opencode-route proxy are real unit dependencies.
+  # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2581): a
+  # proxy unit in Wants that the guard's allowlist does not name fails
+  # CI, so a clean merge cannot put the removed lines back silently.
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
