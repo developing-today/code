@@ -82,6 +82,12 @@ type Op struct {
 	// idempotent" made restart claim it, and a second restart kills the
 	// calls the first one let start.
 	Idempotent bool
+	// Permission is the authorisation tier this operation declares
+	// (#1968): read, run or admin, in the tiers permission.go defines.
+	// Declared on every entry and pinned against the flags above by a
+	// registry test, so granting or narrowing a tier later is a
+	// deliberate diff to this table and nothing else.
+	Permission Permission
 	// Streams marks an endpoint whose response never ends. MCP cannot carry
 	// a stream as a tool result, so these are excluded from tools; the MCP
 	// equivalent is subscriptions/listen.
@@ -200,13 +206,15 @@ func Ops() []Op {
 	ops := []Op{
 		{
 			Name: "health", Method: "GET", Path: "/v1/health",
+			Permission:  PermissionRead,
 			Summary:     "Liveness, version and the loopback endpoint",
 			Description: "The cheapest way to find out whether a daemon is answering at all.",
 		},
 		{
 			Name: "status", Method: "GET", Path: "/v1/status",
-			Command: "status",
-			Summary: "The daemon, its pools and live instances",
+			Permission: PermissionRead,
+			Command:    "status",
+			Summary:    "The daemon, its pools and live instances",
 			Description: "Everything mcpx knows about itself: version, uptime, socket, " +
 				"config path, and one entry per configured server with its live " +
 				"instance count.",
@@ -214,7 +222,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "events", Method: "GET", Path: "/v1/events",
-			Summary: "Server-sent event stream",
+			Permission: PermissionRead,
+			Summary:    "Server-sent event stream",
 			Description: "Everything the daemon notices, as SSE. Not reachable as an MCP " +
 				"tool: a tool result is one value and this is a stream that does not " +
 				"end. The MCP equivalent is subscriptions/listen, which pushes the " +
@@ -230,6 +239,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "elicit_list", Method: "GET", Path: "/v1/elicit",
+			Permission:  PermissionRead,
 			Command:     "elicit list",
 			Summary:     "Questions servers are waiting on an answer for",
 			Description: "Elicitations and sampling requests that have not been answered yet.",
@@ -240,6 +250,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "elicit_get", Method: "GET", Path: "/v1/elicit/{id}",
+			Permission:  PermissionRead,
 			Command:     "elicit show",
 			Summary:     "One question, with its answer once it has one",
 			Description: "Poll this after answering to see what was recorded.",
@@ -249,8 +260,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "elicit_answer", Method: "POST", Path: "/v1/elicit/{id}/{action}",
-			Command: "elicit answer",
-			Summary: "Answer a question a server asked",
+			Permission: PermissionAdmin,
+			Command:    "elicit answer",
+			Summary:    "Answer a question a server asked",
 			Description: "The action is in the path and the body is only ever content, so " +
 				"there is no way to send an accept with the wrong shape or a decline " +
 				"carrying content that will be ignored. Answering on a user's behalf " +
@@ -266,8 +278,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "log_record", Method: "POST", Path: "/v1/log",
-			Command: "log record",
-			Summary: "Append one record to the durable log",
+			Permission: PermissionAdmin,
+			Command:    "log record",
+			Summary:    "Append one record to the durable log",
 			Description: "`mcpx log record` without the process. Anything not recognised " +
 				"becomes an attribute, so a caller that can produce JSON does not " +
 				"also have to learn a schema. Writes into mcpx's own log, which is " +
@@ -281,8 +294,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "log_query", Method: "GET", Path: "/v1/log",
-			Command: "log",
-			Summary: "Query the durable log",
+			Permission: PermissionRead,
+			Command:    "log",
+			Summary:    "Query the durable log",
 			Description: "The same filters `mcpx log` accepts, over HTTP. Use it to find " +
 				"out why something did not work without re-running it. With chain " +
 				"set, the answer is the trace and every ancestor as a tree rather " +
@@ -291,8 +305,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "stats_query", Method: "GET", Path: "/v1/stats",
-			Command: "stats",
-			Summary: "Aggregate the log into numbers",
+			Permission: PermissionRead,
+			Command:    "stats",
+			Summary:    "Aggregate the log into numbers",
 			Description: "`mcpx stats` as JSON: calls, servers, instances, errors, " +
 				"sessions, volume or slowest. Answers 'what is slow' and 'what keeps " +
 				"failing' without reading records one at a time.",
@@ -309,8 +324,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "registry_search", Method: "GET", Path: "/v1/registry/search",
-			Command: "registry search",
-			Summary: "Search a public registry of MCP servers",
+			Permission: PermissionRead,
+			Command:    "registry search",
+			Summary:    "Search a public registry of MCP servers",
 			Description: "Servers that are not configured here yet. The registry matches " +
 				"names as a substring, so one word finds more than a phrase. The " +
 				"answer carries enough to add one with `mcpx registry add`, and " +
@@ -322,7 +338,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "complete", Method: "POST", Path: "/v1/complete",
-			Summary: "Argument autocomplete from an upstream server",
+			Permission: PermissionRead,
+			Summary:    "Argument autocomplete from an upstream server",
 			Description: "Forwards MCP completion/complete to the named server, so a " +
 				"client offering completion over mcpx offers what the server itself " +
 				"would -- which knows the values an argument may take, where mcpx " +
@@ -350,6 +367,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "resource_templates", Method: "GET", Path: "/v1/resource-templates",
+			Permission:  PermissionRead,
 			Command:     "resources --templates",
 			Summary:     "Every templated resource the configured servers offer",
 			Description: "Parameterised resources, namespaced.",
@@ -357,20 +375,23 @@ func Ops() []Op {
 		},
 		{
 			Name: "prompts", Method: "GET", Path: "/v1/prompts",
-			Command: "prompts",
-			Summary: "Every prompt the configured servers offer",
+			Permission: PermissionRead,
+			Command:    "prompts",
+			Summary:    "Every prompt the configured servers offer",
 			Description: "Prompts are the part of MCP that is not tools: a server saying " +
 				"'here is the wording that works for this'.",
 			Params: []Param{nsParam()},
 		},
 		{
 			Name: "resources", Method: "GET", Path: "/v1/resources",
-			Command: "resources",
-			Summary: "Every resource the configured servers offer",
-			Params:  []Param{nsParam()},
+			Permission: PermissionRead,
+			Command:    "resources",
+			Summary:    "Every resource the configured servers offer",
+			Params:     []Param{nsParam()},
 		},
 		{
 			Name: "prompt_get", Method: "POST", Path: "/v1/prompt",
+			Permission:  PermissionRead,
 			Command:     "prompts",
 			Summary:     "Render one prompt with its arguments filled in",
 			Description: "The server does the substitution; mcpx passes the arguments through.",
@@ -385,6 +406,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "namespaces", Method: "GET", Path: "/v1/namespaces",
+			Permission:  PermissionRead,
 			Command:     "ls",
 			Summary:     "Every configured server, with tool counts",
 			Description: "Small, and it starts nothing.",
@@ -393,15 +415,17 @@ func Ops() []Op {
 		},
 		{
 			Name: "tools", Method: "GET", Path: "/v1/tools",
+			Permission:  PermissionRead,
 			Summary:     "Every tool of every configured server",
 			Description: "The full list, with input schemas. Large by design; mcpx_catalog is the budgeted view.",
 			Params:      []Param{nsParam()},
 		},
 		{
 			Name: "search", Method: "GET", Path: "/v1/search",
-			Command:   "search",
-			Summary:   "Rank tools against a query",
-			CoveredBy: "mcpx_search",
+			Permission: PermissionRead,
+			Command:    "search",
+			Summary:    "Rank tools against a query",
+			CoveredBy:  "mcpx_search",
 			Params: []Param{
 				{Name: "q", In: InQuery, Type: "string", Required: true, Desc: "what to match against tool names and descriptions"},
 				{Name: "limit", In: InQuery, Type: "integer", Desc: "how many results to return"},
@@ -410,9 +434,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "types", Method: "GET", Path: "/v1/types",
-			Command:   "types",
-			Summary:   "TypeScript declarations for the named namespaces",
-			CoveredBy: "mcpx_types", Text: true,
+			Permission: PermissionRead,
+			Command:    "types",
+			Summary:    "TypeScript declarations for the named namespaces",
+			CoveredBy:  "mcpx_types", Text: true,
 			Params: append([]Param{
 				nsParam(),
 				{Name: "instructions", In: InQuery, Type: "string", Enum: []string{"0", "1"}, Desc: "0 to omit each server's own guidance"},
@@ -420,9 +445,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "catalog", Method: "GET", Path: "/v1/catalog",
-			Command:   "catalog",
-			Summary:   "Every namespace with as many signatures as fit a token budget",
-			CoveredBy: "mcpx_catalog", Text: true,
+			Permission: PermissionRead,
+			Command:    "catalog",
+			Summary:    "Every namespace with as many signatures as fit a token budget",
+			CoveredBy:  "mcpx_catalog", Text: true,
 			Params: append([]Param{
 				nsParam(),
 				{Name: "budget", In: InQuery, Type: "integer", Desc: "approximate token ceiling"},
@@ -431,8 +457,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "client_module", Method: "GET", Path: "/v1/client.ts",
-			Command: "client",
-			Summary: "The generated TypeScript client",
+			Permission: PermissionRead,
+			Command:    "client",
+			Summary:    "The generated TypeScript client",
 			Description: "A module binding every tool as an async function. This is what " +
 				"a script imports.",
 			Text: true,
@@ -443,6 +470,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "globals", Method: "GET", Path: "/v1/globals.d.ts",
+			Permission:  PermissionRead,
 			Summary:     "Ambient declarations for the installed globals",
 			Description: "What an editor needs to typecheck a script that uses `tools` without importing it.",
 			Text:        true,
@@ -450,8 +478,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "call", Method: "POST", Path: "/v1/call",
-			Command: "call",
-			Summary: "Call one tool on one server",
+			Permission: PermissionRun,
+			Command:    "call",
+			Summary:    "Call one tool on one server",
 			Description: "With task set, the answer is a handle rather than a result: the " +
 				"call runs in the background and is collected from /v1/tasks. That is " +
 				"the right shape for a genuinely slow tool, where holding a request " +
@@ -468,6 +497,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "batch", Method: "POST", Path: "/v1/batch",
+			Permission:  PermissionRun,
 			Command:     "batch",
 			Summary:     "Execute multiple tool calls in a single turn",
 			Description: "Executes multiple calls sequentially or in parallel, returning all results in a single response.",
@@ -481,9 +511,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "resource_read", Method: "POST", Path: "/v1/resource",
-			Command:  "resources",
-			Summary:  "Read one resource from one server",
-			Mutating: true,
+			Permission: PermissionRun,
+			Command:    "resources",
+			Summary:    "Read one resource from one server",
+			Mutating:   true,
 			Params: append([]Param{
 				{Name: "server", In: InBody, Type: "string", Required: true, Desc: "the server holding the resource"},
 				{Name: "uri", In: InBody, Type: "string", Required: true, Desc: "the resource's URI, as it appears in the server's resource list"},
@@ -491,12 +522,14 @@ func Ops() []Op {
 		},
 		{
 			Name: "tasks_list", Method: "GET", Path: "/v1/tasks",
+			Permission:  PermissionRead,
 			CLI:         "task list",
 			Summary:     "Background calls and their status",
 			Description: "Tasks expire: a result nobody collects is memory nobody frees.",
 		},
 		{
 			Name: "task_get", Method: "GET", Path: "/v1/tasks/{id}",
+			Permission:  PermissionRead,
 			Summary:     "One task's status",
 			Description: "Check on it. /v1/tasks/{id}/result waits for it.",
 			Params: []Param{
@@ -505,7 +538,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "task_result", Method: "GET", Path: "/v1/tasks/{id}/result",
-			Summary: "Wait for a task and collect its result",
+			Permission: PermissionRead,
+			Summary:    "Wait for a task and collect its result",
 			Description: "Blocks until the task ends, bounded by a timeout, after which it " +
 				"answers 408 and the task keeps running. A caller that would rather " +
 				"poll should use /v1/tasks/{id}.",
@@ -516,6 +550,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "task_cancel", Method: "POST", Path: "/v1/tasks/{id}/cancel",
+			Permission: PermissionRun,
 			Idempotent: true,
 			Summary:    "Cancel a running task",
 			Mutating:   true,
@@ -525,7 +560,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "session_release", Method: "POST", Path: "/v1/session/release",
-			Summary: "Free the instances a finished caller created",
+			Permission: PermissionAdmin,
+			Summary:    "Free the instances a finished caller created",
 			Description: "Called when a session ends. Releasing somebody else's session " +
 				"stops servers they are still using, which is why it is privileged.",
 			Admin: true, Mutating: true,
@@ -535,8 +571,9 @@ func Ops() []Op {
 		},
 		{
 			Name: "refresh", Method: "POST", Path: "/v1/refresh",
-			Command: "refresh",
-			Summary: "Re-read the configuration and every server's schemas",
+			Permission: PermissionAdmin,
+			Command:    "refresh",
+			Summary:    "Re-read the configuration and every server's schemas",
 			Description: "Picks up configuration files edited since the daemon started " +
 				"-- a server added by hand, or by `mcpx registry add` -- and then " +
 				"starts every configured server to read its schemas. A server whose " +
@@ -547,16 +584,18 @@ func Ops() []Op {
 		},
 		{
 			Name: "reload", Method: "POST", Path: "/v1/reload",
-			Command: "reload",
-			Summary: "Re-read the configuration and swap server pools without restarting unchanged servers",
+			Permission: PermissionAdmin,
+			Command:    "reload",
+			Summary:    "Re-read the configuration and swap server pools without restarting unchanged servers",
 			Description: "Re-reads the daemon configuration files without re-probing all unchanged server schemas. " +
 				"Unchanged server processes and their cached schemas remain live.",
 			Admin: true, Mutating: true,
 		},
 		{
 			Name: "restart", Method: "POST", Path: "/v1/restart",
-			Command: "restart",
-			Summary: "Restart a server's instances, or every server's",
+			Permission: PermissionAdmin,
+			Command:    "restart",
+			Summary:    "Restart a server's instances, or every server's",
 			Description: "Stops every running instance and starts a replacement under the " +
 				"same scope key, waiting for each to initialize; a replacement that " +
 				"does not come up is reported with the server's own error. With " +
@@ -576,6 +615,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "shutdown", Method: "POST", Path: "/v1/shutdown",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Command:    "stop",
 			Summary:    "Stop the daemon",
@@ -585,6 +625,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "daemon_restart", Method: "POST", Path: "/v1/daemon/restart",
+			Permission:  PermissionAdmin,
 			Command:     "restart",
 			Summary:     "Restart the mcpx daemon",
 			Description: "Gracefully reloads or restarts the mcpx daemon process itself.",
@@ -592,6 +633,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "dashboard", Method: "GET", Path: "/v1/dashboard",
+			Permission:  PermissionRead,
 			Command:     "dashboard",
 			Text:        true,
 			Summary:     "Live web dashboard HTML",
@@ -599,16 +641,19 @@ func Ops() []Op {
 		},
 		{
 			Name: "metrics_tokens", Method: "GET", Path: "/v1/metrics/tokens",
+			Permission:  PermissionRead,
 			Summary:     "Token economics telemetry summary",
 			Description: "Aggregated stats on prompt turns, baseline tool schema tokens, injected tokens, and tokens saved.",
 		},
 		{
 			Name: "metrics_tools", Method: "GET", Path: "/v1/metrics/tools",
+			Permission:  PermissionRead,
 			Summary:     "Tool call telemetry, error rates, correlations and timelines",
 			Description: "Aggregated stats on tool call volume, error rates, error shapes, correlated tool pairs, and usage over time.",
 		},
 		{
 			Name: "chat_completions", Method: "POST", Path: "/v1/chat/completions",
+			Permission:  PermissionRun,
 			Command:     "proxy",
 			Summary:     "OpenAI-compatible LLM chat completions endpoint",
 			Description: "Proxies chat completions requests while dynamically injecting semantically discovered tools.",
@@ -621,6 +666,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "embeddings", Method: "POST", Path: "/v1/embeddings",
+			Permission:  PermissionRun,
 			Command:     "embeddings",
 			Summary:     "Compute vector embeddings for text",
 			Description: "OpenAI-compatible vector embedding endpoint using pure-Go, WASM, or remote engines.",
@@ -632,12 +678,14 @@ func Ops() []Op {
 		},
 		{
 			Name: "embeddings_export", Method: "GET", Path: "/v1/embeddings/export",
+			Permission:  PermissionRead,
 			Command:     "embeddings export",
 			Summary:     "Export cached vector embeddings",
 			Description: "Exports all computed and indexed tool vector embeddings as JSON.",
 		},
 		{
 			Name: "embeddings_import", Method: "POST", Path: "/v1/embeddings/import",
+			Permission:  PermissionRun,
 			Command:     "embeddings import",
 			Summary:     "Import pre-computed vector embeddings",
 			Description: "Imports pre-computed tool vector embeddings from JSON payload.",
@@ -649,6 +697,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "feedback", Method: "POST", Path: "/v1/feedback",
+			Permission:  PermissionRun,
 			Command:     "feedback",
 			Summary:     "Submit quality feedback for a trace",
 			Description: "Attaches a score and feedback notes to an interaction trace ID for adaptive routing.",
@@ -664,6 +713,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "interactions_list", Method: "GET", Path: "/v1/interactions",
+			Permission:  PermissionRead,
 			Command:     "interactions",
 			Summary:     "List and filter past interaction traces",
 			Description: "Returns history of inputs, outputs, tools used, and recorded feedback scores.",
@@ -676,6 +726,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "interactions_get", Method: "GET", Path: "/v1/interactions/{id}",
+			Permission:  PermissionRead,
 			Command:     "interactions show",
 			Summary:     "Inspect a specific interaction trace",
 			Description: "Returns full details of an interaction by its trace ID.",
@@ -685,6 +736,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "openapi", Method: "GET", Path: "/v1/openapi.json",
+			Permission:  PermissionRead,
 			Command:     "openapi",
 			Summary:     "This API, as an OpenAPI 3.1 document",
 			Description: "Generated from the same table the routes and the MCP tools are.",

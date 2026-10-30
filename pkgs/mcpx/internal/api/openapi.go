@@ -41,7 +41,12 @@ func OpenAPI(version string) map[string]any {
 				"are the access control; binding the TCP listener wider than " +
 				"loopback is a deliberate act and the responsibility of whatever " +
 				"does it. Operations marked x-mcpx-admin are the ones a scoped " +
-				"token would have to grant separately.",
+				"token would have to grant separately. Each operation also " +
+				"declares a permission tier (read, run or admin) and each caller " +
+				"is assigned a principal for its surface; the check is permissive " +
+				"today -- every principal is the owner and every check passes -- " +
+				"and its decisions are recorded so a future policy can see what " +
+				"it would refuse before it refuses anything.",
 			"license": map[string]any{"name": "MIT"},
 		},
 		"servers": []any{
