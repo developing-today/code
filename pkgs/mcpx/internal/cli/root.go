@@ -469,7 +469,7 @@ func (a *App) CmdCompletion(_ context.Context, args []string) error {
 	if shell == "" {
 		return errors.New("usage: mcpx completion <bash|zsh|fish>")
 	}
-	text, err := Completion(shell)
+	text, err := Completion(shell, a.Version)
 	if err != nil {
 		return err
 	}

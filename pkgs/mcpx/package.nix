@@ -71,10 +71,14 @@ buildGo127Module {
     export GOFLAGS="$GOFLAGS -buildvcs=false"
   '';
 
+  # The version is written once, above, and interpolated here, so the build
+  # stamp cannot silently disagree with `package.nix`'s version. The default in
+  # cmd/mcpx/main.go is the third site and is kept honest by
+  # internal/buildcheck's version agreement test (#1895).
   ldflags = [
     "-s"
     "-w"
-    "-X main.version=0.1.0"
+    "-X main.version=${version}"
   ];
 
   nativeBuildInputs = [
