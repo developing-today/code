@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Supabase usage exporter every 15 minutes — code#1050 (gatherer tick, #1151)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=20
+Persistent=true
+Unit=supabase-quota-export.service
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,7 @@ let
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   designCodeProxyPort = 18746;
   agyProxyPort = 18743;
   codexProxyPort = 18744;
@@ -43,11 +44,18 @@ in
 {
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
 
-  # Point acpx's `opencode` harness at this laptop's pinned OpenCode fork
-  # (the build OpenChamber uses) instead of acpx's default
-  # `npx -y opencode-ai acp` upstream download.
+  # Point acpx's harnesses at this laptop's pinned binaries instead of
+  # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
+  # OpenCode fork (the build OpenChamber uses); claude/codex run the local
+  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
+  # the system antigravity-acp server.
   home.file.".acpx/config.json".text = builtins.toJSON {
-    agents.opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+    agents = {
+      opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+      claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      agy.command = "/run/current-system/sw/bin/agy_acp_server";
+    };
   };
 
   # Start after the provider proxies + mcpx it depends on. The proxies
@@ -55,11 +63,12 @@ in
   # canonical ports), so the gateway must not Want the manual per-proxy
   # units: a gateway restart would re-pull them, and the manual
   # commandcode-proxy unit crash-loops on its already-taken port (#883).
-  # The gateway reaches the proxies by port, not by unit; only mcpx is
-  # a real unit dependency.
+  # The gateway reaches the proxies by port, not by unit; only mcpx and
+  # the opencode-route proxy are real unit dependencies.
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
         "agy-proxy.service"
@@ -67,6 +76,7 @@ in
         "mcpx.service"
       ];
       Wants = [
+        "opencode-route-proxy.service"
         "mcpx.service"
       ];
     };
@@ -81,6 +91,8 @@ in
     # the token itself never enters the store.
     environment = {
       OPENCLAW_GATEWAY_TOKEN = "${homeDir}/.secrets/openclaw/gateway-token";
+      OPENCLAW_SLACK_BOT_TOKEN = "/home/user/.secrets/openclaw/slack-bot-token";
+      OPENCLAW_SLACK_APP_TOKEN = "/home/user/.secrets/openclaw/slack-app-token";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -108,11 +120,7 @@ in
 
     # nix-openclaw tool plugins (CLI tools + skills, packaged in Nix).
     bundledPlugins = {
-      # summarize.enable = true; # summarize URLs / PDFs / videos —
-      # disabled 2026-10-26: its ~780-package pnpm deps fetch kept dying
-      # on the laptop's flaky route to registry.npmjs.org (timeouts /
-      # HTTP2 framing errors). Re-enable and rebuild when the route is
-      # healthy; nothing else depends on it.
+      summarize.enable = true; # summarize URLs / PDFs / videos
       gogcli.enable = true; # Google Workspace CLI (gog)
       goplaces.enable = true; # Google Places CLI
       # peekaboo / poltergeist are macOS-only in the nix-openclaw
@@ -144,6 +152,9 @@ in
       "firecrawl"
       "perplexity"
       "duckduckgo"
+      "searxng" # keyless web search (added 2026-10-26, Drew: more plugins)
+      "lobster" # typed workflow runtime for resumable automations
+      "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
     ];
 
@@ -201,7 +212,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -224,6 +235,30 @@ in
             provider = "default";
             id = "OPENCLAW_GATEWAY_TOKEN";
           };
+        };
+      };
+
+      # Chat channels. Slack wired 2026-10-26: app A0CD7L3S81W, bot
+      # @openclaw (U0CC72H7KA7); tokens via env SecretRefs fed from
+      # laptop files (interim home for sops-managed secrets). DMs from
+      # Drew only; channel access gets allowlisted per channel later.
+      channels = {
+        slack = {
+          enabled = true;
+          mode = "socket";
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_BOT_TOKEN";
+          };
+          appToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_APP_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
         };
       };
 
@@ -255,7 +290,23 @@ in
             (model "gpt-6-luna" "GPT-6 Luna (ChatGPT plan — final reserve)")
             (model "gpt-5.6-sol" "GPT-5.6 Sol (ChatGPT plan — final reserve)")
           ];
+          # The OpenCode server fronted by the route proxy (code#2229):
+          # each model id is an opencode-route pool, carried by the
+          # OpenCode build agent server-side.
+          opencode-route = localProvider opencodeRouteProxyPort [
+            (model "workhorse" "Workhorse (OpenCode route pool)")
+            (model "speed" "Speed (OpenCode route pool)")
+            (model "specialist" "Specialist (OpenCode route pool)")
+            (model "summit" "Summit (OpenCode route pool)")
+            (model "scout" "Scout (OpenCode route pool)")
+          ];
         };
+      };
+
+      # One DM session per channel+peer, so a future second channel
+      # never shares a transcript with Slack DMs.
+      session = {
+        dmScope = "per-channel-peer";
       };
 
       agents = {
@@ -268,13 +319,30 @@ in
               "commandcode/moonshotai/kimi-k2.6"
             ];
           };
-          heartbeat.every = "1h";
+          heartbeat = {
+            every = "30m";
+            lightContext = true;
+            isolatedSession = true;
+            activeHours = {
+              start = "07:00";
+              end = "23:00";
+            };
+          };
         };
         ownership = "explicit";
         entries = {
           main = {
             name = "OpenClaw (laptop node)";
           };
+          # The ACP-runtime agent entry (opencode-acp, #2229 mechanism 1)
+          # is removed for now: the nix-openclaw generated schema types an
+          # entry's runtime as a oneOf of two submodules, and under the
+          # pinned nixpkgs the acp branch is unreachable, so any entry
+          # using it fails the whole configuration evaluation. Full
+          # analysis and the minimal reproduction: code#2509. Restore the
+          # entry (tracked by #2256) once the schema can express it. The
+          # ACP capability itself (acp block below: enabled, allowedAgents,
+          # acpx plugin) is unaffected.
         };
       };
 
@@ -284,12 +352,21 @@ in
         enabled = true;
         backend = "acpx";
         defaultAgent = "opencode";
-        # Only opencode is wired as an ACP harness for now: the acpx
-        # startup check initializes every allowed agent, and the other
-        # harnesses resolve to npx-fetched adapters, which hang on this
-        # laptop's flaky npmjs route (120s check timeout, 2026-10-26).
-        # Claude/Codex still work via their native runtime plugins.
-        allowedAgents = [ "opencode" ];
+        # Every allowed agent gets a per-agent command override below,
+        # so the acpx startup check never resolves a harness to an
+        # npx-fetched adapter (that fetch hangs on this laptop's flaky
+        # npmjs route; 120s check timeout, 2026-10-26). claude/codex run
+        # the local wrappers in ~/.openclaw/acpx (adapters bundled with
+        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # system antigravity-acp binary. Drew enabled all four
+        # 2026-10-28. Claude/Codex ALSO work via their native runtime
+        # plugins for chat bindings — ACP is the background-spawn path.
+        allowedAgents = [
+          "opencode"
+          "claude"
+          "codex"
+          "agy"
+        ];
         dispatch.enabled = true;
       };
 
@@ -311,6 +388,15 @@ in
             agents.opencode = {
               command = "/etc/profiles/per-user/user/bin/opencode";
               args = [ "acp" ];
+            };
+            agents.claude = {
+              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+            };
+            agents.codex = {
+              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+            };
+            agents.agy = {
+              command = "/run/current-system/sw/bin/agy_acp_server";
             };
           };
         };

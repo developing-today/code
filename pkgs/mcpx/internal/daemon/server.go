@@ -24,6 +24,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
+	"github.com/dezren39/mcpx/internal/hooks"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/logstore"
 	"github.com/dezren39/mcpx/internal/mcpclient"
@@ -65,6 +66,12 @@ type Server struct {
 	// Events carries everything the daemon notices, to every subscriber.
 	Events *events.Bus
 
+	// hookRunner runs the config-declared hooks (the `hooks` setting)
+	// over Events. Nil when none are declared, or when the declaration
+	// failed to parse -- doctor reports that case, and a daemon that
+	// refuses to start over an observer's typo helps nobody.
+	hookRunner *hooks.Runner
+
 	// Origins decides which browser origins may use the daemon at all; see
 	// refuseBrowserPages. The zero value allows loopback origins only.
 	Origins mcpserver.OriginPolicy
@@ -77,6 +84,10 @@ type Server struct {
 	// daemon's only accept path, so a handover can see every connection.
 	tcpLn  net.Listener
 	unixLn net.Listener
+	// tsnetLn is set only when daemon.tsnet.hostname names a tailnet
+	// identity for this daemon (#1967); nil on every daemon that did not
+	// ask for one.
+	tsnetLn net.Listener
 	// conns tracks every connection the HTTP server holds, for a handover.
 	conns    connTracker
 	endpoint string
@@ -231,8 +242,26 @@ func NewServer(opts Options) (*Server, error) {
 		opts.Logger.Printf("elicitation disabled: %v", berr)
 		broker = nil
 	}
+	if broker != nil && opts.Settings != nil {
+		// The declared elicit.ttl / elicit.maxAge settings govern the
+		// broker's touch-on-read convention; without this the registry
+		// entries would be promises nothing honours.
+		broker.Configure(opts.Settings.Duration("elicit.ttl"),
+			opts.Settings.Duration("elicit.maxAge"))
+	}
 	reg.UseSettings(opts.Settings)
 	reg.InstallHooks(srv.Events, broker, nil)
+	if raw := opts.Settings.String("hooks"); raw != "" {
+		declared, herr := hooks.Parse(raw, opts.Settings.Duration("hooks.timeout"))
+		if herr != nil {
+			opts.Logger.Printf("hooks: %v (no hooks installed)", herr)
+		} else if len(declared) > 0 {
+			srv.hookRunner = hooks.NewRunner(srv.Events, declared, func(f string, a ...any) {
+				opts.Logger.Printf(f, a...)
+			})
+			srv.hookRunner.Start()
+		}
+	}
 	srv.initConsumer()
 	srv.tokenStore, _ = logstore.NewTokenStore(filepath.Join(opts.Paths.State, "tokens.db"))
 	if opts.Config != nil {
@@ -246,8 +275,31 @@ func NewServer(opts Options) (*Server, error) {
 // Registry exposes the pool registry (used by the in-process fast path).
 func (s *Server) Registry() *Registry { return s.reg }
 
+// HookRunner exposes the declared-hook runner, for status and tests.
+// Nil when no hooks are declared.
+func (s *Server) HookRunner() *hooks.Runner { return s.hookRunner }
+
 // Endpoint is the loopback base URL once Listen has run.
 func (s *Server) Endpoint() string { return s.endpoint }
+
+// TSNetStatus reports this daemon's tailnet identity and, per peer,
+// whether traffic is direct or relayed. ok is false on a daemon with no
+// tsnet listener.
+func (s *Server) TSNetStatus(ctx context.Context) (status TSNetStatus, ok bool, err error) {
+	cl, isConn := s.tsnetLn.(*connListener)
+	if !isConn || cl == nil {
+		return TSNetStatus{}, false, nil
+	}
+	tl, isTSNet := cl.inner.(*tsnetListener)
+	if !isTSNet {
+		return TSNetStatus{}, false, nil
+	}
+	status, err = tl.Status(ctx)
+	if err != nil {
+		return TSNetStatus{}, true, err
+	}
+	return status, true, nil
+}
 
 // Listen binds both listeners and publishes the daemon record.
 func (s *Server) Listen(tcpPort int) error {
@@ -255,12 +307,8 @@ func (s *Server) Listen(tcpPort int) error {
 	if err := s.clearStaleSocket(); err != nil {
 		return err
 	}
-	unixLn, err := net.Listen("unix", s.paths.Socket)
+	unixLn, err := unixTransport{socket: s.paths.Socket}.Listen()
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.paths.Socket, err)
-	}
-	if err := os.Chmod(s.paths.Socket, defaults.PrivateMode); err != nil {
-		unixLn.Close()
 		return err
 	}
 	// Loopback unless told otherwise. Binding wider is a deliberate act:
@@ -270,30 +318,90 @@ func (s *Server) Listen(tcpPort int) error {
 	if host == "" {
 		host = s.set.String("daemon.address")
 	}
-	tcpLn, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(tcpPort)))
+	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
 	if err != nil {
 		unixLn.Close()
-		return fmt.Errorf("listen tcp: %w", err)
+		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
 	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
+	// An identity listener, when one is named: the same API on the
+	// daemon's tailnet, reachable by name from another network. A
+	// failure here is fatal to Listen — a daemon that was asked for a
+	// tsnet route and silently does not have one would be found out by
+	// the first remote caller, not by its operator.
+	if err := s.listenTSNet(); err != nil {
+		unixLn.Close()
+		tcpLn.Close()
+		return err
+	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
 	return s.publish()
 }
 
+// listenTSNet starts the daemon's tsnet identity listener when
+// daemon.tsnet.hostname names one, and records it on the server. It is
+// shared by Listen, by a takeover successor (which must recreate the
+// listener: the node is in-process state and cannot be passed), and by
+// a handover that did not commit (which must give the route back).
+func (s *Server) listenTSNet() error {
+	hostname := s.set.String("daemon.tsnet.hostname")
+	if hostname == "" {
+		return nil
+	}
+	tsLn, err := tsnetTransport{
+		hostname: hostname,
+		stateDir: s.tsnetStateDir(),
+		authKey:  envTSNetAuthKey(),
+	}.Listen()
+	if err != nil {
+		return err
+	}
+	s.tsnetLn = newConnListener(tsLn, &s.conns, nil)
+	return nil
+}
+
+// tsnetStateDir is where this daemon's tsnet node keeps its identity
+// (its node keys) across restarts. It is keyed by the daemon's
+// configuration identity -- the same config file-set fingerprint that
+// keys the socket and info file in Paths.ForConfig. Paths.ForConfig
+// keys Socket and Info but leaves State shared, so without this key
+// two daemons serving different configurations out of one state
+// directory would share one node-state directory: the second daemon
+// would load the first daemon's node keys, tsnet would ignore its
+// auth key (persisted state wins), and both would compete for one
+// tailnet identity. tsnet requires a unique state directory per
+// service. The key is the file set, not the contents, so it is stable
+// across a takeover: the successor runs the same configuration and
+// lands on the same directory, keeping the identity. A daemon with no
+// configuration keeps the unkeyed directory -- it is the only daemon
+// its state directory can hold.
+func (s *Server) tsnetStateDir() string {
+	dir := filepath.Join(s.paths.State, "tsnet")
+	if cfg := s.currentConfig(); cfg != nil {
+		if key := FingerprintConfig(cfg.Sources); key != "" {
+			dir = filepath.Join(dir, key)
+		}
+	}
+	return dir
+}
+
 // publish writes the daemon record clients find the daemon by.
 func (s *Server) publish() error {
 	cfgPath := ""
+	daemonKey := ""
 	if cfg := s.currentConfig(); cfg != nil {
 		cfgPath = cfg.Path
+		daemonKey = FingerprintConfig(cfg.Sources)
 	}
 	return s.paths.WriteInfo(Info{
 		PID:        os.Getpid(),
 		Socket:     s.paths.Socket,
 		Endpoint:   s.endpoint,
 		ConfigPath: cfgPath,
-		ConfigHash: s.reg.ConfigHash(),
+		SchemaHash: s.reg.ConfigHash(),
+		DaemonKey:  daemonKey,
 		Version:    s.version,
 		StartedAt:  s.started.Format(time.RFC3339),
 	})
@@ -310,7 +418,11 @@ func (s *Server) startHTTP() {
 		ConnState:         s.observeConn,
 	}
 	s.httpSrv = srv
-	for _, ln := range []net.Listener{s.unixLn, s.tcpLn} {
+	listeners := []net.Listener{s.unixLn, s.tcpLn}
+	if s.tsnetLn != nil {
+		listeners = append(listeners, s.tsnetLn)
+	}
+	for _, ln := range listeners {
 		s.httpServing.Add(1)
 		go func() {
 			err := srv.Serve(ln)
@@ -355,9 +467,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 		return err
 	}
 	s.unixLn = ln
-	mux := http.NewServeMux()
-	s.routes(mux)
-	s.httpSrv = &http.Server{Handler: s.refuseBrowserPages(mux),
+	s.httpSrv = &http.Server{Handler: s.Handler(),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
 	go func() {
 		<-ctx.Done()
@@ -365,6 +475,52 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 		_ = os.Remove(socket)
 	}()
 	go func() { _ = s.httpSrv.Serve(ln) }()
+	return nil
+}
+
+// Handler is the daemon's API as a plain http.Handler: the same handler
+// its listeners serve, ServeInline included. One API, hosted wherever
+// the caller can carry it — a host that invokes the handler directly
+// (the CLI's inline mode) serves the identical API without a listener.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	s.routes(mux)
+	return s.refuseBrowserPages(mux)
+}
+
+// InProcessHandler returns Handler with the daemon's lifetime tied to
+// ctx, the way ServeInline ties it to its socket's context: when ctx
+// ends, the pools drain and the caches flush (stopServing). The caller
+// owns carrying the requests; this owns only the lifetime.
+func (s *Server) InProcessHandler(ctx context.Context) http.Handler {
+	go func() {
+		<-ctx.Done()
+		s.stopServing()
+	}()
+	return s.Handler()
+}
+
+// ServeSocket serves the daemon's API on a unix socket until ctx ends.
+//
+// It is ServeInline's listener without the lifetime: ending ctx closes
+// the socket and removes its file, but the pools keep running —
+// InProcessHandler owns those. Inline mode opens a socket lazily, only
+// when a script asks for one: a script runs in a child process, which
+// can reach the in-process daemon no other way.
+func (s *Server) ServeSocket(ctx context.Context, socket string) error {
+	_ = os.Remove(socket)
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: s.Handler(),
+		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+		_ = os.Remove(socket)
+	}()
+	go func() { _ = srv.Serve(ln) }()
 	return nil
 }
 
@@ -641,6 +797,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/restart", s.handleRestart)
 	mux.HandleFunc("GET /dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /v1/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /dashboard/", s.handleDashboardAsset)
+	mux.HandleFunc("GET /v1/dashboard/", s.handleDashboardAsset)
 	mux.HandleFunc("GET /v1/metrics/tokens", s.handleMetricsTokens)
 	mux.HandleFunc("GET /v1/metrics/tools", s.handleMetricsTools)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
