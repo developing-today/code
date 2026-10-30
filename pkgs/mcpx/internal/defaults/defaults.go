@@ -157,6 +157,7 @@ type Defaults struct {
 		Disambiguate        string `json:"disambiguate"`
 		DisambiguateDefault string `json:"disambiguateDefault"`
 		ConfirmDestructive  bool   `json:"confirmDestructive"`
+		WritePolicy         string `json:"writePolicy"`
 		AskTimeout          string `json:"askTimeout"`
 		DiagnosePreflight   bool   `json:"diagnosePreflight"`
 		HistoryPerTool      int    `json:"historyPerTool"`
@@ -655,6 +656,7 @@ var (
 	Disambiguate        = builtin.Consumer.Disambiguate
 	DisambiguateDefault = builtin.Consumer.DisambiguateDefault
 	ConfirmDestructive  = builtin.Consumer.ConfirmDestructive
+	WritePolicy         = builtin.Consumer.WritePolicy
 	AskTimeout          = mustDur(builtin.Consumer.AskTimeout, "consumer.askTimeout")
 	DiagnosePreflight   = builtin.Consumer.DiagnosePreflight
 	HistoryPerTool      = builtin.Consumer.HistoryPerTool

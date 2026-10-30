@@ -18,6 +18,7 @@ import (
 	"github.com/dezren39/mcpx/internal/events"
 	"github.com/dezren39/mcpx/internal/mcpclient"
 	"github.com/dezren39/mcpx/internal/model"
+	"github.com/dezren39/mcpx/internal/policy"
 	"github.com/dezren39/mcpx/internal/pool"
 	"github.com/dezren39/mcpx/internal/recipes"
 	"github.com/dezren39/mcpx/internal/runner"
@@ -37,6 +38,7 @@ type ConsumerPolicy struct {
 	Disambiguate        string
 	DisambiguateDefault string
 	ConfirmDestructive  bool
+	WritePolicy         string
 	AskTimeout          time.Duration
 	DiagnosePreflight   bool
 	HistoryPerTool      int
@@ -76,13 +78,26 @@ const CatalogHistoryFile = "catalog-history.json"
 // diagnostic that says what changed.
 func (s *Server) initConsumer() {
 	st := &consumerState{policy: defaultConsumerPolicy()}
-	var sources []string
-	if s.cfg != nil {
-		sources = s.cfg.Sources
+	// The daemon's already-resolved settings are the authority: they
+	// carry the command-line flags (--policy-write and friends), which
+	// a fresh settings.Resolve over the config sources would silently
+	// drop, leaving the gate reading file/environment values the
+	// operator explicitly overrode. Resolve from sources only when
+	// the server was built without a set.
+	set := s.set
+	if set == nil {
+		var sources []string
+		if s.cfg != nil {
+			sources = s.cfg.Sources
+		}
+		resolved, err := settings.Resolve(sources)
+		if err != nil {
+			s.logger.Printf("consumer policy: %v; using defaults", err)
+		} else {
+			set = resolved
+		}
 	}
-	if set, err := settings.Resolve(sources); err != nil {
-		s.logger.Printf("consumer policy: %v; using defaults", err)
-	} else {
+	if set != nil {
 		st.policy = consumerPolicyFrom(set)
 		st.dirs = recipeDirs(set.String("paths.scripts"))
 	}
@@ -106,6 +121,7 @@ func defaultConsumerPolicy() ConsumerPolicy {
 		Disambiguate:        defaults.Disambiguate,
 		DisambiguateDefault: defaults.DisambiguateDefault,
 		ConfirmDestructive:  defaults.ConfirmDestructive,
+		WritePolicy:         defaults.WritePolicy,
 		AskTimeout:          defaults.AskTimeout,
 		DiagnosePreflight:   defaults.DiagnosePreflight,
 		HistoryPerTool:      defaults.HistoryPerTool,
@@ -125,6 +141,7 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.Disambiguate = set.String("elicit.disambiguate")
 	p.DisambiguateDefault = set.String("elicit.disambiguateDefault")
 	p.ConfirmDestructive = set.Bool("elicit.confirmDestructive")
+	p.WritePolicy = set.String("policy.write")
 	p.AskTimeout = set.Duration("elicit.askTimeout")
 	p.DiagnosePreflight = set.Bool("diagnose.preflight")
 	p.HistoryPerTool = set.Int("diagnose.history")
@@ -447,6 +464,150 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
 	}
 	return nil
+}
+
+// ErrWriteDenied is returned when the write policy refuses a call.
+type ErrWriteDenied struct {
+	Tool   string
+	Mode   string
+	Reason string
+}
+
+func (e ErrWriteDenied) Error() string {
+	return fmt.Sprintf("%s was refused by the write policy (mode %s): %s; "+
+		"change policy.write, or this server's writePolicy, to allow it", e.Tool, e.Mode, e.Reason)
+}
+
+// applyWritePolicy is the write policy gate (#1979, Phase 1): before a
+// call, decide from its tool's annotations and the effective mode
+// whether it proceeds, asks, or is refused.
+//
+// The effective mode is the server's own writePolicy when it sets one,
+// else the daemon's policy.write. An empty effective mode -- a zero
+// ConsumerPolicy, as a registry built for a test has -- is treated as
+// allow, so an unconfigured daemon behaves exactly as it did before
+// the gate existed. A non-empty mode that is none of ask, allow or
+// deny is a configuration error and is refused at call time, naming
+// the bad value, rather than silently read as some other mode.
+//
+// The returned asked reports whether this gate already raised the
+// confirmation, so the caller does not ask twice: under ask the policy
+// has asked, and elicit.confirmDestructive's floor is then satisfied;
+// under allow confirmDestructive still runs, which is how the floor
+// reaches a destructive call the policy let through.
+func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
+	mode := r.consumer.WritePolicy
+	// The requested server's VIEW carries the override, never the
+	// pool's creating config: pools are shared between aliases, so
+	// p.Config() holds only the configuration that happened to create
+	// the pool — an alias configured deny could inherit another
+	// alias's allow, and a Reload that changes a view's writePolicy
+	// (pools are preserved across reloads; views are rebuilt) would
+	// never reach the gate.
+	if view, ok := r.View(server); ok && view.WritePolicy != "" {
+		mode = view.WritePolicy
+	}
+	if mode == "" {
+		// Unconfigured (zero-value policy in tests): allow, with no
+		// schema read, so nothing about the call path changes.
+		return false, nil
+	}
+	parsed, ok := policy.ParseMode(mode)
+	if !ok {
+		return false, fmt.Errorf("write policy: invalid mode %q for %s.%s; want ask, allow or deny "+
+			"(set policy.write, or this server's writePolicy)", mode, p.Namespace(), tool)
+	}
+	if parsed == policy.ModeAllow && !r.consumer.ConfirmDestructive {
+		// The common path made cheaper on purpose: allow with no
+		// destructive floor cannot ask or deny anything the evaluator
+		// would reach, and classifying would cost a schema read on
+		// every call for a decision that is already known.
+		return false, nil
+	}
+
+	// Classification needs the tool's annotations, fetched the way
+	// confirmDestructive fetches them: from the cache, or read now --
+	// failing closed if they cannot be read, because deciding from an
+	// empty list would let a write through unasked.
+	// Freshness matters as much as presence: an expired cache (a
+	// modern upstream's ttlMs deadline, or a disk seed past its
+	// deadline) can carry annotations the tool no longer has — a
+	// cached read-only hint on a now-writable tool would sail past
+	// ask and deny alike. Refresh first, failing closed on error:
+	// RefreshSchemas returns the error instead of serving the stale
+	// catalogue, and deciding from stale annotations is exactly the
+	// fail-open this gate exists to prevent.
+	all, _, at := p.CachedSchemas()
+	if at.IsZero() || p.SchemaExpired() {
+		fresh, _, err := p.RefreshSchemas(ctx)
+		if err != nil {
+			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
+				Reason: "write policy: its annotations could not be read: " + err.Error()}
+		}
+		all = fresh
+	}
+	// A tool the schemas do not name is treated as unannotated, which
+	// the specification's defaults read as a possibly destructive
+	// write -- the conservative answer, not an exemption.
+	class := policy.Classify(nil)
+	for i := range all {
+		if all[i].Name == tool {
+			class = policy.Classify(all[i].Annotations)
+			break
+		}
+	}
+
+	decision := policy.Evaluator{}.Evaluate(policy.Input{
+		Mode:                    parsed,
+		Classification:          class,
+		ConfirmDestructiveFloor: r.consumer.ConfirmDestructive,
+	})
+	path := p.Namespace() + "." + tool
+	switch decision.Kind {
+	case policy.DecideDeny:
+		return false, ErrWriteDenied{Tool: path, Mode: string(parsed), Reason: decision.Reason}
+	case policy.DecideAsk:
+		if r.consumer.ConfirmDestructive && parsed == policy.ModeAllow {
+			// This ask is the floor's, and confirmDestructive is the
+			// code that has always raised it, with its annotation
+			// trust rules (#2191) unchanged. Defer to it rather than
+			// asking here in a second, subtly different way.
+			return false, nil
+		}
+		if r.broker == nil {
+			return false, ErrNotConfirmed{Tool: path,
+				Reason: "write policy is ask but there is no question broker to answer it; " +
+					"set policy.write to allow or deny, or run a caller that can answer questions"}
+		}
+		req := elicit.Confirmation(elicit.Ask{
+			Server:  p.Name(),
+			Tool:    tool,
+			Session: cc.SessionID,
+			Message: fmt.Sprintf("%s.%s is a write call and policy.write is ask. Exact call: %s(%s). Let this call proceed?",
+				p.Namespace(), tool, path, policy.CanonicalArgs(args)),
+			Default: "false",
+			TTL:     r.consumer.AskTimeout,
+		})
+		opened, err := r.broker.OpenRequest(req)
+		if err != nil {
+			return false, err
+		}
+		r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(elicitEventSummary(opened))})
+
+		actx, cancel := context.WithTimeout(ctx, r.consumer.AskTimeout)
+		defer cancel()
+		ans, aerr := r.broker.Await(actx, opened.ID)
+		if aerr != nil {
+			return false, ErrNotConfirmed{Tool: path,
+				Reason: "nobody answered within " + r.consumer.AskTimeout.String()}
+		}
+		if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
+			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // annotationClearsCall reports whether a tool's annotations may clear
