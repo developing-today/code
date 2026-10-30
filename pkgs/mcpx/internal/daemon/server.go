@@ -1074,7 +1074,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	dur := time.Since(start).Truncate(time.Millisecond)
-	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, err)
+	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, res, err)
 
 	toolKey := req.Server + ":" + req.Tool
 	var inBytes, outBytes []byte
@@ -1603,18 +1603,41 @@ func (s *Server) callRegistry() *execsvc.CallRegistry {
 // any, that the call happened: a call frame with the tool's resolved
 // destructiveHint. A call with no run id, or a run this daemon is not
 // executing, has no stream to join and is not reported.
-func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args any, start time.Time, callErr error) {
+func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args any, start time.Time, res json.RawMessage, callErr error) {
 	run := runFrom(ctx)
 	if run == "" {
 		return
 	}
+	// A tool that ran and returned isError failed, even though the
+	// transport call itself succeeded: the frame must say so, the way
+	// the path-per-tool handler already does with resultFailed.
+	if callErr == nil && resultFailed(res) {
+		callErr = errors.New("tool returned an error result (isError)")
+	}
 	var dh *bool
-	for _, t := range s.reg.Tools([]string{server}) {
-		if t.Tool == tool {
-			d := destructiveHint(t.Annotations)
-			dh = &d
+	tools := s.reg.Tools([]string{server})
+	// Dispatch resolves an exact server name before a namespace
+	// (Registry.Pool), so the annotations must be picked the same way:
+	// a server whose namespace equals another server's name must not
+	// lend its annotations to that server's calls.
+	var picked *ToolInfo
+	for i := range tools {
+		if tools[i].Tool == tool && tools[i].Server == server {
+			picked = &tools[i]
 			break
 		}
+	}
+	if picked == nil {
+		for i := range tools {
+			if tools[i].Tool == tool && tools[i].Namespace == server {
+				picked = &tools[i]
+				break
+			}
+		}
+	}
+	if picked != nil {
+		d := destructiveHint(picked.Annotations)
+		dh = &d
 	}
 	s.callRegistry().ReportCall(run, server, tool, args, time.Since(start), callErr, dh)
 }

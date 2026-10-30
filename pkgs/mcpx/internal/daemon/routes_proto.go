@@ -850,7 +850,7 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	callCtx := withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
 	res, err := s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
-	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, err)
+	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
 		return
