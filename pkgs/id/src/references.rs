@@ -87,24 +87,50 @@ pub struct Reference {
 
 impl Reference {
     /// The plain-text/markdown degradation: surface as the text, the ID as the link target.
+    /// The surface's `\`, `[` and `]` are backslash-escaped, so a surface containing markdown
+    /// syntax keeps its text and cannot break out of the label.
     #[must_use]
     pub fn to_markdown(&self) -> String {
-        format!("[{}](id://{})", self.surface, self.target_id.to_hex())
+        let mut escaped = String::with_capacity(self.surface.len());
+        for chr in self.surface.chars() {
+            if matches!(chr, '\\' | '[' | ']') {
+                escaped.push('\\');
+            }
+            escaped.push(chr);
+        }
+        format!("[{escaped}](id://{})", self.target_id.to_hex())
     }
 
-    /// Parses the degradation written by [`Reference::to_markdown`]. The sigil and author are
-    /// not carried by the degradation, so the caller names the sigil and the author defaults
-    /// to zeroes; the ID and surface — the meaning and the label — round-trip exactly.
+    /// Parses the degradation written by [`Reference::to_markdown`], undoing its escapes. The
+    /// sigil and author are not carried by the degradation, so the caller names the sigil and
+    /// the author defaults to zeroes; the ID and surface — the meaning and the label —
+    /// round-trip exactly, whatever the surface contains.
     #[must_use]
     pub fn from_markdown(text: &str, sigil: Sigil) -> Option<Self> {
-        let inner = text.strip_prefix('[')?;
-        let (surface, rest) = inner.split_once("](id://")?;
-        let hex = rest.strip_suffix(')')?;
+        let mut surface = String::new();
+        let mut chars = text.strip_prefix('[')?.chars().peekable();
+        // Consume the label up to the first unescaped "](id://" delimiter.
+        let hex = loop {
+            match chars.next()? {
+                '\\' => {
+                    let next = chars.next()?;
+                    if !matches!(next, '\\' | '[' | ']') {
+                        return None;
+                    }
+                    surface.push(next);
+                }
+                ']' if chars.next() == Some('(') => {
+                    let rest: String = chars.collect();
+                    break rest.strip_prefix("id://")?.strip_suffix(')')?;
+                }
+                chr => surface.push(chr),
+            }
+        };
         let target_id = hex.parse::<Hash>().ok()?;
         Some(Self {
             target_id,
             sigil,
-            surface: surface.to_owned(),
+            surface,
             locator_hints: Vec::new(),
             author_context: [0; 32],
         })
@@ -332,12 +358,15 @@ impl LocalIndex {
         true
     }
 
-    /// How many distinct targets claim `surface` as a title or alias (case-folded). Two or
-    /// more means the surface is contested.
-    fn claimants(&self, surface: &str) -> usize {
+    /// How many distinct targets **of the requested sigil** claim `surface` as a title or
+    /// alias (case-folded). Two or more means the surface is contested for that sigil. An
+    /// actor and a topic sharing a title never contest each other: they answer different
+    /// sigils, so neither is a competing target for the other's resolution.
+    fn claimants(&self, sigil: Sigil, surface: &str) -> usize {
         let folded = fold(surface);
         self.objects
             .iter()
+            .filter(|object| object.kind == sigil)
             .filter(|object| {
                 fold(&object.title) == folded
                     || object
@@ -378,7 +407,7 @@ impl LocalIndex {
     /// The best (lowest-tier) match of one object against the folded phrase, if it matches.
     fn best_match(&self, object: &IndexedObject, sigil: Sigil, folded: &str) -> Option<Candidate> {
         let claim_state = |surface: &str| {
-            if self.claimants(surface) > 1 {
+            if self.claimants(sigil, surface) > 1 {
                 ClaimState::Contested
             } else {
                 ClaimState::Uncontested
@@ -423,10 +452,17 @@ impl LocalIndex {
             let state = claim_state(&object.title);
             return Some(candidate(MatchKind::ExactTitle, object.current_label().to_owned(), object.author, state));
         }
-        // Tier 3: prefix, then token, then full-text.
-        let mut names = vec![object.title.as_str()];
-        names.extend(object.alias_claims.iter().map(|claim| claim.text.as_str()));
-        if names.iter().any(|name| fold(name).starts_with(folded)) {
+        // Tier 3: prefix, then token, then full-text. A prefix that matches an alias claim
+        // keeps that claim's author as provenance — the claim, not the object, is what the
+        // author is evaluating.
+        if let Some(claim) = object
+            .alias_claims
+            .iter()
+            .find(|claim| fold(&claim.text).starts_with(folded))
+        {
+            return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), claim.author, ClaimState::Uncontested));
+        }
+        if fold(&object.title).starts_with(folded) {
             return Some(candidate(MatchKind::Prefix, object.current_label().to_owned(), object.author, ClaimState::Uncontested));
         }
         if object.title.split_whitespace().any(|word| fold(word.trim_matches(|chr: char| !chr.is_alphanumeric())) == folded) {
@@ -755,5 +791,54 @@ mod tests {
         assert_eq!(parse_typed("@ann"), Some((Sigil::Actor, "ann")));
         assert_eq!(parse_typed("#atlas"), Some((Sigil::Topic, "atlas")));
         assert_eq!(parse_typed("ann"), None);
+    }
+
+    #[test]
+    fn a_title_shared_across_sigils_is_not_contested() {
+        // Codex finding on PR 2756: claimants must be scoped to the requested sigil.
+        let index = index_with(vec![
+            object(b"a", Sigil::Actor, "Atlas", vec![], 1),
+            object(b"t", Sigil::Topic, "Atlas", vec![], 1),
+        ]);
+        let actor = index.resolve(Sigil::Actor, "atlas");
+        assert!(!actor.is_contested());
+        assert!(actor.single().is_some());
+        assert!(index
+            .insert_unambiguous(Sigil::Actor, "atlas", author(9))
+            .is_ok());
+        assert!(index
+            .insert_unambiguous(Sigil::Topic, "atlas", author(9))
+            .is_ok());
+    }
+
+    #[test]
+    fn markdown_round_trips_a_surface_containing_markdown_syntax() {
+        // Codex finding on PR 2756: the degradation must escape the surface.
+        let reference = Reference {
+            target_id: Hash::digest(b"target"),
+            sigil: Sigil::Topic,
+            surface: "Plan ](id://draft)".to_owned(),
+            locator_hints: vec![StoreId::local()],
+            author_context: author(3),
+        };
+        let parsed = Reference::from_markdown(&reference.to_markdown(), Sigil::Topic).unwrap();
+        assert_eq!(parsed.target_id, reference.target_id);
+        assert_eq!(parsed.surface, reference.surface);
+    }
+
+    #[test]
+    fn a_prefix_match_on_an_alias_keeps_the_claim_author() {
+        // Codex finding on PR 2756: provenance follows the matched claim, not the object.
+        let index = index_with(vec![object(
+            b"o",
+            Sigil::Topic,
+            "Field Notes",
+            vec![("atlas", 2)],
+            1,
+        )]);
+        let resolution = index.resolve(Sigil::Topic, "atl");
+        assert_eq!(resolution.candidates.len(), 1);
+        assert_eq!(resolution.candidates[0].match_kind, MatchKind::Prefix);
+        assert_eq!(resolution.candidates[0].provenance.author, author(2));
     }
 }
