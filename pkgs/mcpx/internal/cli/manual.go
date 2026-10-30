@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -636,6 +638,24 @@ func handCommands() []Command {
 	}
 }
 
+// manDateFallback is stamped into the man page when SOURCE_DATE_EPOCH is
+// unset. A wall-clock date would make two builds of the same source differ,
+// so the page carries a fixed date instead; bump it with a release.
+const manDateFallback = "2026-10-30"
+
+// manDate is the date in the man page header. SOURCE_DATE_EPOCH
+// (https://reproducible-builds.org/specs/source-date-epoch/) wins when it is
+// set and parseable, which is how a pinned Nix build reproduces the page byte
+// for byte; otherwise the fixed fallback is used, never the clock.
+func manDate() string {
+	if raw := os.Getenv("SOURCE_DATE_EPOCH"); raw != "" {
+		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return time.Unix(secs, 0).UTC().Format("2006-01-02")
+		}
+	}
+	return manDateFallback
+}
+
 // ManPage renders a roff man page.
 //
 // Generated from the same command table and setting registry the program
@@ -644,7 +664,7 @@ func handCommands() []Command {
 // wrong only if the code is.
 func ManPage(version string) string {
 	var b strings.Builder
-	date := time.Now().UTC().Format("2006-01-02")
+	date := manDate()
 
 	fmt.Fprintf(&b, ".TH MCPX 1 %q %q \"mcpx manual\"\n", date, "mcpx "+version)
 	b.WriteString(".SH NAME\nmcpx \\- expose MCP servers to the shell\n")
