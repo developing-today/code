@@ -40,9 +40,8 @@ throughput. The escalation ladder is:
 1. **Partition by topic/channel inside the world** — own journal
    segment per topic; the world keeps one identity and membership.
 2. **Partition by region** into sibling shard-worlds under a thin
-   coordinator — the only rung that raises both the req/s ceiling and
-   the per-object storage cap; cross-region atomicity explicitly does
-   not exist.
+   coordinator — raises aggregate req/s and aggregate storage across
+   objects; cross-region atomicity explicitly does not exist.
 3. **Spill execution to native nodes** under a journaled single-writer
    lease — for indivisible load that stays critical after rungs 0–2;
    temporary per world, never the default hosting shape.
@@ -71,8 +70,10 @@ From #2044 (Cloudflare Durable Objects limits/pricing, cited there):
 - **Rows written are the scarce currency** ($1.00/M written vs
   $0.001/M read): a journaled event per input is the cost driver, not
   the read fan-out.
-- **10 GB storage cap per object** — the second ceiling, which only
-  rung 2 raises.
+- **10 GB storage cap per object** — the second ceiling. No strategy
+  raises the per-object limit itself; partitioning (rungs 1–2)
+  raises *aggregate* capacity when the data actually partitions
+  across objects.
 
 The native side has the same shape of wall at a different height: the
 native `WorldActor` is also serial per world, and every journal append
@@ -96,12 +97,19 @@ snapshot — both filed as follow-on
 | Signal | Healthy | Warning | Critical | What it diagnoses |
 | --- | --- | --- | --- | --- |
 | Sustained command rate vs ceiling | < 40% | 40–70% for 10 min | > 70% for 10 min, or any "overloaded" errors | Approaching the DO soft cap / native actor saturation |
-| `actor_queue_depth_max` trend | ~0–few | Growing across snapshots | Monotonic growth over 3+ snapshots | Arrival rate > service rate — the definition of hot; queueing, not CPU, is the pain |
-| `command_latency` p95 | < 10 ms bucket | 10–50 ms | > 50 ms, mass in overflow bucket (> 1 s) | Per-command cost (the world program's turn) too heavy — sharding won't fix a slow program; profiling will |
+| Sampled `actor_queue_depth` trend | ~0–few | Growing across snapshots | Monotonic growth over 3+ snapshots | Arrival rate > service rate — the definition of hot; queueing, not CPU, is the pain |
+| `command_latency` p95 | < 10 ms bucket | 10–50 ms | > 50 ms, mass in overflow bucket (> 1 s) | End-to-end handler cost too heavy — but this metric times the whole command handler, journal persistence included (`actor.rs`: `record_command` wraps `handle`), so it cannot by itself separate a slow program from slow storage. Call it a slow *program* only with corroboration (journal latency healthy, or dedicated program-execution timing); uncorroborated, treat it as storage-bound (next row) |
 | `journal_append_latency` p95 | < 2 ms | 2–10 ms | > 10 ms | Storage/fsync bound (native) or row-write contention (hosted) — journal batching/checkpoint tuning before sharding |
 | `checkpoint_duration` vs interval | < 5% of interval | 5–25% | > 25% | Journal too large between checkpoints (`checkpoint_every: 1000` default); raise checkpoint frequency / snapshot size before structural change |
 | `sessions` + `frame_bytes_total` growth | — | Fan-out bytes growing faster than command rate | Egress/frame cost dominates | Read fan-out problem, not a write problem — rung 0/4, not journal sharding |
 | Write locality (NEW: needs a counter, #2275) | One topic/region > 60% of writes | — | — | Whether partition-by-topic/region can actually split the load; a world whose writes are all one topic cannot be topic-sharded |
+
+**One signal caveat:** `actor_queue_depth_max` is a lifetime
+high-water mark — `record_queue_depth` uses `fetch_max` and snapshots
+never reset it — so it can prove a burst *happened* but cannot show
+growth or recovery inside a window. The queue-depth trigger above
+therefore uses sampled `actor_queue_depth`; computing a windowed
+maximum is part of what #2275's detector must add.
 
 **Trigger discipline:** act only on **sustained** signals (10-minute
 windows, 3+ snapshots), never on a spike — worlds are bursty by nature
@@ -164,9 +172,13 @@ at the seam is accepted and visible.
   (participants cluster; cross-region interactions < ~10% of writes).
 - *Consistency cost:* medium — seams are real: cross-region atomicity
   does not exist, and the design must say so rather than fake it.
-- *Platform note:* regions spread both the ~1,000 req/s cap and the
-  10 GB/object storage cap independently — the only rung that raises
-  both ceilings (§1).
+- *Platform note:* regions spread load across independently capped
+  objects, raising aggregate req/s and aggregate storage (no
+  per-object limit changes). Topic partitioning (rung 1) does the
+  same for storage *if* its hosted mapping is separate DOs per
+  topic rather than segmented tables in one DO — the mapping §8
+  leaves open — so a storage-bound non-spatial world is a rung-1
+  candidate, not automatically a rung-2 one.
 
 ### Rung 3 — Spill execution to native nodes
 
@@ -179,8 +191,10 @@ signatures are transport-independent, so the trust model survives.
 
 - *Trigger:* a single indivisible topic/region stays critical after
   rungs 0–2 (the locality check fails: the load cannot be
-  partitioned), **or** `command_latency` shows the world program
-  itself needs native CPU/Wasm headroom the isolate can't give.
+  partitioned), **or** corroborated program-execution cost (§2's
+  caveat: raw `command_latency` alone does not show this) proves
+  the world program itself needs native CPU/Wasm headroom the
+  isolate can't give.
 - *Consistency cost:* medium-high — one writer at a time must be
   enforced by a journaled lease/handoff; split-brain (DO and native
   node both accepting writes) is the catastrophic failure, and the
@@ -210,8 +224,8 @@ the parent consumes their settled events and serves reads.
 | Strategy | Raises which ceiling? | Ordering guarantee after | Atomicity after | Is it still one world? | Trigger (sustained) |
 | --- | --- | --- | --- | --- | --- |
 | 0 — Shed non-actor load | Effective (fewer actor commands) | Unchanged: one journal, total order | Unchanged | Yes, trivially | Any warning-band signal |
-| 1 — Topic partition | Req/s (per topic) | Total within a topic; none across topics | Cross-topic ops via journaled coordinator writes, not transactions | Yes — one identity, membership, capability root; partitioned journal | Critical rate/queue + no topic > ~60% of writes |
-| 2 — Region shards | Req/s **and** 10 GB storage | Total within a region; none across regions | None across regions; export/import handoff at seams | Federated — sibling worlds under one coordinator; membership/region map stay in the coordinator | Critical + spatial locality, cross-region writes < ~10% |
+| 1 — Topic partition | Req/s (per topic); aggregate storage too, under the separate-DO mapping (§8) | Total within a topic; none across topics | Cross-topic ops via journaled coordinator writes, not transactions | Yes — one identity, membership, capability root; partitioned journal | Critical rate/queue + no topic > ~60% of writes |
+| 2 — Region shards | Req/s **and** aggregate storage | Total within a region; none across regions | None across regions; export/import handoff at seams | Federated — sibling worlds under one coordinator; membership/region map stay in the coordinator | Critical + spatial locality, cross-region writes < ~10% |
 | 3 — Native spill | Req/s and CPU (native headroom) | Unchanged *if* the lease holds: still one writer | Unchanged under the lease | Yes — execution moved, journal and identity did not | Indivisible load critical after 0–2, or program needs native headroom |
 | 4 — Hierarchy | Read fan-out only | Unchanged (children untouched) | Unchanged | Yes — parent is a derived view, not a writer | Read fan-out critical, write signals healthy |
 
@@ -236,12 +250,18 @@ world stay one world?" (§4, last column) is really a journal question:
   is one world *socially* (one name, one membership) and several
   worlds *mechanically*. Designs and UIs must not paper over the
   seam: an entity mid-handoff is in transit, visibly.
-- **De-escalation is a journal problem too.** Re-merging shards is
-  journal concatenation + replay; whether that is worth building is
-  an open question for #2046 (§6). If it is not built, the honest
-  statement is that rungs 1–2 are one-way doors taken only on
-  sustained signals — another reason for the trigger discipline in
-  §2.
+- **De-escalation is a state problem, not a journal trick.**
+  Re-merging shards is *not* journal concatenation + replay:
+  `WorldCore::restore` (`src/world/core.rs`) validates a single
+  world identity and rejects a second `Created` header, and
+  independently compacted shards have independently allocated
+  participant IDs, sequences, and program snapshots to reconcile.
+  A re-merge needs its own state-import/reconciliation design
+  (export one shard's state as an import into the survivor, with
+  ID/sequence remapping), which does not exist today. Until that
+  design exists — an open question for #2046 (§8) — rungs 1–2 are
+  one-way doors taken only on sustained signals: another reason
+  for the trigger discipline in §2.
 
 **Explicitly rejected: splitting one journal across DOs with a
 multi-writer merge protocol (CRDT journal).** It destroys the
@@ -293,9 +313,11 @@ handed off, not decided here:
   sharing one world-name prefix vs one DO with segmented SQLite
   tables — the 10 GB and req/s caps argue for separate DOs;
   membership/capability sharing argues the other way.
-- **Shard re-merge / de-escalation mechanics** (§5): build the
-  journal concatenation + replay path, or declare rungs 1–2 one-way
-  and price that into the trigger thresholds.
+- **Shard re-merge / de-escalation mechanics** (§5): design a
+  state-import/reconciliation path (journal concatenation + replay
+  is not one — `WorldCore::restore` rejects a second `Created`
+  header), or declare rungs 1–2 one-way and price that into the
+  trigger thresholds.
 - **Threshold defaults:** §2's bands are investigation-grade starting
   points from the wave-1 pass; the synthesis should confirm them
   against #2275's detector implementation experience before they
