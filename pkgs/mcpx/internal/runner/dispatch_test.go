@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
+
+	"github.com/dezren39/mcpx/internal/codegen"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +32,88 @@ func TestParseShebang(t *testing.T) {
 		if ok != tc.ok || strings.Join(got, " ") != strings.Join(tc.want, " ") {
 			t.Errorf("ParseShebang(%q) = %v, %v; want %v, %v", tc.line, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+func TestParseShebangEnvAssignments(t *testing.T) {
+	tokens, env, ok := ParseShebangEnv("#!/usr/bin/env -S MODE=prod sh")
+	if !ok || strings.Join(tokens, " ") != "sh" || strings.Join(env, " ") != "MODE=prod" {
+		t.Errorf("ParseShebangEnv = %v, %v, %v; want [sh], [MODE=prod], true", tokens, env, ok)
+	}
+	tokens, env, ok = ParseShebangEnv("#!/usr/bin/env FOO=1 BAR=two python3 -u")
+	if !ok || strings.Join(tokens, " ") != "python3 -u" || strings.Join(env, " ") != "FOO=1 BAR=two" {
+		t.Errorf("ParseShebangEnv = %v, %v, %v; want [python3 -u], [FOO=1 BAR=two], true", tokens, env, ok)
+	}
+	// A non-env shebang has no assignments to preserve.
+	_, env, _ = ParseShebangEnv("#!/bin/sh")
+	if len(env) != 0 {
+		t.Errorf("env = %v, want none", env)
+	}
+}
+
+func TestRunEnvShebangAssignmentsReachTheScript(t *testing.T) {
+	dir := t.TempDir()
+	f := writeScript(t, dir, "mode.sh",
+		"#!/usr/bin/env -S MODE=prod sh\necho \"mode=$MODE\"\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(stdout.String(), "mode=prod") {
+		t.Errorf("res=%+v stdout=%q; the shebang's MODE=prod assignment must reach the script", res, stdout.String())
+	}
+}
+
+func TestDecideDispatchJSRuntimeShebang(t *testing.T) {
+	// A plain JavaScript-runtime shebang must NOT divert to raw
+	// dispatch: the harness runs it, under the shebang's runtime.
+	d, jsRuntime, err := decideDispatch(Options{Source: "#!/usr/bin/env node\nexport default () => 1\n"})
+	if err != nil || d != nil || jsRuntime != "node" {
+		t.Errorf("decideDispatch(node shebang) = %v, %q, %v; want nil, \"node\", nil", d, jsRuntime, err)
+	}
+	// A JavaScript shebang with extra arguments keeps raw dispatch:
+	// the arguments are part of the named command.
+	d, jsRuntime, err = decideDispatch(Options{Source: "#!/usr/bin/env -S node --inspect main.ts\n"})
+	if err != nil || d == nil || jsRuntime != "" {
+		t.Errorf("decideDispatch(node --inspect) = %v, %q, %v; want a dispatch, \"\", nil", d, jsRuntime, err)
+	}
+	// A non-JavaScript shebang dispatches as before.
+	d, jsRuntime, err = decideDispatch(Options{Source: "#!/bin/sh\necho hi\n"})
+	if err != nil || d == nil || jsRuntime != "" {
+		t.Errorf("decideDispatch(sh) = %v, %q, %v; want a dispatch, \"\", nil", d, jsRuntime, err)
+	}
+}
+
+func TestRunJSRuntimeShebangKeepsHarness(t *testing.T) {
+	// The Codex finding on PR #2611, end to end: a Node .mjs file whose
+	// shebang names node must still go through the generated launcher,
+	// so its default export is called and its return value printed --
+	// raw dispatch ran the file as a plain script and produced neither.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	dir := t.TempDir()
+	f := writeScript(t, dir, "main.mjs",
+		"#!/usr/bin/env node\nexport default () => \"expected-result\"\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Stdout: &stdout, Stderr: &stderr,
+		// The launcher imports the generated client; an empty one does
+		// not export what it names, which is a failure of the fixture,
+		// not of the run.
+		ClientSource: codegen.Module(nil, "", ""),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v (stderr %q)", err, stderr.String())
+	}
+	if res.ExitCode != 0 || !strings.Contains(stdout.String(), "expected-result") {
+		t.Errorf("res=%+v stdout=%q stderr=%q; the harness must call the default export and print its result", res, stdout.String(), stderr.String())
+	}
+	if res.Runtime != "node" {
+		t.Errorf("Runtime = %q, want node (the shebang's choice)", res.Runtime)
 	}
 }
 

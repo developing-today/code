@@ -7,7 +7,12 @@
 //     verbatim. A shebang is an instruction inside the program itself, so
 //     it beats every configuration surface -- including script.runtime:
 //     a file that names its own interpreter is not overridden by a
-//     machine-wide preference for a different one.
+//     machine-wide preference for a different one. One exception: a
+//     shebang naming a JavaScript runtime (deno, bun, node, or a
+//     declared runtime) with no extra arguments goes through the
+//     harness with that runtime, because raw dispatch would skip the
+//     generated launcher and the script's default export would never
+//     be called.
 //  2. script.interpreter: a configured command line, with the script
 //     path appended.
 //  3. script.language / file extension: RESERVED for #1917. Nothing
@@ -84,35 +89,68 @@ func ResolveCwd(policy, callerDir, scriptPath, configDir, workDir string) (strin
 type dispatch struct {
 	bin    string
 	args   []string
-	name   string // interpreter name reported as the run's runtime
-	source string // "shebang" or "interpreter"
+	env    []string // VAR=value assignments an env shebang carried
+	name   string   // interpreter name reported as the run's runtime
+	source string   // "shebang" or "interpreter"
 }
 
 // ParseShebang splits a #! line into the interpreter command it names.
 // The /usr/bin/env form is unwrapped the way the kernel cannot: env's
-// own flags (-S, -i) and VAR=value assignments are consumed, and what
-// remains is the command. ok is false when the line is not a shebang.
+// own flags (-S, -i) are consumed, and what remains is the command. ok
+// is false when the line is not a shebang.
 func ParseShebang(line string) (tokens []string, ok bool) {
+	tokens, _, ok = ParseShebangEnv(line)
+	return tokens, ok
+}
+
+// ParseShebangEnv is ParseShebang that also returns the VAR=value
+// assignments an env shebang carried (#!/usr/bin/env MODE=prod sh).
+// env(1) would set them for the command it runs; dropping them would
+// run the script under a different environment than its own first line
+// specifies, silently, so the dispatch carries them into the child
+// environment instead.
+func ParseShebangEnv(line string) (tokens []string, env []string, ok bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if !strings.HasPrefix(line, "#!") {
-		return nil, false
+		return nil, nil, false
 	}
 	fields := strings.Fields(strings.TrimSpace(line[2:]))
 	if len(fields) == 0 {
-		return nil, true
+		return nil, nil, true
 	}
 	if filepath.Base(fields[0]) == "env" {
 		fields = fields[1:]
 		for len(fields) > 0 {
 			f := fields[0]
-			if strings.HasPrefix(f, "-") || (strings.Contains(f, "=") && !strings.Contains(f, "/")) {
+			if strings.HasPrefix(f, "-") {
+				fields = fields[1:]
+				continue
+			}
+			if strings.Contains(f, "=") && !strings.Contains(f, "/") {
+				env = append(env, f)
 				fields = fields[1:]
 				continue
 			}
 			break
 		}
 	}
-	return fields, true
+	return fields, env, true
+}
+
+// isJSRuntimeName reports whether a shebang's command names a
+// JavaScript runtime mcpx can drive through the harness: a known kind
+// (deno, bun, node), by name or by path, or a name declared under
+// script.runtimes.
+func isJSRuntimeName(setup Setup, name string) bool {
+	if _, ok := setup.Runtimes[name]; ok {
+		return true
+	}
+	base := filepath.Base(name)
+	if _, ok := setup.Runtimes[base]; ok {
+		return true
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	return knownKind(strings.ToLower(stem))
 }
 
 // SplitCommandLine splits a configured command line (script.interpreter)
@@ -186,8 +224,20 @@ func fileFirstLine(path string) (string, error) {
 }
 
 // decideDispatch applies ranks 1 and 2 of the dispatch order. A nil
-// dispatch means the run falls through to the TypeScript runtime.
-func decideDispatch(opts Options) (*dispatch, error) {
+// dispatch means the run falls through to the TypeScript runtime; the
+// second return value then names the runtime a JavaScript shebang
+// chose, so the harness honours the shebang's choice instead of the
+// configured preference.
+//
+// A shebang naming a JavaScript runtime, with no extra arguments, is
+// that exception: raw dispatch would bypass the generated launcher, so
+// a script whose default export is the program would run without its
+// entry point ever being called (the pkgs/mcpx/AGENTS.md script
+// contract). The harness path below keeps the contract and takes the
+// shebang's runtime as its preference. A JavaScript shebang WITH extra
+// arguments keeps raw dispatch: the arguments are part of the command
+// the file names, and the harness has nowhere to put them.
+func decideDispatch(opts Options) (*dispatch, string, error) {
 	first := ""
 	if opts.Source != "" {
 		first = firstLineOf(opts.Source)
@@ -199,23 +249,35 @@ func decideDispatch(opts Options) (*dispatch, error) {
 			first = l
 		}
 	}
-	if tokens, ok := ParseShebang(first); ok {
+	if tokens, env, ok := ParseShebangEnv(first); ok {
 		if len(tokens) == 0 {
-			return nil, errors.New("runner: the script's shebang line (#!) names no interpreter")
+			return nil, "", errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
-		return dispatchFromTokens("shebang", tokens)
+		if len(tokens) == 1 && isJSRuntimeName(opts.Setup, tokens[0]) {
+			return nil, tokens[0], nil
+		}
+		d, err := dispatchFromTokens("shebang", tokens)
+		if err != nil {
+			return nil, "", err
+		}
+		d.env = env
+		return d, "", nil
 	}
 	if strings.TrimSpace(opts.Interpreter) != "" {
 		tokens, err := SplitCommandLine(opts.Interpreter)
 		if err != nil {
-			return nil, fmt.Errorf("runner: script.interpreter: %w", err)
+			return nil, "", fmt.Errorf("runner: script.interpreter: %w", err)
 		}
 		if len(tokens) == 0 {
-			return nil, errors.New("runner: script.interpreter is set but names no command")
+			return nil, "", errors.New("runner: script.interpreter is set but names no command")
 		}
-		return dispatchFromTokens("interpreter", tokens)
+		d, err := dispatchFromTokens("interpreter", tokens)
+		if err != nil {
+			return nil, "", err
+		}
+		return d, "", nil
 	}
-	return nil, nil
+	return nil, "", nil
 }
 
 func dispatchFromTokens(source string, tokens []string) (*dispatch, error) {
@@ -297,7 +359,11 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	args = append(args, opts.Args...)
 	cmd := exec.Command(d.bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "MCPX_RUNTIME="+d.name, "MCPX_ENTRY="+scriptPath, "MCPX_DISPATCH="+d.source)
+	// The shebang's own VAR=value assignments come first of the
+	// additions: env(1) would have set them, and the MCPX_* variables
+	// after them win any collision, as the run's own contract should.
+	cmd.Env = append(os.Environ(), d.env...)
+	cmd.Env = append(cmd.Env, "MCPX_RUNTIME="+d.name, "MCPX_ENTRY="+scriptPath, "MCPX_DISPATCH="+d.source)
 	for k, v := range opts.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

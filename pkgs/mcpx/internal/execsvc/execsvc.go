@@ -104,7 +104,13 @@ type Options struct {
 	// Interpreter is the script.interpreter command line for this run;
 	// empty takes the service's configured one. A shebang in the source
 	// or file beats it, as it beats every configuration surface.
-	Interpreter  string            `json:"interpreter,omitempty"`
+	Interpreter string `json:"interpreter,omitempty"`
+	// CwdPolicy is the caller's script.cwd policy for this run; empty
+	// takes the service's configured one. The CLI resolves its own set
+	// (flag aliases, env, config) and forwards the result, so a remote
+	// run honours the caller's policy instead of silently substituting
+	// the daemon's.
+	CwdPolicy    string            `json:"cwdPolicy,omitempty"`
 	Timeout      string            `json:"timeout,omitempty"`
 	Permissions  string            `json:"permissions,omitempty"`
 	Placeholders map[string]any    `json:"placeholders,omitempty"`
@@ -385,7 +391,7 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		WorkRoot:       s.WorkRoot,
 		Runtime:        firstNonEmpty(opts.Runtime, s.Limits.Runtime),
 		Interpreter:    firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
-		CwdPolicy:      s.Limits.CwdPolicy,
+		CwdPolicy:      firstNonEmpty(opts.CwdPolicy, s.Limits.CwdPolicy),
 		ConfigDir:      s.ConfigDir,
 		Setup:          s.Limits.Setup,
 		Timeout:        timeout,

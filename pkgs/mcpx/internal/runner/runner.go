@@ -178,10 +178,14 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// runs the script under that interpreter, before any JavaScript
 	// runtime is considered. Rank 3 (language/extension) is reserved
 	// for #1917; rank 4 is everything below, unchanged.
-	if d, derr := decideDispatch(opts); derr != nil {
+	if d, jsRuntime, derr := decideDispatch(opts); derr != nil {
 		return nil, derr
 	} else if d != nil {
 		return runDispatched(ctx, opts, d)
+	} else if jsRuntime != "" {
+		// A JavaScript shebang chose this runtime (rank 1); the harness
+		// below runs under it instead of the configured preference.
+		opts.Runtime = jsRuntime
 	}
 	rt, err := Resolve(opts.Runtime, opts.Permissions, opts.Setup)
 	if err != nil {

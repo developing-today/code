@@ -186,11 +186,21 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
+	// script.cwd=config resolves against the directory holding the
+	// configuration this daemon loaded -- the same cfg.Path the info
+	// file and the resolve route report. Without it every /v1/exec run
+	// under that policy fails in ResolveCwd before the script starts.
+	configDir := ""
+	if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
+		configDir = filepath.Dir(cfg.Path)
+	}
+
 	return &execsvc.Service{
-		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
-		Store:    store,
-		Endpoint: s.endpoint,
-		Socket:   s.paths.Socket,
+		Src:       registrySource{reg: s.reg, endpoint: s.endpoint},
+		Store:     store,
+		Endpoint:  s.endpoint,
+		Socket:    s.paths.Socket,
+		ConfigDir: configDir,
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
