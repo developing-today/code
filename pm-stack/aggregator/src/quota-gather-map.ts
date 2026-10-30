@@ -227,18 +227,29 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
 }
 
 /**
- * Snapshot records for one tick: a pct record per window whose VALUE
- * changed since the gatherer last appended it (the state map is
- * serviceId|metricId -> value), so the store gains a point when a
- * reading moves, not every 15 minutes. The stamp is the value alone:
- * several providers recompute the reset instant from a duration on
- * every fetch (sub-second drift, or "now + window" for idle 5h
- * windows), so keying on resetsAt would append noise points for
- * readings that did not move. A window roll still shows up — as the
- * value change it causes. The record itself carries the current
+ * Snapshot records for one tick: ONE pct record per serviceId|window
+ * key whose VALUE changed since the gatherer last appended it (the
+ * state map is serviceId|metricId -> value), so the store gains a
+ * point when a reading moves, not every 15 minutes. The stamp is the
+ * value alone: several providers recompute the reset instant from a
+ * duration on every fetch (sub-second drift, or "now + window" for
+ * idle 5h windows), so keying on resetsAt would append noise points
+ * for readings that did not move. A window roll still shows up — as
+ * the value change it causes. The record itself carries the current
  * resetsAt. Label-only windows (balances) yield no record in v1 —
  * the CNY balance case is #1052's unit work; quota-current still
  * carries the label.
+ *
+ * Pinned rule (#1624): the gatherer emits one entry per credential
+ * but series identity is pool-level (serviceId, metricId), so all
+ * same-tick candidates for one key collapse to a single record —
+ * the max pctOfLimit, tie-broken by lowest credentialId (then
+ * earliest measuredAt/resetsAt, so entry order never matters). The
+ * dedup check reads both the input state map AND this call's
+ * appended map, so two same-tick credentials can never emit two
+ * records for one key. A non-max credential moving while the max is
+ * unchanged therefore appends nothing: the pool-level series did
+ * not move.
  */
 /**
  * Snapshot units for Turso windows whose metric ALSO has a native-unit
@@ -261,6 +272,10 @@ export function recordsFromEntries(
 ): { records: SnapshotRecord[]; appended: Map<string, string> } {
   const records: SnapshotRecord[] = [];
   const appended = new Map<string, string>();
+  // One candidate per pool-level key: the max pct wins, lowest
+  // credentialId breaks ties so the pick is order-independent.
+  const best = new Map<string, { entry: QuotaCurrentEntry; w: QuotaCurrentEntry["windows"][number] }>();
+  const credOf = (e: QuotaCurrentEntry): string => e.credentialId ?? "";
   for (const entry of entries) {
     if (entry.state !== "ok") continue;
     for (const w of entry.windows) {
@@ -286,23 +301,48 @@ export function recordsFromEntries(
       }
       if (w.pctOfLimit == null) continue;
       const key = `${entry.serviceId}|${w.name}`;
-      const stamp = `${w.pctOfLimit}`;
-      if (lastAppended.get(key) === stamp) continue;
-      appended.set(key, stamp);
-      records.push({
-        ts: w.measuredAt,
-        serviceId: entry.serviceId,
-        metricId: w.name,
-        value: w.pctOfLimit,
-        unit: "pct",
-        limit: 100,
-        ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}),
-        // File exports are console reads by another route; module
-        // providers are API reads.
-        source: entry.source.startsWith("file-export") ? "console" : "api",
-        observedBy,
-      });
+      const cur = best.get(key);
+      if (!cur) {
+        best.set(key, { entry, w });
+        continue;
+      }
+      const pct = w.pctOfLimit;
+      const curPct = cur.w.pctOfLimit;
+      if (
+        curPct == null ||
+        pct > curPct ||
+        (pct === curPct &&
+          (credOf(entry) < credOf(cur.entry) ||
+            (credOf(entry) === credOf(cur.entry) &&
+              (w.measuredAt < cur.w.measuredAt ||
+                (w.measuredAt === cur.w.measuredAt && (w.resetsAt ?? "") < (cur.w.resetsAt ?? ""))))))
+      ) {
+        best.set(key, { entry, w });
+      }
     }
+  }
+  // Deterministic emission order regardless of input order.
+  for (const key of [...best.keys()].sort()) {
+    const cand = best.get(key);
+    if (!cand) continue;
+    const { entry, w } = cand;
+    if (w.pctOfLimit == null) continue;
+    const stamp = `${w.pctOfLimit}`;
+    if (lastAppended.get(key) === stamp || appended.get(key) === stamp) continue;
+    appended.set(key, stamp);
+    records.push({
+      ts: w.measuredAt,
+      serviceId: entry.serviceId,
+      metricId: w.name,
+      value: w.pctOfLimit,
+      unit: "pct",
+      limit: 100,
+      ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}),
+      // File exports are console reads by another route; module
+      // providers are API reads.
+      source: entry.source.startsWith("file-export") ? "console" : "api",
+      observedBy,
+    });
   }
   return { records, appended };
 }

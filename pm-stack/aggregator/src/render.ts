@@ -123,6 +123,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -1334,10 +1335,16 @@ export function coverageHtml(coverage: SourceCoverage[]): string {
 }
 
 function itemBadge(item: GhItem): string {
+  // #1141: fixture-resolved state is invented fallback data — render it
+  // hollow (dashed, transparent) and named "unverified" so it can never
+  // be mistaken for a live badge on board/roadmap/item/program pages.
+  const unverified = item.resolution === "fixture";
   const cls = item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed";
   const kind = item.kind === "pr" ? (item.state === "merged" ? "PR merged" : "PR") : "issue";
   const draft = item.draft ? " · draft" : "";
-  return `<a class="badge ${cls}" href="${esc(item.url)}" title="${esc(item.title)}">${kind} ${esc(item.ref)}${draft}</a>`;
+  const marker = unverified ? " · unverified" : "";
+  const title = unverified ? `${item.title} (unverified — fixture state, not live GitHub data)` : item.title;
+  return `<a class="badge ${cls}${unverified ? " unverified" : ""}" href="${esc(item.url)}" title="${esc(title)}">${kind} ${esc(item.ref)}${draft}${marker}</a>`;
 }
 
 function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): string {
@@ -4661,6 +4668,11 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  const cov = view.itemsCoverage;
+  const coverageLine =
+    cov && cov.total > 0
+      ? `<strong>${cov.resolvedLive} of ${cov.total}</strong> board items resolved from live data (project pool / projector) · <strong>${cov.fixture}</strong> resolved from fixtures (rendered hollow + "unverified") · coverage ratio <strong>${cov.ratio !== null ? cov.ratio.toFixed(2) : "—"}</strong> — measured on the health prime's board resolution pass, the same pass that sets the items facet provenance (#1141).`
+      : `not measured yet — coverage is computed on the health prime's board resolution pass (#1267); a pass that resolved no tagged items reports nothing rather than inventing a ratio.`;
   const facets = view.facets
     ? freshnessChips(view.facets, [
         "board",
@@ -4694,6 +4706,8 @@ ${degraded}${modeNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
+<h2>Item resolution coverage</h2>
+<div class="card">${coverageLine}</div>
 <h2>Dashboard comments</h2>
 <div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 \u2014 a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
