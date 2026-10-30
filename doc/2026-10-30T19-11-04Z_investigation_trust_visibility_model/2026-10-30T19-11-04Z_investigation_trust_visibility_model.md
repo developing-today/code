@@ -183,8 +183,18 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
   per-view opt-in "N uncounted claims exist about subjects in this view" indicator
   is acceptable; default off for metrics.)
 - **Flood-shaped results:** discovery results are grouped by author with
-  per-author counts, so a flood reads as one suspicious cluster, not 10,000
-  facts (abuse case 2, §6).
+  per-author counts and are returned paginated under a result cap, so a
+  *single-author* flood collapses into one group with a count instead of
+  10,000 facts. Per-author grouping is **not** a Sybil defence: an attacker
+  controlling 10,000 distinct author keys produces 10,000 groups, and
+  neither the grouping nor per-topic storage quotas / cold tiering
+  consolidates them. **Sybil-resistant discovery is explicitly unresolved
+  in this design** — cross-author clustering (key age, co-claim patterns,
+  shared submission infrastructure) is an open problem routed to the
+  #2238 discovery-query spec and the #2033 abuse-controls work; until one
+  of those lands, the bounded mitigations are the result cap + pagination,
+  counted-first default ordering, and the §4 storage quotas (abuse
+  case 2, §6).
 
 ## 6. Abuse cases walked through
 
@@ -194,11 +204,13 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
    it, or (if it turns out to be my neighbour) add the writer. ✅ Model holds.
 2. **Sybil flood:** an attacker mints 10,000 keys and floods claims about my dog
    to pollute discovery. Metrics: unaffected (none are in my set). Discovery:
-   results are grouped by author with per-author counts, so the flood reads as
-   one suspicious cluster; server-side per-topic quotas + cold tiering bound the
-   storage. Residual risk: discovery UX under flood needs author-clustering to
-   stay usable — that clustering is part of the #2238 discovery-query spec, not
-   solved here. ⚠️ Holds for metrics; discovery depends on the spec landing.
+   per-author grouping does **not** consolidate this attack — 10,000 keys are
+   10,000 groups — so discovery degrades to a capped, paginated list in which
+   the flood is visible but not summarised; server-side per-topic quotas +
+   cold tiering bound the storage, not the result set's shape. Residual risk:
+   Sybil-resistant discovery (cross-author clustering) is **unresolved** — it
+   is routed to the #2238 discovery-query spec and #2033, not solved here.
+   ⚠️ Holds for metrics; discovery under a Sybil flood is an open problem.
 3. **Storage exhaustion against a relay:** an attacker submits validly-signed
    bulk to fill a server. This is a resource attack, answered by #2032's budgets
    (per-IP / per-ID / per-topic windows, block lists) and the uncounted-tier
