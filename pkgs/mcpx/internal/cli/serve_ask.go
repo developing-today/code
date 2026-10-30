@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -304,23 +307,101 @@ func (d daemonAsker) Abandon(callID string) {
 	}
 }
 
-// lazyMCP builds mcpx's MCP server the first time something asks for it.
+// lazyMCP builds mcpx's MCP server the first time something asks for it,
+// and rebuilds it when its declared inputs change (PM-13, #1942).
 //
 // Built lazily because constructing it reads adapter declarations and may
 // fetch a declared OpenAPI document over the network. The daemon auto-starts
 // on the first command anybody runs, and a remote document that is slow to
 // answer would become a daemon that is slow to start -- for a surface that
 // particular invocation is not using.
+//
+// The old build used a sync.Once: the surface could never change for the
+// daemon's life (adapters added later were invisible) and a failed first
+// build -- even one caused by the first request's cancelled context -- was
+// cached forever. Now the build is keyed by a fingerprint of the adapter
+// and API declaration files: unchanged inputs reuse the built surface, a
+// change rebuilds it (live MCP sessions on the old surface end with it,
+// which is still strictly better than the restart this used to require),
+// and a failure is returned without being cached, so the next request
+// retries.
 type lazyMCP struct {
-	app  *App
-	once sync.Once
-	srv  *mcpserver.Server
-	err  error
+	app *App
+	// build and inputs are seams for tests; nil means the App's own.
+	build  func(ctx context.Context) (*mcpserver.Server, error)
+	inputs func() string
+	retire func(*mcpserver.Server)
+
+	mu      sync.Mutex
+	srv     *mcpserver.Server
+	builtFP string
+}
+
+// fingerprint hashes the declared file inputs the surface is built
+// from -- the adapter files and the API declaration files -- so a
+// changed, added, or newly-created declaration changes the value and
+// the surface is rebuilt. A file that cannot be read contributes its
+// error to the hash: present-but-broken and absent are different
+// states, and a file appearing later must not match a fingerprint
+// taken while it was missing.
+func (l *lazyMCP) fingerprint() string {
+	if l.inputs != nil {
+		return l.inputs()
+	}
+	h := sha256.New()
+	for _, key := range []string{"paths.adapters", "paths.apis"} {
+		for _, p := range splitPathList(l.app.Settings().String(key)) {
+			b, err := os.ReadFile(p)
+			fmt.Fprintf(h, "%s\x00", p)
+			if err != nil {
+				fmt.Fprintf(h, "err:%v\x00", err)
+				continue
+			}
+			h.Write(b)
+			h.Write([]byte("\x00"))
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func (l *lazyMCP) get(ctx context.Context) (*mcpserver.Server, error) {
-	l.once.Do(func() { l.srv, l.err = l.app.MCPServer(ctx) })
-	return l.srv, l.err
+	fp := l.fingerprint()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.srv != nil && fp == l.builtFP {
+		return l.srv, nil
+	}
+	build := l.build
+	if build == nil {
+		build = l.app.MCPServer
+	}
+	srv, err := build(ctx)
+	if err != nil {
+		// PM-13 (#1942): a failed build is NOT cached. The old
+		// sync.Once stored the first error for the daemon's life --
+		// including a first request whose context was cancelled --
+		// so one transient failure took /mcp down until a restart.
+		// The fingerprint stays unbuilt, and the next request
+		// retries. (A previously built surface is likewise not
+		// served stale past a known input change: the caller gets
+		// the error, not a surface that no longer matches config.)
+		return nil, err
+	}
+	old := l.srv
+	l.srv, l.builtFP = srv, fp
+	if old != nil && old != srv {
+		// PM-13 follow-up (#1942): the replaced surface is retired, not
+		// abandoned. Its legacy sessions would otherwise keep their GET
+		// streams, notification subscriptions, and listen streams open
+		// against a server nothing routes to, accumulating with every
+		// rebuild. Clients re-initialize against the new surface.
+		retire := l.retire
+		if retire == nil {
+			retire = (*mcpserver.Server).CloseSessions
+		}
+		retire(old)
+	}
+	return srv, nil
 }
 
 func (l *lazyMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
