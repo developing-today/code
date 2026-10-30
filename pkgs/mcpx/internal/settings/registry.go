@@ -465,6 +465,12 @@ func pathSettings() []Setting {
 func daemonSettings() []Setting {
 	return []Setting{
 		{
+			Path: "daemon.tsnetUpTimeout", Kind: KindDuration, Default: "30s",
+			Scope:    ScopeDaemon,
+			Plumbing: true,
+			Name:     "tsnet up timeout", Short: "how long a node may take to authenticate",
+		},
+		{
 			Path: "daemon.reapInterval", Kind: KindDuration, Default: "30s",
 			Scope:    ScopeDaemon,
 			Plumbing: true,

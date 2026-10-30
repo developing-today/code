@@ -319,6 +319,7 @@ and a switch to turn the report off would have kept it quiet.
 | `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
 | `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
 | `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name |
+| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate |
 | `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard |
 | `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard |
 | `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup |
