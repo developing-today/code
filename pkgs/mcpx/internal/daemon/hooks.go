@@ -51,6 +51,11 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			if k != "" {
 				r.publish(events.Event{Kind: k, Server: server})
 			}
+			// A changed catalog can orphan an argument rule (#1986):
+			// re-check this server's rules against what is now cached.
+			if kind == "tools" {
+				r.warnDeadArgumentRulesFor(server)
+			}
 		},
 		OnResourceUpdated: func(server, uri string) {
 			r.publish(events.Event{Kind: events.ResourceUpdated, Server: server, URI: uri})

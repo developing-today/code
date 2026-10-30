@@ -478,6 +478,23 @@ func (e ErrWriteDenied) Error() string {
 		"change policy.write, or this server's writePolicy, to allow it", e.Tool, e.Mode, e.Reason)
 }
 
+// ErrArgumentRuleDenied is returned when an argument rule (#1986)
+// refuses a call: the call's arguments broke a JSON Schema constraint
+// configured for its tool. Like a hidden tool it is the caller's
+// mistake -- the arguments, not the server, are wrong -- so the daemon
+// answers 400 (see failureStatus), and the MCP pass-through renders it
+// as an isError result carrying this text.
+type ErrArgumentRuleDenied struct {
+	Tool      string
+	Violation *config.ArgumentRuleViolation
+}
+
+func (e ErrArgumentRuleDenied) Error() string {
+	return fmt.Sprintf("%s was refused by an argument rule: %s; "+
+		"change the call's arguments, or the rule in the config it names, to allow it",
+		e.Tool, e.Violation)
+}
+
 // applyWritePolicy is the write policy gate (#1979, Phase 1): before a
 // call, decide from its tool's annotations and the effective mode
 // whether it proceeds, asks, or is refused.
@@ -496,6 +513,32 @@ func (e ErrWriteDenied) Error() string {
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
 func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
+	// Argument rules (#1986) sit in the evaluator's fixed order
+	// (#2126) after the hidden-tool check -- which resolveAndGuard has
+	// already applied -- and the Phase 3 ledger hook (still a no-op),
+	// and BEFORE the write mode below: a call whose arguments break a
+	// rule is refused whatever the mode says, and a call that
+	// satisfies every rule has no opinion from this step and falls
+	// through to the mode. Rules are read from the requested server's
+	// VIEW for the same reason writePolicy is: aliases share a pool
+	// but not a configuration. The check runs even when no write
+	// policy is configured -- rules are their own opt-in -- and before
+	// the pool is touched, so a refused call starts nothing.
+	if view, ok := r.View(server); ok && !view.ArgumentRules.Empty() {
+		rules := view.ArgumentRules
+		var violation *config.ArgumentRuleViolation
+		evaluator := policy.Evaluator{ArgumentRules: func() (policy.Decision, bool) {
+			if v := rules.Check(tool, args); v != nil {
+				violation = v
+				return policy.Decision{Kind: policy.DecideDeny, Reason: v.Error()}, true
+			}
+			return policy.Decision{}, false
+		}}
+		if d := evaluator.Evaluate(policy.Input{Mode: policy.ModeAllow}); d.Kind == policy.DecideDeny {
+			return false, ErrArgumentRuleDenied{Tool: p.Namespace() + "." + tool, Violation: violation}
+		}
+	}
+
 	mode := r.consumer.WritePolicy
 	// The requested server's VIEW carries the override, never the
 	// pool's creating config: pools are shared between aliases, so

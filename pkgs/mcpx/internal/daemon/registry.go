@@ -58,6 +58,12 @@ type Registry struct {
 	embedder      catalog.Embedder
 	feedbackStore *logstore.FeedbackStore
 
+	// deadRuleWarned records argument rules (#1986) already warned
+	// about as matching no known tool, keyed server + rule key, so a
+	// dead rule warns once per registry lifetime instead of on every
+	// catalog observation.
+	deadRuleWarned sync.Map
+
 	sessMu sync.Mutex
 	leases map[string]*leaseState
 
@@ -235,7 +241,55 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 	}
 	sort.Strings(r.order)
 	r.loadCache()
+	r.warnDeadArgumentRules()
 	return r, nil
+}
+
+// warnDeadArgumentRules logs each argument rule (#1986) that matches
+// no tool in its server's cached catalog: a dead rule constrains
+// nothing and is usually a tool name that moved. Called at load (from
+// NewRegistry, over the disk-seeded cache), after Warm, and on catalog
+// changes; a server whose catalog is not loaded yet warns nothing, and
+// each rule warns once per registry lifetime unless it comes back to
+// life in between.
+func (r *Registry) warnDeadArgumentRules() {
+	names := r.Names()
+	for _, name := range names {
+		r.warnDeadArgumentRulesFor(name)
+	}
+}
+
+func (r *Registry) warnDeadArgumentRulesFor(name string) {
+	view, ok := r.View(name)
+	if !ok || view.ArgumentRules.Empty() {
+		return
+	}
+	p, ok := r.Pool(name)
+	if !ok {
+		return
+	}
+	tools, _, _ := p.CachedSchemas()
+	if len(tools) == 0 {
+		return
+	}
+	known := make([]string, 0, len(tools))
+	for _, t := range tools {
+		known = append(known, t.Name)
+	}
+	dead := map[string]bool{}
+	for _, rule := range view.ArgumentRules.DeadRules(known) {
+		dead[rule.Key] = true
+		k := name + "\x00" + rule.Key
+		if _, loaded := r.deadRuleWarned.LoadOrStore(k, true); !loaded {
+			r.logf("argument rule %q for server %q (%s) matches no known tool; it constrains nothing -- check the tool name",
+				rule.Key, name, rule.Origin)
+		}
+	}
+	for _, rule := range view.ArgumentRules.Rules() {
+		if !dead[rule.Key] {
+			r.deadRuleWarned.Delete(name + "\x00" + rule.Key)
+		}
+	}
 }
 
 // ConfigHash fingerprints the server definitions.
@@ -403,6 +457,7 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 	// that one of them changed. Recording it here is what lets a diagnostic
 	// say when.
 	r.ObserveCatalog()
+	r.warnDeadArgumentRules()
 	return errs
 }
 
@@ -549,7 +604,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  t.InputSchema,
+				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -962,7 +1017,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  t.InputSchema,
+				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}
@@ -1010,6 +1065,7 @@ func failureStatus(err error) int {
 	var hidden HiddenTool
 	var secret SecretRequired
 	var denied ErrWriteDenied
+	var argDenied ErrArgumentRuleDenied
 	switch {
 	case errors.As(err, &denied):
 		// The write policy refused the call: a permission answer, not
@@ -1019,7 +1075,9 @@ func failureStatus(err error) int {
 		// A conflict with the state of the daemon, not a fault in the request
 		// and not a failure of the server: it can succeed once a value exists.
 		return http.StatusConflict
-	case errors.As(err, &unknown), errors.As(err, &hidden):
+	case errors.As(err, &unknown), errors.As(err, &hidden), errors.As(err, &argDenied):
+		// An argument-rule refusal is 400 like a hidden tool (#1986):
+		// the caller's arguments broke a configured constraint.
 		return http.StatusBadRequest
 	}
 	return http.StatusBadGateway
