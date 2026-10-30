@@ -857,8 +857,9 @@ never displayed from claim-supplied data*. Making it two Rust types means a UI c
 uncounted claim inside the counted collection without a deliberate conversion — the invariant
 survives contact with a careless template.
 
-`WhyNotCounted` is a closed enum, one variant per clause of §4.1 that can fail *after* `applied`
-succeeded:
+`WhyNotCounted` is a closed enum: one variant per clause of §4.1 that can fail *after* `applied`
+succeeded, plus one variant for the second retrieval that produces `UncountedHit`s — discovery
+(§5.1):
 
 ```rust
 enum WhyNotCounted {
@@ -868,14 +869,28 @@ enum WhyNotCounted {
     HistoryNotImported,               // clause 4 — the claim precedes the author's first
                                       //            admission and no admission carrying
                                       //            include_history covers it
+    AuthorNeverAdmitted,              // §5.1 only — no version in the applied prefix ever
+                                      //            admitted this author; reachable through
+                                      //            discovery's subject-first scan, never
+                                      //            through §4.2's author-range retrieval
     OutOfScope(ScopeMismatch),        // clause 5 — subject or kind
 }
 ```
 
-The set is **exactly the failure modes reachable through §4.2's retrieval**, which is why there is
-no `AuthorNotInSet`: an author no version ever admitted is in no historical author range, so their
-claims are never candidates and can never appear in either collection. A variant for that case
-would be an arm a test can never reach.
+The set is **exactly the failure modes reachable through the two retrievals that produce
+`UncountedHit`s**, and the two do not reach the same authors. Through §4.2's projection retrieval a
+never-admitted author is in no historical author range, so their claims are never candidates and
+can never appear in either of `Projection`'s collections — that is why finding 20 removed
+`AuthorNotInSet`, and for projection it was right. But §5.1's discovery is a subject-first scan,
+not an author-range scan: it deliberately retrieves claims from authors the view never admitted
+(the Montana stranger of §7 row 1; the 10,000 unadmitted keys of §9's flood fixture), groups them
+as `UncountedHit`s, and every hit must carry a reason. None of the clause variants describes that
+author — they were never removed, and they were not admitted later without history — so discovery
+could not construct its own required hits without dropping them or misreporting why.
+`AuthorNeverAdmitted` is that reason, retained for discovery even though it is unreachable through
+projection's author-range retrieval (round 13, finding 36). The reachability rule finding 20
+stated is therefore per-path, not per-enum: an arm no *retrieval* can reach is a defect; an arm
+exactly one retrieval reaches is a reason that path owes its callers.
 
 `HistoryNotImported` covers **both** shapes of "too early", and an earlier draft only covered one:
 a claim that predates *every* set version, and — the case finding 25 caught — a claim written while
@@ -1048,6 +1063,13 @@ rather than *discarded* — #2030's "uncounted must not be a bin".
 Grouping by author handles the **one-key** flood: 10,000 claims from one key read as **one
 cluster with a count**, not 10,000 facts. That is a real mitigation and it is a *layout* rule on
 the result type so it cannot be lost in a UI.
+
+**Every discovery hit carries its reason, including the never-admitted.** A hit whose author no
+version in the set's applied prefix ever admitted carries `AuthorNeverAdmitted` (§4.3) — the
+reason projection can never produce, retained precisely because this scan is not author-range
+bounded. Dropping those hits would make discovery a bin for exactly the claims it exists to
+surface; labelling them `AuthorRemoved` or `HistoryNotImported` would misreport authors who were
+never in the set at all.
 
 **But it does not answer a multi-key flood, and the first draft overclaimed by implying it did.**
 A Sybil flood of 10,000 *distinct* keys yields 10,000 clusters — grouping has bought nothing,
@@ -1394,6 +1416,10 @@ Each is independently reviewable and small enough to land alone.
 5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
    labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
    **10k distinct keys → 10k clusters, one bounded page** (the one that fails today). Plus the
+   reason test: a discovery hit from a never-admitted author carries `AuthorNeverAdmitted`
+   (finding 36), and the 10k-key fixture's hits are constructible with it — the negative control
+   is the enum without that variant, where those hits cannot be built without a misleading
+   reason. Plus the
    `total_authors` bound: a scan that finishes inside `MAX_DISCOVERY_ROWS` reports `Exact`, one
    that does not reports `AtLeast` and stops at the row cap — the negative control is an
    implementation that counts all matching distinct authors, which fails the row assertion on the
@@ -1499,7 +1525,7 @@ consulted. All accepted and fixed.
 | 17 | `seen_by` took `max` over **every** `idset.writer` event in the store. A set chain that forked at a `set_seq` gives two versions that `seq`, so `max` was ambiguous and §4.1 stopped being a function — and a forked, never-applied set version could still admit an author or satisfy `retro`, contradicting clause 1's own fork discipline. | **Fixed.** `versions(S)` is now explicitly the owner's **applied prefix under `R`**, which `chains`/`forks` already make linear ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)). `max` is a function again, and the set's history is gated the same way claims are. |
 | 18 | Clause 3's `rescinded(S, c)` was **used but never defined**: §3.3 gave prose and a `through` field but no semantics, so the predicate rested on an undefined term. Relatedly, a rescind is "a new set version", so it would have entered `versions(S)` where `expand(_)` is meaningless for it. | **Fixed.** §3.3 now defines `rescinded` formally — target admits the author, the claim is in the rescind's causal past, `through` bounds it, `from_version` gates it — and states that a rescind carries no entries, so `expand(r)`/`expand_retro(r)` are empty and only clause 3 reads it. |
 | 19 | `kind_scope` was applied **twice** (index filter and `in_scope`), so `OutOfScope(kind)` was unreachable and every claim the owner filtered by kind vanished from the uncounted side — the "uncounted must not be a bin" failure. | **Fixed.** §4.2 applies **neither** scope at retrieval; the index records `kind` so the predicate can test it cheaply. Round 4's finding 15 was half a fix. |
-| 20 | Two `WhyNotCounted` variants were unreachable: `AuthorNotInSet` (such an author is in no historical range, so their claims are never candidates) and `BackupNotImported` as worded. | **Fixed.** `AuthorNotInSet` removed; the clause-4 reasons that *are* reachable — `AuthorRemoved` and `HistoryNotImported` — are worded to their actual conditions (round 7 renamed the second, finding 25). An arm a test can never reach is a defect in a closed enum. |
+| 20 | Two `WhyNotCounted` variants were unreachable: `AuthorNotInSet` (such an author is in no historical range, so their claims are never candidates) and `BackupNotImported` as worded. | **Fixed.** `AuthorNotInSet` removed; the clause-4 reasons that *are* reachable — `AuthorRemoved` and `HistoryNotImported` — are worded to their actual conditions (round 7 renamed the second, finding 25). An arm a test can never reach is a defect in a closed enum. (Round 13, finding 36, restored the variant as `AuthorNeverAdmitted` for §5.1's discovery path, through which such authors *are* retrieved — reachability is per retrieval path, not per enum.) |
 | 21 | §4.4 claimed an excepted claim "still appears on the uncounted side for any other view that did not name it". Under §4.2 that is false: a stranger's claim is fetched only by an author range or that view's own exception list. | **Fixed by narrowing.** §4.4 now states the true reach — other views that *admit* the author still show it uncounted, and a third party who neither admits nor excepts it never sees it, which is §5.3's whole point rather than a gap. |
 
 Two smaller corrections rode along: §7 row 1 still explained case 1 with the current-snapshot test
@@ -1608,7 +1634,18 @@ level: rounds 1–11 had treated "applied prefix" and "distinct authors" as prim
 turned out to be convenient approximations of the thing the guarantee actually needs — per-event
 application, and examined rows.
 
-**A note on what twelve rounds actually shows.** Every round found a real defect, and rounds 2–8 each
+**Round 13** (Codex, on the round-12 fix commit `000efd65`) found one more P2 — in the seam
+between §4.3 and §5.1, the two sections that share the `UncountedHit` type. Accepted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 36 | §5.1 reuses `UncountedHit` for discovery groups and §9's flood fixture requires discovering the 10,000 unadmitted keys, but finding 20 had removed the only `WhyNotCounted` variant that describes a never-admitted author — correctly for §4.2's author-range retrieval, through which such an author is never a candidate. Discovery is subject-first, so it *does* retrieve them, and no remaining variant fits: they were never removed, and never admitted later without history. | **Fixed.** `AuthorNeverAdmitted` restored to §4.3 as a discovery-only variant, with the reachability rule restated per retrieval path. §5.1 now states that never-admitted discovery hits carry it, and slice 5 gained the constructibility test whose negative control is the enum without it. |
+
+Round 13 is finding 20's lesson inverted: reachability is a property of a *retrieval path*, not
+of the enum alone — removing the variant was right for the one path then examined and wrong for
+the second path the same type serves.
+
+**A note on what thirteen rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
