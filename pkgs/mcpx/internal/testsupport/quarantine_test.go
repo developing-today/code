@@ -44,6 +44,7 @@ func (f *fakeTB) Helper() {}
 func (f *fakeTB) Skipf(format string, args ...any) {
 	f.skipped = true
 }
+
 // errFakeFatal is the panic a fake Fatalf raises to model what the real
 // testing.T.Fatalf does: it does not return. Without this the flow under
 // test continues past the fatal call and the double records a skip after

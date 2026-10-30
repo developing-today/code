@@ -364,4 +364,3 @@ func TestOutputSchemaTypeGeneration(t *testing.T) {
 		t.Fatalf("module missing typed return signature or Attached export:\n%s", mod)
 	}
 }
-

@@ -933,6 +933,21 @@ impl EventStore {
         Ok(ids)
     }
 
+    /// Returns the waiting event with `id`, if held in the waiting pool.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn waiting_event(&self, id: &Hash) -> Result<Option<Event>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let rows = txn.open_table(WAITING)?;
+        let Some(found) = rows.get(id.as_bytes().as_slice())? else {
+            return Ok(None);
+        };
+        let row = Row::decode(*id, found.value())?;
+        row_event(&row).map(Some)
+    }
+
     /// Runs `op` in one write transaction against the waiting pool and its rows. The transaction
     /// commits if `op` reports a change, and is aborted otherwise. If the call fails, the pool may
     /// have moved on from the rows, so it is rebuilt from them. If that fails too, the store

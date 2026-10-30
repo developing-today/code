@@ -71,9 +71,9 @@ func TestHandleDiagnose_RepairSafety(t *testing.T) {
 	reg := &Registry{
 		testTools: []ToolInfo{
 			{
-				Namespace: "calc",
-				Tool:      "add",
-				Function:  "calc.add",
+				Namespace:   "calc",
+				Tool:        "add",
+				Function:    "calc.add",
 				InputSchema: []byte(`{"type":"object","required":["a","b"]}`),
 			},
 		},

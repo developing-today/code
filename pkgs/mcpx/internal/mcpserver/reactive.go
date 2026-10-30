@@ -16,7 +16,7 @@ func (s *Server) reactiveSurface(ctx context.Context) ([]Tool, error) {
 	var out []Tool
 	// 1. Core meta tools
 	out = append(out, Tool{
-		Name: "request_tools",
+		Name:        "request_tools",
 		Description: "Search for and activate additional tools into the active tool set matching a natural language query.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
@@ -28,7 +28,7 @@ func (s *Server) reactiveSurface(ctx context.Context) ([]Tool, error) {
 		}`),
 	})
 	out = append(out, Tool{
-		Name: "batch_call",
+		Name:        "batch_call",
 		Description: "Execute multiple tool calls in a single turn.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
