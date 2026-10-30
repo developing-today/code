@@ -237,7 +237,7 @@ fn held_events(store: &EventStore, authors: &[AuthorKey]) -> Vec<Event> {
         }
     }
     for id in store.waiting_ids().unwrap() {
-        if let Some(event) = store.event_by_id(&id).unwrap() {
+        if let Some(event) = store.waiting_event(&id).unwrap() {
             push(event, &mut seen, &mut out);
         }
     }
@@ -824,7 +824,7 @@ async fn send_want_and_receive(
 /// The withholding relay: forwards everything, except that batches lose
 /// every event authored by `dropped`. It cannot forge, alter, or re-sign —
 /// it can only withhold (investigation §6).
-async fn relay(mut client_ws: Ws, mut server_ws: Ws, dropped: AuthorKey) {
+async fn relay(client_ws: Ws, server_ws: Ws, dropped: AuthorKey) {
     let (mut client_tx, mut client_rx) = client_ws.split();
     let (mut server_tx, mut server_rx) = server_ws.split();
     let up = async {
@@ -1010,7 +1010,7 @@ async fn bridge_withholding_is_detected_from_heads_and_frontier() {
     deliver(&mut native, &all_events);
     let mut hosted = HostedStore::open();
 
-    let report = run_session(&mut native, &mut hosted, &authors, Some(xena.public())).await;
+    let _report = run_session(&mut native, &mut hosted, &authors, Some(xena.public())).await;
 
     // Yuri's event crossed and is held, waiting on the withheld frontier:
     // its `after` names Xena's x3, which the store has never seen.
@@ -1023,14 +1023,9 @@ async fn bridge_withholding_is_detected_from_heads_and_frontier() {
         .iter()
         .map(|e| (*e.header.verifying_key.as_bytes(), e.id))
         .collect();
-    // What the hosted store holds: its sync-visible events, plus anything
-    // it holds waiting (a waiting event was delivered, by definition).
-    let mut hosted_held = held_events(&hosted.store, &authors);
-    for event in &all_events {
-        if hosted.store.is_waiting(&event.id) {
-            hosted_held.push(event.clone());
-        }
-    }
+    // What the hosted store holds: held_events includes both applied events
+    // and waiting events now that waiting events are retrieved from waiting rows.
+    let hosted_held = held_events(&hosted.store, &authors);
     let evidence = detect_withholding(&announced, &hosted.store, &hosted_held, &authored);
     assert_eq!(evidence.len(), 1, "evidence: {evidence:?}");
     let proof = &evidence[0];
@@ -1131,5 +1126,105 @@ async fn fork_proof_exchange_cost_scales_sublinearly_in_bytes() {
         report.reconcile_bytes < 6_400,
         "reconciliation cost {} bytes is not below the naive bound",
         report.reconcile_bytes
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bridge_session_converges_with_waiting_events_on_both_sides() {
+    let mut xena = Author::new(91);
+    let mut yuri = Author::new(93);
+    let authors = vec![xena.public(), yuri.public()];
+
+    let x0 = xena.message(vec![]);
+    // Yuri's event depends on Xena's x0
+    let y0 = yuri.message(vec![x0.id]);
+
+    let mut native = open_native();
+    // Native receives only y0 first -> y0 is held in waiting
+    deliver(&mut native, &[y0.clone()]);
+    assert!(native.is_waiting(&y0.id));
+    assert_eq!(native.waiting_ids().unwrap().len(), 1);
+
+    let mut hosted = HostedStore::open();
+    // Hosted receives only x0 first -> x0 is applied
+    hosted.ingest_batch(&[x0.bytes.clone()], NOW_MS);
+    assert_eq!(
+        hosted.store.chain(&xena.public()).unwrap().unwrap().next_seq,
+        1
+    );
+
+    // Run the bridge session:
+    // Native offers y0 from waiting storage and learns of x0.
+    // Hosted offers x0 and learns of y0.
+    let report = run_session(&mut native, &mut hosted, &authors, None).await;
+    assert_eq!(report.events_transferred, 2);
+
+    // After session, native releases y0 and both events are applied on both sides.
+    assert!(!native.is_waiting(&y0.id));
+    assert_eq!(native.waiting_ids().unwrap().len(), 0);
+    assert!(!hosted.store.is_waiting(&y0.id));
+
+    let native_state = canonical(&native, &authors).unwrap();
+    let hosted_state = canonical(&hosted.store, &authors).unwrap();
+    assert_eq!(native_state, hosted_state);
+    assert_eq!(native_state.applied.len(), 2);
+    native.check_invariants().unwrap();
+    hosted.store.check_invariants().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sparse_fork_reconciliation_scales_sublinearly_across_set_sizes() {
+    // Tests reconciliation cost for a single-fork difference against
+    // increasing shared set sizes (20, 60, 100 shared events).
+    let mut results = Vec::new();
+    for total_shared in [20usize, 60, 100] {
+        let mut authors = Vec::new();
+        let mut shared_events = Vec::new();
+        let per_author = total_shared / 4;
+        let mut authors_instances = Vec::new();
+        for seed in [101u8, 103, 107, 109] {
+            let mut author = Author::new(seed);
+            authors.push(author.public());
+            let mut prev: Option<Hash> = None;
+            for _ in 0..per_author {
+                let event = author.message(prev.map_or_else(Vec::new, |id| vec![id]));
+                prev = Some(event.id);
+                shared_events.push(event);
+            }
+            authors_instances.push(author);
+        }
+
+        let mut native = open_native();
+        deliver(&mut native, &shared_events);
+        let mut hosted = HostedStore::open();
+        let shared_bytes: Vec<Vec<u8>> = shared_events.iter().map(|e| e.bytes.clone()).collect();
+        hosted.ingest_batch(&shared_bytes, NOW_MS);
+
+        // Author 0 creates a fork at next sequence:
+        let author0 = &mut authors_instances[0];
+        let next_seq = author0.seq;
+        let backlink = author0.last;
+        let native_event = author0.message(vec![]);
+        let rival_event = author0.rival(next_seq, backlink);
+
+        deliver(&mut native, &[native_event]);
+        hosted.ingest_batch(&[rival_event.bytes.clone()], NOW_MS);
+
+        let report = run_session(&mut native, &mut hosted, &authors, None).await;
+        assert!(report.forks_detected >= 1);
+        println!(
+            "sparse fork reconciliation over {} shared events: {} flights, {} reconciliation bytes",
+            total_shared, report.flights, report.reconcile_bytes
+        );
+        results.push((total_shared, report.flights, report.reconcile_bytes));
+    }
+
+    // Flights and reconciliation bytes for a sparse fork differ minimally even as
+    // shared history quintuples from 20 to 100 events (sublinear in history size).
+    let bytes_20 = results[0].2;
+    let bytes_100 = results[2].2;
+    assert!(
+        bytes_100 < bytes_20 * 3,
+        "reconciliation bytes should scale sublinearly with shared history: 20={bytes_20}, 100={bytes_100}"
     );
 }
