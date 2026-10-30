@@ -1,8 +1,10 @@
 name: mcpx release
 
-# Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.2, §3, §5;
-# #1881). It produces channel 1 (release binaries + checksums) and exercises
-# channel 2 (the curl|sh installer) against them.
+# Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.3, §3, §5;
+# #1881). It produces channel 1 (release binaries + checksums), exercises
+# channel 2 (the curl|sh installer) against them, and builds channel 3 (the
+# container image) from the same version stamp -- publishing the image to
+# GHCR on a tag, building it only on a snapshot.
 #
 # mcpx lives in pkgs/mcpx of a monorepo, so its releases need a scheme that
 # cannot collide with another package's: tags are `mcpx/vX.Y.Z`, and this
@@ -29,6 +31,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 # CI tier policy: see .github/ci-policy.md
 concurrency:
@@ -205,6 +208,60 @@ jobs:
             exit 1
           }
           echo "tampered artifact refused, as it must be"
+
+  container:
+    name: "release: container image"
+    # Channel 3 (decision 0005 §2.3, §6.6): the Containerfile already builds a
+    # working image; this wires it to the release version so the image cannot
+    # carry a fifth hand-synced copy of the string. A tag pushes it to GHCR;
+    # a snapshot builds it and reads `mcpx --version` back, proving the
+    # build-arg path without publishing anything.
+    needs: artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the image at the release version, and read it back
+        env:
+          VERSION: ${{ needs.artifacts.outputs.version }}
+          # Lowercased: GHCR rejects uppercase, and an owner or repo name can
+          # carry it. The image sits under the repository, so it cannot
+          # collide with another package's image in the same org.
+          IMAGE: ghcr.io/${{ github.repository }}/mcpx
+        run: |
+          set -euo pipefail
+          image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          tags=(--tag "$image:$VERSION")
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            tags+=(--tag "$image:latest")
+          fi
+          docker build \
+            --file pkgs/mcpx/Containerfile \
+            --build-arg "VERSION=$VERSION" \
+            "${tags[@]}" \
+            pkgs/mcpx
+          got=$(docker run --rm "$image:$VERSION" --version)
+          echo "image mcpx --version: $got"
+          case "$got" in
+          *"$VERSION"*) ;;
+          *) echo "::error::image reports '$got', expected $VERSION"; exit 1 ;;
+          esac
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            docker push "$image:$VERSION"
+            docker push "$image:latest"
+            echo "published $image:$VERSION"
+          else
+            echo "snapshot: built $image:$VERSION, not pushed"
+          fi
 
   publish:
     name: "release: publish"
