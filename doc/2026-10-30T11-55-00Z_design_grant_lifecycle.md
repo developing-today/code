@@ -50,6 +50,7 @@ The pending transfer's TigerBeetle `timeout` is `refund_window + posting_grace`,
 1. An attestation (§3) of type `refund_executed`, `chargeback_filed`, or `publisher_revocation` arrives naming the grant's fingerprint while the grant is in PendingHold.
 2. The service creates the void-pending transfer. Grant moves to **Revoked** with `revocation_cause = for-cause` and the attestation id recorded.
 3. Nothing was ever spendable, so there is no clawback, no debt, and no third-party exposure. This clean totality is the reason §0 forbids skipping PendingHold.
+4. **The lost-race exception:** the post sweep (§1.3) and a void can race — the attestation is recorded while the grant reads PendingHold, but the transfer posts before the void reaches the ledger, and a void of a posted transfer cannot succeed. In that case the flow does **not** take the clean path above: the grant resolves to its actual ledger outcome (**Active**, per §1.3 step 3) and the already-recorded attestation is processed through the §4 clawback choreography, subject to the §5.2 policy check. Processing is driven from the stored attestation record, never from redelivery — intake deduplication (§3.1) means there may be no second delivery to rely on. Which path a given grant took (clean void vs post-then-clawback) is recorded on the grant record, because the two have different debt consequences and the difference must be auditable.
 
 ## 2. Fingerprint registry
 
