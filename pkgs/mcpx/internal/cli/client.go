@@ -135,13 +135,20 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 
 	if c.endpoint == "" {
 		c.dialSocket = paths.ClientSocket()
-		dialSocket := c.dialSocket
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					// Resolve at dial time, not once at construction
+					// (#1886, Codex on PR #2561): a client built while
+					// a stale info record names a dead daemon's socket
+					// must follow the replacement EnsureDaemon starts,
+					// which binds the computed path and republishes the
+					// record. ClientSocket's fast path costs one stat
+					// when the computed socket is already live.
+					sock := paths.ClientSocket()
 					var d net.Dialer
-					return d.DialContext(ctx, "unix", dialSocket)
+					return d.DialContext(ctx, "unix", sock)
 				},
 				// No connection is kept between calls. A takeover closes
 				// the old daemon's idle connections; a client that reused

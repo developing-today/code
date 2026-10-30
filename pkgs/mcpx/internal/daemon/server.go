@@ -300,6 +300,16 @@ func (s *Server) Listen(tcpPort int) error {
 	// with the variable binds the named socket, and the record it
 	// publishes then names that socket.
 	s.paths.Socket = s.paths.BindSocket()
+	// The selected bind path's parent may not exist yet (#1886, Codex
+	// on PR #2561): NewServer ran EnsureDirs against the *computed*
+	// socket, so an MCPX_SOCKET pointing into a fresh directory would
+	// fail to bind. Create the bind path's parent here, at the bind
+	// call site, once the bind socket is actually known.
+	if dir := filepath.Dir(s.paths.Socket); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
 	if preferred, relocated := s.paths.Relocated(); relocated {
 		s.logger.Printf("socket relocated to %s: state path is %d bytes, limit %d",
 			s.paths.Socket, len(preferred), maxSocketPath)

@@ -327,7 +327,11 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
-	a.daemonSocket = paths.Socket
+	// The back-channel socket plugins receive must be the socket this
+	// daemon actually binds (#1886, Codex on PR #2561): with
+	// MCPX_SOCKET set, Listen binds BindSocket(), not the computed
+	// paths.Socket, so record the bind socket here.
+	a.daemonSocket = paths.BindSocket()
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,
