@@ -83,6 +83,7 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
+import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -5032,6 +5033,60 @@ ${trackedTable(live.tracked)}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** The #2400 graph section of a project page: blocked weight + longest
+ * blocked chain and the depth-graph SVG, from the part-1 edge contract
+ * (#2399). Graceful absence is explicit: a pool with no effort labels
+ * and no edges says "not yet sized/graphed" (never a fake 0%); a sized
+ * pool without edges says "not yet graphed" only. */
+function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summarizeWeights>): string {
+  const edges = hasGraphEdges(items);
+  if (!edges && allW.totalWeight === 0) {
+    return `<div class="banner">Not yet sized/graphed: no pool item for this project carries an effort/* label or an issue graph edge yet, so there is no weighted or graph view to draw. The counts above are raw item counts — not a 0% weighted score.</div>`;
+  }
+  if (!edges) {
+    return `<p class="muted">Not yet graphed: pool items carry no parent / blocked-by edges yet, so blocked weight and the depth graph appear once the collector sees edges. Weighted progress above is from effort labels alone.</p>`;
+  }
+  const blocked = blockedSummary(items);
+  const chainHtml = blocked.longestChain.length >= 2
+    ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+    : "";
+  const blockedHtml = blocked.blockedCount
+    ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
+    : `<p class="muted"><strong>Blocked weight: 0</strong> — no open item is waiting on an unresolved blocker.</p>`;
+
+  const layout = depthLayout(items);
+  const pos = new Map(layout.nodes.map((n) => [n.ref, n]));
+  const X = (depth: number) => 16 + depth * 180;
+  const Y = (row: number) => 16 + row * 26;
+  const width = X(layout.maxDepth) + 340;
+  const height = Y(layout.nodes.length - 1) + 16;
+  const edgeLines = layout.edges
+    .map((e) => {
+      const a = pos.get(e.from)!;
+      const b = pos.get(e.to)!;
+      return `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
+    })
+    .join("");
+  const nodeShapes = layout.nodes
+    .map((n) => {
+      const label = `#${n.number} ${n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title}`;
+      const dash = n.mode === "hybrid" ? ` stroke-dasharray="3 2"` : "";
+      const strokeW = n.mode === "physical" ? 3 : 1.5;
+      const shape = n.epic
+        ? `<rect x="${X(n.depth) - 6}" y="${Y(n.row) - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="${strokeW}"${dash}/>`
+        : `<circle cx="${X(n.depth)}" cy="${Y(n.row)}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="${strokeW}"${dash}/>`;
+      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${X(n.depth) + 11}" y="${Y(n.row) + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+    })
+    .join("");
+  const truncated = layout.truncated
+    ? `<p class="muted">Depth graph shows ${layout.nodes.length} of ${items.length} items (cap) — the full set is in the cards below.</p>`
+    : "";
+  const svg = layout.nodes.length
+    ? `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Issue depth graph" style="max-width:100%;height:auto">${edgeLines}${nodeShapes}</svg><p class="muted">Depth = sub-issue nesting from the Project pool. Squares are epics; amber = open, grey = closed. Border: thick solid = mode/physical, dashed = mode/hybrid, thin = online or no mode.</p>${truncated}`
+    : "";
+  return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -5099,7 +5154,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
