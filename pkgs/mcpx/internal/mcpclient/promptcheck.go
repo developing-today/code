@@ -169,7 +169,7 @@ func validatePromptBlock(raw json.RawMessage) error {
 		if err := json.Unmarshal(raw, &b); err != nil {
 			return fmt.Errorf("a resource_link block's uri or name is not a string: %w", err)
 		}
-		if b.URI == nil || *b.URI == "" || b.Name == nil || *b.Name == "" {
+		if b.URI == nil || *b.URI == "" || b.Name == nil {
 			return fmt.Errorf("a resource_link block must carry uri and name")
 		}
 	}
