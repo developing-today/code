@@ -78,9 +78,23 @@ func TestSupervisedReattachDoesNotResolveNixSpec(t *testing.T) {
 	// nix vanishes: with resolution on the attach path, the reattach
 	// would now fail before ever reaching the live supervisor.
 	t.Setenv("PATH", t.TempDir())
-	tr2, err := mcpclient.NewSupervised(opts)
-	if err != nil {
-		t.Fatalf("reattach without nix on PATH: %v", err)
+	// Close returns once the local connection is closed; the supervisor
+	// clears its attach slot when it notices the disconnect, which is
+	// asynchronous. Poll the reattach until the slot frees instead of
+	// assuming the release is instant (the #2609 flake, hit by this
+	// test in the PR stress run: under shuffle/load the immediate
+	// reattach was refused "already attached").
+	var tr2 *mcpclient.SupervisedTransport
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		tr2, err = mcpclient.NewSupervised(opts)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "already attached") || time.Now().After(deadline) {
+			t.Fatalf("reattach without nix on PATH: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	defer tr2.Close()
 	if tr2.PID() != pid {
