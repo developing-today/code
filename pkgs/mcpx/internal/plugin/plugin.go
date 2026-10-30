@@ -154,6 +154,14 @@ func Discover(dirs []string, pathEnv string) ([]Plugin, error) {
 		if d == "" {
 			continue
 		}
+		// Absolute before anything is derived from it: a discovered
+		// plugin's command and working directory are handed to a
+		// transport that runs the command FROM that directory, so a
+		// relative path would be resolved twice and point nowhere
+		// (Codex P2 on #2481).
+		if abs, aerr := filepath.Abs(d); aerr == nil {
+			d = abs
+		}
 		info, err := os.Stat(d)
 		if err != nil {
 			return nil, fmt.Errorf("reading plugins from %s: %w", d, err)
@@ -265,6 +273,9 @@ func discoverPATH(pathEnv string) []Plugin {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
+		}
+		if abs, aerr := filepath.Abs(dir); aerr == nil {
+			dir = abs
 		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasPrefix(e.Name(), PathPrefix) {

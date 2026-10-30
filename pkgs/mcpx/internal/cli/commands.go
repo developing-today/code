@@ -45,6 +45,13 @@ type App struct {
 	machineOutput bool
 	// inlineStop shuts down an in-process daemon when the command ends.
 	inlineStop func()
+	// daemonSocket is the socket the daemon built by this process
+	// actually listens on, recorded where it is resolved: CmdDaemon
+	// keys it to the config (root.go), an inline daemon uses a private
+	// one (connect.go). It differs from Paths.Socket, which is the
+	// un-keyed default; augmentPlugins hands daemonSocket to plugin
+	// servers as their MCPX_SOCKET back-channel (#1870, Codex P1).
+	daemonSocket string
 	// daemonStore is the in-process daemon's task store, set only on
 	// the daemon-run path (root.go) so MCPServer can inject it into
 	// the daemon-served MCP server (issue #1555). Nil everywhere
