@@ -687,9 +687,10 @@ const runAppServerTurn = (client, { threadId, text, baseModel, effort, prompt, e
       content: '',
       promptTokens: Math.max(1, Math.ceil((prompt || text).length / 4)),
       completionTokens: 0,
+      cacheReadTokens: 0,
       fail: (err) => {
         client.turnStates.delete(threadId);
-        done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: err.message });
+        done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, cacheReadTokens: state.cacheReadTokens, detail: err.message });
       },
       onNotification: (method, params) => {
         if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
@@ -700,18 +701,19 @@ const runAppServerTurn = (client, { threadId, text, baseModel, effort, prompt, e
         } else if (method === 'thread/tokenUsage/updated' && params.tokenUsage && params.tokenUsage.last) {
           if (typeof params.tokenUsage.last.inputTokens === 'number') state.promptTokens = params.tokenUsage.last.inputTokens;
           if (typeof params.tokenUsage.last.outputTokens === 'number') state.completionTokens = params.tokenUsage.last.outputTokens;
+          if (typeof params.tokenUsage.last.cachedInputTokens === 'number') state.cacheReadTokens = params.tokenUsage.last.cachedInputTokens;
         } else if (method === 'turn/completed' && params.turn) {
           client.turnStates.delete(threadId);
           if (params.turn.status === 'failed') {
             const detail =
               (params.turn.error && (params.turn.error.message || params.turn.error.codexErrorInfo)) ||
               'app-server turn failed';
-            done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: String(detail) });
+            done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, cacheReadTokens: state.cacheReadTokens, detail: String(detail) });
           } else {
             if (state.completionTokens === 0 && state.content) {
               state.completionTokens = Math.max(1, Math.ceil(state.content.length / 4));
             }
-            done({ ok: true, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: null });
+            done({ ok: true, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, cacheReadTokens: state.cacheReadTokens, detail: null });
           }
         }
       }
@@ -836,6 +838,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     let fullContent = '';
     let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
     let completionTokens = 0;
+    let cacheReadTokens = 0;
     let stderrTail = '';
     let spawnError = null;
     // In-band failure state: `codex exec --json` can report a fatal
@@ -895,6 +898,9 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
           if (typeof event.usage.output_tokens === 'number') {
             completionTokens = event.usage.output_tokens;
           }
+          if (typeof event.usage.cached_input_tokens === 'number') {
+            cacheReadTokens = event.usage.cached_input_tokens;
+          }
         }
       } catch (err) {
         // Non-JSON line or parser error ignored
@@ -946,6 +952,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
           content: fullContent,
           promptTokens,
           completionTokens,
+          cacheReadTokens,
           sessionId,
           detail
         });
@@ -957,6 +964,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
         content: fullContent,
         promptTokens,
         completionTokens,
+        cacheReadTokens,
         sessionId,
         detail: null
       });
@@ -1113,7 +1121,8 @@ const server = http.createServer(async (req, res) => {
         const usage = {
           prompt_tokens: result.promptTokens,
           completion_tokens: result.completionTokens,
-          total_tokens: result.promptTokens + result.completionTokens
+          total_tokens: result.promptTokens + result.completionTokens,
+          ...(result.cacheReadTokens > 0 ? { prompt_tokens_details: { cached_tokens: result.cacheReadTokens } } : {})
         };
         if (stream) {
           // Buffered (resumed) runs replay their content as one chunk;

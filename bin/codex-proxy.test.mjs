@@ -62,7 +62,7 @@ case "$prompt" in
   *)
     printf '%s\\n' '{"type":"thread.started","thread_id":"stub-session-1"}'
     printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}'
-    printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":3}}'
+    printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":3,"cached_input_tokens":93}}'
     exit 0 ;;
 esac
 `;
@@ -131,7 +131,7 @@ const createFakeAppServer = () => {
         }
         sendObj({ method: 'item/agentMessage/delta', params: { threadId: tid, turnId: 'stub-turn-1', itemId: 'item-1', delta: 'app-' } });
         sendObj({ method: 'item/agentMessage/delta', params: { threadId: tid, turnId: 'stub-turn-1', itemId: 'item-1', delta: 'server answer' } });
-        sendObj({ method: 'thread/tokenUsage/updated', params: { threadId: tid, turnId: 'stub-turn-1', tokenUsage: { last: { inputTokens: 42, outputTokens: 5 }, total: { inputTokens: 42, outputTokens: 5 } } } });
+        sendObj({ method: 'thread/tokenUsage/updated', params: { threadId: tid, turnId: 'stub-turn-1', tokenUsage: { last: { inputTokens: 42, outputTokens: 5, cachedInputTokens: 39 }, total: { inputTokens: 42, outputTokens: 5, cachedInputTokens: 39 } } } });
         sendObj({ method: 'turn/completed', params: { threadId: tid, turn: { id: 'stub-turn-1', status: 'completed' } } });
       }
     };
@@ -438,6 +438,7 @@ test('app-server transport: two turns on one daemon thread, tail only on turn 2 
   assert.equal(b1.choices[0].message.content, 'app-server answer');
   assert.equal(b1.usage.prompt_tokens, 42, 'usage must map from thread/tokenUsage/updated last.inputTokens');
   assert.equal(b1.usage.completion_tokens, 5);
+  assert.equal(b1.usage.prompt_tokens_details.cached_tokens, 39, 'app-server cachedInputTokens must surface as prompt_tokens_details.cached_tokens (opencode #394)');
 
   const saved = JSON.parse(
     fs.readFileSync(path.join(stateHome, 'codex-proxy', 'sessions.json'), 'utf-8')
