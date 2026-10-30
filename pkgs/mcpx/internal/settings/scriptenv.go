@@ -34,6 +34,9 @@ const (
 	// SetByPlugin is the opencode plugin, into the environment of every
 	// shell command the editor runs.
 	SetByPlugin Setter = "plugin"
+	// SetByHooks is the declared-hook runner (internal/hooks), into the
+	// environment of every hook process it starts for an event.
+	SetByHooks Setter = "hooks"
 	// SetByPluginLoader is the plugin loader (#1870), into the environment
 	// of every plugin process it hands the pool: the back-channel a plugin
 	// uses to call /v1. Not SetByPlugin -- that is the opencode plugin, a
@@ -56,6 +59,8 @@ func (s Setter) Describe() string {
 		return "the opencode plugin"
 	case SetByPluginLoader:
 		return "the plugin loader, for a discovered plugin"
+	case SetByHooks:
+		return "the declared-hook runner, for a hook it runs"
 	}
 	return string(s)
 }
@@ -128,6 +133,52 @@ func ScriptEnv() []EnvVar {
 			Meaning: "report: nothing in this run can answer a server's question mid-call, so a call that " +
 				"asks one exits 75 with the question instead of waiting for it to expire",
 			ReadBy: client + ", sent as X-Mcpx-Input",
+		},
+		// ---- the event a hook is running for ----
+		{
+			Name:    "MCPX_HOOK_NAME",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the declared name of the hook being run",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_PHASE",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the hook's phase; always observe for config-declared hooks",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_KIND",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the kind of the event the hook is running for; the full event is JSON on stdin",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SEQ",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the event's sequence number on the daemon's bus",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SERVER",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event names no server",
+			Meaning: "the server the event is about",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SESSION",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event belongs to no session",
+			Meaning: "the session the event belongs to",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_URI",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event names no resource",
+			Meaning: "the resource URI the event is about",
+			ReadBy:  "the hook itself",
 		},
 		// ---- reaching the daemon ----
 		{

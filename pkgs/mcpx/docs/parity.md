@@ -151,6 +151,7 @@ that reaches none says why: those are decisions, not gaps.
 | `health` | `health` | Generated from the operation table. |
 | `help` | – | Text about the binary, produced by the binary. |
 | `history` | `catalog_history` | Generated from the operation table. |
+| `hook` | – | Reads the resolved `hooks` setting from the configuration chain on this machine. |
 | `init` | – | Writes a file into the current directory. |
 | `interactions` | `interactions_list`, `interactions_get` |  |
 | `log` / `logs` | `log_query`, `log_record` |  |

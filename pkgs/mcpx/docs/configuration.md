@@ -377,7 +377,9 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `hooks` | string | *(empty)* | daemon | no | `--hooks` | `MCPX_HOOKS` | config-declared hooks over the event bus: a JSON array of hook objects |
 | `hooks.autonomy` | enum | `run` | call | yes | `--hooks-autonomy` | `MCPX_HOOKS_AUTONOMY` | whether configured script hooks (before, onSuccess, onError) run |
+| `hooks.timeout` | duration | `2s` | daemon | no | `--hooks-timeout` | `MCPX_HOOKS_TIMEOUT` | the hard timeout for a declared hook that does not set its own |
 
 ### http
 
