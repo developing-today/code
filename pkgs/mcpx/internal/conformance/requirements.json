@@ -2411,8 +2411,8 @@
       "server": "applies"
     },
     "notes": {
-      "client": "**partial**: parses `protocolVersions`, so a spec-conformant server's `supportedVersions` is missed → \"no shared protocol version\"",
-      "server": "**partial**: answers, but with `protocolVersions` (spec: `supportedVersions`), `serverInfo` top-level (spec: `_meta`), no `ttlMs`/`cacheScope`"
+      "client": "parses `supportedVersions` from the discover result (internal/mcpclient/probe.go)",
+      "server": "**partial**: answers with `supportedVersions` and `serverInfo` in `_meta` (envelope), but the discover result carries no `ttlMs`/`cacheScope`"
     }
   },
   {

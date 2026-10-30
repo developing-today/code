@@ -19,8 +19,29 @@ Decided by those settings today:
   while 2026-07-28 is strict (default); answered when it is in `spec.lenient`.
   `internal/mcpclient/client.go`.
 
-Not yet converted -- each is still decided in code: headline items 1, 3, 4,
-5, 6, 7, 8, 9, 10, 11, 12 and 13, and the per-area items in sections A-E.
+Every headline item now carries a disposition in the index below
+(Phase 1 of #2209): **peer-settled** (the peer's stated revision decides it,
+in code), **precedence-governed** (decided by the settings above), a
+**recorded reading** (mcpx follows one named reading of contradictory spec
+texts), or **undisposed** (an open question is named instead of a silent
+choice). Per-area items in sections A-E are dispositioned in place as that
+work proceeds; until an item carries a disposition line it is undisposed.
+
+## Disposition index — headline items
+
+1. **Recorded reading** — on stdio send the cancel (MUST) and, for a graceful end, the result; on HTTP answer the listen request and close the stream. Reading recorded in the item and in the comment block at internal/mcpserver/listen.go.
+2. **Precedence-governed** — `spec.Current().Governs("2026-07-28")` at internal/mcpclient/client.go (server-initiated requests dropped while 2026-07-28 is strict; MRTR carriage in section E). Also in the "Decided" list above.
+3. **Peer-settled** — disconnect split by era at internal/mcpserver/server.go (disconnect SHOULD NOT cancel on legacy, MUST in 2026).
+4. **Recorded reading** — the legacy MUST governs legacy `initialize`: `negotiate()` counter-offers a supported version; `-32022` applies to modern `_meta`-versioned requests only. See A/C5.
+5. **Undisposed** — open question (#1481 decision): the client choke keeps `-32602` (internal/mcpclient/schemacheck.go, internal/daemon/callerr.go); should the serve seam era-split `isError` for >=2025-11-25 hosts while /v1 and the client API keep `-32602`?
+6. **Peer-settled** — era-split codes in code: legacy `-32002` (internal/mcpserver/server.go, `codeResourceNotFoundLegacy`), 2026 `-32602`.
+7. **Undisposed** — open question: `downgrade()` (internal/mcpserver/revisions.go) deletes `structuredContent` only for pre-2025-06-18; a non-object value to a 2025-06-18..2025-11-25 (object-only) host passes unchanged. Render into content, wrap, or error? Check the conformance rows first.
+8. **Peer-settled** — `nextPage` (internal/mcpclient/client.go): a missing cursor ends results in every revision; in 2026 an empty string is a valid cursor, not the end.
+9. **Undisposed** — open question: the logging gate. The client relay gates on a requested level (internal/mcpclient/relay.go, `moreVerbose`); if no path relays upstream logs to a host that requested no level, this item is moot in the relay direction and should be closed saying so, with the site.
+10. **Undisposed** — legacy session-404 re-initialisation lives in internal/mcpclient's legacy session recovery; the era split (404 = session ended vs method not found) needs its site pinned before disposition.
+11. **Peer-settled** — `batchRefused` (internal/mcpserver/transport.go): batches are refused outside 2025-03-26, the one revision that mandates receiving them.
+12. **Recorded reading** — the schema and caching page govern over the changelog's list: `server/discover` results are `CacheableResult`s. Implementation gap: the discover result (internal/mcpserver/server.go) emits `supportedVersions` but not yet `ttlMs`/`cacheScope`.
+13. **Undisposed** — no code site verified yet: cancelled-task finality (core vs extension) and the missing-task code (`-32601` vs `-32600`) are spec-internal readings to disposition from the tasks code, or to list as open sub-questions per sub-part.
 
 ## Headline items
 
@@ -67,7 +88,7 @@ Not yet converted -- each is still decided in code: headline items 1, 3, 4,
 **C5. Version negotiation: MUST counter-offer vs example error (lifecycle page, all legacy revisions).**
 - Prose: "Otherwise, the server **MUST** respond with another protocol version it supports." https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
 - Same page, "Example initialization error": `"code": -32602, "message": "Unsupported protocol version", "data": {"supported": [...], "requested": "1.0.0"}` https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#error-handling
-- The example is a server doing what the MUST forbids. 2026 then standardises that example's shape under -32022 for modern requests only. mcpx follows the 2026 shape on legacy `initialize` (returns -32022), which is neither the legacy MUST nor the legacy example's code.
+- The example is a server doing what the MUST forbids. 2026 then standardises that example's shape under -32022 for modern requests only. mcpx now follows the legacy MUST: `negotiate()` (internal/mcpserver/server.go) counter-offers a supported version (its latest when the request is unknown or modern); `-32022` is used only for modern `_meta`-versioned requests, as 2026 specifies. (When this item was recorded, mcpx returned -32022 on legacy `initialize` too.)
 
 **C6. Client on an unsupported negotiated version: SHOULD vs MUST (prose vs schema, 2024-11-05..2025-11-25).**
 - Prose: "If the client does not support the version in the server's response, it **SHOULD** disconnect." https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation
@@ -101,7 +122,7 @@ Not yet converted -- each is still decided in code: headline items 1, 3, 4,
 **C17. `serverInfo` placement and `instructions`.**
 - Legacy: `InitializeResult.serverInfo` (required), `instructions?` top-level.
 - 2026: `serverInfo` only in `_meta["io.modelcontextprotocol/serverInfo"]` (SHOULD, every result); `DiscoverResult.instructions` top-level. https://modelcontextprotocol.io/specification/2026-07-28/server/discover#discoverresult
-- mcpx's discover answer uses the legacy placement (top-level `serverInfo`) and a non-spec `protocolVersions`.
+- mcpx's discover answer now uses the 2026 placement: `supportedVersions` in the result and `serverInfo` in `_meta` (added by the envelope to every modern result). Remaining gap: the discover result carries no `ttlMs`/`cacheScope` (headline 12).
 
 **C18. Timeouts relocated and reworded.**
 - 2025-03-26..2025-11-25 lifecycle: "the sender **SHOULD** issue a cancellation notification for that request" https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#timeouts
@@ -147,7 +168,7 @@ Not yet converted -- each is still decided in code: headline items 1, 3, 4,
 - basic/index: "A `resultType` of any value unrecognized by the client **MUST** be considered invalid." https://modelcontextprotocol.io/specification/2026-07-28/basic/index#resulttype
 - schema: `type ResultType = "complete" | "input_required" | string;` and "Servers implementing this protocol version MUST include this field. For backward compatibility, when a client receives a result from a server implementing an earlier protocol version … the client MUST treat the absent field as `\"complete\"`." A client cannot tell a pre-2026 server from a 2026 server that forgot the field, and on a response to a request that carried `protocolVersion: 2026-07-28` the server by definition is not "implementing an earlier protocol version" — yet the only rule given is absent ⇒ complete.
 
-**C23. `server/discover` field names: versioning page vs mcpx (not a spec-internal conflict; recorded because it breaks interop).** Spec: `supportedVersions` (schema DiscoverResult, discover.mdx, versioning page text "learn the server's supported versions"). mcpx server and client both use `protocolVersions` and top-level `serverInfo`.
+**C23. `server/discover` field names: versioning page vs mcpx (not a spec-internal conflict; recorded because it breaks interop).** Spec: `supportedVersions` (schema DiscoverResult, discover.mdx, versioning page text "learn the server's supported versions"). When recorded, mcpx server and client both used `protocolVersions` and top-level `serverInfo`. Fixed: the server emits `supportedVersions` (internal/mcpserver/server.go, `server/discover` case) with `serverInfo` in `_meta`, and the client parses `supportedVersions` (internal/mcpclient/probe.go). No longer an interop break; kept as the record of one.
 
 ## B. Transports and authorization
 
