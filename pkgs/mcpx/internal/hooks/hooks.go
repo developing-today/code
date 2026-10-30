@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/events"
 )
 
@@ -147,7 +148,7 @@ func Parse(raw string, defaultTimeout time.Duration) ([]Hook, error) {
 		return nil, nil
 	}
 	if defaultTimeout <= 0 {
-		defaultTimeout = 2 * time.Second
+		defaultTimeout = defaults.HooksTimeout
 	}
 	var decls []decl
 	if err := json.Unmarshal([]byte(raw), &decls); err != nil {

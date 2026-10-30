@@ -272,3 +272,38 @@ func TestOnlyKeysTheCallerMintedAreCallerOwned(t *testing.T) {
 		t.Error("a per-call key is always the caller's")
 	}
 }
+
+func TestCwdScopeCaseDifferingDirectoriesStaySeparate(t *testing.T) {
+	// On a case-sensitive volume these are two directories and must never
+	// share a key (#1912: identity keying makes the unsafe direction
+	// impossible). On a case-insensitive volume the second is the first,
+	// and the two spellings must key together instead.
+	base := t.TempDir()
+	upper := filepath.Join(base, "CaseDir")
+	lower := filepath.Join(base, "casedir")
+	if err := os.Mkdir(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(lower, 0o755); err != nil {
+		// The name is taken because the volume already resolved it to
+		// CaseDir -- that is the case-insensitive outcome, tested below.
+		t.Logf("second mkdir: %v", err)
+	}
+	fiU, err := os.Stat(upper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fiL, err := os.Stat(lower)
+	if err != nil {
+		t.Skip("lower-case spelling does not resolve")
+	}
+	a, _ := config.ScopeCwd.Key(config.CallContext{Cwd: upper, CallID: "c1"})
+	b, _ := config.ScopeCwd.Key(config.CallContext{Cwd: lower, CallID: "c2"})
+	if os.SameFile(fiU, fiL) {
+		if a != b {
+			t.Fatalf("two spellings of one directory must key together: %q vs %q", a, b)
+		}
+	} else if a == b {
+		t.Fatal("case-differing distinct directories must not share a cwd key")
+	}
+}

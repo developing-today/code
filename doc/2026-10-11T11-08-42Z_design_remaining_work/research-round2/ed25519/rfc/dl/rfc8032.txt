@@ -56,7 +56,7 @@ Copyright Notice
 
 
 Josefsson & Liusvaara         Informational                     [Page 1]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -112,7 +112,7 @@ Table of Contents
 
 
 Josefsson & Liusvaara         Informational                     [Page 2]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -168,7 +168,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 3]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -224,7 +224,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 4]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -280,7 +280,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 5]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -336,7 +336,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 6]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -392,7 +392,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 7]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -448,7 +448,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 8]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -504,7 +504,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                     [Page 9]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -560,7 +560,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 10]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -616,7 +616,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 11]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -672,7 +672,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 12]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -728,7 +728,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 13]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -784,7 +784,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 14]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -840,7 +840,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 15]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -896,7 +896,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 16]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -952,7 +952,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 17]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1008,7 +1008,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 18]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1064,7 +1064,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 19]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1120,7 +1120,7 @@ def point_add(P, Q):
 
 
 Josefsson & Liusvaara         Informational                    [Page 20]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1176,7 +1176,7 @@ def recover_x(y, sign):
 
 
 Josefsson & Liusvaara         Informational                    [Page 21]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1232,7 +1232,7 @@ def secret_to_public(secret):
 
 
 Josefsson & Liusvaara         Informational                    [Page 22]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1288,7 +1288,7 @@ def verify(public, msg, signature):
 
 
 Josefsson & Liusvaara         Informational                    [Page 23]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1344,7 +1344,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 24]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1400,7 +1400,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 25]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1456,7 +1456,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 26]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1512,7 +1512,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 27]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1568,7 +1568,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 28]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1624,7 +1624,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 29]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1680,7 +1680,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 30]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1736,7 +1736,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 31]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1792,7 +1792,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 32]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1848,7 +1848,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 33]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1904,7 +1904,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 34]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -1960,7 +1960,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 35]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2016,7 +2016,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 36]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2072,7 +2072,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 37]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2128,7 +2128,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 38]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2184,7 +2184,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 39]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2240,7 +2240,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 40]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2296,7 +2296,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 41]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2352,7 +2352,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 42]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2408,7 +2408,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 43]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2464,7 +2464,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 44]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2520,7 +2520,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 45]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2576,7 +2576,7 @@ def sha3_transform(s):
 
 
 Josefsson & Liusvaara         Informational                    [Page 46]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2632,7 +2632,7 @@ def reinterpret_to_octets(w):
 
 
 Josefsson & Liusvaara         Informational                    [Page 47]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2688,7 +2688,7 @@ def shake256(msg,olen): return sha3_raw(msg,17,31,olen)
 
 
 Josefsson & Liusvaara         Informational                    [Page 48]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2744,7 +2744,7 @@ class Field:
 
 
 Josefsson & Liusvaara         Informational                    [Page 49]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2800,7 +2800,7 @@ class EdwardsPoint:
 
 
 Josefsson & Liusvaara         Informational                    [Page 50]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2856,7 +2856,7 @@ class Edwards25519Point(EdwardsPoint):
 
 
 Josefsson & Liusvaara         Informational                    [Page 51]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2912,7 +2912,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 52]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -2968,7 +2968,7 @@ class Edwards448Point(EdwardsPoint):
 
 
 Josefsson & Liusvaara         Informational                    [Page 53]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3024,7 +3024,7 @@ RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
 Josefsson & Liusvaara         Informational                    [Page 54]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3080,7 +3080,7 @@ class PureEdDSA:
 
 
 Josefsson & Liusvaara         Informational                    [Page 55]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3136,7 +3136,7 @@ def Ed25519_inthash(data,ctx,hflag):
 
 
 Josefsson & Liusvaara         Informational                    [Page 56]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3192,7 +3192,7 @@ class EdDSA:
 
 
 Josefsson & Liusvaara         Informational                    [Page 57]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3248,7 +3248,7 @@ def munge_string(s, pos, change):
 
 
 Josefsson & Liusvaara         Informational                    [Page 58]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3304,7 +3304,7 @@ while True:
 
 
 Josefsson & Liusvaara         Informational                    [Page 59]
-
+
 RFC 8032                EdDSA: Ed25519 and Ed448            January 2017
 
 
@@ -3360,4 +3360,4 @@ Authors' Addresses
 
 
 Josefsson & Liusvaara         Informational                    [Page 60]
-
+

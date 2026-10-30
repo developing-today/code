@@ -236,9 +236,10 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
  * idle 5h windows), so keying on resetsAt would append noise points
  * for readings that did not move. A window roll still shows up — as
  * the value change it causes. The record itself carries the current
- * resetsAt. Label-only windows (balances) yield no record in v1 —
- * the CNY balance case is #1052's unit work; quota-current still
- * carries the label.
+ * resetsAt. Label-only USD windows (balances) still yield no
+ * record; a label carrying a yuan balance (#1052) yields a unit
+ * "cny" record with the same value-moved stamping, stored in yuan
+ * exactly as read.
  *
  * Pinned rule (#1624): the gatherer emits one entry per credential
  * but series identity is pool-level (serviceId, metricId), so all
@@ -299,7 +300,32 @@ export function recordsFromEntries(
         });
         continue;
       }
-      if (w.pctOfLimit == null) continue;
+      if (w.pctOfLimit == null) {
+        // CNY balance (#1052): the DeepSeek reserve's label is
+        // "¥44.29" — a yuan figure is its own unit, never converted.
+        // Same value-moved dedupe as pct windows (checked against
+        // both the input state map and this call's appended map, per
+        // the #1624 pinned rule), so the store gains a point when
+        // the balance actually moves.
+        const cny = w.valueLabel == null ? null : /^¥\s*([\d,]+(?:\.\d+)?)/.exec(w.valueLabel.trim());
+        if (!cny) continue;
+        const value = Number(cny[1].replace(/,/g, ""));
+        if (!Number.isFinite(value)) continue;
+        const key = `${entry.serviceId}|${w.name}`;
+        const stamp = `${value}`;
+        if (lastAppended.get(key) === stamp || appended.get(key) === stamp) continue;
+        appended.set(key, stamp);
+        records.push({
+          ts: w.measuredAt,
+          serviceId: entry.serviceId,
+          metricId: w.name,
+          value,
+          unit: "cny",
+          source: entry.source.startsWith("file-export") ? "console" : "api",
+          observedBy,
+        });
+        continue;
+      }
       const key = `${entry.serviceId}|${w.name}`;
       const cur = best.get(key);
       if (!cur) {

@@ -1071,6 +1071,7 @@ export type UsageSourceClass = "api" | "console" | "manual" | "estimate" | "invo
 export type UsageUnit =
   | "pct"
   | "usd"
+  | "cny"
   | "count"
   | "gb"
   | "tokens"
@@ -1092,6 +1093,9 @@ export interface UsageMetric {
   unit: UsageUnit;
   /** 0–100+, present when used and limit are both known (or unit is pct). */
   percent?: number;
+  /** `used` is a lower bound (e.g. capped API result), so derived
+   * percentages must read "at least N%". */
+  lowerBound?: boolean;
   /** In the §2 highlight set (front page); false = detail view only. */
   highlight: boolean;
   note?: string;
@@ -1273,7 +1277,9 @@ export interface SnapshotRecord {
   serviceId: string;
   metricId: string;
   value: number | { low: number; high: number };
-  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
+  /** "cny" is a first-class currency unit (#1052): a yuan balance is
+   * stored in yuan and never converted — no FX rate exists here. */
+  unit: "pct" | "usd" | "cny" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
   limit?: number | null;
   resetsAt?: string | null;
   source: UsageSourceClass;
