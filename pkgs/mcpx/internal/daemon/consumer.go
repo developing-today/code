@@ -17,6 +17,7 @@ import (
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
 	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/dezren39/mcpx/internal/model"
 	"github.com/dezren39/mcpx/internal/pool"
 	"github.com/dezren39/mcpx/internal/recipes"
 	"github.com/dezren39/mcpx/internal/runner"
@@ -47,6 +48,12 @@ type ConsumerPolicy struct {
 	PromptSampleTimeout time.Duration
 	PromptMaxTokens     int
 	RunTimeout          time.Duration
+	ModelProvider       string
+	ModelBaseURL        string
+	ModelAPIKeyEnv      string
+	ModelDefault        string
+	ModelBudget         int
+	ModelTimeout        time.Duration
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -129,6 +136,12 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.PromptSampleTimeout = set.Duration("prompt.sampleTimeout")
 	p.PromptMaxTokens = set.Int("prompt.maxTokens")
 	p.RunTimeout = set.Duration("prompt.runTimeout")
+	p.ModelProvider = set.String("model.provider")
+	p.ModelBaseURL = set.String("model.baseURL")
+	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelDefault = set.String("model.default")
+	p.ModelBudget = set.Int("model.budget")
+	p.ModelTimeout = set.Duration("model.timeout")
 	return p
 }
 
@@ -700,6 +713,17 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		"returning the result. Answer with the program only, no prose and no " +
 		"code fences.\n\n" + slice
 
+	// The model layer (#1925) is the path when one is configured: the
+	// caller resolved model.* through the settings registry, and a
+	// provider error here is errNoModel like any other, so the intent
+	// route falls back to its deterministic answer -- the ranked recipes
+	// plus the note that no model answered -- which is the scope guard's
+	// required shape. With model.provider at its default (none) this
+	// whole branch is skipped and generation behaves as it always has.
+	if mp := s.modelLayer(ctx); mp != nil {
+		return s.generateViaModel(ctx, mp, system, prompt, model)
+	}
+
 	if prov == nil {
 		return "", "", errNoModel
 	}
@@ -723,6 +747,177 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 // and generation no longer falls back to an MCP sampling request
 // (sampling is deprecated in MCP 2026-07-28; #1961).
 var errNoModel = fmt.Errorf("no model provider answered")
+
+// modelLayer resolves the #1925 provider layer for this request from the
+// request's own policy. It returns nil when no layer is configured --
+// model.provider none or unset, auto with nothing configured, or a named
+// provider that cannot be built -- so the caller keeps the behaviour it
+// had before the layer existed.
+func (s *Server) modelLayer(ctx context.Context) model.Provider {
+	pol := s.policyFor(ctx)
+	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
+		return nil
+	}
+	prov, err := model.Resolve(model.Config{
+		Provider:     pol.ModelProvider,
+		BaseURL:      pol.ModelBaseURL,
+		APIKeyEnv:    pol.ModelAPIKeyEnv,
+		DefaultModel: pol.ModelDefault,
+		Timeout:      pol.ModelTimeout,
+		Sampler:      s.brokerSampler(),
+	})
+	if err != nil {
+		s.logger.Printf("model layer: %v; generation falls back to the repair provider", err)
+		return nil
+	}
+	return prov
+}
+
+// generateViaModel is generate's model-layer path: the same system prompt
+// and catalog slice, one Generate call, the layer's bounds applied --
+// model.budget caps the tokens asked for, model.default supplies the
+// model id when the caller named none.
+func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, system, prompt, modelID string) (string, string, error) {
+	pol := s.policyFor(ctx)
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	maxTokens := pol.PromptMaxTokens
+	if pol.ModelBudget > 0 && (maxTokens == 0 || pol.ModelBudget < maxTokens) {
+		maxTokens = pol.ModelBudget
+	}
+	resp, err := prov.Generate(ctx, model.Request{
+		Model:     modelID,
+		Messages:  []model.Message{{Role: "system", Content: system}, {Role: "user", Content: prompt}},
+		MaxTokens: maxTokens,
+	})
+	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		return "", "", errNoModel
+	}
+	used := "provider:" + prov.Name()
+	answered := resp.Model
+	if answered == "" {
+		answered = model.ModelID(modelID)
+	}
+	if answered != "" {
+		used += "/" + answered
+	}
+	return stripFences(resp.Text), used, nil
+}
+
+// brokerSampler is the sampling backend's path into the elicitation
+// broker: a generation request becomes a sampling question for whatever
+// drives mcpx, in the CreateMessage shape answerers already know
+// (elicit.SampleAsk). Nobody answering within the deadline is an
+// unavailable provider, not a hang: the broker's expiry answer lands as
+// an error here and the caller falls back deterministically.
+func (s *Server) brokerSampler() model.SampleFunc {
+	if s.reg == nil || s.reg.broker == nil {
+		return nil
+	}
+	broker := s.reg.broker
+	return func(ctx context.Context, req model.Request) (model.Response, error) {
+		params, err := samplingParams(req)
+		if err != nil {
+			return model.Response{}, err
+		}
+		ttl := s.policyFor(ctx).ModelTimeout
+		if ttl <= 0 {
+			ttl = defaults.PromptSampleTimeout
+		}
+		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
+			Server:  "mcpx",
+			Message: "mcpx asks for a model completion (model.provider=sampling)",
+			TTL:     ttl,
+		}, params))
+		if err != nil {
+			return model.Response{}, err
+		}
+		ans, err := broker.Await(ctx, question.ID)
+		if err != nil {
+			return model.Response{}, err
+		}
+		if ans.Action != elicit.Accept {
+			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
+		}
+		text, answered := parseSampleResult(ans.Content)
+		if strings.TrimSpace(text) == "" {
+			return model.Response{}, fmt.Errorf("model: sampling answered with no text: %w", model.ErrUnavailable)
+		}
+		return model.Response{Text: text, Model: answered, Provider: "sampling"}, nil
+	}
+}
+
+// samplingParams renders a model.Request as an MCP sampling
+// CreateMessageRequest, the shape the broker's answerers speak.
+func samplingParams(req model.Request) (json.RawMessage, error) {
+	var messages []map[string]any
+	var system string
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			system = m.Content
+			continue
+		}
+		role := m.Role
+		if role == "" {
+			role = "user"
+		}
+		messages = append(messages, map[string]any{
+			"role":    role,
+			"content": map[string]any{"type": "text", "text": m.Content},
+		})
+	}
+	doc := map[string]any{"messages": messages}
+	if system != "" {
+		doc["systemPrompt"] = system
+	}
+	if req.MaxTokens > 0 {
+		doc["maxTokens"] = req.MaxTokens
+	}
+	if len(req.Stop) > 0 {
+		doc["stopSequences"] = req.Stop
+	}
+	if id := model.ModelID(req.Model); id != "" {
+		doc["modelPreferences"] = map[string]any{
+			"hints": []map[string]any{{"name": id}},
+		}
+	}
+	return json.Marshal(doc)
+}
+
+// parseSampleResult extracts the text and the answering model from a
+// sampling CreateMessageResult. Content arrives as one block (the legacy
+// shape) or an array of blocks (2025-11-25); text blocks are concatenated.
+func parseSampleResult(raw json.RawMessage) (text, modelName string) {
+	var result struct {
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return "", ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &blocks) == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, ""), result.Model
+	}
+	var one struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &one) == nil && one.Type == "text" {
+		return one.Text, result.Model
+	}
+	return "", result.Model
+}
 
 // stripFences removes a markdown code fence a model wrapped the answer in.
 //

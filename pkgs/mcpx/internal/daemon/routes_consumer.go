@@ -419,7 +419,8 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// default; without it a host with opencode installed paid for a model
 	// call on every unmatched prompt. A caller naming a provider or model
 	// on this request has asked, for this request.
-	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != ""
+	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != "" ||
+		(pol.ModelProvider != "" && pol.ModelProvider != "none")
 	if !asked || prov == nil {
 		out.Model = "none"
 		if !asked {
@@ -428,8 +429,8 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 				"The ranked recipes above are everything mcpx can offer deterministically."
 		} else {
 			out.Message = "no recipe matched, and no model provider is " +
-				"available: mcpx has no model of its own, and neither the " +
-				"daemon's repair.provider settings nor this request's " +
+				"available: neither the model.provider settings (#1925), " +
+				"the daemon's repair.provider settings, nor this request's " +
 				"provider/model named a usable one. " +
 				"The ranked recipes above are everything mcpx can offer deterministically."
 		}
@@ -441,9 +442,10 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		out.Model = "none"
 		out.Message = "no recipe matched, and no model answered. " +
-			"mcpx has no model of its own: generation needs a provider " +
-			"-- the daemon's repair.provider/repair.model settings, or " +
-			"this request's provider/model -- to answer. The ranked " +
+			"Generation needs a provider -- the model.* settings " +
+			"(#1925), the daemon's repair.provider/repair.model " +
+			"settings, or this request's provider/model -- to answer, " +
+			"and the one configured was unavailable. The ranked " +
 			"recipes above are everything mcpx can offer without one."
 		writeJSON(w, 200, out)
 		return
