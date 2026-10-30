@@ -189,6 +189,12 @@ func ScriptEnv() []EnvVar {
 			Meaning: "the directories searched for named scripts, nearest first, colon-separated",
 			ReadBy:  client + " (paths.scriptDirs)",
 		},
+		{
+			Name:    "MCPX_API_DECLARATION_SHA256",
+			SetBy:   []Setter{SetByCLI},
+			Meaning: "the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
+			ReadBy:  client + " (api serve, as a pool identity input)",
+		},
 		// ---- how the script runs ----
 		{
 			Name:    "MCPX_RUNTIME",
