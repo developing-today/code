@@ -438,9 +438,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 		return err
 	}
 	s.unixLn = ln
-	mux := http.NewServeMux()
-	s.routes(mux)
-	s.httpSrv = &http.Server{Handler: s.refuseBrowserPages(mux),
+	s.httpSrv = &http.Server{Handler: s.Handler(),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
 	go func() {
 		<-ctx.Done()
@@ -448,6 +446,52 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 		_ = os.Remove(socket)
 	}()
 	go func() { _ = s.httpSrv.Serve(ln) }()
+	return nil
+}
+
+// Handler is the daemon's API as a plain http.Handler: the same handler
+// its listeners serve, ServeInline included. One API, hosted wherever
+// the caller can carry it — a host that invokes the handler directly
+// (the CLI's inline mode) serves the identical API without a listener.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	s.routes(mux)
+	return s.refuseBrowserPages(mux)
+}
+
+// InProcessHandler returns Handler with the daemon's lifetime tied to
+// ctx, the way ServeInline ties it to its socket's context: when ctx
+// ends, the pools drain and the caches flush (stopServing). The caller
+// owns carrying the requests; this owns only the lifetime.
+func (s *Server) InProcessHandler(ctx context.Context) http.Handler {
+	go func() {
+		<-ctx.Done()
+		s.stopServing()
+	}()
+	return s.Handler()
+}
+
+// ServeSocket serves the daemon's API on a unix socket until ctx ends.
+//
+// It is ServeInline's listener without the lifetime: ending ctx closes
+// the socket and removes its file, but the pools keep running —
+// InProcessHandler owns those. Inline mode opens a socket lazily, only
+// when a script asks for one: a script runs in a child process, which
+// can reach the in-process daemon no other way.
+func (s *Server) ServeSocket(ctx context.Context, socket string) error {
+	_ = os.Remove(socket)
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: s.Handler(),
+		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+		_ = os.Remove(socket)
+	}()
+	go func() { _ = srv.Serve(ln) }()
 	return nil
 }
 

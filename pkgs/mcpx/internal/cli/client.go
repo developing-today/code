@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,6 +36,14 @@ type Client struct {
 	// endpoint is empty for the local socket, or a base URL for a daemon
 	// somewhere else.
 	endpoint string
+	// lazySocket, for an in-process (inline) client, opens the daemon's
+	// socket on first use and returns its path. Inline mode creates no
+	// socket for its own calls; only a script — a child process, which
+	// cannot share the in-process transport — needs one, so the socket
+	// is opened lazily by Socket.
+	lazySocket func() (string, error)
+	socketOnce sync.Once
+	socketPath string
 	// set is this process's resolved configuration.
 	set *settings.Set
 	// callSettings is the JSON header carrying whatever call-scoped settings
@@ -188,6 +197,18 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	return c
 }
 
+// NewInProcessClient builds a client whose daemon is hosted in this
+// process: rt carries its requests to the daemon's handler directly, so
+// no connection is dialled and no socket exists for the client's own
+// calls. lazySocket opens the daemon's real socket if something — a
+// script — asks for it through Socket.
+func NewInProcessClient(paths daemon.Paths, configPath string, rt http.RoundTripper, lazySocket func() (string, error)) *Client {
+	c := NewClient(paths, configPath)
+	c.hc.Transport = rt
+	c.lazySocket = lazySocket
+	return c
+}
+
 // Remote reports whether this client talks to a daemon it cannot start.
 // Socket is the unix socket this client is actually using, or "" when the
 // daemon is somewhere else.
@@ -197,6 +218,14 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 // from the config key gave the wrong answer -- and an empty one, which the
 // generated client turned into "cannot reach the mcpx daemon at ".
 func (c *Client) Socket() string {
+	if c.lazySocket != nil {
+		c.socketOnce.Do(func() {
+			if p, err := c.lazySocket(); err == nil {
+				c.socketPath = p
+			}
+		})
+		return c.socketPath
+	}
 	if c.endpoint != "" {
 		return ""
 	}
