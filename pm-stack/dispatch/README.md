@@ -86,7 +86,9 @@ it cannot claim a specific row. A dispatch launch knows exactly which
 task it created and which session owns it, so it PATCHes that row
 directly (the service-role key can), setting the same fields a claim
 would. This is deliberate and is the only place dispatch writes task
-rows outside the RPCs.
+rows outside the RPCs. One FK wrinkle: `tasks.worker_id` references
+`agent.workers`, so dispatch idempotently registers its own worker row
+(`dispatch-opencode`, role `build`) before the first claim PATCH.
 
 ## Auth
 Every endpoint except `GET /health` requires `Authorization: Bearer …`:
