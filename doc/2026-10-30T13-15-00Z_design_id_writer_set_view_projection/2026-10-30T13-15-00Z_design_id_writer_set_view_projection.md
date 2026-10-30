@@ -520,7 +520,7 @@ people who trust different sets.
 
 **Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
 Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
-It is stated once, in full, because eleven review rounds showed that patching clauses one at a time
+It is stated once, in full, because twelve review rounds showed that patching clauses one at a time
 keeps opening a hole somewhere else. "Undefined" covers **two** named preconditions, both of them
 a *selected input* that no longer applies under the pinned `R`: the set version `S` is forked
 (below) and the view-configuration event `C.config_event_id` is forked (`config_applied`).
@@ -538,28 +538,33 @@ a *selected input* that no longer applies under the pinned `R`: the set version 
 
 past(F, c)      ⇔  c ∈ causal_past(F)
 
-// versions(S) is NOT "every idset.writer event the store holds". It is TWO restrictions,
-// and both are load-bearing:
-//   (a) the owner's APPLIED PREFIX as of R, truncated at S.set_seq — a linear sequence,
-//       because `chains` stores the applied prefix and `forks` holds the conflicting
-//       headers outside it (event_store/mod.rs:90-91), and
+// versions(S) is NOT "every idset.writer event the store holds". It is THREE restrictions,
+// and all are load-bearing:
+//   (a) the events on S.owner's VERIFIED CHAIN through S.set_seq that are INDIVIDUALLY
+//       applied under R — not "the contiguous applied prefix". A voided operation does not
+//       stall its author: `test_a_voided_event_does_not_stall_its_author`
+//       (pkgs/id/tests/voiding_scenarios.rs:390-404) keeps Bob's content applied after his
+//       voided `add`, while `refresh` stops advancing the chain *prefix* at the voided
+//       predecessor (event_store/ingest.rs:926-930). Using the prefix would therefore
+//       exclude an otherwise-valid writer-set event published after a voided sibling and
+//       make `project` undefined with no fork anywhere (round 12, finding 35). The chain
+//       is still linear — verdicts differ, sequence numbers do not — so `max` over this
+//       set remains a function.
 //   (b) a FILTER ON `set_id`: only versions whose body says set_id = S.set_id.
+//   (c) S.set_seq itself must be in the set, or project() is undefined (below).
 // (b) is not cosmetic. OQ-2 explicitly permits one owner to publish several purpose-
-// specific sets, so the owner's applied prefix interleaves the dog set, the chat set and
+// specific sets, so the owner's chain interleaves the dog set, the chat set and
 // the dog set again. Without the filter, seq 2 of the *chat* set would be an admission
 // version of the *dog* set: a stranger's dog claim that saw seq 2 but not the dog set's
 // seq 3 would resolve `seen_by` to the chat set's Public and count. A set version is a
 // position in an owner's chain, but a *version of S* only if S is the set it publishes.
-versions(S)     ⇔  { v : v ∈ applied prefix of S.owner's chain under R, v.seq ≤ S.set_seq,
-                        body(v).set_id = S.set_id }
-                    // `applied prefix ... under R` is the same linearity guarantee as before;
-                    // the set_id filter makes it linear *and about one set*. Both kinds
-                    // (idset.writer and idset.rescind) carry a set_id, so one filter serves
-                    // both — a rescind of the chat set can never erase a dog claim.
-                    // if S.set_seq is NOT in this sequence, project() is undefined for this
-                    // view: the view's own set version is forked, so there is nothing to
-                    // project. Refusing is the answer; silently projecting the surviving
-                    // branch would attribute a total to an input the owner did not select.
+versions(S)     ⇔  { v : v ∈ verified chain of S.owner under R, v.seq ≤ S.set_seq,
+                        applied(R, v), body(v).set_id = S.set_id }
+                    // if S.set_seq is NOT in this set, project() is undefined for this
+                    // view: the view's own set version is forked or does not apply, so
+                    // there is nothing to project. Refusing is the answer; silently
+                    // projecting the surviving branch would attribute a total to an input
+                    // the owner did not select.
 config_applied(C, R) ⇔  applied(R, C.config_event_id)
                     // THE SAME RULE FOR THE CONFIGURATION EVENT. `config_seq` names one
                     // owner-chain event, and that event can be at or above a fork point even
@@ -671,22 +676,33 @@ Each clause exists because a review round proved its absence broke something:
      stays counted for later ones: a later removal must not un-import a backlog already brought in,
      only `rescind` (§3.3) may. This is the only way a claim that predates any admission can count —
      the promise §3.1 makes and that a prospective-only predicate could never keep.
-   - **`seen_by` draws from the *applied* prefix, not from every `idset.writer` event in the
-     store.** `chains` keeps each author's applied prefix and `forks` holds conflicting headers
-     outside it ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)), so the prefix
-     is linear and `max` is a function. Without that restriction a set chain that forked at some
-     `set_seq` would give two versions the same `seq`, `max` would be ambiguous, and §4.1 would stop
-     being a function of *(C, S, F, R)* at all — a forked, never-applied set version could admit an
-     author or satisfy `retro`. This is the same discipline clause 1 applies to claims, applied to
-     the set's own history.
-   - **…and only from versions *of this set*.** The applied prefix is the *owner's*, not the
-     set's: OQ-2 lets one owner publish several purpose-specific sets, so the prefix interleaves
+   - **`seen_by` draws from the *individually applied* events on the owner's verified chain, not
+     from every `idset.writer` event in the store.** `chains` keeps each author's chain and `forks`
+     holds conflicting headers outside it ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)),
+     so the sequence is linear and `max` is a function. Without that restriction a set chain that
+     forked at some `set_seq` would give two versions the same `seq`, `max` would be ambiguous, and
+     §4.1 would stop being a function of *(C, S, F, R)* at all — a forked, never-applied set version
+     could admit an author or satisfy `retro`. This is the same discipline clause 1 applies to
+     claims, applied to the set's own history.
+   - **…and "applied" is per event, not the contiguous *prefix*** (round 12, finding 35). A voided
+     operation does not stall its author: `test_a_voided_event_does_not_stall_its_author`
+     ([`tests/voiding_scenarios.rs:390-404`](../../pkgs/id/tests/voiding_scenarios.rs)) keeps Bob's
+     content applied after his voided `add`, while `refresh` stops advancing the stored chain
+     *prefix* at that voided predecessor
+     ([`event_store/ingest.rs:926-930`](../../pkgs/id/src/event_store/ingest.rs)). An owner whose
+     earlier group operation is voided by a concurrent removal can therefore publish a valid
+     `idset.writer` after it, and a prefix-based `versions(S)` would drop that version and declare
+     `project` undefined with no fork anywhere. Membership is `applied(R, v)` evaluated per event;
+     `S.set_seq ∈ versions(S)` is the check that the *selected* version survives.
+   - **…and only from versions *of this set*.** The chain is the *owner's*, not the
+     set's: OQ-2 lets one owner publish several purpose-specific sets, so it interleaves
      them. Filtering by `body(v).set_id = S.set_id` (round-8 finding 26) is what keeps a second
      set's admission from governing the first — without it, a chat set admitting `Public` at seq 2
      would admit the world into the dog view, and a chat `rescind` would erase dog claims. Both
      kinds carry `set_id`, so one filter covers admissions and rescinds alike.
    - **If `S.set_seq` itself is not in `versions(S)` under `R`, `project` is undefined.** The
-     owner selected a set version that a fork proof has since invalidated, so the view's own input is
+     owner selected a set version that a fork proof has since invalidated (or that does not
+     individually apply), so the view's own input is
      gone; refusing is correct and silently substituting the surviving branch would report a total
      against an input nobody chose. §4.6's `validity_now` is what tells the owner *why* — the same
      split that keeps a saved total reproducible keeps an unresolvable one from being invented.
@@ -696,7 +712,7 @@ Each clause exists because a review round proved its absence broke something:
      the selected version, which is exactly what "removal stops future counting" means for a view
      that has not yet advanced.
    - **`retro` is monotone, and clearing `include_history` later does not un-import.** Because the
-     disjunct is existential over the applied prefix, a later version that drops the flag leaves an
+     disjunct is existential over the applied versions, a later version that drops the flag leaves an
      already-imported backlog counted. That is intended (§3.2: only `rescind` retracts), but it is
      worth stating: the flag is an import switch, not a standing filter. An owner who wants the
      import *undone* uses `rescind` (§3.3), which is visible in the set's version history.
@@ -1048,15 +1064,26 @@ the multi-key form ("an attacker mints 10,000 keys"). So:
   [`search.rs`](../../pkgs/id/src/search.rs)) — so an exact distinct-author count per subject has no
   index path and would make the *first* page cost O(all matching claims). That is the opposite of
   what §5.1 exists to guarantee. The decision:
-  - the discovery scan is capped at `MAX_AUTHORS_SCANNED` distinct authors (a #2032 budget value);
+  - the discovery scan is capped by a **work budget in examined rows (and decoded bytes), not by a
+    count of distinct authors** — `MAX_DISCOVERY_ROWS`. A distinct-author cap alone is no bound at
+    all for the single-key flood: one author with an unbounded history keeps `authors_seen = 1`
+    while the query reads every row (round 12, finding 33);
   - `total_authors` is returned as `TotalAuthors { kind: Exact, n }` when the scan finished inside
-    the cap, and `TotalAuthors { kind: AtLeast, n, scanned: MAX_AUTHORS_SCANNED }` when it did not;
+    the budget, and `TotalAuthors { kind: AtLeast, n, rows_scanned }` when it did not, together with
+    a **resumable cursor** — the same cursor that pages the result, so a truncated scan is continued
+    on the next request rather than restarted or silently dropped;
   - the result type therefore cannot present a lower bound as a total, and a renderer that shows
     "at least 500 authors" is not lying while one that shows "500" would be;
-  - if a later slice needs exactness, it adds a **subject-keyed author index** maintained on append
-    and pays for it in slice 3's cost and in abuse-case row 2 — not in this query's first page.
+  - `claim_count` per cluster is the count of that author's hits **observed within the same budget**,
+    marked as a lower bound when the budget was hit — it is never produced by walking the author's
+    whole history, which is the row-unbounded path this finding named;
+  - if a later slice needs exactness *or* bounded exact counts, it adds a **subject-keyed author
+    index plus maintained per-(subject, author) aggregates** on append, and pays for it in slice 3's
+    cost and in abuse-case row 2 — not in this query's first page.
   The row-2 compute bound is restated with this: projection cost is writer-set-shaped, and
-  discovery cost is `O(MAX_AUTHORS_SCANNED)`, not `O(matching claims)`.
+  discovery cost is `O(MAX_DISCOVERY_ROWS)` examined rows per page, not `O(matching claims)` and
+  not `O(distinct authors)` — the two are different budgets and only the row budget bounds the
+  single-key case.
 - The page cap and any bucket-width values are **delegated to #2032** with the other budget
   numbers (§6) — this spec sets the *shape* (bounded + cursor + a total marked `Exact`/`AtLeast`),
   not the number.
@@ -1068,7 +1095,7 @@ the multi-key form ("an attacker mints 10,000 keys"). So:
   with the projection layer.
 - The §9 slice-5 test must therefore cover **both** shapes: 10k claims from 1 key (one cluster)
   **and** 10k keys with 1 claim each (10k clusters, bounded page, a `total_authors` that reports
-  `AtLeast` when the author scan hits `MAX_AUTHORS_SCANNED`). The
+  `AtLeast` when the row budget `MAX_DISCOVERY_ROWS` is exhausted). The
   second is the one that fails today, so it is the test that matters.
 
 ### 5.2 `petname` is viewer-local and must never be presented as identity
@@ -1107,8 +1134,9 @@ enum Tier { Hot, Cold { expires_at: RetentionWindow } }
 //      or named by a view exception,
 //      or it is a view-configuration input of a view this server serves
 //      (the view config itself, every writer-set or rescind version that
-//       view's projection reads, and every membership-action event its
-//       pinned resolution snapshot R consumed) — see the third constraint below.
+//       view's projection reads, every membership-action event its pinned
+//       resolution snapshot R consumed, and the saved frontier tip F) — see
+//       the third and fourth constraints below.
 // Cold otherwise.
 ```
 
@@ -1156,6 +1184,18 @@ because the numbers are not this spec's to set. Three constraints from the code:
   `voiding_scenarios.rs` removal-of-Bob is the worked shape: pin Dave's claim from that scenario,
   and Alice's removal is protected only by this term.
 
+  **A fourth term is needed for the same reason, and round 12 found it: the saved frontier itself**
+  (finding 34). `F` is an event, and it can be an ordinary out-of-scope event that is *not* counted
+  and *not* an ancestor of any root above — a tip descended from a counted claim. `prune_behind_cut`
+  protects explicit roots and their **ancestors**
+  ([`event_store/mod.rs:611-629`](../../pkgs/id/src/event_store/mod.rs)), never a protected claim's
+  *descendants*, so a later cut can delete the frontier tip while keeping the counted claim it
+  bounds. `past(F, c)` would then be unreconstructible and the saved projection unreproducible — the
+  same class as findings 27 and 31, on the third input of the tuple. So **every served view's saved
+  frontier tip, and its causal dependencies, are retention roots too**, on the same
+  `prune_behind_cut(cut, protected)` contract. The complete root set this section defines is
+  therefore `counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs ∪ frontier tips`.
+
 **There is already a worked precedent for exactly that rule, and it is unwired.**
 `EventStore::prune_behind_cut(cut, protected)` prunes events behind a causal cut while keeping
 "every event back to the causal past of each open removal … and open frontier" and "events that
@@ -1191,7 +1231,7 @@ Each case gets: the mechanism in this spec, or an explicitly accepted residual r
 | # | Case | Mechanism here | Verdict |
 |---|---|---|---|
 | 1 | **Montana stranger** claims they walked my dog | Signed claim is `applied` (content always applies, `resolve.rs:1-20`) and stored; `counted()` is false because no version in the set's applied prefix ever admitted them, so `admitted_at` and `retro` are both false (§4.1) — *not* because they are absent from the current snapshot, which was finding 3. Discovery still shows the claim where its author is otherwise known (§5.1); a view that neither admits nor names them does not retrieve it at all, and that is deliberate (§5.3). Owner may ignore, `view.exception` it, or add the writer (§4.4). | **✅ wholly answered** |
-| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1) — no version admitted those authors, so they are not even candidates. Compute: projection is author-indexed, so cost ∝ writer-set rows, not flood volume (§4.2) — true for keyed/group sets; a `Public` set is the stated exception. Discovery is bounded by `MAX_AUTHORS_SCANNED`, not by matching-claim volume, so its cost is a #2032-set constant rather than a function of the flood (§5.1). Readability: bounded, cursor-paginated discovery with a total marked `Exact`/`AtLeast`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
+| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1) — no version admitted those authors, so they are not even candidates. Compute: projection is author-indexed, so cost ∝ writer-set rows, not flood volume (§4.2) — true for keyed/group sets; a `Public` set is the stated exception. Discovery is bounded by a row/byte work budget (`MAX_DISCOVERY_ROWS`) with resumable cursors, not by matching-claim volume and not by a distinct-author count — the latter does not bound a single-key flood — so its per-page cost is a #2032-set constant rather than a function of the flood (§5.1). Readability: bounded, cursor-paginated discovery with a total marked `Exact`/`AtLeast`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
 | 3 | **Storage exhaustion** against a relay | Validity is not a storage entitlement: `Tier::Cold { expires_at }` (§6) plus #2032's per-IP/per-ID/per-topic MB windows. Reference-holding rule (§6) prevents expiry stranding hot dependents. | **⚠️ holds only with #2032 budgets in place — this is the model's real weak point, stated not buried** |
 | 4 | **Confusion attack** — spam crafted to look counted | `Projection.counted` and `.uncounted` are different types (§4.3); counted status is computed from the set, never read from the claim; every uncounted hit renders author + `WhyNotCounted`. | **✅ if the type split and the render rule hold** |
 | 5 | **Writer-set poisoning** — I'm talked into adding an attacker | Set changes are signed `idset.writer` versions (§D1/D2), so the version history is a reviewable list ("your set changed 3× this week"); `rescind` exists (§3.3); per-entry scoping (`Entry::Group{role_min, ..}`, §D3) bounds blast radius. | **⚠️ accepted residual: the model makes an owner decision visible and reversible; it cannot make it wisely** |
@@ -1354,9 +1394,10 @@ Each is independently reviewable and small enough to land alone.
 5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
    labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
    **10k distinct keys → 10k clusters, one bounded page** (the one that fails today). Plus the
-   `total_authors` bound: a scan that finishes inside `MAX_AUTHORS_SCANNED` reports `Exact`, one
-   that does not reports `AtLeast` and stops at the cap — the negative control is an implementation
-   that counts all matching distinct authors, which fails the cap assertion on the 10k-key fixture.
+   `total_authors` bound: a scan that finishes inside `MAX_DISCOVERY_ROWS` reports `Exact`, one
+   that does not reports `AtLeast` and stops at the row cap — the negative control is an
+   implementation that counts all matching distinct authors, which fails the row assertion on the
+   **one-key** fixture (one author, unbounded rows), the case a distinct-author cap cannot catch.
 6. **`Tier` decision function** (§D7) with the reference-holding rule (§6), built on
    `prune_behind_cut`'s existing "protect dependencies and active backlinks" contract
    ([`event_store/mod.rs:527-545`](../../pkgs/id/src/event_store/mod.rs)) — give it a
@@ -1377,6 +1418,12 @@ Each is independently reviewable and small enough to land alone.
      the resolution-root term removed — reconstructing `R` without the removal **restores** the
      claim's applicability and the saved total changes, so the test fails on that, not on a missing
      row.
+   - **a saved frontier tip outlives the same cut** (finding 34): the view's `F` is an ordinary
+     out-of-scope event descended from a counted claim, so it is neither counted nor an ancestor of
+     any other root. Prune to a cut that would drop it and re-derive `project(view, R)`: the total
+     must be identical. The negative control is the same fixture with the frontier-tip term removed
+     — `past(F, ·)` becomes unreconstructible and the totals diverge, so the test fails on the
+     divergence.
 7. **The did-it tracker's first view** as the first real consumer, in
    [#2031](https://github.com/developing-today/code/issues/2031)'s PoC — the proof that one
    identity's view excludes a third party's claims while keeping them retrievable.
@@ -1539,14 +1586,29 @@ more P2s and one minor. All four accepted and fixed; none dismissed.
 |---|---|---|
 | 31 | §D7's retention roots covered a served view's **configuration and writer-set versions** but not the **membership-action inputs its pinned `R` consumed**. Alice's concurrent removal of Bob voids Dave's claim without any fork, and the removal is neither counted nor an ancestor of the configuration, the selected set version, or the retained claims — so every earlier root rule leaves it `Cold`, pruning deletes it, and reconstructing `R` **restores** Dave's applicability instead of reproducing the saved total. | **Fixed.** §D7's third term now names **every membership-action event in `R`'s snapshot** (§3.4's identifier hashes exactly that set) as a retention root while any served view names that `R`, plus its causal dependencies through the same `prune_behind_cut` contract. The root set is stated as `counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs`, and slice 6 gained the `voiding_scenarios.rs` fixture whose negative control is the saved total changing after the prune. |
 | 32 | §4.1 gated the selected **set** version (`S.set_seq ∈ versions(S)`) but never the selected **configuration** event. A fork at owner-chain seq 10 that invalidates a `view.exception` published there leaves `S` (seq 5) healthy while the exception still counts a stranger's claim — a rejected owner-chain branch continuing to steer the total. | **Fixed.** New `config_applied(C, R) ⇔ applied(R, C.config_event_id)` in §4.1, with `C` re-stated as `(config_event_id, scopes, exceptions)`. A forked configuration event makes `project` **undefined**, for exactly the reason a forked `S` already did — one rule applied to the view's two selected events. §4.4 states that an exception therefore does not fire if its publishing event is invalidated, and slice 4 gained the test with its negative control. |
-| — | **CodeRabbit (minor, §5.1):** `total_authors` was required to be "honest" with no definition, while the only index is `(author, seq)` and `subject` is a stored value — so an exact distinct-author total would require reading every matching claim before the first page. | **Fixed by bounding it.** `total_authors` is now `TotalAuthors { Exact, n } \| { AtLeast, n, scanned }` over a scan capped at `MAX_AUTHORS_SCANNED` (a #2032 value), the row-2 compute bound is restated as `O(MAX_AUTHORS_SCANNED)`, and slice 5's test asserts `AtLeast` on the 10k-key fixture. Exactness would need a subject-keyed author index and is stated as a separate, priced option — not silently assumed. |
+| — | **CodeRabbit (minor, §5.1):** `total_authors` was required to be "honest" with no definition, while the only index is `(author, seq)` and `subject` is a stored value — so an exact distinct-author total would require reading every matching claim before the first page. | **Fixed by bounding it.** `total_authors` is now `TotalAuthors { Exact, n } \| { AtLeast, n, scanned }` over a scan capped at `MAX_DISCOVERY_ROWS` **examined rows** (a #2032 value; round 12, finding 33 replaced the original distinct-author cap, which left the single-key case unbounded), the row-2 compute bound is restated as `O(MAX_DISCOVERY_ROWS)`, and slice 5's test asserts `AtLeast` on the 10k-key fixture **and** on the 10k-claims-from-one-key fixture. Exactness would need a subject-keyed author index and is stated as a separate, priced option — not silently assumed. |
 
 Round 11 is the first round where two findings are **the same shape applied to a different input**:
 `S` was gated and `C` was not (finding 32), and the config inputs were rooted and the resolution
 inputs were not (finding 31). Both are the "name *all* of what you name" lesson of rounds 9–10,
 reaching the two halves of the tuple that had only ever been treated as static context.
 
-**A note on what eleven rounds actually shows.** Every round found a real defect, and rounds 2–8 each
+**Round 12** (Codex, on the round-11 fix commit `8522f013`) found three more P2s, and two of them
+were defects round 11 introduced — the third round in this document where a fix created the next
+finding. All accepted and fixed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 33 | The round-11 `total_authors` bound capped **distinct authors**, which does not bound the single-key case at all: one author with an unbounded history keeps the author count at 1 while the query reads every row, and the `(author, seq)` index stores `subject` as a value, so finding matches and building `claim_count` can still examine the whole row range. The first page stayed O(author rows) while §5.1 claimed `O(MAX_AUTHORS_SCANNED)`. | **Fixed.** The cap is now a **row/byte work budget** (`MAX_DISCOVERY_ROWS`) with **resumable cursors**, `claim_count` is the observed count within that budget and marked a lower bound when it is hit, and row 2's bound is restated as `O(MAX_DISCOVERY_ROWS)` examined rows per page. Exactness or bounded exact aggregates need a subject-keyed index maintained on append, which is stated as the separate priced option. Slice 5's negative control is the **one-key** fixture — the case a distinct-author cap cannot catch. |
+| 34 | §D7 rooted configuration, set and resolution inputs but **not the saved frontier tip**. `F` can be an ordinary out-of-scope event descended from a counted claim: neither counted nor an ancestor of any root, so it stays `Cold`, and `prune_behind_cut` protects roots' *ancestors* only ([`event_store/mod.rs:611-629`](../../pkgs/id/src/event_store/mod.rs)) — a later cut deletes it and `past(F, c)` becomes unreconstructible. | **Fixed.** §D7's root set is now `counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs ∪ frontier tips`; every served view's saved frontier tip and its causal dependencies are `protected` roots on the same `prune_behind_cut` contract. Slice 6 gained the out-of-scope-tip fixture with the divergence as its negative control. |
+| 35 | `versions(S)` was the owner's **contiguous applied prefix**, but a voided event does not stall its author: `test_a_voided_event_does_not_stall_its_author` ([`tests/voiding_scenarios.rs:390-404`](../../pkgs/id/tests/voiding_scenarios.rs)) keeps Bob's content applied after his voided `add`, while `refresh` stops advancing the prefix at that voided predecessor ([`event_store/ingest.rs:926-930`](../../pkgs/id/src/event_store/ingest.rs)). An owner whose earlier group operation is voided can therefore publish a valid `idset.writer` that a prefix-based `versions(S)` drops, making `project` undefined with no fork anywhere. | **Fixed.** `versions(S)` is now `{ v ∈ owner's verified chain under R, v.seq ≤ S.set_seq, applied(R, v), body(v).set_id = S.set_id }` — **per-event** application, not the contiguous prefix. The sequence stays linear (verdicts differ; sequence numbers do not), so `max` remains a function, and the fork-ambiguity argument (finding 17) still holds. §4.1's bullet and slice 4's `S.set_seq` check were updated to the same wording. |
+
+Round 12 is the counterpart of round 11's lesson at the *substrate* level rather than the tuple
+level: rounds 1–11 had treated "applied prefix" and "distinct authors" as primitive facts, and both
+turned out to be convenient approximations of the thing the guarantee actually needs — per-event
+application, and examined rows.
+
+**A note on what twelve rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
@@ -1581,8 +1643,8 @@ completeness:
    16, 23 and 31.
 5. **The retention root set** (§D7, §6). Counting is a property of *this view*, so "hot iff counted"
    can never protect the inputs a view is defined over; round 8 found that for the configuration
-   inputs and round 11 for the resolution inputs, and the fix is stated as an open shape
-   (`counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs`) rather than as an implemented
+   inputs, round 11 for the resolution inputs and round 12 for the saved frontier tip, and the fix is stated as an open shape
+   (`counted ∪ pinned ∪ excepted ∪ config inputs ∪ resolution inputs ∪ frontier tips`) rather than as an implemented
    predicate. Where the root set is computed — per server, per served view, or from a durable index
    of served views — is not specified, and a server that loses that index loses the guarantee.
 6. **The `config_applied` gate** (§4.1). It is the newest rule (round 11), and it is the first one
