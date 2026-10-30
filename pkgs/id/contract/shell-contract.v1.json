@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 1,
+  "revision": 3,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -79,6 +79,12 @@
       "phases": ["opening", "query"],
       "opens": "query",
       "fields": { "capability": "string", "module_hash": "string" }
+    },
+    "download_module_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "module_hash": "string" }
     },
     "caps": {
       "class": "query",
@@ -181,6 +187,24 @@
       "phases": ["opening", "joined"],
       "opens": "closed",
       "fields": { "admin_token": "string", "profile": "object" }
+    },
+    "set_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string", "at_ms": "u64" }
+    },
+    "cancel_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string" }
+    },
+    "world_state": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
     },
     "install_begin": {
       "class": "admin",
@@ -325,6 +349,14 @@
     "execution_profile": {
       "class": "reply",
       "fields": { "update": "object", "message": "string" }
+    },
+    "schedules": {
+      "class": "reply",
+      "fields": { "schedules": "object" }
+    },
+    "world_state": {
+      "class": "reply",
+      "fields": { "seed": "u64?", "schedules": "object" }
     },
     "compiled": {
       "class": "reply",

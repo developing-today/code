@@ -21,6 +21,7 @@ let
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
@@ -85,6 +86,75 @@ let
     mcpxStart
   ];
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    # Single-instance guard (dezren39/nix#1117). The unit below is
+    # socket-activated with KillMode=process: a stop terminates only the
+    # tracked main process, so a server that is no longer the tracked
+    # main -- a self-handoff predecessor systemd has lost track of --
+    # survives in the cgroup still holding the listen socket systemd
+    # handed it. The next start passes the same socket to a new server
+    # and both accept() on it, so /api/version answers alternate between
+    # instances. Reap any leftover server before taking the socket over.
+    # Only the web server is matched (its managed OpenCode serves a
+    # different port and must stay up for adoption), and this script's
+    # own pid is excluded -- it execs into the new server below.
+    leftovers=""
+    for proc in /proc/[0-9]*; do
+      pid="''${proc#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # The pattern text itself rides in the argv of anything inspecting
+      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
+      # is not proof: the process must actually be the node server.
+      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+      case "$exe" in
+        */node | */openchamber) ;;
+        *) continue ;;
+      esac
+      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
+      case "$cmd" in
+        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
+        *) continue ;;
+      esac
+      case "$cmd" in
+        # Argument boundary required: "--port 3000" must not match the
+        # 30001..30009 of an unrelated instance (cmdline words are
+        # space-separated here, trailing word included).
+        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
+        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
+      esac
+    done
+    if [ -n "$leftovers" ]; then
+      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
+      for pid in $leftovers; do
+        kill -TERM "$pid" 2>/dev/null || true
+      done
+      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
+      for _ in $(seq 1 100); do
+        alive=0
+        for pid in $leftovers; do
+          kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = 0 ] && break
+        sleep 0.1
+      done
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+      done
+      # Verify synchronously, before taking the socket over: a leftover
+      # that could not be reaped fails this start loudly instead of
+      # silently sharing the listener with the new server. (An
+      # ExecStartPost assertion cannot do this: with Type=simple it
+      # races the guard's drain window.)
+      sleep 0.2
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
+          exit 1
+        fi
+      done
+    fi
     pw="$HOME/.config/openchamber/ui-password"
     if [ -r "$pw" ]; then
       export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
@@ -482,6 +552,16 @@ in
   # it with:
   #   install -m600 /dev/null ~/.config/openchamber/ui-password
   #   printf '%s' 'your-password' > ~/.config/openchamber/ui-password
+  # Fleet proxies (#2104): automatic user services, one per proxy, each
+  # WantedBy default.target so it starts with the user session. ExecStart
+  # runs the same checkout entry points the proxy-supervisor ran
+  # (~/code/bin/*.mjs and the *-start.sh wrappers, via /run/current-system
+  # node/bash, exactly as the supervisor's systemd-run invocations did),
+  # so a proxy's code is the live checkout build, not a nix-store copy.
+  # The proxy-supervisor's process ownership is retired in the same
+  # change (its timer/service/config are removed below the proxy units):
+  # exactly one owner per canonical port. Consumers (openchamber,
+  # openclaw-gateway) Wants these units with Wants+After soft semantics.
   systemd.user.services.clef-proxy = {
     Unit = {
       Description = "Clef System One Local Proxy for OpenChamber";
@@ -491,7 +571,7 @@ in
     Service = {
       ExecStart = toString (
         pkgs.writeShellScript "clef-proxy-start" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/clef-proxy.mjs"
         ''
       );
       Restart = "always";
@@ -501,30 +581,34 @@ in
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
-    # No Install.WantedBy: the proxy-supervisor (below) owns the proxy
-    # processes. These per-proxy units remain for manual one-off starts.
+    Install.WantedBy = [ "default.target" ];
   };
 
-  # Antigravity CLI (agy) Local Proxy Bridge
-  # Disabled per user request (too slow due to per-turn CLI spawning; replaced by antigravity-ls-proxy)
+  # Antigravity CLI (agy) Local Proxy Bridge. Slow per-turn (CLI spawn),
+  # but a live provider route: openclaw-gateway Wants it and the
+  # supervisor served it on the canonical port, so as an automatic
+  # service it keeps the same entry point and port (#2104).
   systemd.user.services.agy-proxy = {
     Unit = {
-      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode (DISABLED)";
+      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode";
       After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
     };
     Service = {
       ExecStart = toString (
         pkgs.writeShellScript "agy-proxy-start" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/agy-proxy.mjs"
         ''
       );
-      Restart = "no";
+      Restart = "always";
+      RestartSec = 3;
       Environment = [
         "AGY_PROXY_PORT=${toString agyProxyPort}"
         "AGY_PROXY_HOST=127.0.0.1"
       ];
     };
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.codex-proxy = {
@@ -537,7 +621,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "codex-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/codex-proxy.mjs"
         ''
       );
       Restart = "always";
@@ -547,7 +631,7 @@ in
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
-    # No Install.WantedBy: owned by the proxy-supervisor (below).
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.antigravity-ls-proxy = {
@@ -560,7 +644,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "antigravity-ls-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-ls-proxy.mjs"
         ''
       );
       Restart = "always";
@@ -571,7 +655,7 @@ in
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
     };
-    # No Install.WantedBy: owned by the proxy-supervisor (below).
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.design-code-proxy = {
@@ -592,7 +676,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "design-code-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/design-code-proxy.mjs"
         ''
       );
       Restart = "always";
@@ -602,240 +686,37 @@ in
         "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
-    # No Install.WantedBy: owned by the proxy-supervisor (below).
+    Install.WantedBy = [ "default.target" ];
   };
 
-  # Fleet proxy supervisor (bin/proxy-supervise.mjs): hash-keyed A/B
-  # rolls for the proxies above. Drew's rule (2026-10-24): a rebuild +
-  # switch must not kill a running proxy unless the artifact that
-  # would run actually changed — and then the roll is graceful (new
-  # build on the alternate port, health-checked, endpoint record
-  # flips, old instance drained). The supervisor therefore owns the
-  # proxy processes; this unit only runs the reconcile, and it invokes
-  # the supervisor from the CHECKOUT path so this unit's definition
-  # does not change when proxy code does.
-  systemd.user.services.proxy-supervisor = {
-    Unit = {
-      Description = "Fleet proxy supervisor (hash-keyed A/B reconcile)";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      Type = "oneshot";
-      ExecStart = toString (
-        pkgs.writeShellScript "proxy-supervisor-run" ''
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/proxy-supervise.mjs" --config "$HOME/.config/proxy-supervisor/config.json"
-        ''
-      );
-      Environment = [
-        # Interpolated into the supervisor config ($ANTIGRAVITY_LS_BIN);
-        # it is part of the LS proxy's artifact hash, so a hub rebuild
-        # rolls that proxy gracefully instead of stranding it.
-        "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
-      ];
-    };
-  };
-
-  systemd.user.timers.proxy-supervisor = {
-    Unit = {
-      Description = "Reconcile fleet proxies every 2 minutes";
-    };
-    Timer = {
-      OnBootSec = "1min";
-      OnUnitActiveSec = "2min";
-    };
-    Install.WantedBy = [ "timers.target" ];
-  };
-
-  # The supervisor's machine config. "~" and "$VAR" in paths/values are
-  # expanded by the supervisor itself.
-  xdg.configFile."proxy-supervisor/config.json".text = builtins.toJSON {
-    stateDir = "~/.local/state/proxy-supervisor";
-    endpointDir = "~/.local/state";
-    systemdRun = "user";
-    drainSeconds = 5;
-    healthTimeoutSeconds = 60;
-    proxies = [
-      {
-        name = "clef-proxy";
-        canonicalPort = clefProxyPort;
-        portEnv = "CLEF_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/clef-proxy.mjs"
-        ];
-        env = {
-          CLEF_PROXY_HOST = "127.0.0.1";
-        };
-        hashFiles = [
-          "~/code/bin/clef-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-        ];
-      }
-      {
-        name = "agy-proxy";
-        canonicalPort = agyProxyPort;
-        portEnv = "AGY_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/agy-proxy.mjs"
-        ];
-        env = {
-          AGY_PROXY_HOST = "127.0.0.1";
-          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
-        };
-        hashFiles = [
-          "~/code/bin/agy-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-        ];
-      }
-      {
-        name = "codex-proxy";
-        canonicalPort = codexProxyPort;
-        portEnv = "CODEX_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/codex-proxy.mjs"
-        ];
-        env = {
-          CODEX_PROXY_HOST = "127.0.0.1";
-          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
-        };
-        hashFiles = [
-          "~/code/bin/codex-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-          # Build stamp: a content change here stands in for "the
-          # artifact changed" (used by the A/B demo; harmless in
-          # production — a missing file hashes as a constant).
-          "~/.local/state/proxy-supervisor/codex-proxy.build-stamp"
-        ];
-      }
-      {
-        name = "antigravity-ls-proxy";
-        canonicalPort = antigravityLsProxyPort;
-        portEnv = "ANTIGRAVITY_LS_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/antigravity-ls-proxy.mjs"
-        ];
-        env = {
-          ANTIGRAVITY_LS_PROXY_HOST = "127.0.0.1";
-          ANTIGRAVITY_LS_BIN = "$ANTIGRAVITY_LS_BIN";
-          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
-        };
-        hashEnv = [ "ANTIGRAVITY_LS_BIN" ];
-        hashFiles = [
-          "~/code/bin/antigravity-ls-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-        ];
-      }
-      {
-        name = "design-code-proxy";
-        canonicalPort = designCodeProxyPort;
-        portEnv = "DESIGN_CODE_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/design-code-proxy.mjs"
-        ];
-        env = {
-          DESIGN_CODE_PROXY_HOST = "127.0.0.1";
-          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
-        };
-        hashFiles = [
-          "~/code/bin/design-code-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-        ];
-        backends = [
-          {
-            name = "codex-proxy";
-            env = "CODEX_PROXY_PORT";
-          }
-          {
-            name = "antigravity-ls-proxy";
-            env = "ANTIGRAVITY_LS_PROXY_PORT";
-          }
-        ];
-      }
-      # The two entries below were added to the LIVE supervisor config by
-      # hand on 2026-10-24 but never made it back into this file -- the drift
-      # surfaced on 2026-10-26, when home-manager activation failed on the
-      # hand-placed (unmanaged) supervisor unit/config files and the live
-      # config turned out to supervise two more proxies than the repo knew
-      # about. Transcribed verbatim from the live config: unlike the node
-      # proxies above these run their repo start scripts (which own their
-      # environment, cf. the commandcode-proxy unit below), so they carry
-      # no `env` block.
-      {
-        name = "commandcode-proxy";
-        canonicalPort = commandcodeProxyPort;
-        portEnv = "COMMANDCODE_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/bash"
-          "~/code/bin/commandcode-proxy-start.sh"
-        ];
-        hashFiles = [
-          "~/code/bin/commandcode-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-          "~/.local/state/proxy-supervisor/commandcode-proxy.build-stamp"
-        ];
-      }
-      {
-        name = "muse-proxy";
-        canonicalPort = museProxyPort;
-        portEnv = "MUSE_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/bash"
-          "~/code/bin/muse-proxy-start.sh"
-        ];
-        hashFiles = [
-          "~/code/bin/muse-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-          "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
-        ];
-      }
-      # Enrolled 2026-10-27. The let block reserved claudeCodeProxyPort
-      # and the session variables already export CLAUDE_CODE_PROXY_PORT
-      # (opencode.jsonc dials it), but the proxy was never added to this
-      # list, so nothing supervised port 18749 and it sat dark until
-      # started by hand -- the same drift class as the hand-added pair
-      # transcribed above. Entry mirrors codex-proxy (the other node
-      # CLI bridge): host + PATH env, entrypoint + proxy-port.mjs as
-      # the artifact hash.
-      {
-        name = "claude-code-proxy";
-        canonicalPort = claudeCodeProxyPort;
-        portEnv = "CLAUDE_CODE_PROXY_PORT";
-        command = [
-          "/run/current-system/sw/bin/node"
-          "~/code/bin/claude-code-proxy.mjs"
-        ];
-        env = {
-          CLAUDE_CODE_PROXY_HOST = "127.0.0.1";
-          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
-        };
-        hashFiles = [
-          "~/code/bin/claude-code-proxy.mjs"
-          "~/code/bin/proxy-port.mjs"
-        ];
-      }
-    ];
-  };
+  # Proxy supervisor retired (#2104, 2026-10-28): the proxy-supervisor
+  # oneshot service, its 2-minute timer, and the supervisor config that
+  # used to live here are removed. The per-proxy units in this file are
+  # now the automatic services (Install.WantedBy default.target) and the
+  # sole owners of the canonical ports; nothing may respawn the old
+  # transient fps-* units. bin/proxy-supervise.mjs remains in the repo
+  # as history, uninvoked. Its endpoint bookkeeping
+  # (~/.local/state/<proxy>/endpoint.json) is likewise retired: the
+  # files on disk are stale records with no writer, and service state
+  # is read from the units themselves (systemctl --user show).
+  # The supervisor's hash-keyed A/B roll behaviour is deliberately NOT
+  # reproduced: a switch that changes a unit's ExecStart restarts that
+  # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
   # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
   # Provider API rejects the Go plan, so OpenCode talks to the CLI via
   # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
-  # Runs the repo's start script (shared with the fleet proxy-supervisor's
-  # transient fps-commandcode-proxy unit) so laptop/sandbox env handling
-  # and the MAX_TURNS pins live in exactly one place:
-  # bin/commandcode-proxy-start.sh.
+  # Runs the repo checkout's start script -- the same invocation the
+  # proxy-supervisor used for its transient fps-commandcode-proxy unit --
+  # so laptop/sandbox env handling and the MAX_TURNS pins live in exactly
+  # one place: bin/commandcode-proxy-start.sh. (The checkout path also
+  # avoids the stale-store ExecStart failure of #883.)
   #
-  # This unit originally landed (169d594e) WITH an Install.WantedBy and a
-  # "not yet deployed" note, breaking the fleet pattern below: the first
-  # home-manager activation that included it (2026-10-26, the T3 switch)
-  # started it against the supervisor's already-running transient unit,
-  # and it crash-looped on the taken port (44 restarts in an evening).
-  # The supervisor has served this port continuously since 2026-10-24;
-  # the unit is the manual fallback, like every other proxy here.
+  # History: this unit originally landed (169d594e) WITH an
+  # Install.WantedBy while the supervisor owned the port, and the first
+  # activation including it (2026-10-26) crash-looped it against the
+  # supervisor's instance (44 restarts). That fight was a two-owners
+  # problem; #2104 removes the supervisor, so WantedBy is now correct.
   systemd.user.services.commandcode-proxy = {
     Unit = {
       Description = "Command Code CLI Local Proxy Bridge for OpenCode";
@@ -843,7 +724,11 @@ in
       Wants = [ "network-online.target" ];
     };
     Service = {
-      ExecStart = "${../../bin}/commandcode-proxy-start.sh";
+      ExecStart = toString (
+        pkgs.writeShellScript "commandcode-proxy-start-unit" ''
+          exec /run/current-system/sw/bin/bash "$HOME/code/bin/commandcode-proxy-start.sh"
+        ''
+      );
       Restart = "always";
       RestartSec = 3;
       Environment = [
@@ -853,8 +738,90 @@ in
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
     };
-    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
-    # processes. These per-proxy units remain for manual one-off starts.
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Muse proxy (#2104): previously supervisor-config only, with no
+  # declarative unit at all. Entry point mirrors the supervisor's
+  # invocation of bin/claude-code-proxy.mjs (the codex-proxy shape).
+  systemd.user.services.claude-code-proxy = {
+    Unit = {
+      Description = "Claude Code CLI Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "claude-code-proxy-start" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/claude-code-proxy.mjs"
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
+        "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Muse (Meta) proxy (#2104): also previously supervisor-config only.
+  # Runs the checkout start script, the supervisor's exact invocation;
+  # the script owns its environment (including keeping META_API_KEY out).
+  # Enrolled here so retiring the supervisor does not strand :18747 --
+  # the redesign leaves exactly one owner for every proxy port.
+  systemd.user.services.muse-proxy = {
+    Unit = {
+      Description = "Muse (Meta) Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "muse-proxy-start-unit" ''
+          exec /run/current-system/sw/bin/bash "$HOME/code/bin/muse-proxy-start.sh"
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "MUSE_PROXY_PORT=${toString museProxyPort}"
+        "MUSE_PROXY_HOST=127.0.0.1"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
+  # opencode-route pool models (workhorse et al.) in the chat-completions
+  # shape OpenClaw providers use (code#2229). Runs the repo checkout's
+  # start script -- the same invocation the proxy-supervisor ran for its
+  # transient unit -- so the routing-only door (bin/opencode-route-proxy.mjs)
+  # is owned by exactly one unit. Enrolled as an automatic service under
+  # the #2104 redesign (this unit landed on main after that branch was
+  # cut): retiring the supervisor must not strand :18750, and the
+  # openclaw-gateway unit Wants this service.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "opencode-route-proxy-start-unit" ''
+          exec /run/current-system/sw/bin/bash "$HOME/code/bin/opencode-route-proxy-start.sh"
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.sync-models = {
@@ -1002,6 +969,11 @@ in
     Install.WantedBy = [ "sockets.target" ];
   };
 
+  # The provider proxies are automatic services (Install.WantedBy
+  # default.target, #2104), so they are up independently of OpenChamber;
+  # OpenChamber reaches them by port, not by unit, and only mcpx is a
+  # real unit dependency here. The After ordering entries stay
+  # (ordering only, harmless).
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
@@ -1018,10 +990,6 @@ in
       Wants = [
         "network-online.target"
         "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-ls-proxy.service"
-        "design-code-proxy.service"
       ];
       Requires = [ "openchamber.socket" ];
     };
@@ -1029,7 +997,9 @@ in
       ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart.
+      # OpenChamber adopts it, so sessions survive a restart. The same
+      # KillMode lets an untracked server survive a stop with the socket
+      # attached -- the start script reaps leftovers (dezren39/nix#1117).
       KillMode = "process";
       # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
       # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
@@ -1042,6 +1012,10 @@ in
             mcpx
             pkgs.git
             pkgs.openssh
+            # The start script's single-instance guard scans /proc with
+            # coreutils (readlink, cat, tr, seq, sleep); without it the
+            # guard silently matches nothing.
+            pkgs.coreutils
           ]
         }"
       ];

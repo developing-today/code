@@ -119,6 +119,7 @@ function initWorld(): void {
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
+  let recordsRefetch = false;
   let reconnects = 0;
   let intentionalClose = false;
 
@@ -182,6 +183,13 @@ function initWorld(): void {
         if (recordsAfter === null) {
           recordsPending = false;
           recordsView.textContent = JSON.stringify(records, null, 2);
+          // #1458: a re-request arrived while this fetch was in flight
+          // and was coalesced (see requestRecords). Now that a complete
+          // set has rendered, run the refetch it was waiting for.
+          if (recordsRefetch) {
+            recordsRefetch = false;
+            requestRecords();
+          }
         } else {
           socket?.send(
             JSON.stringify({
@@ -212,6 +220,16 @@ function initWorld(): void {
   const requestRecords = () => {
     if (socket?.readyState !== WebSocket.OPEN) {
       setStatus("Join the world before reading records", "error");
+      return;
+    }
+    // #1458: never overlap records fetches. Records pages carry no
+    // fetch identity, so a first-page request sent mid-pagination lets
+    // the stale chain's terminal page close the fresh fetch and render
+    // as the result, while the fresh pages are then dropped by the
+    // recordsPending guard. Coalesce instead: note that a refetch is
+    // due and run it when the in-flight fetch completes.
+    if (recordsPending) {
+      recordsRefetch = true;
       return;
     }
     records = {};
@@ -274,6 +292,11 @@ function initWorld(): void {
       return;
     }
     intentionalClose = false;
+    // A new connection owns no records fetch: one left pending by a
+    // previous connection can never complete and must not coalesce
+    // (block) this connection's first fetch.
+    recordsPending = false;
+    recordsRefetch = false;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
@@ -301,6 +324,9 @@ function initWorld(): void {
     ws.addEventListener("close", () => {
       if (ws !== socket) return;
       socket = null;
+      // This connection's records fetch, if any, can never complete.
+      recordsPending = false;
+      recordsRefetch = false;
       if (intentionalClose) return;
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
