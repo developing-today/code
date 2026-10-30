@@ -11,8 +11,10 @@ import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
@@ -123,8 +125,15 @@ async function ensureProvenancePrimed(): Promise<void> {
  * 60 s inside health.ts). Page and API read this same view, so they
  * cannot disagree.
  */
-async function healthContext(): Promise<HealthView> {
-  await ensureProvenancePrimed();
+async function healthContext(prime = true): Promise<HealthView> {
+  // Priming exercises every facet so /health provenance never depends
+  // on request order. Callers that only need the feed snapshot and the
+  // cached probes (the attention path's watchdog assembly, #1148) pass
+  // prime=false: a stalled unrelated facet (e.g. Grist's roadmap API
+  // and its 8s timeout) must not delay attention rendering (Codex P2
+  // on PR #2431). The registry age the watchdog reads comes from the
+  // live source's lastFeed, which attention's own reads already load.
+  if (prime) await ensureProvenancePrimed();
   const [feed, feedFileMtimeMs] = await Promise.all([
     loadFeed(cfg.feedFile).catch(() => null),
     stat(cfg.feedFile)
@@ -233,12 +242,37 @@ async function roadmapContext() {
   return { rows, items };
 }
 
+// #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
+// current diagnoses (feed age + probes via the health assembly —
+// its probe cache keeps this cheap — plus the orchestration
+// diagnosis and registry facet age). Live mode only: fixtures mode
+// has no real inputs to watch. Derived per request, never stored,
+// so recovery clears the cards on the next render. The health
+// assembly here is deliberately UNPRIMED (see healthContext): the
+// watchdog needs only the feed file, the cached probes, and the
+// registry age from the source's already-loaded feed.
+async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
+  if (cfg.source !== "live") return [];
+  const health = await healthContext(false);
+  return watchdogTierItems({
+    now: Date.now(),
+    feedAgeMs: health.feed.ageMs,
+    feedGeneratedAt: health.feed.generatedAt,
+    ...(diagnosis ? { orchestration: diagnosis } : {}),
+    ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
+    probes: health.services
+      .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
+      .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+  });
+}
+
 async function attentionContext() {
   const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
+  const watchdog = await deriveWatchdogItems(diagnosis);
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
 }
 
 /**
@@ -678,9 +712,13 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
-    // orchestratorNote, source, parentId).
+    // orchestratorNote, source, parentId). #1148: the derived watchdog
+    // tier items are appended in their TierItem shape (tier-annotated
+    // needs-orchestrator) so machine consumers see the same queue the
+    // HTML renders — the array shape itself is unchanged (Codex P2
+    // on PR #2431).
     const { view } = await attentionContext();
-    return json(view.all);
+    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -692,9 +730,19 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
-    // means "not measured yet" — never an empty queue.
+    // means "not measured yet" — never an empty queue. #1148: the
+    // aggregator-derived watchdog items ride along as an additive
+    // field (the published section itself stays verbatim) so JSON
+    // consumers can see derived queue items next to the published
+    // tiers (Codex P2 on PR #2431).
     const section = await source.orchestration();
-    return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
+    const diagnosis = source.diagnostics?.().orchestration;
+    const derivedWatchdogItems = await deriveWatchdogItems(diagnosis);
+    return json(
+      section
+        ? { ...section, derivedWatchdogItems }
+        : { status: "absent", reason: "no orchestration run has published yet", derivedWatchdogItems },
+    );
   }
   if (path === "/sw.js") {
     // Kill switch for the opencode service worker stranded on this
@@ -756,6 +804,7 @@ async function handler(req: Request): Promise<Response> {
       const extras = {
         dashComments,
         formRef: id,
+        serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),
         sessions,
         actions: allActions.filter((a) => wanted.has(a.objectRef)),

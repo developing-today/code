@@ -1503,7 +1503,62 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 const (
 	codeResourceNotFound = -32002
 	codeInvalidParams    = -32602
+	codeInternalError    = -32603
+	// codeUserRejected is the code the sampling error table assigns to a
+	// person refusing a sampling request (2025-11-25 client/sampling
+	// error handling: "User rejected sampling request: -1"). It is not a
+	// JSON-RPC reserved code; the specification spends it on exactly
+	// this refusal, so an upstream can tell "the user said no" apart
+	// from an internal failure and not retry.
+	codeUserRejected = -1
 )
+
+// CodedError is a handler error that carries the JSON-RPC code it must
+// reach the upstream as. Client.answer recognises it (errors.As, so a
+// wrapped CodedError counts) and relays its code and message instead of
+// flattening every handler failure to -32603. Producers that know which
+// spec-assigned code their failure is -- the daemon's sampling broker
+// path, Phase 2's content validator -- return this type; everything
+// untyped keeps the -32603 wrap.
+type CodedError struct {
+	Code    int
+	Message string
+}
+
+func (e *CodedError) Error() string { return e.Message }
+
+// RPCCode is the JSON-RPC error code this failure stands for, matching
+// the InvalidParamsError precedent: surfaces that translate generic
+// errors check for it by interface, with no import cycle.
+func (e *CodedError) RPCCode() int { return e.Code }
+
+// NewCodedError builds a CodedError for a spec-assigned code with no
+// dedicated constructor below.
+func NewCodedError(code int, message string) *CodedError {
+	return &CodedError{Code: code, Message: message}
+}
+
+// UserRejectedError is a sampling request refused by the person or
+// agent answering it (decline or cancel): code -1, per the 2025-11-25
+// sampling error table.
+func UserRejectedError(message string) *CodedError {
+	return &CodedError{Code: codeUserRejected, Message: message}
+}
+
+// ToolShapeError is a sampling message or result whose content breaks
+// the tool-use/tool-result shape rules: code -32602 (Invalid params),
+// per the same table. Defined here for Phase 2 of #1834 (#1836), whose
+// validator raises it; Phase 1 adds no content checks.
+func ToolShapeError(message string) *CodedError {
+	return &CodedError{Code: codeInvalidParams, Message: message}
+}
+
+// InternalError is a failure that is mcpx's own: code -32603, but as a
+// typed error so the message wording (e.g. naming a broker expiry) is
+// chosen by the producer, not reconstructed downstream.
+func InternalError(message string) *CodedError {
+	return &CodedError{Code: codeInternalError, Message: message}
+}
 
 // ResourceNotFoundError is a resources/read of a URI the server does not
 // have.
