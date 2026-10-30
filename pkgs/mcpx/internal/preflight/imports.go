@@ -8,10 +8,13 @@
 // typechecking), and reports every unresolved specifier in one pass, with
 // the source span deno recorded for the edge that needed it.
 //
-// Report mode only: nothing is installed, nothing is written into any
-// project directory, and no cache entry is created. The prepare stage of
-// #1915 stays out until the cache mechanism (#1908) and the resolved
-// dependency set (#1913) exist to build on.
+// Report mode only: the deno info invocation is isolated so it cannot do
+// the prepare stage's work by accident -- --no-lock and
+// --node-modules-dir=none are appended after any forwarded resolution
+// options, so a project configured with nodeModulesDir "auto" or a stale
+// lockfile is neither installed into nor edited (Codex review, PR #2575).
+// The prepare stage of #1915 stays out until the cache mechanism (#1908)
+// and the resolved dependency set (#1913) exist to build on.
 //
 // The two edges a static graph cannot decide are computed dynamic imports:
 // import("./" + name) and require(v). deno's graph simply omits them, so
@@ -291,7 +294,64 @@ func (r *Report) mergeDynamics(dynamics []DynamicImport, mode DynamicImportMode)
 // property of the source, not of the runtime that will execute it, so any
 // deno serves. An empty denoBin is reported, not silently skipped: a check
 // that did not run must not look like a check that passed.
+// ResolutionArgs selects the arguments of a configured runtime that
+// decide how specifiers resolve -- an import map can redirect a specifier
+// to a different module, and a config file can carry the map, workspace
+// and node-modules policy -- in both --flag value and --flag=value forms.
+// Everything else a runtime is configured with (permission flags, --quiet,
+// run-only switches) does not change the graph and is not forwarded: deno
+// info rejects several of them, and a check that errors on its own flags
+// would report scripts as broken that run fine.
+func ResolutionArgs(args []string) []string {
+	valueFlags := map[string]bool{
+		"--import-map": true, "--config": true,
+		"--node-modules-dir": true, "--lock": true,
+	}
+	switchFlags := map[string]bool{
+		"--frozen": true, "--cached-only": true, "--no-remote": true,
+	}
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if k, _, isEq := strings.Cut(a, "="); isEq {
+			if valueFlags[k] || switchFlags[k] {
+				out = append(out, a)
+			}
+			continue
+		}
+		if valueFlags[a] {
+			out = append(out, a)
+			if i+1 < len(args) {
+				out = append(out, args[i+1])
+				i++
+			}
+			continue
+		}
+		if switchFlags[a] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// isolationArgs are appended LAST to every report-mode deno info call, so
+// they win over any forwarded or project-configured value: report mode
+// must not install dependencies or write a lockfile as a side effect of
+// checking (deno info otherwise uses eager npm caching and writes a
+// changed lockfile; nodeModulesDir "auto" would create node_modules).
+var isolationArgs = []string{"--no-lock", "--node-modules-dir=none"}
+
 func CheckImports(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration) *Report {
+	return CheckImportsResolved(ctx, denoBin, entry, mode, dynamicMode, timeout, nil)
+}
+
+// CheckImportsResolved is CheckImports with the executing runtime's
+// configured arguments: the resolution subset (ResolutionArgs) is passed
+// to deno info, so the graph that is checked is the graph that will
+// actually execute -- an import map that redirects ./dep.ts to a real
+// module must not be reported as a missing import (Codex review, PR
+// #2575).
+func CheckImportsResolved(ctx context.Context, denoBin, entry string, mode ImportsMode, dynamicMode DynamicImportMode, timeout time.Duration, runtimeArgs []string) *Report {
 	r := &Report{}
 	if mode == ImportsOff || mode == "" {
 		return r
@@ -310,7 +370,11 @@ func CheckImports(ctx context.Context, denoBin, entry string, mode ImportsMode, 
 		cctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(cctx, denoBin, "info", "--json", entry)
+	argv := []string{"info", "--json"}
+	argv = append(argv, ResolutionArgs(runtimeArgs)...)
+	argv = append(argv, isolationArgs...)
+	argv = append(argv, entry)
+	cmd := exec.CommandContext(cctx, denoBin, argv...)
 	cmd.Dir = filepath.Dir(entry)
 	out, err := cmd.Output()
 	if err != nil {
@@ -422,28 +486,41 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 		return lo + 1, off - lineStarts[lo] + 1
 	}
 	prevWord := ""
+	// prevValue records whether the previous significant token completes
+	// a value (an identifier that is not an expression keyword, a number,
+	// a string, a regex, a closing bracket). A '/' after a value divides;
+	// anywhere else it can open a regex literal. Tracking only the last
+	// word loses this: in (a + b) / (await import(name)) / 2 the ')' after
+	// b completes a value, so both slashes divide and the import between
+	// them is real code (Codex review, PR #2575).
+	prevValue := false
 	for i := 0; i < len(src); {
 		c := src[i]
 		switch {
-		case c == '/' && regexContext(prevWord):
+		case c == '/' && i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*'):
+			// Comments are recognised before regexes: at the start of
+			// a line // opens a comment, never an empty regex, and
+			// the comment's text is not code (Codex review, PR #2575).
+			i = skipCommentIn(src, i)
+			prevWord = ""
+		case c == '/' && !prevValue:
 			// A regex literal in a position where a value is expected:
 			// its contents are not code, so an identifier+paren inside
 			// one (/require(foo)/) is not a module load.
 			if end, ok := scanRegexIn(src, i); ok {
 				i = end
 				prevWord = ""
+				prevValue = true
 				continue
 			}
 			i++
-		case c == '/' && i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*'):
-			i = skipCommentIn(src, i)
-			prevWord = ""
 		case c == '\'' || c == '"' || c == '`':
 			end, content := readStringIn(src, i)
 			if prevWord == "from" || prevWord == "import" {
 				addBare(content)
 			}
 			prevWord = ""
+			prevValue = true
 			i = end
 		case isIdentStartIn(c):
 			word, next := readIdentIn(src, i)
@@ -458,14 +535,25 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 					addBare(lit)
 					i = after
 					prevWord = ""
+					prevValue = true
 					continue
 				}
 			}
 			prevWord = word
+			prevValue = precededByDot(src, i) || !expressionKeyword(word)
 			i = next
+		case c >= '0' && c <= '9':
+			j := i
+			for j < len(src) && (isIdentPartIn(src[j]) || src[j] == '.') {
+				j++
+			}
+			prevWord = ""
+			prevValue = true
+			i = j
 		default:
 			if !isSpaceIn(c) {
 				prevWord = ""
+				prevValue = c == ')' || c == ']' || c == '}'
 			}
 			i++
 		}
@@ -485,14 +573,13 @@ func precededByDot(src string, off int) bool {
 	return k >= 0 && src[k] == '.'
 }
 
-// regexContext reports whether a '/' here starts a regex literal rather
-// than dividing: only where a value could begin — at the start, after an
-// operator or punctuation (which clear prevWord), or after a keyword
-// that takes an expression.
-func regexContext(prevWord string) bool {
-	switch prevWord {
-	case "", "return", "typeof", "case", "in", "of", "new", "delete",
-		"void", "instanceof", "yield", "await", "throw":
+// expressionKeyword reports whether an identifier is a keyword after
+// which an expression -- and therefore possibly a regex literal --
+// follows, rather than a value in its own right.
+func expressionKeyword(word string) bool {
+	switch word {
+	case "return", "typeof", "case", "in", "of", "new", "delete",
+		"void", "instanceof", "yield", "await", "throw", "else", "do":
 		return true
 	}
 	return false

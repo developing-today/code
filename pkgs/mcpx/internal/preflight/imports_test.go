@@ -201,3 +201,45 @@ func TestScanDynamicImportsSkipsRegexesAndPropertyCalls(t *testing.T) {
 		t.Fatalf("division must not swallow the file, got %+v", dyn)
 	}
 }
+
+// Codex round 2 on PR #2575: a line comment at the start of a line was
+// scanned as an empty regex followed by code, so a commented-out require
+// was reported as a computed import.
+func TestScanDynamicImportsSkipsComments(t *testing.T) {
+	src := "// require(foo)\n/* import(bar) */\nconst x = 1; // import(baz)\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 0 {
+		t.Fatalf("commented-out calls are not module loads, got %+v", dyn)
+	}
+	src += "require(name);\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 1 {
+		t.Fatalf("the real require after the comments should survive, got %+v", dyn)
+	}
+}
+
+// Codex round 2 on PR #2575: ')' completes a value, so the slashes in
+// (a + b) / (await import(name)).default / 2 divide -- the computed
+// import between them must not be swallowed as regex contents.
+func TestScanDynamicImportsFindsImportBetweenDivisions(t *testing.T) {
+	src := "const x = (a + b) / (await import(name)).default / 2;\n"
+	dyn := preflight.ScanDynamicImports("a.ts", src)
+	if len(dyn) != 1 || dyn[0].Kind != "import" {
+		t.Fatalf("the import between the divisions should be found, got %+v", dyn)
+	}
+}
+
+// Codex on PR #2575: the graph check must run with the executing
+// runtime's resolution configuration. Only resolution flags are
+// forwarded, in both forms; run-only flags are left behind.
+func TestResolutionArgsForwardsOnlyResolutionFlags(t *testing.T) {
+	in := []string{"--allow-all", "--import-map", "map.json",
+		"--config=deno.json", "--quiet", "--node-modules-dir=auto",
+		"--frozen", "--unstable-kv", "--lock", "deno.lock"}
+	want := []string{"--import-map", "map.json", "--config=deno.json",
+		"--node-modules-dir=auto", "--frozen", "--lock", "deno.lock"}
+	if got := preflight.ResolutionArgs(in); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("ResolutionArgs = %v, want %v", got, want)
+	}
+	if got := preflight.ResolutionArgs(nil); len(got) != 0 {
+		t.Fatalf("ResolutionArgs(nil) = %v, want empty", got)
+	}
+}

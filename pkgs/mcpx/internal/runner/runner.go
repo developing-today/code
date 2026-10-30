@@ -324,9 +324,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				// or node run still serves as the graph oracle.
 				denoBin = found
 			}
-			rep = preflight.CheckImports(ctx, denoBin, scriptPath,
+			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
-				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout)
+				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
+				rt.ConfigArgs)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
