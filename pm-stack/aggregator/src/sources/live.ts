@@ -20,7 +20,8 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { SupabaseExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
@@ -825,10 +826,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
               domainCount: feed.dns.entries.length,
             }
           : null;
+      // The Supabase export overlay applies to BOTH service sources:
+      // the collector's feed.saas cards are built with plain
+      // extractSaasServices, so without this the fresh export would be
+      // ignored exactly when the fleet collector is operating (#1050).
+      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
+        .then((text) => JSON.parse(text) as SupabaseExportDoc)
+        .catch(() => null);
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         const partial = {
-          services: feed.saas,
+          services: applySupabaseExport(feed.saas, supabaseExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
@@ -861,7 +869,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
         const partial = {
-          services: extractSaasServices(doc),
+          services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),
