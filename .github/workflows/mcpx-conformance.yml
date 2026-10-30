@@ -55,7 +55,7 @@ env:
 
 jobs:
   leg:
-    name: ${{ matrix.leg }}
+    name: "full (main tier): ${{ matrix.leg }}"
     # Main tier only (Phase 2, #1781): the conformance legs move off PRs.
     # The spec-parity job below stays on PRs: measured exec 28s on run
     # 40801660942 (2026-10-29), well under the 5m fast-leg limit.
@@ -265,7 +265,7 @@ jobs:
           fi
 
   spec-parity:
-    name: spec parity
+    name: "basic: spec parity"
     # Which MCP revisions mcpx supports against which the conformance suite
     # knows, read from each tool itself. See scripts/spec-parity.py for the
     # deadlines; the variables are written on main only.
@@ -347,7 +347,7 @@ jobs:
           esac
 
   records:
-    name: compare with the records
+    name: "full (main tier): compare with the records"
     needs: leg
     if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest

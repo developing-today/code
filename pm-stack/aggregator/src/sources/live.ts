@@ -6,6 +6,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
@@ -20,11 +21,13 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { SupabaseExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
-import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
+import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
@@ -34,6 +37,7 @@ import {
   type Comment,
   type DnsSection,
   type GhItem,
+  type ItemResolution,
   type Link,
   type OrchestrationSection,
   type ProjectPoolItem,
@@ -43,6 +47,7 @@ import {
   type QuotaView,
   type RefKey,
   type RoadmapRow,
+  type SaasService,
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
@@ -81,6 +86,7 @@ interface KaneoTask {
   status: string;
   priority?: string;
   createdAt?: string;
+  updatedAt?: string;
   externalLinks?: {
     resourceType: string;
     externalId: string;
@@ -105,7 +111,7 @@ const KANEO_PROJECT_REPOS: Record<string, string> = {
 async function kaneoProjects(
   cfg: Config,
   cookie: string,
-): Promise<{ id: string; slug: string; name: string; repo: string }[]> {
+): Promise<{ id: string; slug: string; name: string; repo: string; workspaceId: string }[]> {
   const ws = await getJson(`${cfg.kaneo.baseUrl}/api/workspace`, { Cookie: cookie });
   if (!ws.ok) throw new Error("kaneo workspace read failed");
   const workspaces = ws.json as { id: string }[];
@@ -118,17 +124,25 @@ async function kaneoProjects(
     slug: p.slug,
     name: p.name,
     repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    workspaceId,
   }));
 }
 
 async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
   const projects = await kaneoProjects(cfg, cookie);
   const out: BoardItem[] = [];
+  // A task read that fails on every project is a failed fetch, not a
+  // successfully empty board (Codex review, PR #2430): board() must
+  // reach its catch path and serve fixtures with that provenance,
+  // while a successful read the done policy filters to empty stays
+  // live. Partial data (at least one page read) is still served.
+  let anyTaskPageRead = false;
   for (const p of projects) {
     const all: KaneoColumn[] = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${cfg.kaneo.baseUrl}/api/task/tasks/${p.id}?page=${page}`, { Cookie: cookie });
       if (!r.ok) break;
+      anyTaskPageRead = true;
       const body = r.json as { data?: { columns?: KaneoColumn[] }; pagination?: { totalPages: number } };
       const cols = body.data?.columns ?? [];
       all.push(...cols);
@@ -137,10 +151,15 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     }
     // The curated in-flight set, not every open issue: in-progress,
     // in-review, and done (recent) columns only. To-do is the backlog.
+    // "Done (recent)" is enforced, not just commented (#1146): done
+    // cards older than 7 days drop off below via applyBoardDonePolicy,
+    // and the retired ROADMAP Done-table bookkeeping class is filtered
+    // here at the aggregator (the board provenance states the filter).
     const wipStatuses = new Set(["in-progress", "in-review", "done"]);
     for (const col of all) {
       if (!wipStatuses.has(col.id)) continue;
       for (const t of col.tasks) {
+        if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
           .map((l) => {
@@ -156,14 +175,15 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.createdAt,
-          kaneoUrl: cfg.kaneo.baseUrl,
+          updatedAt: t.updatedAt ?? t.createdAt,
+          kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
       }
     }
   }
-  return out;
+  if (projects.length > 0 && !anyTaskPageRead) throw new Error("kaneo task reads failed for every project");
+  return applyBoardDonePolicy(out);
 }
 
 // --- Grist --------------------------------------------------------------
@@ -196,6 +216,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
       source,
       notes,
       links,
+      gristUrl: gristDocUrl(cfg.grist.docId),
     };
   });
 }
@@ -509,6 +530,22 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  */
 const FEED_STALE_MS = 15 * 60_000;
 
+/**
+ * The gatherer's Turso entry (#1049) overlaid onto usage() services,
+ * fail-soft like quota(): a missing or malformed quota-current file
+ * leaves the base services untouched.
+ */
+async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
+  try {
+    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return overlayTursoUsage(services, file);
+  } catch {
+    /* no gatherer file (or unreadable): base services stand */
+  }
+  return services;
+}
+
 export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
@@ -644,33 +681,36 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       try {
         const cookie = await kaneoCookie();
         const board = await kaneoBoard(cfg, cookie);
-        if (board.length > 0) {
-          provenance.board = "live (Kaneo)";
-          let merged = board;
-          if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-            provenance.board = "live (Kaneo + projector links)";
-          }
-          // In-flight lane (see inFlightBoardItems above): synthetic
-          // entries from the fleet feed's orchestration section — the
-          // same feed read this source already uses for quota and
-          // orchestration — merged ahead of the Kaneo cards. The lane
-          // fails soft: no feed / no section = the Kaneo board alone.
-          try {
-            const feed = await getFeed();
-            const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
-            if (orchSection) {
-              const inFlight = inFlightBoardItems(orchSection, merged);
-              if (inFlight.length) {
-                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
-                merged = [...inFlight, ...merged];
-              }
-            }
-          } catch {
-            /* the Kaneo board still renders without the lane */
-          }
-          return merged;
+        // A successfully fetched board is live data even when the
+        // done policy (#1146) filters it to empty: falling through to
+        // fixtures would replace the real (empty) board with
+        // illustrative work and hide the orchestrator in-flight lane
+        // merged below. Fixtures are only for a failed fetch (catch).
+        provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+        let merged = board;
+        if (cfg.projector.baseUrl) {
+          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
+        // In-flight lane (see inFlightBoardItems above): synthetic
+        // entries from the fleet feed's orchestration section — the
+        // same feed read this source already uses for quota and
+        // orchestration — merged ahead of the Kaneo cards. The lane
+        // fails soft: no feed / no section = the Kaneo board alone.
+        try {
+          const feed = await getFeed();
+          const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
+          if (orchSection) {
+            const inFlight = inFlightBoardItems(orchSection, merged);
+            if (inFlight.length) {
+              provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
+              merged = [...inFlight, ...merged];
+            }
+          }
+        } catch {
+          /* the Kaneo board still renders without the lane */
+        }
+        return merged;
       } catch (err) {
         provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
       }
@@ -705,7 +745,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const byRef = new Map(pool.map((p) => [p.ref, p] as const));
         for (const ref of refs) {
           const p = byRef.get(ref);
-          if (p) out.set(ref, poolItemToGhItem(p));
+          if (p) out.set(ref, { ...poolItemToGhItem(p), resolution: "pool" });
         }
       }
       const remaining = refs.filter((r) => !out.has(r));
@@ -716,8 +756,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           rest = await projectorItems(cfg.projector.baseUrl, remaining).catch(() => null);
           if (rest && rest.size > 0) projectorServed = true;
         }
-        if (!rest || rest.size === 0) rest = await fix.items(remaining);
-        for (const [k, v] of rest) out.set(k, v);
+        // #1141: every served item carries its resolution source, so
+        // fixture state can render as unverified and health can publish
+        // the live-vs-fixture coverage ratio from the same pass.
+        let restSource: ItemResolution = "projector";
+        if (!rest || rest.size === 0) {
+          rest = await fix.items(remaining);
+          restSource = "fixture";
+        }
+        for (const [k, v] of rest) out.set(k, { ...v, resolution: restSource });
       }
       const poolServed = refs.length - remaining.length;
       if (poolServed > 0 && feed) {
@@ -805,10 +852,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
               domainCount: feed.dns.entries.length,
             }
           : null;
+      // The Supabase export overlay applies to BOTH service sources:
+      // the collector's feed.saas cards are built with plain
+      // extractSaasServices, so without this the fresh export would be
+      // ignored exactly when the fleet collector is operating (#1050).
+      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
+        .then((text) => JSON.parse(text) as SupabaseExportDoc)
+        .catch(() => null);
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         const partial = {
-          services: feed.saas,
+          services: applySupabaseExport(feed.saas, supabaseExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
@@ -817,6 +871,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // first-time unmatched SaaS/AI charges (the collector's
         // surfaced-state guarantees exactly-once), so each becomes
         // an attention flag here and never repeats on later feeds.
+        partial.services = await tursoOverlay(cfg, partial.services);
         const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
           kind: "unmatched-charge",
           label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -840,11 +895,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
         const partial = {
-          services: extractSaasServices(doc),
+          services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),
         };
+        partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
         return {
           ...partial,
@@ -1081,9 +1137,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         } else if (feedBacked && feedAgeMs !== undefined) {
           out.ageMs = feedAgeMs;
         }
-        if (key === "registry" && lastRegistryMergedCount !== null) {
-          out.count = lastRegistryMergedCount;
-          out.countLabel = "session records";
+        if (key === "registry") {
+          // The registry facet's age is the age of the feed its records
+          // merge from, so it derives from the loaded feed alone —
+          // gating it on lastRegistryMergedCount made the age (and the
+          // #1148 watchdog's registry item, which reads it) depend on
+          // some earlier request having called registry() (Codex P2,
+          // PR #2431). The COUNT still requires a real merge.
+          if (lastRegistryMergedCount !== null) {
+            out.count = lastRegistryMergedCount;
+            out.countLabel = "session records";
+          }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
             if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";

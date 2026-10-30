@@ -333,6 +333,153 @@ mod tests {
         assert_eq!(peer.next().await.unwrap()["type"], "error");
     }
 
+    #[tokio::test]
+    async fn manifest_schedules_are_admin_only_and_replace() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let at = unix_ms() + 60_000;
+        assert!(
+            service
+                .set_schedule(Some("wrong"), "nap".to_owned(), at)
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .set_schedule(None, "nap".to_owned(), at)
+                .await
+                .is_err()
+        );
+        assert!(
+            world.manifest_state().await.unwrap().1.is_empty(),
+            "a refused change changes nothing"
+        );
+
+        let schedules = service
+            .set_schedule(Some("admin"), "nap".to_owned(), at)
+            .await
+            .unwrap();
+        assert_eq!(
+            schedules,
+            std::collections::BTreeMap::from([("nap".to_owned(), at)])
+        );
+        // Re-setting the same id replaces its fire time: that is how a
+        // manifest reconciles a schedule whose time drifted.
+        let later = at + 60_000;
+        let schedules = service
+            .set_schedule(Some("admin"), "nap".to_owned(), later)
+            .await
+            .unwrap();
+        assert_eq!(
+            schedules,
+            std::collections::BTreeMap::from([("nap".to_owned(), later)])
+        );
+        let (seed, schedules) = world.manifest_state().await.unwrap();
+        assert_eq!(seed, 0, "no install yet, so no install seed");
+        assert_eq!(schedules.get("nap"), Some(&later));
+
+        let schedules = service
+            .cancel_schedule(Some("admin"), "nap".to_owned())
+            .await
+            .unwrap();
+        assert!(schedules.is_empty());
+        // Cancelling an absent id is a no-op, not an error.
+        assert!(
+            service
+                .cancel_schedule(Some("admin"), "nap".to_owned())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// #807: a module saved only in the module directory (the native
+    /// install path never pins blobs) is still retrievable by hash for an
+    /// admin reconciling a manifest, and an unknown hash is refused.
+    #[tokio::test]
+    async fn stored_module_bytes_fall_back_to_the_module_directory() {
+        let dir =
+            std::env::temp_dir().join(format!("id-stored-module-test-{}", std::process::id()));
+        let modules = crate::world_store::ModuleDir::new(dir.clone());
+        let bytes: &[u8] = b"native-module-bytes";
+        let hash = modules.save(bytes).unwrap();
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
+        assert_eq!(service.stored_module_bytes(&hash).await.unwrap(), bytes);
+        assert!(service.stored_module_bytes(&"0".repeat(64)).await.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn schedule_and_world_state_frames_round_trip_and_hide_the_seed() {
+        let svc = service(Some("admin"));
+        let world = svc.world().clone();
+        let (_, guest) = world.issue("ada", WorldScopes::GUEST).await.unwrap();
+        let cap = guest.expose().to_owned();
+        world
+            .install_program("ab".repeat(32), 4242, Box::new(NoProgram))
+            .await
+            .unwrap();
+        let at = unix_ms() + 60_000;
+
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_schedule",
+            "admin_token": "admin",
+            "id": "nap",
+            "at_ms": at,
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "schedules");
+        assert_eq!(response["schedules"], serde_json::json!({"nap": at}));
+
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_schedule",
+            "admin_token": "wrong",
+            "id": "nap",
+            "at_ms": at,
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+
+        // A capability reader sees the schedules but never the seed (#240).
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type": "world_state", "capability": cap}))
+            .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "world_state");
+        assert_eq!(response["seed"], serde_json::Value::Null);
+        assert_eq!(response["schedules"], serde_json::json!({"nap": at}));
+
+        // The admin reader sees the real install seed.
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type": "world_state", "admin_token": "admin"}))
+            .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "world_state");
+        assert_eq!(response["seed"], 4242);
+        assert_eq!(response["schedules"], serde_json::json!({"nap": at}));
+
+        // No credential at all is refused.
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type": "world_state"})).await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "cancel_schedule",
+            "admin_token": "admin",
+            "id": "nap",
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "schedules");
+        assert_eq!(response["schedules"], serde_json::json!({}));
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn source_compile_sees_the_effective_list_not_the_raw_grants() {

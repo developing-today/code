@@ -216,6 +216,12 @@ type Config struct {
 	Path string `json:"-"`
 	// Sources lists every file that contributed, nearest first.
 	Sources []string `json:"-"`
+	// Chain records the two-pass resolution that produced Sources
+	// (issue #1842): which locations the discovery pass searched, and
+	// any pass-2 paths.config declarations reported rather than
+	// applied. Nil for an explicit --config load, which skips the
+	// chain entirely.
+	Chain *ChainInfo `json:"-"`
 	// Origin maps a server name to the file that defined the winning entry.
 	Origin map[string]string `json:"-"`
 	// Ignored lists keys on server entries that mcpx does not read, with
@@ -796,8 +802,12 @@ func LoadFrom(explicit, wd string) (*Config, error) {
 		return c, nil
 	}
 
-	merged := &Config{MCPServers: map[string]*Server{}, Origin: map[string]string{}}
-	for _, p := range SearchPathFrom(wd) {
+	chain, chainInfo, cerr := ResolveChainFrom(wd)
+	if cerr != nil {
+		return nil, cerr
+	}
+	merged := &Config{MCPServers: map[string]*Server{}, Origin: map[string]string{}, Chain: chainInfo}
+	for _, p := range chain {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue
