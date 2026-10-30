@@ -36,6 +36,7 @@ import {
   type Comment,
   type DnsSection,
   type GhItem,
+  type ItemResolution,
   type Link,
   type OrchestrationSection,
   type ProjectPoolItem,
@@ -726,7 +727,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const byRef = new Map(pool.map((p) => [p.ref, p] as const));
         for (const ref of refs) {
           const p = byRef.get(ref);
-          if (p) out.set(ref, poolItemToGhItem(p));
+          if (p) out.set(ref, { ...poolItemToGhItem(p), resolution: "pool" });
         }
       }
       const remaining = refs.filter((r) => !out.has(r));
@@ -737,8 +738,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           rest = await projectorItems(cfg.projector.baseUrl, remaining).catch(() => null);
           if (rest && rest.size > 0) projectorServed = true;
         }
-        if (!rest || rest.size === 0) rest = await fix.items(remaining);
-        for (const [k, v] of rest) out.set(k, v);
+        // #1141: every served item carries its resolution source, so
+        // fixture state can render as unverified and health can publish
+        // the live-vs-fixture coverage ratio from the same pass.
+        let restSource: ItemResolution = "projector";
+        if (!rest || rest.size === 0) {
+          rest = await fix.items(remaining);
+          restSource = "fixture";
+        }
+        for (const [k, v] of rest) out.set(k, { ...v, resolution: restSource });
       }
       const poolServed = refs.length - remaining.length;
       if (poolServed > 0 && feed) {
