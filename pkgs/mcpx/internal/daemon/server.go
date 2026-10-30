@@ -730,6 +730,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+takeoverRoute, s.handleTakeover)
 	mux.HandleFunc("POST "+upgradeRoute, s.handleUpgrade)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
+	s.routesSessions(mux)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
 	// need nothing but a GET to consume. A WebSocket would buy
