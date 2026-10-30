@@ -394,6 +394,19 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}
+				if manifest == nil && len(m.Lockfiles) > 0 {
+					// No project manifest competes, so the
+					// configuration layer's lockfile is the
+					// run's frozen resolution: preserve it on
+					// the set (as its manifest, which is what
+					// transports manifest + lockfile text) or
+					// a config declaration like foo@^1.0.0
+					// loses the exact resolution recorded
+					// beside its manifest (Codex review,
+					// PR #2589).
+					set.Manifest = m
+					set.Frozen = true
+				}
 			}
 		}
 	}
@@ -469,14 +482,16 @@ func (m *Manifest) JSON() ([]byte, error) {
 }
 
 // LockfileText is the content of the project's lockfile, honoured frozen. It
-// is empty when there is none.
-func (m *Manifest) LockfileText() (name string, text []byte) {
+// is empty when there is none. A lockfile that exists but cannot be read is
+// an error, not an absence: returning empty would silently drop the frozen
+// resolution the discovery above recorded (Codex review, PR #2589).
+func (m *Manifest) LockfileText() (name string, text []byte, err error) {
 	if len(m.Lockfiles) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	b, err := os.ReadFile(m.Lockfiles[0])
 	if err != nil {
-		return "", nil
+		return "", nil, fmt.Errorf("deps: reading lockfile %s: %w", m.Lockfiles[0], err)
 	}
-	return filepath.Base(m.Lockfiles[0]), b
+	return filepath.Base(m.Lockfiles[0]), b, nil
 }

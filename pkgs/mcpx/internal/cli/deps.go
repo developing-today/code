@@ -83,7 +83,11 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 				out.ManifestName = "package.json"
 			}
 		}
-		if name, text := m.LockfileText(); name != "" {
+		name, text, err := m.LockfileText()
+		if err != nil {
+			return nil, err
+		}
+		if name != "" {
 			out.LockfileName, out.Lockfile = name, text
 		}
 	}

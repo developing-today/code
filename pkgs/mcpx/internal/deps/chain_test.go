@@ -361,3 +361,49 @@ func TestPrereleasePinsConflict(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigLayerLockfileIsPreservedWithoutAProject is the Codex
+// finding on PR #2589 (chain.go): with deps.source=config and no
+// project manifest, the config layer's own lockfile was discarded —
+// the set was neither frozen nor carrying a manifest, so no lockfile
+// ever reached the payload.
+func TestConfigLayerLockfileIsPreservedWithoutAProject(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{"dependencies":{"foo":"^1.0.0"}}`)
+	write(t, filepath.Join(configDir, "mcpx"), "package-lock.json", `{"lockfileVersion":3}`)
+
+	set, err := deps.Resolve(cfg(t, deps.SourceConfig, t.TempDir()), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !set.Frozen {
+		t.Fatalf("config lockfile present but set is not frozen: %s", set.Describe())
+	}
+	if set.Manifest == nil {
+		t.Fatal("config manifest was not preserved on the set, so its lockfile cannot be transported")
+	}
+	name, text, err := set.Manifest.LockfileText()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "package-lock.json" || !strings.Contains(string(text), "lockfileVersion") {
+		t.Fatalf("lockfile = %q %q, want the config layer's package-lock.json", name, text)
+	}
+}
+
+// TestLockfileTextPropagatesReadErrors is the second Codex finding on
+// PR #2589 (chain.go): a discovered lockfile that cannot be read was
+// reported exactly like no lockfile at all. A directory standing
+// where the lockfile should be is the portable unreadable file.
+func TestLockfileTextPropagatesReadErrors(t *testing.T) {
+	m := &deps.Manifest{Lockfiles: []string{t.TempDir()}}
+	if _, _, err := m.LockfileText(); err == nil {
+		t.Fatal("an unreadable lockfile must return its read error, not an empty lockfile")
+	}
+	none := &deps.Manifest{}
+	name, text, err := none.LockfileText()
+	if err != nil || name != "" || text != nil {
+		t.Fatalf("no lockfile = (%q, %q, %v), want empty and nil error", name, text, err)
+	}
+}
