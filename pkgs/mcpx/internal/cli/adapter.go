@@ -248,7 +248,7 @@ func adapterImport(args []string) error {
 	}
 	doc = append(doc, '\n')
 	if outPath != "" {
-		if err := os.WriteFile(outPath, doc, 0o644); err != nil {
+		if err := writeFileAtomic(outPath, doc, 0o644); err != nil {
 			return fmt.Errorf("writing %s: %w", outPath, err)
 		}
 	} else {
@@ -256,6 +256,31 @@ func adapterImport(args []string) error {
 	}
 	fmt.Fprint(os.Stderr, bareImportWarning(spec))
 	return nil
+}
+
+// writeFileAtomic writes path via a temporary file in the same
+// directory and a rename, so an interrupted write never leaves an
+// existing adapter file truncated and unparseable — loadAdapterFiles
+// would then fail for every adapter in that file, not just this one.
+func writeFileAtomic(path string, doc []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".mcpx-import-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(doc); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // splitImportArgs partitions import's command line by hand: the standard
@@ -309,9 +334,23 @@ func buildBareImport(binary, description string) (adapter.Spec, error) {
 	if strings.TrimSpace(description) == "" {
 		return adapter.Spec{}, fmt.Errorf("a description is required for --bare: say what %q is for, since bare exposes its whole argv surface", binary)
 	}
+	// The name must survive `adapter call <name>.<tool>`, which
+	// splits at the first dot: a dotted basename (python3.12) would
+	// name an adapter no call can address, so dots become dashes.
+	// The command is the binary as given, except that a path-like
+	// binary is stored absolute: the adapter server resolves a
+	// relative command against its own working directory, not the
+	// importer's, so ./bin/tool would probe (or run) whatever
+	// happens to sit at that relative path there.
+	command := binary
+	if strings.ContainsRune(binary, '/') {
+		if abs, err := filepath.Abs(binary); err == nil {
+			command = abs
+		}
+	}
 	spec := adapter.Spec{
-		Name:        filepath.Base(binary),
-		Command:     binary,
+		Name:        strings.ReplaceAll(filepath.Base(binary), ".", "-"),
+		Command:     command,
 		Bare:        true,
 		Description: description,
 	}

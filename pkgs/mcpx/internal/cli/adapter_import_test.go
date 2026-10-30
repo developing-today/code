@@ -50,6 +50,35 @@ func TestBuildBareImportDerivesTheName(t *testing.T) {
 	}
 }
 
+func TestBuildBareImportNormalizesDottedNames(t *testing.T) {
+	// adapter call splits <name>.<tool> at the first dot, so a
+	// dotted basename must not become the adapter name verbatim.
+	spec, err := buildBareImport("python3.12", "python for tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Name != "python3-12" || strings.Contains(spec.Name, ".") {
+		t.Fatalf("dotted basename should normalize to a dot-free name: %+v", spec)
+	}
+}
+
+func TestBuildBareImportStoresPathBinariesAbsolute(t *testing.T) {
+	spec, err := buildBareImport("./bin/tool", "a tool for tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(spec.Command) || !strings.HasSuffix(spec.Command, filepath.Join("bin", "tool")) {
+		t.Fatalf("a path-like binary should be stored absolute: %+v", spec)
+	}
+	plain, err := buildBareImport("git", "version control for tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Command != "git" {
+		t.Fatalf("a bare command name should be stored unchanged: %+v", plain)
+	}
+}
+
 func TestBuildBareImportRefusesWithoutDescription(t *testing.T) {
 	for _, desc := range []string{"", "   "} {
 		if _, err := buildBareImport("git", desc); err == nil {
