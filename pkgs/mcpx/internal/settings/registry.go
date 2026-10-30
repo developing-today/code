@@ -441,6 +441,20 @@ func daemonSettings() []Setting {
 				"search", "status", "client", "serve", "tui", "prompts", "resources"},
 		},
 		{
+			Path: "daemon.tsnet.hostname", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status"},
+			Name:     "Tailnet hostname",
+			Short:    "also serve the daemon on a tailnet, under this name",
+			Long: "Empty serves only the local socket and TCP port. A name " +
+				"joins a tailnet as that identity (tsnet) and serves the same " +
+				"API there, so the daemon is reachable by name from another " +
+				"network with no port forwarded. The node joins with the auth " +
+				"key in the TS_AUTHKEY environment variable; with no key the " +
+				"daemon refuses to start rather than silently serving only " +
+				"the local routes. Clients reach it with a tsnet:// endpoint.",
+		},
+		{
 			Path: "daemon.address", Kind: KindString, Default: "127.0.0.1",
 			Scope: ScopeDaemon, FlagAliases: []string{"address"},
 			Name:  "Bind address",
