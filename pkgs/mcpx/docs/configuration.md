@@ -53,6 +53,17 @@ Lowest to highest:
 what it displaced. "Why is this not what my config says" is the most common
 configuration question there is, and the answer is always in that list.
 
+The search path itself is decided before any of those layers exist, in two
+passes. The discovery pass walks the default locations, seeded by
+`MCPX_PATHS_CONFIG` / `--paths-config`, and reads only `paths.config`. The
+load pass resolves that list and loads everything on it, nearest last: a
+file's `paths.config` governs the rest of the chain from that point, a null
+entry stands for the locations the default walk provided, and a list with
+no null replaces the farther remainder. A `paths.config` found only in the
+load pass is reported by `mcpx config --sources`, not applied, and a cycle
+is refused naming the path that closed it. `MCPX_CONFIG` bypasses both
+passes and loads exactly one file.
+
 Two spellings of one setting at the same level is an error rather than a race:
 `--log-level` and `--logging-level` together, or two variables that mean the
 same thing with different values. The environment has no order, so there is
