@@ -562,7 +562,7 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 			word, next := readIdentIn(src, i)
 			if (word == "import" || word == "require") && !precededByDot(src, i) {
 				j := skipSpaceAndCommentsIn(src, next)
-				if j < len(src) && src[j] == '(' {
+				if j < len(src) && src[j] == '(' && !isMethodDefinition(src, j) {
 					line, char := pos(i)
 					dyn, lit, after := scanCallArg(src, j, word, line, char)
 					if dyn != nil {
@@ -596,6 +596,56 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 	}
 	sort.Strings(bare)
 	return bare, dynamics
+}
+
+// isMethodDefinition reports whether the parenthesised list at open is
+// a method or function parameter list rather than a call's argument
+// list: the token after its closing paren is '{' (the body). In valid
+// code a call cannot be followed directly by a block, so
+// `require(value) { ... }` only parses as a definition (Codex review,
+// PR #2575: `class Loader { require(value) { return value; } }` was
+// reported as a computed require and rejected under
+// script.importsOnDynamic=fail).
+func isMethodDefinition(src string, open int) bool {
+	close := matchingParenIn(src, open)
+	if close < 0 {
+		return false
+	}
+	k := skipSpaceAndCommentsIn(src, close+1)
+	return k < len(src) && src[k] == '{'
+}
+
+// matchingParenIn returns the index of the ')' matching the '(' at
+// open, skipping strings, templates and comments, or -1 when the list
+// is unbalanced.
+func matchingParenIn(src string, open int) int {
+	depth := 0
+	for i := open; i < len(src); {
+		switch src[i] {
+		case '\'', '"':
+			i, _ = readStringIn(src, i)
+		case '`':
+			i, _ = scanTemplateIn(src, i)
+		case '/':
+			if i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*') {
+				i = skipCommentIn(src, i)
+			} else {
+				i++
+			}
+		case '(':
+			depth++
+			i++
+		case ')':
+			depth--
+			i++
+			if depth == 0 {
+				return i - 1
+			}
+		default:
+			i++
+		}
+	}
+	return -1
 }
 
 // precededByDot reports whether the identifier at off is a property
@@ -692,21 +742,53 @@ func scanTemplateIn(src string, i int) (int, [][2]int) {
 			start := j + 2
 			depth := 1
 			k := start
+			// prevValue mirrors scanSource: a '/' after a completed
+			// value divides; anywhere else it can open a regex literal,
+			// whose braces are not interpolation braces (Codex review,
+			// PR #2575: `${/}/.test(s) ? await import(name) : ''}` lost
+			// the import when the regex's } closed the span early).
+			prevValue := false
 			for k < len(src) && depth > 0 {
 				switch {
 				case src[k] == '\'' || src[k] == '"':
 					k, _ = readStringIn(src, k)
+					prevValue = true
 				case src[k] == '`':
 					k, _ = scanTemplateIn(src, k)
+					prevValue = true
 				case src[k] == '/' && k+1 < len(src) && (src[k+1] == '/' || src[k+1] == '*'):
 					k = skipCommentIn(src, k)
+				case src[k] == '/':
+					if !prevValue {
+						if end, ok := scanRegexIn(src, k); ok {
+							k = end
+							prevValue = true
+							continue
+						}
+					}
+					k++
+					prevValue = false
 				case src[k] == '{':
 					depth++
 					k++
+					prevValue = false
 				case src[k] == '}':
 					depth--
 					k++
+					prevValue = true
+				case isIdentStartIn(src[k]):
+					word, next := readIdentIn(src, k)
+					prevValue = !expressionKeyword(word)
+					k = next
+				case src[k] >= '0' && src[k] <= '9':
+					for k < len(src) && (isIdentPartIn(src[k]) || src[k] == '.') {
+						k++
+					}
+					prevValue = true
 				default:
+					if !isSpaceIn(src[k]) {
+						prevValue = src[k] == ')' || src[k] == ']'
+					}
 					k++
 				}
 			}

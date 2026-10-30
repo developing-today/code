@@ -326,3 +326,23 @@ func TestCheckImportsPreservesGraphStderr(t *testing.T) {
 		t.Fatalf("error = %q, want the subprocess stderr preserved", err.Error())
 	}
 }
+
+func TestScanDynamicImportsSkipsMethodDeclarations(t *testing.T) {
+	src := "class Loader { require(value) { return value; } }\n" +
+		"const o = { import(name) { return name; } };\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 0 {
+		t.Fatalf("method declarations are not module loads, got %v", dyn)
+	}
+	src2 := "class Loader { require(value) { return value; } }\nconst m = require(name);\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src2); len(dyn) != 1 {
+		t.Fatalf("the real require call after the class should be found, got %v", dyn)
+	}
+}
+
+func TestScanDynamicImportsFindsImportAfterRegexInTemplate(t *testing.T) {
+	src := "const text = `${/}/.test(s) ? await import(name) : ''}`;\n"
+	dyn := preflight.ScanDynamicImports("a.ts", src)
+	if len(dyn) != 1 {
+		t.Fatalf("the regex's } must not close the interpolation early, got %v", dyn)
+	}
+}
