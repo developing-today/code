@@ -20,6 +20,8 @@
     overlays = [
       inputs.self.vimOverlay.${system}
       inputs.yazi.overlays.default
+      # Provides pkgs.openclaw + pkgs.openclawPackages for home/openclaw.
+      inputs.nix-openclaw.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css
       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
     ];

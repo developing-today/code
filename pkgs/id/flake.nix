@@ -318,18 +318,31 @@
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int-sandbox";
-          # PR-gate shards of the integration suite (#869): the three
+          # PR-gate shards of the integration suite (#869): the four
           # shards together run every target test-sandbox runs, in
           # parallel jobs instead of one serial ~25-minute check.
-          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 3";
-          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 3";
-          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 3";
+          # (3 → 4 shards in #551: the 3-way shards had drifted to
+          # ~12.5 min, close to the fast-lane exit.)
+          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 4";
+          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
+          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
+          test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
+          # PR-gate splits of crash-gate (#551): the aggregate above runs
+          # every heavy full sweep serially (~15 min, the slowest PR
+          # check). These four checks partition the same tests by name
+          # filter and run in parallel on PRs; crash-gate itself stays
+          # for local use and the nightly full flake check, and is
+          # excluded from the PR list in check-id-pr-checks.sh.
+          crash-gate-sampled = mkCheck "crash-gate-sampled" "crash-gate-sampled";
+          crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
+          crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
+          crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
@@ -389,11 +402,28 @@
               # causing it to hang on launch in the nix sandbox.
               unset LD_LIBRARY_PATH
 
-              # Run Playwright E2E tests
+              # Run Playwright E2E tests — one invocation per spec file (#229).
+              # playwright.config.ts starts ONE ephemeral server per browser
+              # project for the whole invocation, so a single full-suite run
+              # lets every spec observe the files/state earlier specs created
+              # on that shared server (the Firefox shared-state failure
+              # cluster: e.g. basic.spec's "empty state" test ran after
+              # autosave.spec had already created files). A fresh invocation
+              # per spec file gives each file a fresh ephemeral server.
+              # All files run even if one fails, so one run reports every
+              # failing file; the check fails if any file failed.
               # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
               # Playwright's .esm.preflight virtual imports for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
-              (cd e2e && node node_modules/@playwright/test/cli.js test)
+              (
+                cd e2e
+                e2e_status=0
+                for spec in tests/*.spec.ts; do
+                  echo "=== test-e2e isolated per-spec run: $spec ==="
+                  node node_modules/@playwright/test/cli.js test "$spec" || e2e_status=1
+                done
+                exit $e2e_status
+              )
             '';
             installPhase = ''
               mkdir -p $out

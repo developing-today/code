@@ -3,7 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "python3 -m unittest discover -s test -p \"test_*.py\""
   },
   "dependencies": {
     "@cloudflare/containers": "^0.0.31"

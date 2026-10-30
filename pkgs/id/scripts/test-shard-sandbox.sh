@@ -7,7 +7,7 @@
 # automatically. The shards together cover every target test-sandbox
 # covers; shard 0 also runs the bin unit tests and the doc tests, which
 # the per-target shards skip. Lib unit tests stay in test-unit. The PR
-# gate runs 3 shards in parallel instead of the single serial
+# gate runs 4 shards in parallel instead of the single serial
 # test/test-web pair (#869).
 set -euo pipefail
 

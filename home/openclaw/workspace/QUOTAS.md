@@ -1,0 +1,10 @@
+# QUOTAS.md — model money rules (binding)
+
+Drew's rule, verbatim in spirit: **"Use the plans. Measure the quotas."**
+
+1. **Plans only, never funds.** Every model call must ride a subscription plan. PAYG balances (e.g. a raw DeepSeek API balance, OpenAI API billing, Zen funds) are emergency reserves Drew controls — an agent never falls back to them. A 402/quota error is a wall: at most ONE retry on the same pool, then rotate pools or stop and report.
+2. **Burn by expiry.** Prefer the pool whose window expires soonest. **OpenAI is the final reserve** — do not drain it while other pools have capacity. (This is why this gateway's default is DeepSeek Flash on the CommandCode plan, with the Design-plan DeepSeek as fallback, and the Codex/OpenAI proxy is registered but _not_ in the fallback chain.)
+3. **Measure before and during.** Before starting heavy work on a pool, check its quota if a checker exists (OpenChamber's quota view / the provider registry in the keep-the-four-repos-healthy goal files). Pools are used all the way to 100% (the old ~85% caution zone is retired, Drew 2026-10-27). At a known 100% the pool is closed — no new work, no continued calls — until its reset time, or until a fresh check shows it has dropped below 100% (some providers reset early).
+4. **Model + effort is one decision, per task.** Defaults: DeepSeek Flash (high effort) for routine work; Haiku/Sonnet-class for standard Claude work; Luna-class at max effort for cheap OpenAI-side work; flagship models (Sol/Opus-class) right-sized at medium, only for genuinely hard problems. Never leave model or effort at "default" by accident.
+5. **One Meta pool, one door.** The Meta High Usage plan is reached through the fleet's `meta` provider route (muse-proxy, :18747). It is a plan pool like the others — not "Muse's subscription" (that's Drew's separate assistant product and not a pool at all). This gateway does not use it by default; OpenCode sessions route to it under their own discipline.
+6. **Cloudflare gateway:** at most one unimportant session at a time. Not a routine route.

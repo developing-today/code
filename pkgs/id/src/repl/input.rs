@@ -267,7 +267,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     while let Some(start) = result.find("$(") {
         let mut depth = 1;
         let mut end = start + 2;
-        for (i, c) in result[start + 2..].chars().enumerate() {
+        for (i, c) in result[start + 2..].char_indices() {
             match c {
                 '(' => depth += 1,
                 ')' => {
@@ -606,6 +606,44 @@ mod tests {
                 .to_string()
                 .contains("unterminated backtick")
         );
+    }
+
+    #[test]
+    fn test_preprocess_command_substitution_multibyte() {
+        // Regression: the closing-paren scan must use byte offsets
+        // (char_indices), not char counts — a multibyte character inside
+        // $(...) used to make `end` land inside the character and panic
+        // on the slice (issue #1583).
+        match preprocess_repl_line("get $(echo café)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get café"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_command_substitution_emoji() {
+        match preprocess_repl_line("get $(echo ☕)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get ☕"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_command_substitution_two_multibyte() {
+        // Two multibyte characters also exercise the remainder slice
+        // (&result[end + 1..]), the second former panic site.
+        match preprocess_repl_line("get $(echo éé)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get éé"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_put_command_substitution_multibyte() {
+        match preprocess_repl_line("put $(echo café) name").unwrap() {
+            ReplInput::Ready(s) => assert!(s.contains("__STDIN_CONTENT__:café")),
+            _ => panic!("expected Ready"),
+        }
     }
 
     #[test]

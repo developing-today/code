@@ -34,6 +34,7 @@ mod actor;
 mod clock;
 mod core;
 mod handle;
+mod metrics;
 mod util;
 
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub(crate) use actor::{WorldActor, WorldCommand};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
+pub use metrics::{HistogramSnapshot, MetricsSnapshot, WorldMetrics};
 pub use util::{EventPage, hex_encode, publish_records};
 pub(crate) use util::{
     constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
@@ -640,8 +642,44 @@ pub enum JournalEntry {
     },
 }
 
-/// Current [`JournalEntry::Created`] version.
+/// Version written in a new journal's [`JournalEntry::Created`] header.
+///
+/// Journal upgrade/rollback contract (issue #227): a journal is created at
+/// version 1 and stays at version 1 until it contains an entry kind a
+/// version-1 binary cannot read. The first such entry — today only
+/// [`JournalEntry::ExecutionProfile`] — bumps the header to
+/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] *before* the entry is appended, by
+/// atomically rewriting the journal (sibling temp file, fsync, rename), so
+/// a failed bump leaves the old journal untouched. A binary refuses any
+/// journal newer than [`MAX_JOURNAL_VERSION`] at the header check in
+/// [`WorldCore::restore`], never mid-read: a version-1 binary opening a
+/// version-2 journal therefore fails early and clearly instead of dying on
+/// the profile entry it cannot deserialize. New binaries accept versions
+/// 1..=[`MAX_JOURNAL_VERSION`], so existing journals stay readable
+/// (forward compatibility), and a journal that never writes a profile
+/// entry is never migrated at all.
 pub const JOURNAL_VERSION: u32 = 1;
+
+/// Header version of a journal that contains a
+/// [`JournalEntry::ExecutionProfile`]: the first entry kind a version-1
+/// binary cannot read. See the contract on [`JOURNAL_VERSION`].
+pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
+
+/// Newest journal version this binary can read. Journals with a higher
+/// header version are refused at the header check, before any entry is
+/// applied.
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_EXECUTION_PROFILE;
+
+/// The header version a journal must carry once it contains `entry`:
+/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] for the entry kinds a version-1
+/// binary cannot read, [`JOURNAL_VERSION`] for everything else.
+#[must_use]
+pub const fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    match entry {
+        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        _ => JOURNAL_VERSION,
+    }
+}
 
 /// Durable, append-only record of a world's history.
 ///

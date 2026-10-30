@@ -4,7 +4,7 @@
  */
 
 import { getSearchState } from "prosemirror-search";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { afterEach, describe, expect, it } from "vitest";
 import { rawSchema } from "./editor";
@@ -65,10 +65,11 @@ afterEach(() => {
 // ── createSearchPlugins ────────────────────────────────────────────
 
 describe("createSearchPlugins", () => {
-  it("returns an array of 2 plugins", () => {
+  it("returns an array of 3 plugins", () => {
     const plugins = createSearchPlugins();
     expect(Array.isArray(plugins)).toBe(true);
-    expect(plugins.length).toBe(2);
+    // search + keymap + match-count sync
+    expect(plugins.length).toBe(3);
   });
 
   it("all returned items are ProseMirror plugins", () => {
@@ -255,7 +256,7 @@ describe("search panel integration", () => {
     expect(container.querySelector("#search-regex")).not.toBeNull();
   });
 
-  it("panel has role=search for accessibility", () => {
+  it("panel has role=search and aria-label for accessibility", () => {
     const { view, container } = createViewWithSearch();
     activeView = view;
     activeContainer = container;
@@ -264,6 +265,8 @@ describe("search panel integration", () => {
 
     const panel = container.querySelector(".search-panel");
     expect(panel?.getAttribute("role")).toBe("search");
+    expect(panel?.getAttribute("aria-label")).toBe("Find and replace");
+    expect(container.querySelector("#replace-all")?.getAttribute("aria-label")).toBe("Replace all");
   });
 
   it("opening panel twice does not create duplicate panels", () => {
@@ -276,6 +279,108 @@ describe("search panel integration", () => {
 
     const panels = container.querySelectorAll(".search-panel");
     expect(panels.length).toBe(1);
+  });
+});
+
+// ── Match count refresh on document edits (#1402) ──────────────────
+
+/** Create a view whose document is a single raw code_block holding `text`. */
+function createViewWithDoc(text: string): { view: EditorView; container: HTMLElement } {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const doc = rawSchema.node("doc", null, [rawSchema.node("code_block", null, [rawSchema.text(text)])]);
+  const state = EditorState.create({ schema: rawSchema, doc, plugins: createSearchPlugins() });
+  const view = new EditorView(container, { state });
+  return { view, container };
+}
+
+/** Open the find panel and type a query, as a user would. */
+function openAndSearch(view: EditorView, container: HTMLElement, query: string): void {
+  triggerSearchKey(view, "f");
+  const input = container.querySelector("#search-input") as HTMLInputElement;
+  input.value = query;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** Text currently shown in the match count label. */
+function matchCountText(container: HTMLElement): string | null | undefined {
+  return container.querySelector("#search-match-count")?.textContent;
+}
+
+describe("match count refresh on document edits", () => {
+  it("decreases the count when an edit removes a match", () => {
+    const { view, container } = createViewWithDoc("foo foo foo");
+    activeView = view;
+    activeContainer = container;
+
+    openAndSearch(view, container, "foo");
+    expect(matchCountText(container)).toBe("3 matches");
+
+    // Delete the second "foo " -> "foo foo"
+    view.dispatch(view.state.tr.delete(5, 9));
+
+    expect(matchCountText(container)).toBe("2 matches");
+  });
+
+  it("increases the count when an edit adds a match", () => {
+    const { view, container } = createViewWithDoc("foo foo");
+    activeView = view;
+    activeContainer = container;
+
+    openAndSearch(view, container, "foo");
+    expect(matchCountText(container)).toBe("2 matches");
+
+    view.dispatch(view.state.tr.insertText(" foo", 8));
+
+    expect(matchCountText(container)).toBe("3 matches");
+  });
+
+  it("transitions through '1 match' and 'No results' as the document is edited", () => {
+    const { view, container } = createViewWithDoc("foo foo");
+    activeView = view;
+    activeContainer = container;
+
+    openAndSearch(view, container, "foo");
+    expect(matchCountText(container)).toBe("2 matches");
+
+    view.dispatch(view.state.tr.delete(5, 9));
+    expect(matchCountText(container)).toBe("1 match");
+
+    view.dispatch(view.state.tr.delete(1, 4));
+    expect(matchCountText(container)).toBe("No results");
+
+    view.dispatch(view.state.tr.insertText("foo", 1));
+    expect(matchCountText(container)).toBe("1 match");
+  });
+
+  it("does not re-count on selection-only transactions", () => {
+    const { view, container } = createViewWithDoc("foo foo foo");
+    activeView = view;
+    activeContainer = container;
+
+    openAndSearch(view, container, "foo");
+    expect(matchCountText(container)).toBe("3 matches");
+
+    // Count writes to the label, so a redundant re-count is observable even
+    // when it writes the same text back.
+    const label = container.querySelector("#search-match-count") as HTMLElement;
+    let text = label.textContent ?? "";
+    let writes = 0;
+    Object.defineProperty(label, "textContent", {
+      configurable: true,
+      get() {
+        return text;
+      },
+      set(value: string) {
+        writes += 1;
+        text = value;
+      },
+    });
+
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 4)));
+
+    expect(writes).toBe(0);
+    expect(matchCountText(container)).toBe("3 matches");
   });
 });
 

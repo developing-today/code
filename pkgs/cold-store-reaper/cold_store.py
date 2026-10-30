@@ -2,7 +2,9 @@
 """cold-store reaper v1: archive files into Google Drive as immutable,
 content-addressed bundles of concatenated per-object zstd frames.
 
-Stdlib only. Compression/decompression is delegated to the `zstd` CLI.
+Stdlib only. Compression/decompression is delegated to the `zstd` CLI,
+and S3 downloads that urllib cannot deliver whole fall back to the
+`curl` CLI (see s3_get_object).
 
 Identity model (see README.md): the OAuth app holds ONLY the drive.file
 scope, so it can see nothing but files/folders it creates itself. On first
@@ -27,6 +29,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,6 +77,31 @@ DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
 DEFAULT_R2_BUCKET = "supabase-backups"
 R2_SIGNING_REGION = "auto"  # R2 is region-agnostic; SigV4 still needs one
 S3_GET_ATTEMPTS = 3
+# The curl fallback for S3 downloads (s3_get_object) is a last resort
+# for objects urllib cannot deliver whole; it gets one attempt and a
+# generous timeout — the objects it exists for are the large ones.
+S3_CURL_TIMEOUT_SECONDS = 900
+# Transport-level retries inside the S3 layer (LIST/GET/DELETE are all
+# idempotent). Through some egress proxies, urllib responses are
+# intermittently truncated mid-body or the connection drops outright;
+# http_request surfaces those as the exceptions below, and before this
+# retry existed they escaped _s3_request as raw tracebacks that killed
+# the caller at the LIST step. Only S3 requests retry — Drive and the
+# other http_request callers keep their own semantics.
+S3_TRANSPORT_ATTEMPTS = 4
+S3_TRANSPORT_BACKOFF_SECONDS = 0.5  # x attempt number, capped below
+S3_TRANSPORT_BACKOFF_CAP_SECONDS = 5.0
+# A reset during the request-send phase is wrapped by urllib into a
+# URLError, which http_request converts to ColdStoreError; _s3_request
+# adds ColdStoreError to this tuple at call time (the class is defined
+# further down). Its try covers only the http_request call, so no
+# other ColdStoreError can be caught by the retry.
+S3_TRANSPORT_ERRORS = (
+    http.client.IncompleteRead,
+    http.client.RemoteDisconnected,
+    http.client.BadStatusLine,
+    ConnectionResetError,
+)
 
 
 def s3_error_message(body: bytes) -> str:
@@ -83,6 +111,17 @@ def s3_error_message(body: bytes) -> str:
         return m.group(1).decode("utf-8", "replace")
     text = (body or b"").decode("utf-8", "replace").strip()
     return text[:200] if text else "no error detail in response body"
+
+
+def _scrub_secrets(text: str, *values: str) -> str:
+    """Replace credential values in text destined for an error
+    message. The curl fallback passes credentials in argv (visible in
+    the local process list, like any CLI); they must still never land
+    in logs or error text."""
+    for v in values:
+        if v:
+            text = text.replace(v, "***")
+    return text
 
 
 def _header_value(headers: dict, name: str):
@@ -238,6 +277,7 @@ class ColdStore:
         zstd=None,
         d1_base=None,
         s3_base=None,
+        curl=None,
     ):
         self.home = Path(home)
         self.credentials_path = self.home / "credentials.json"
@@ -265,7 +305,14 @@ class ColdStore:
         if not Path(candidate).exists():
             candidate = "zstd"  # fall back to PATH lookup
         self.zstd = candidate
+        # curl is the S3 download fallback of last resort
+        # (s3_get_object); PATH lookup unless overridden, like zstd.
+        self.curl = curl or os.environ.get("COLD_STORE_CURL") or "curl"
         self._access_token = None
+        self._access_token_expires_at = 0.0
+        # Injectable so tests can zero it: transport-retry backoff for
+        # the S3 layer (see _s3_request).
+        self.s3_backoff_seconds = S3_TRANSPORT_BACKOFF_SECONDS
 
     # ------------------------------------------------------------------ init
     def init(self) -> dict:
@@ -278,7 +325,7 @@ class ColdStore:
             self._write_private_json(self.credentials_path, template)
             created.append("credentials.json (template — fill from Bitwarden)")
         if not self.state_path.exists():
-            self._write_json(self.state_path, {})
+            self._write_private_json(self.state_path, {})
             created.append("state.json")
         had_manifest = self.manifest_path.exists()
         self.db()  # creates manifest.sqlite with the schema
@@ -292,10 +339,6 @@ class ColdStore:
             json.dump(obj, f, indent=2)
             f.write("\n")
         os.chmod(path, 0o600)
-
-    @staticmethod
-    def _write_json(path: Path, obj: dict) -> None:
-        path.write_text(json.dumps(obj, indent=2) + "\n")
 
     # ------------------------------------------------------------ credentials
     def load_credentials(self) -> dict:
@@ -316,7 +359,11 @@ class ColdStore:
         return {}
 
     def save_state(self, state: dict) -> None:
-        self._write_json(self.state_path, state)
+        # state.json is written 0600 like credentials.json, and it must
+        # never carry credential material: drop any access_token a
+        # pre-#940 state file may still hold (tokens live in memory only).
+        state = {k: v for k, v in state.items() if k != "access_token"}
+        self._write_private_json(self.state_path, state)
 
     # ------------------------------------------------------------------- db
     def db(self) -> sqlite3.Connection:
@@ -408,6 +455,80 @@ class ColdStore:
             (utcnow_str(), direction, nbytes, kind, ref),
         )
 
+    # ------------------------------------------------------- upload limits
+    @staticmethod
+    def _upload_accounting(conn) -> dict:
+        """The guardrail accounting shared by `status` and enforcement
+        (#938): rolling-24h upload bytes from the transfer ledger,
+        verified cold bytes in Drive, and the two meta limits. One
+        implementation, so the readout and the refusal can never
+        disagree."""
+        up_24h = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='upload' AND ts >= datetime('now','-1 day')"
+        ).fetchone()["n"]
+        cold_bytes = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
+        ).fetchone()["n"]
+        # #1028: backups live unbundled in Drive and never enter the
+        # bundles table, so bundle bytes alone leave the project budget
+        # blind to the one class that grows nightly. The transfer
+        # ledger records both sides of that flow — every put_backup
+        # writes an upload/backup-upload row and prune_backups writes a
+        # trash/backup-prune row per trashed file — so backup bytes in
+        # Drive are the all-time difference (the ledger is never
+        # pruned; only the daily hard stop above uses a 24h window).
+        # A backup trashed manually in Drive, outside prune-backups,
+        # is not decremented: the total then overcounts and the budget
+        # refuses earlier, never later.
+        backup_uploaded = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='upload' AND kind='backup-upload'"
+        ).fetchone()["n"]
+        backup_pruned = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='trash' AND kind='backup-prune'"
+        ).fetchone()["n"]
+        backup_bytes = max(0, backup_uploaded - backup_pruned)
+        meta = {
+            r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
+        }
+        return {
+            "uploads_24h_bytes": up_24h,
+            "cold_bytes": cold_bytes,
+            "backup_bytes": backup_bytes,
+            "daily_upload_hard_stop_bytes": int(
+                meta.get("daily_upload_hard_stop_bytes", "700000000000")
+            ),
+            "project_budget_bytes": int(meta.get("project_budget_bytes", "0")),
+        }
+
+    def _check_upload_limits(self, conn, nbytes: int, what: str) -> None:
+        """Refuse a transfer BEFORE any bytes are uploaded when it would
+        cross the daily upload hard stop (rolling-24h ledger uploads +
+        this transfer) or the project budget (verified cold bytes +
+        backup bytes (#1028) + this transfer). Raises ColdStoreError
+        naming the limit, the current usage, and the refused size."""
+        acct = self._upload_accounting(conn)
+        up_24h = acct["uploads_24h_bytes"]
+        hard_stop = acct["daily_upload_hard_stop_bytes"]
+        if up_24h + nbytes > hard_stop:
+            raise ColdStoreError(
+                f"{what} refused: daily upload hard stop — {up_24h} B uploaded "
+                f"in the last 24h + this {nbytes} B transfer would cross the "
+                f"{hard_stop} B daily_upload_hard_stop_bytes limit"
+            )
+        cold_bytes = acct["cold_bytes"]
+        backup_bytes = acct["backup_bytes"]
+        budget = acct["project_budget_bytes"]
+        if budget and cold_bytes + backup_bytes + nbytes > budget:
+            raise ColdStoreError(
+                f"{what} refused: project budget — {cold_bytes} B verified "
+                f"cold in Drive + {backup_bytes} B backups in Drive + this "
+                f"{nbytes} B transfer would cross the "
+                f"{budget} B project_budget_bytes limit"
+            )
+
     # ------------------------------------------------------------------ auth
     def auth_url(self) -> str:
         creds = self.load_credentials()
@@ -452,14 +573,13 @@ class ColdStore:
         return {"stored": "refresh_token", "expires_in": payload.get("expires_in")}
 
     def access_token(self) -> str:
-        if self._access_token:
+        # The access token lives in memory only — it is never persisted
+        # (state.json used to cache it; see #940). It is re-derived from
+        # the refresh token in credentials.json whenever the in-memory
+        # copy is missing or about to expire.
+        now = datetime.now(timezone.utc).timestamp()
+        if self._access_token and self._access_token_expires_at > now + 60:
             return self._access_token
-        state = self.load_state()
-        cached = state.get("access_token")
-        expires_at = state.get("access_token_expires_at", 0)
-        if cached and expires_at > datetime.now(timezone.utc).timestamp() + 60:
-            self._access_token = cached
-            return cached
         creds = self.load_credentials()
         if not creds.get("refresh_token"):
             raise ColdStoreError(
@@ -484,13 +604,8 @@ class ColdStore:
             raise ColdStoreError(f"token refresh failed (HTTP {status})")
         payload = json.loads(resp)
         token = payload["access_token"]
-        state["access_token"] = token
-        state["access_token_expires_at"] = (
-            datetime.now(timezone.utc)
-            + timedelta(seconds=payload.get("expires_in", 3600))
-        ).timestamp()
-        self.save_state(state)
         self._access_token = token
+        self._access_token_expires_at = now + payload.get("expires_in", 3600)
         return token
 
     def _auth_headers(self, extra=None) -> dict:
@@ -592,12 +707,21 @@ class ColdStore:
         bundle_hash = hashlib.sha256()
         members = []
         offset = 0
+        seen_hashes = set()
         with open(tmp_bundle, "wb") as bundle_out:
             for name in files:
                 src = Path(name)
                 if not src.is_file():
                     raise ColdStoreError(f"not a file: {src}")
                 obj_hash = sha256_file(src)
+                # Members are keyed (bundle_id, object_hash): duplicate
+                # content in one pack call would write a second frame no
+                # member row can ever point at (INSERT OR IGNORE drops
+                # it) while member_count/live_bytes counted it (#963).
+                # Store each distinct object exactly once.
+                if obj_hash in seen_hashes:
+                    continue
+                seen_hashes.add(obj_hash)
                 frame_path = self.bundles_dir / "frame.tmp"
                 self._compress_to_frame(src, frame_path)
                 frame_len = frame_path.stat().st_size
@@ -735,6 +859,11 @@ class ColdStore:
                 "already": "verified",
                 "drive_file_id": row["drive_file_id"],
             }
+        try:
+            self._check_upload_limits(conn, row["bytes"], f"upload of {bundle_id}")
+        except ColdStoreError:
+            conn.close()
+            raise
         with conn:
             conn.execute(
                 "UPDATE bundles SET state='uploading' WHERE bundle_id=?", (bundle_id,)
@@ -839,11 +968,16 @@ class ColdStore:
         src = Path(file)
         if not src.is_file():
             raise ColdStoreError(f"not a file: {src}")
+        size = src.stat().st_size
+        conn = self.db()
+        try:
+            self._check_upload_limits(conn, size, f"put-backup {db_name}")
+        finally:
+            conn.close()
         folder_id = self._folder_id(f"db-backups/{db_name}")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         name = f"{db_name}-{stamp}-{src.name}"
         file_id = self._resumable_upload(src, name, folder_id)
-        size = src.stat().st_size
         conn = self.db()
         with conn:
             self.ledger_add(conn, "upload", size, "backup-upload", name)
@@ -1329,8 +1463,39 @@ class ColdStore:
             "x-amz-date": amz_date,
         }
 
-    def _s3_request(self, method, bucket, key=None, query=None):
-        """One signed S3 request; returns (status, headers, body)."""
+    def _s3_request(self, method, bucket, key=None, query=None, curl_fallback=True):
+        """One signed S3 request; returns (status, headers, body).
+
+        Transport failures — the response truncated mid-body
+        (IncompleteRead), the peer dropping or resetting the
+        connection (RemoteDisconnected / ConnectionResetError,
+        including the URLError form http_request converts to
+        ColdStoreError), or a garbled status line (BadStatusLine) —
+        retry the WHOLE request, up to S3_TRANSPORT_ATTEMPTS attempts
+        with a small backoff (self.s3_backoff_seconds x attempt,
+        capped). LIST, GET and DELETE are all idempotent, so a blind
+        retry is safe; the retry lives only in this S3 layer, never in
+        http_request itself. The request is re-signed per attempt
+        (SigV4 timestamps go stale; a fresh signature costs nothing).
+
+        If every urllib attempt fails at the transport level and the
+        method is GET, make exactly ONE curl attempt for the same URL
+        (_s3_request_via_curl) before giving up: on a hostile-proxy
+        night every urllib retry can truncate at a different offset
+        (seen live 2026-10-28, when backup-supabase died at its LIST),
+        while curl is immune. The curl response returns through the
+        same (status, headers, body) shape, so callers' status
+        handling (_s3_check) sees an HTTP error from curl exactly as
+        it would from urllib. Non-GET methods get no fallback.
+        s3_get_object passes curl_fallback=False: object downloads
+        keep their dedicated byte-count-verified fallback
+        (_s3_get_via_curl) instead of this unverified one.
+
+        If every attempt fails, raise a ColdStoreError naming the
+        operation and bucket instead of leaking a raw http.client
+        traceback; when the curl fallback was attempted and also
+        failed, the message says so.
+        """
         path = "/" + urllib.parse.quote(bucket, safe="")
         if key is not None:
             path += "/" + urllib.parse.quote(key, safe="/")
@@ -1340,8 +1505,45 @@ class ColdStore:
         url = self.s3_base + path
         if canonical_query:
             url += "?" + canonical_query
-        headers = self._s3_signed_headers(method, path, canonical_query)
-        return http_request(method, url, headers=headers)
+        what = f"{method} {bucket}" + (f"/{key}" if key is not None else "")
+        problem: Exception | None = None
+        for attempt in range(1, S3_TRANSPORT_ATTEMPTS + 1):
+            headers = self._s3_signed_headers(method, path, canonical_query)
+            try:
+                return http_request(method, url, headers=headers)
+            except (*S3_TRANSPORT_ERRORS, ColdStoreError) as e:
+                problem = e
+                if attempt < S3_TRANSPORT_ATTEMPTS:
+                    delay = min(
+                        self.s3_backoff_seconds * attempt,
+                        S3_TRANSPORT_BACKOFF_CAP_SECONDS,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+        if method == "GET" and curl_fallback:
+            try:
+                return self._s3_request_via_curl(url)
+            except ColdStoreError as curl_problem:
+                raise ColdStoreError(
+                    f"S3 {what} failed after {S3_TRANSPORT_ATTEMPTS} attempts: "
+                    f"transport error ({type(problem).__name__}: {problem}); "
+                    f"curl fallback also failed: {curl_problem}"
+                ) from None
+        raise ColdStoreError(
+            f"S3 {what} failed after {S3_TRANSPORT_ATTEMPTS} attempts: "
+            f"transport error ({type(problem).__name__}: {problem})"
+        )
+
+    def _s3_request_via_curl(self, url: str):
+        """One curl attempt at a GET-class _s3_request URL, in the
+        same (status, headers, body) shape a urllib response has, so
+        the caller's _s3_check treats an HTTP error status from curl
+        exactly as it would from urllib. Headers are not captured
+        (the GET-class callers — listings — read none); errors are
+        the _curl_fetch_status ColdStoreErrors, already scrubbed."""
+        access, secret = self._r2_credentials()
+        status, body = self._curl_fetch_status(url, access, secret)
+        return status, {}, body
 
     @staticmethod
     def _s3_check(status: int, body: bytes, what: str) -> None:
@@ -1366,16 +1568,34 @@ class ColdStore:
             if not truncated:
                 return out
 
-    def s3_get_object(self, bucket: str, key: str) -> bytes:
+    def s3_get_object(
+        self, bucket: str, key: str, expected_size: int | None = None
+    ) -> bytes:
         """Download one object, verifying the received byte count
         against Content-Length. A truncated body — seen live through
         this sandbox's egress proxy, where urllib surfaces it as an
         http.client.IncompleteRead (an HTTPException) or a short read —
-        retries the whole GET, up to S3_GET_ATTEMPTS attempts."""
+        retries the whole GET, up to S3_GET_ATTEMPTS attempts.
+
+        If urllib ultimately cannot deliver the object whole, fall
+        back to ONE curl attempt (_s3_get_via_curl): small responses
+        truncate intermittently and retries absorb them, but
+        multi-megabyte responses truncate systematically through this
+        proxy (every attempt cut at the same byte count), while curl
+        is immune — the same reason the Supabase backup tooling
+        replays downloads with curl. `expected_size`, when the caller
+        knows it (backup-supabase has it from the listing), is the
+        byte count the curl body is verified against.
+        """
         problem = "no attempt made"
         for _attempt in range(S3_GET_ATTEMPTS):
             try:
-                status, headers, resp = self._s3_request("GET", bucket, key=key)
+                # curl_fallback=False: downloads keep the dedicated
+                # byte-count-verified curl fallback below rather than
+                # _s3_request's unverified GET fallback.
+                status, headers, resp = self._s3_request(
+                    "GET", bucket, key=key, curl_fallback=False
+                )
             except (http.client.HTTPException, ColdStoreError) as e:
                 problem = str(e)
                 continue
@@ -1385,9 +1605,153 @@ class ColdStore:
                 problem = f"truncated body: got {len(resp)} of {expected} bytes"
                 continue
             return resp
-        raise ColdStoreError(
-            f"S3 GET {bucket}/{key} failed after {S3_GET_ATTEMPTS} attempts: {problem}"
+        try:
+            return self._s3_get_via_curl(bucket, key, expected_size=expected_size)
+        except ColdStoreError as e:
+            raise ColdStoreError(
+                f"S3 GET {bucket}/{key} failed after {S3_GET_ATTEMPTS} "
+                f"urllib attempts ({problem}); {e}"
+            ) from None
+
+    def _s3_get_via_curl(
+        self, bucket: str, key: str, expected_size: int | None = None
+    ) -> bytes:
+        """One curl download of one object, byte-count verified.
+
+        The expected size is the caller's when given, else a urllib
+        HEAD's Content-Length (HEAD has no body for the proxy to
+        truncate). A body whose length cannot be established is not
+        accepted: an unverifiable download is exactly what this path
+        exists to avoid. Errors are detail-only — the caller
+        (s3_get_object) names the operation, bucket and key.
+        """
+        access, secret = self._r2_credentials()
+        if expected_size is None:
+            try:
+                status, headers, _body = self._s3_request("HEAD", bucket, key=key)
+                if status == 200:
+                    length = _header_value(headers, "Content-Length")
+                    if length is not None:
+                        expected_size = int(length)
+            except ColdStoreError:
+                pass  # no size from HEAD either; handled below
+        if expected_size is None:
+            raise ColdStoreError(
+                "curl fallback could not determine the object's size "
+                "(no caller size, no HEAD Content-Length); refusing "
+                "an unverifiable download"
+            )
+        path = "/" + urllib.parse.quote(bucket, safe="")
+        path += "/" + urllib.parse.quote(key, safe="/")
+        body = self._curl_fetch(self.s3_base + path, access, secret)
+        if len(body) != expected_size:
+            raise ColdStoreError(
+                f"curl fallback delivered {len(body)} of {expected_size} "
+                "bytes (truncated)"
+            )
+        return body
+
+    @staticmethod
+    def _curl_config(access: str, secret: str) -> bytes:
+        """The curl config carrying the credentials, fed to curl on
+        stdin (--config -) by every curl call below: credentials
+        never travel in argv — the local process list must not see
+        them (the --user argv form was issue #983, the pattern
+        #948/#970 removed from push-fleet-feed.sh) — and never on
+        disk. They are scrubbed from every error the curl layer
+        raises, and nothing in it is logged."""
+        return (
+            'user = "'
+            + f"{access}:{secret}".replace("\\", "\\\\").replace('"', '\\"')
+            + '"\n'
+        ).encode()
+
+    def _curl_spawn(self, argv: list, access: str, secret: str):
+        """Run curl once (it does its own SigV4 signing via
+        --aws-sigv4 and reads the proxy from the environment itself).
+        A missing binary or a timeout is a ColdStoreError here; the
+        exit code is the caller's to interpret."""
+        try:
+            return subprocess.run(
+                argv,
+                input=self._curl_config(access, secret),
+                capture_output=True,
+                timeout=S3_CURL_TIMEOUT_SECONDS,
+            )
+        except FileNotFoundError:
+            raise ColdStoreError(
+                f"curl binary not found (looked for {self.curl!r}) — "
+                "the S3 curl fallback needs curl on PATH"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise ColdStoreError(
+                f"curl fallback timed out after {S3_CURL_TIMEOUT_SECONDS}s"
+            ) from None
+
+    @staticmethod
+    def _curl_failure(proc, access: str, secret: str) -> ColdStoreError:
+        detail = _scrub_secrets(
+            proc.stderr.decode("utf-8", "replace").strip()[:200], access, secret
         )
+        return ColdStoreError(
+            f"curl fallback failed (exit {proc.returncode}): "
+            f"{detail or 'no error output'}"
+        )
+
+    def _curl_fetch(self, url: str, access: str, secret: str) -> bytes:
+        """GET `url` with curl and return the body; --fail makes any
+        HTTP error status a curl failure, so a return is always a
+        2xx body. Used by the object-download fallback, whose caller
+        byte-count-verifies the result."""
+        argv = [
+            self.curl,
+            "-sS",
+            "--fail",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--config",
+            "-",
+            url,
+        ]
+        proc = self._curl_spawn(argv, access, secret)
+        if proc.returncode != 0:
+            raise self._curl_failure(proc, access, secret)
+        return proc.stdout
+
+    # Appended to curl's stdout by --write-out so _curl_fetch_status
+    # can split body from status unambiguously, whatever the body
+    # itself ends with.
+    _CURL_STATUS_TRAILER = "\n<<<coldstore-http-status:"
+
+    def _curl_fetch_status(self, url: str, access: str, secret: str):
+        """GET `url` with curl and return (status, body). No --fail:
+        an HTTP error status is a normal result here, so the caller
+        (_s3_request, via _s3_request_via_curl) can run it through
+        the same _s3_check handling as a urllib response. A curl
+        transport failure (nonzero exit — e.g. exit 18 when even curl
+        gets a truncated transfer) raises like _curl_fetch."""
+        argv = [
+            self.curl,
+            "-sS",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--config",
+            "-",
+            "--write-out",
+            self._CURL_STATUS_TRAILER + "%{http_code}>>>",
+            url,
+        ]
+        proc = self._curl_spawn(argv, access, secret)
+        if proc.returncode != 0:
+            raise self._curl_failure(proc, access, secret)
+        body, marker, tail = proc.stdout.rpartition(self._CURL_STATUS_TRAILER.encode())
+        status_text = tail.decode("ascii", "replace")
+        if not marker or not re.fullmatch(r"\d{3}>>>", status_text):
+            raise ColdStoreError(
+                "curl fallback returned an unparseable response "
+                "(no HTTP status trailer)"
+            )
+        return int(status_text[:3]), body
 
     def s3_delete_object(self, bucket: str, key: str) -> None:
         status, _h, resp = self._s3_request("DELETE", bucket, key=key)
@@ -1414,7 +1778,7 @@ class ColdStore:
         if not objects:
             raise ColdStoreError(f"no backup objects found in R2 bucket {bucket}")
         newest = max(objects, key=lambda o: (o["last_modified"] or epoch, o["key"]))
-        data = self.s3_get_object(bucket, newest["key"])
+        data = self.s3_get_object(bucket, newest["key"], expected_size=newest["size"])
         staging = self.home / "staging"
         staging.mkdir(parents=True, exist_ok=True)
         path = staging / newest["key"].rsplit("/", 1)[-1]
@@ -1558,35 +1922,30 @@ class ColdStore:
         bundles_verified = conn.execute(
             "SELECT count(*) n FROM bundles WHERE state='verified'"
         ).fetchone()["n"]
-        cold_bytes = conn.execute(
-            "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
-        ).fetchone()["n"]
-        up_24h = conn.execute(
-            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
-            " WHERE direction='upload' AND ts >= datetime('now','-1 day')"
-        ).fetchone()["n"]
+        acct = self._upload_accounting(conn)
+        cold_bytes = acct["cold_bytes"]
+        backup_bytes = acct["backup_bytes"]
+        up_24h = acct["uploads_24h_bytes"]
         down_24h = conn.execute(
             "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
             " WHERE direction='download' AND ts >= datetime('now','-1 day')"
         ).fetchone()["n"]
-        meta = {
-            r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
-        }
         conn.close()
-        hard_stop = int(meta.get("daily_upload_hard_stop_bytes", "700000000000"))
-        budget = int(meta.get("project_budget_bytes", "0"))
+        hard_stop = acct["daily_upload_hard_stop_bytes"]
+        budget = acct["project_budget_bytes"]
         return {
             "objects_total": objects_total,
             "objects_cold": objects_cold,
             "bundles_total": bundles_total,
             "bundles_verified": bundles_verified,
             "cold_bytes": cold_bytes,
+            "backup_bytes": backup_bytes,
             "uploads_24h_bytes": up_24h,
             "downloads_24h_bytes": down_24h,
             "daily_upload_hard_stop_bytes": hard_stop,
             "hard_stop_ok": up_24h < hard_stop,
             "project_budget_bytes": budget,
-            "within_budget": cold_bytes <= budget if budget else True,
+            "within_budget": cold_bytes + backup_bytes <= budget if budget else True,
         }
 
 
@@ -1772,7 +2131,9 @@ def main(argv=None) -> int:
                 f"bundles: {d['bundles_total']} total, {d['bundles_verified']} verified"
             )
             print(
-                f"cold bytes in Drive: {_human(d['cold_bytes'])} of budget {_human(d['project_budget_bytes'])}"
+                f"cold bytes in Drive: {_human(d['cold_bytes'])}"
+                f" + backup bytes {_human(d['backup_bytes'])}"
+                f" of budget {_human(d['project_budget_bytes'])}"
                 f" ({'within' if d['within_budget'] else 'OVER'} budget)"
             )
             print(

@@ -246,7 +246,7 @@ func (r *Registry) ObserveCatalog() {
 	for _, ch := range changes {
 		r.logf("catalog: %s %s", ch.Tool, ch.What)
 		r.publish(events.Event{
-			Kind: events.Kind("catalog.changed"), Data: mustJSON(ch),
+			Kind: events.CatalogChanged, Data: mustJSON(ch),
 		})
 	}
 }
@@ -602,23 +602,25 @@ func prelude(nss []codegen.Namespace) string {
 	return b.String()
 }
 
-// ---- generation by sampling ----
+// ---- generation ----
 
-// generate asks whatever drives mcpx to write a script.
+// generate asks a model provider to write a script.
 //
-// mcpx has no model, which is the whole reason this goes through the broker:
-// the request is a sampling request like any other, so every answerer that
-// already exists -- the agent through `mcpx elicit`, the plugin through the
-// opencode SDK, an MCP client that declared sampling -- answers it without
-// learning anything new.
+// mcpx has no model, so generation goes to a provider: the daemon's own
+// repair.* configuration, or the provider/model the caller supplied on
+// this intent request. It no longer falls back to an MCP sampling
+// request: sampling is deprecated in MCP 2026-07-28, and the primary
+// consumer cannot answer it (#1961). With no provider, generate returns
+// errNoModel and the intent route answers with its no-model resolution.
 //
-// What it is given is the part that needs care. The reason mcpx is worth
-// having is that tool schemas stay out of a model's context, so a generation
-// request sends the slice of the catalog the existing search ranked for this
-// request, inside a budget, and nothing else.
-func (s *Server) resolveProvider() scripting.Provider {
+// What the provider is given is the part that needs care. The reason mcpx
+// is worth having is that tool schemas stay out of a model's context, so
+// a generation request sends the slice of the catalog the existing
+// search ranked for this request, inside a budget, and nothing else.
+
+func (s *Server) providerConfig() scripting.ProviderConfig {
 	if s.set == nil {
-		return scripting.ResolveProvider(scripting.ProviderConfig{}, nil)
+		return scripting.ProviderConfig{}
 	}
 	getString := func(key string) string {
 		if v, ok := s.set.Value(key); ok {
@@ -626,17 +628,42 @@ func (s *Server) resolveProvider() scripting.Provider {
 		}
 		return ""
 	}
-	cfg := scripting.ProviderConfig{
+	return scripting.ProviderConfig{
 		Type:    getString("repair.provider"),
 		BaseURL: getString("repair.url"),
 		APIKey:  getString("repair.apiKey"),
 		Model:   getString("repair.model"),
 		Command: getString("repair.command"),
 	}
-	return scripting.ResolveProvider(cfg, nil)
 }
 
-func (s *Server) generate(ctx context.Context, prompt, session string) (string, string, error) {
+func (s *Server) resolveProvider() scripting.Provider {
+	return scripting.ResolveProvider(s.providerConfig(), nil)
+}
+
+// callerProviderConfig layers a caller-supplied provider and model (the
+// intent request's provider/model fields, from `mcpx prompt --provider
+// --model` or the /v1 caller) over the daemon's own configuration. An
+// empty caller value leaves the daemon's setting in place.
+func callerProviderConfig(base scripting.ProviderConfig, provider, model string) scripting.ProviderConfig {
+	if provider != "" {
+		base.Type = provider
+	}
+	if model != "" {
+		base.Model = model
+	}
+	return base
+}
+
+// resolveProviderFor resolves the provider for one intent request: the
+// caller's provider/model when supplied, the daemon's repair.* provider
+// otherwise.
+func (s *Server) resolveProviderFor(provider, model string) scripting.Provider {
+	return scripting.ResolveProvider(
+		callerProviderConfig(s.providerConfig(), provider, model), nil)
+}
+
+func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string) (string, string, error) {
 	nss, err := s.reg.CodegenNamespaces(nil, config.Profile{All: true})
 	if err != nil {
 		return "", "", err
@@ -651,93 +678,29 @@ func (s *Server) generate(ctx context.Context, prompt, session string) (string, 
 		"returning the result. Answer with the program only, no prose and no " +
 		"code fences.\n\n" + slice
 
-	prov := s.resolveProvider()
-	if prov != nil {
-		text, perr := prov.Complete(ctx, scripting.CompletionRequest{
-			SystemPrompt: system,
-			UserPrompt:   prompt,
-			MaxTokens:    s.policyFor(ctx).PromptMaxTokens,
-			Temperature:  0.2,
-		})
-		if perr == nil && strings.TrimSpace(text) != "" {
-			return stripFences(text), "provider:" + prov.Name(), nil
-		}
+	if prov == nil {
+		return "", "", errNoModel
 	}
-
-	if s.reg.broker == nil {
-		return "", "", errNoSampler
-	}
-
-	params, _ := json.Marshal(map[string]any{
-		"messages": []any{map[string]any{
-			"role":    "user",
-			"content": map[string]any{"type": "text", "text": prompt},
-		}},
-		"systemPrompt": system,
-		"maxTokens":    s.policyFor(ctx).PromptMaxTokens,
+	text, perr := prov.Complete(ctx, scripting.CompletionRequest{
+		SystemPrompt: system,
+		UserPrompt:   prompt,
+		MaxTokens:    s.policyFor(ctx).PromptMaxTokens,
+		Temperature:  0.2,
 	})
-
-	req := elicit.SampleAsk(elicit.Ask{
-		Session: session,
-		Message: "mcpx is asking for a script: " + prompt,
-		TTL:     s.policyFor(ctx).PromptSampleTimeout,
-	}, params)
-
-	opened, oerr := s.reg.broker.OpenRequest(req)
-	if oerr != nil {
-		return "", "", oerr
+	if perr != nil || strings.TrimSpace(text) == "" {
+		return "", "", errNoModel
 	}
-	s.reg.publish(events.Event{Kind: events.SampleOpened, Data: mustJSON(opened)})
-
-	actx, cancel := context.WithTimeout(ctx, s.policyFor(ctx).PromptSampleTimeout)
-	defer cancel()
-	ans, aerr := s.reg.broker.Await(actx, opened.ID)
-	if aerr != nil || ans.Action != elicit.Accept {
-		return "", opened.ID, errNoSampler
+	used := "provider:" + prov.Name()
+	if model != "" {
+		used += "/" + model
 	}
-	text := sampledText(ans.Content)
-	if strings.TrimSpace(text) == "" {
-		return "", opened.ID, errNoSampler
-	}
-	return stripFences(text), opened.ID, nil
+	return stripFences(text), used, nil
 }
 
-// errNoSampler means nothing answered the sampling request.
-var errNoSampler = fmt.Errorf("no sampling answerer")
-
-// sampledText pulls the completion out of a CreateMessageResult.
-func sampledText(raw json.RawMessage) string {
-	var doc struct {
-		Content json.RawMessage `json:"content"`
-	}
-	if json.Unmarshal(raw, &doc) != nil {
-		return ""
-	}
-	// Content is one block in the specification, but answerers write a list
-	// often enough that accepting both costs one branch and saves a support
-	// question.
-	var one struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(doc.Content, &one) == nil && one.Text != "" {
-		return one.Text
-	}
-	var many []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(doc.Content, &many) == nil {
-		var parts []string
-		for _, b := range many {
-			if b.Text != "" {
-				parts = append(parts, b.Text)
-			}
-		}
-		return strings.Join(parts, "\n")
-	}
-	return ""
-}
+// errNoModel means no provider answered: mcpx has no model of its own,
+// and generation no longer falls back to an MCP sampling request
+// (sampling is deprecated in MCP 2026-07-28; #1961).
+var errNoModel = fmt.Errorf("no model provider answered")
 
 // stripFences removes a markdown code fence a model wrapped the answer in.
 //

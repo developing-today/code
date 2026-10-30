@@ -113,6 +113,21 @@ const extractCodex: Extractor = (s, now) => {
 };
 
 const extractMeta: Extractor = (s, now) => {
+  // A dated billing-blocked read (402 billing_not_configured — the
+  // billing-verification wall) outranks every window/reset read: the
+  // pool is blocked at the account level, whatever the windows say.
+  // The 100% weekly window is the fleet's blocked-status mapping (it
+  // drives poolState → walled), NOT a measured consumption percentage;
+  // the note says so, and no reset is invented for when it lifts.
+  const blocked =
+    /(\d{4}-\d{2}-\d{2})[^\n]{0,200}?billing_not_configured/i.exec(s) ??
+    /billing_not_configured[^\n]{0,200}?(\d{4}-\d{2}-\d{2})/i.exec(s);
+  if (blocked) {
+    return {
+      windows: [pctWindow("weekly", 100, null)],
+      note: `BLOCKED ${blocked[1]} — API returns 402 billing_not_configured (billing-verification wall); laptop meta-provider probes all walled, stewardship measurement gate closed. The 100% weekly window is a blocked-status mapping, not measured consumption.`,
+    };
+  }
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
   const resetIso = reset ? dateTimeCDT(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
@@ -141,9 +156,16 @@ function goWorkspace(name: "Personal" | "Lab"): Extractor {
       new RegExp(`\\*\\*${name} — monthly (\\d+(?:\\.\\d+)?)% used(?:, weekly (\\d+(?:\\.\\d+)?)%)?`, "i"),
     );
     if (!m) return null;
-    // Resets appear in the same paragraph order as the workspaces.
-    const resets = [...s.matchAll(/monthly reset (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/gi)];
-    const r = name === "Personal" ? resets[0] : resets[1];
+    // Paragraph anchoring (#1626): a workspace's reset is the first
+    // 'monthly reset' in its own paragraph — the text from its percentage
+    // match to the next blank line (or the end of the section). A paragraph
+    // with no reset yields null; a reset is never borrowed from another
+    // workspace's paragraph or from an earlier mention elsewhere in the
+    // section (the old section-wide index pairing shifted both workspaces'
+    // resets whenever one reset line was missing or an extra one appeared).
+    const paraEnd = s.indexOf("\n\n", m.index);
+    const paragraph = s.slice(m.index, paraEnd === -1 ? undefined : paraEnd);
+    const r = first(paragraph, /monthly reset (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
     const monthlyReset = r ? monthDayTime(r[1], r[2], r[3], now) : null;
     const windows: QuotaWindow[] = [usdWindow("monthly", (Number(m[1]) / 100) * 60, 60, monthlyReset)];
     if (m[2] !== undefined) windows.push(usdWindow("weekly", (Number(m[2]) / 100) * 30, 30, null));
@@ -323,10 +345,83 @@ const SHELL_POOLS: QuotaPool[] = [
   },
 ];
 
-/** Extract every pool's freshest dated read from the quota view text. */
-export function extractQuotaPools(quotaViewText: string, now = new Date()): QuotaPool[] {
+/**
+ * Pools whose consuming opencode provider ("door") is NOT the pool-id
+ * prefix. Source of truth: `poolFor` in scripts/collect-fleet-feed.ts,
+ * which attributes sessions to pools by door provider — the Claude Pro
+ * pool is burned exclusively through the `claude-code` provider (there
+ * is no `anthropic` provider in the deployed config), so disabling
+ * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
+ * door is its prefix.
+ */
+const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
+  "anthropic:claude-pro": "claude-code",
+};
+
+/**
+ * The opencode provider id whose disablement filters a pool: the pool's
+ * door provider ("openai" in "openai:codex"; "claude-code" for
+ * "anthropic:claude-pro").
+ */
+export function poolProviderId(poolId: string): string {
+  return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
+}
+
+/**
+ * Pools consumed through SEVERAL door providers, none of which is the
+ * pool-id prefix: there is no `antigravity` provider in the deployed
+ * config — the two Antigravity pools are burned through the
+ * `antigravity-ls`, `antigravity-agy` and `google` providers (the same
+ * three doors `poolFor` in scripts/collect-fleet-feed.ts attributes to
+ * them). Such a pool is filtered only when EVERY door is disabled; one
+ * usable door remaining keeps it, because sessions can still burn it.
+ */
+const POOL_DOOR_PROVIDER_IDS: Record<string, string[]> = {
+  "antigravity:gemini": ["antigravity-ls", "antigravity-agy", "google"],
+  "antigravity:claude-gpt": ["antigravity-ls", "antigravity-agy", "google"],
+};
+
+/** Every opencode provider id that can burn a pool (its doors). */
+export function poolProviderIds(poolId: string): string[] {
+  return POOL_DOOR_PROVIDER_IDS[poolId] ?? [poolProviderId(poolId)];
+}
+
+/**
+ * True when a pool must be filtered for the given disabled set: single-
+ * door pools when their door is disabled, multi-door pools only when
+ * every door is disabled.
+ */
+export function poolFilteredByDisabled(poolId: string, disabledProviderIds: ReadonlySet<string>): boolean {
+  return poolProviderIds(poolId).every((id) => disabledProviderIds.has(id));
+}
+
+/**
+ * Extract every pool's freshest dated read from the quota view text.
+ *
+ * #1114: a pool whose provider id is in the deployed opencode config's
+ * disabled_providers set is filtered out HERE, at pool assembly — never
+ * at render time — so quota.json and the guidance derived from these
+ * pools can never name a disabled provider. Matching is exact provider-id
+ * equality against the pool's DOOR provider(s) (poolProviderIds): "openai" is
+ * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
+ * not "opencode" — "anthropic:claude-pro" answers to "claude-code",
+ * its only door, and the antigravity pools answer to antigravity-ls /
+ * antigravity-agy / google jointly (filtered only when all three are
+ * disabled). A filtered pool is
+ * reported through onFiltered (visibly noted, never silently dropped).
+ */
+export function extractQuotaPools(
+  quotaViewText: string,
+  now = new Date(),
+  disabledProviderIds: ReadonlySet<string> = new Set(),
+  onFiltered?: (poolId: string, providerId: string) => void,
+): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
+    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
+      onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
+      continue;
+    }
     const section = sectionOf(quotaViewText, spec.heading);
     let raw: Raw | null = null;
     try {
@@ -361,5 +456,10 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
     }
     pools.push(pool);
   }
-  return [...pools, ...SHELL_POOLS.map((p) => ({ ...p }))];
+  const shells = SHELL_POOLS.filter((p) => {
+    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
+    onFiltered?.(p.id, poolProviderIds(p.id).join(","));
+    return false;
+  });
+  return [...pools, ...shells.map((p) => ({ ...p }))];
 }

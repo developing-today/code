@@ -1,9 +1,10 @@
 -- Cold-store manifest schema v1 (2026-10-25)
 -- Canonical index for the Drive cold store. Drive holds bundles; this DB is the system.
 -- v1.2 (reaper v4): objects.state gains 'evicted' — still cold in Drive, but
--- deleted from R2 by `cold-store evict`. The D1 copy of this schema needs the
--- same one-line CHECK change before evicted rows can sync; sync-manifest
--- surfaces D1's own error text until then.
+-- deleted from R2 by `cold-store evict`. The D1 copy of this schema already
+-- carries the same CHECK change (verified 2026-10-26, #984: D1 sqlite_master
+-- read plus a probe sync-manifest with an 'evicted' row succeeded; the probe
+-- rows were removed afterwards).
 CREATE TABLE IF NOT EXISTS objects (
   hash          TEXT PRIMARY KEY,            -- sha256 hex of object content
   size          INTEGER NOT NULL,
@@ -43,8 +44,8 @@ CREATE INDEX IF NOT EXISTS idx_members_hash ON members(object_hash);
 
 -- Reaper/rehydrator budget ledger: one row per action, 24h rolling window computed from ts.
 -- v1.1 (reaper v3): direction gains 'trash' for backup-prune rows (kind='backup-prune').
--- The D1 copy of this schema needs the same one-line CHECK change before prune
--- rows can sync; sync-manifest surfaces D1's own error text until then.
+-- The D1 copy of this schema already carries the same CHECK change
+-- (verified 2026-10-26, #984 — D1 already held real 'trash' ledger rows).
 CREATE TABLE IF NOT EXISTS transfer_ledger (
   id        INTEGER PRIMARY KEY AUTOINCREMENT,
   ts        TEXT NOT NULL DEFAULT (datetime('now')),

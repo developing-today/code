@@ -6,6 +6,7 @@ Run:  python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
 """
 
 import contextlib
+import gzip
 import hashlib
 import io
 import json
@@ -336,6 +337,38 @@ class TestPack(ColdStoreTestBase):
         self.assertEqual(orow["state"], "staging")
         conn.close()
 
+    def test_pack_duplicate_content_stores_one_frame(self):
+        # #963: duplicate content in one pack call must be stored once —
+        # one frame, and bundles accounting equal to the members table.
+        data = b"hello cold store\n" * 10
+        a = self.write_src("a.txt", data)
+        b = self.write_src("b.txt", data)
+        result = self.store.pack([str(a), str(b)])
+        self.assertEqual(result["members"], 1)
+
+        conn = self.store.db()
+        members = conn.execute(
+            "SELECT * FROM members WHERE bundle_id=?", (result["bundle_id"],)
+        ).fetchall()
+        self.assertEqual(len(members), 1)
+        brow = conn.execute(
+            "SELECT * FROM bundles WHERE bundle_id=?", (result["bundle_id"],)
+        ).fetchone()
+        self.assertEqual(brow["member_count"], len(members))
+        self.assertEqual(brow["live_bytes"], len(data))
+        # the bundle holds exactly the one member frame, no orphan bytes
+        self.assertEqual(brow["bytes"], members[0]["length"])
+        self.assertEqual(result["bytes"], members[0]["length"])
+        raw = Path(result["path"]).read_bytes()
+        frame = raw[members[0]["offset"] : members[0]["offset"] + members[0]["length"]]
+        self.assertEqual(self.store.decompress_frame(frame), data)
+        conn.close()
+
+        # packing the same path twice behaves the same
+        again = self.store.pack([str(a), str(a)])
+        self.assertEqual(again["bundle_id"], result["bundle_id"])
+        self.assertEqual(again["members"], 1)
+
 
 class TestUploadFetch(ColdStoreTestBase):
     def test_ensure_folders_idempotent(self):
@@ -422,6 +455,145 @@ class TestStatus(ColdStoreTestBase):
         conn.close()
 
 
+class TestUploadLimits(ColdStoreTestBase):
+    """#938: upload / put-backup enforce the daily hard stop and the
+    project budget BEFORE any bytes move, using status's accounting."""
+
+    def set_meta(self, key, value):
+        conn = self.store.db()
+        with conn:
+            conn.execute("UPDATE meta SET value=? WHERE key=?", (str(value), key))
+        conn.close()
+
+    def test_upload_refused_at_daily_stop_no_drive_writes(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        # rolling-24h uploads (0) + this bundle would cross the stop
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] - 1)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.upload(packed["bundle_id"])
+        self.assertIn("daily upload hard stop", str(ctx.exception))
+        # refused before uploading: no session, no file, no folder, and
+        # the bundle was never marked uploading
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.files, {})
+        self.assertEqual(self.fake.folders, [])
+        conn = self.store.db()
+        brow = conn.execute(
+            "SELECT state FROM bundles WHERE bundle_id=?", (packed["bundle_id"],)
+        ).fetchone()
+        self.assertEqual(brow["state"], "sealed")
+        conn.close()
+
+    def test_upload_refused_when_ledger_alone_crosses_stop(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 10)
+        conn = self.store.db()
+        with conn:  # 20 B already uploaded inside the rolling window
+            self.store.ledger_add(conn, "upload", 20, "bundle", "b_earlier")
+        conn.close()
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.upload(packed["bundle_id"])
+        self.assertIn("daily upload hard stop", str(ctx.exception))
+        self.assertEqual(self.fake.sessions, {})
+
+    def test_put_backup_refused_at_project_budget(self):
+        self.set_meta("project_budget_bytes", 10)
+        src = self.write_src("dump.sql", b"x" * 100)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.put_backup("d1", str(src))
+        self.assertIn("project budget", str(ctx.exception))
+        # refused before the folder lookup could create anything
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.files, {})
+        self.assertEqual(self.fake.folders, [])
+
+    def test_put_backup_cumulative_budget_refusal(self):
+        # #1028: individually-fitting backups must be refused once
+        # their CUMULATIVE total crosses the project budget — prior
+        # backups count, via the transfer ledger's backup-upload rows.
+        self.set_meta("project_budget_bytes", 150)
+        first = self.write_src("a.sql", b"x" * 100)
+        second = self.write_src("b.sql", b"y" * 100)
+        result = self.store.put_backup("d1", str(first))
+        self.assertTrue(result["drive_file_id"])
+        files_after_first = dict(self.fake.files)
+        sessions_after_first = dict(self.fake.sessions)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.put_backup("d1", str(second))
+        self.assertIn("project budget", str(ctx.exception))
+        # refused before any Drive write
+        self.assertEqual(self.fake.files, files_after_first)
+        self.assertEqual(self.fake.sessions, sessions_after_first)
+        # status shares the accounting: 100 B of backups counted
+        d = self.store.status_data()
+        self.assertEqual(d["backup_bytes"], 100)
+        self.assertEqual(d["cold_bytes"], 0)
+        self.assertTrue(d["within_budget"])
+
+    def test_backup_prune_ledger_row_decrements_backup_bytes(self):
+        # #1028: a backup-prune trash row (prune_backups' ledger
+        # record) decrements the counted backup bytes, so pruned
+        # backups stop consuming the project budget.
+        self.set_meta("project_budget_bytes", 150)
+        first = self.write_src("a.sql", b"x" * 100)
+        self.store.put_backup("d1", str(first))
+        self.assertEqual(self.store.status_data()["backup_bytes"], 100)
+        conn = self.store.db()
+        with conn:
+            self.store.ledger_add(conn, "trash", 100, "backup-prune", "gone.sql")
+        conn.close()
+        self.assertEqual(self.store.status_data()["backup_bytes"], 0)
+        second = self.write_src("b.sql", b"y" * 100)
+        result = self.store.put_backup("d1", str(second))
+        self.assertTrue(result["drive_file_id"])
+
+    def test_just_under_limits_succeeds(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 1000)
+        self.set_meta("project_budget_bytes", packed["bytes"] + 1000)
+        uploaded = self.store.upload(packed["bundle_id"])
+        self.assertTrue(uploaded["verified"])
+        # put-backup also fits: ledger/cold totals grow by the bundle,
+        # so widen both limits by the backup size plus headroom
+        backup = self.write_src("dump.sql", b"y" * 100)
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 100 + 1000)
+        self.set_meta("project_budget_bytes", packed["bytes"] + 100 + 1000)
+        result = self.store.put_backup("d1", str(backup))
+        self.assertTrue(result["drive_file_id"])
+        self.assertEqual(result["bytes"], 100)
+
+
+class TestStateHygiene(ColdStoreTestBase):
+    """#940: the access token is never persisted; state.json is 0600."""
+
+    def test_access_token_never_persisted_and_state_is_0600(self):
+        token = self.store.access_token()
+        self.assertEqual(token, "fake-access")
+        # in-memory reuse — the second call needs no new grant
+        self.assertEqual(self.store.access_token(), "fake-access")
+        self.store.ensure_folders()  # an auth-touching op that saves state
+        raw = self.store.state_path.read_bytes()
+        self.assertNotIn(b"fake-access", raw)
+        state = json.loads(raw)
+        self.assertNotIn("access_token", state)
+        self.assertIn("folders", state)
+        mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_legacy_token_in_state_is_purged_on_save(self):
+        state = self.store.load_state()
+        state["access_token"] = "fake-access"  # as a pre-#940 file held it
+        self.store.save_state(state)
+        raw = self.store.state_path.read_bytes()
+        self.assertNotIn(b"fake-access", raw)
+        self.assertNotIn("access_token", json.loads(raw))
+        mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
@@ -505,7 +677,9 @@ class FakeS3:
     the client asks for, so pagination is always exercised. A key in
     `truncate_once` gets one response whose body stops halfway while
     its Content-Length promises the whole object — the truncated-read
-    case the real client must retry.
+    case the real client must retry. A key in `truncate_always` gets
+    that response every time — the systematic large-object truncation
+    that only the curl fallback survives.
     """
 
     BUCKET = "supabase-backups"
@@ -515,8 +689,16 @@ class FakeS3:
         self.deleted = []  # keys, in DELETE order
         self.requests = []  # {"method", "path", "query", "headers"}
         self.truncate_once = set()
+        self.truncate_always = set()
         self._truncated = set()
         self.page_size = 2
+        # Transport-failure injection for LIST requests: a queue of
+        # modes consumed one per listing call — "truncate" (headers
+        # promise the full body, connection closes halfway through
+        # it) or "drop" (connection closes with no response at all).
+        # list_attempts counts every listing call, failed or not.
+        self.list_failures = []
+        self.list_attempts = 0
 
     def put(self, key, body: bytes, last_modified: str):
         self.objects[key] = {"body": body, "last_modified": last_modified}
@@ -568,6 +750,13 @@ def make_s3_handler(fake: FakeS3):
             qs = urllib.parse.parse_qs(parsed.query)
             rest = parsed.path.lstrip("/").split("/", 1)
             if len(rest) == 1:  # bucket root: ListObjectsV2
+                fake.list_attempts += 1
+                failure = fake.list_failures.pop(0) if fake.list_failures else None
+                if failure == "drop":
+                    # No response at all: the client sees the peer
+                    # vanish (RemoteDisconnected) and must retry.
+                    self.close_connection = True
+                    return
                 start = int(qs.get("continuation-token", ["0"])[0])
                 keys = sorted(fake.objects)
                 page = keys[start : start + fake.page_size]
@@ -591,6 +780,17 @@ def make_s3_handler(fake: FakeS3):
                     f"<IsTruncated>{str(truncated).lower()}</IsTruncated>"
                     f"{contents}{token}</ListBucketResult>"
                 ).encode()
+                if failure == "truncate":
+                    # Headers promise the full body; the connection
+                    # closes halfway — the client's read is truncated
+                    # (IncompleteRead) and it must retry the listing.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/xml")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body[: len(body) // 2])
+                    self.close_connection = True
+                    return
                 self._send(200, body)
                 return
             key = urllib.parse.unquote(rest[1])
@@ -599,7 +799,9 @@ def make_s3_handler(fake: FakeS3):
                 self._error(404, "The specified key does not exist.")
                 return
             body = obj["body"]
-            if key in fake.truncate_once and key not in fake._truncated:
+            if key in fake.truncate_always or (
+                key in fake.truncate_once and key not in fake._truncated
+            ):
                 fake._truncated.add(key)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
@@ -609,6 +811,21 @@ def make_s3_handler(fake: FakeS3):
                 self.close_connection = True
                 return
             self._send(200, body, ctype="application/octet-stream")
+
+        def do_HEAD(self):
+            parsed = self._record()
+            rest = parsed.path.lstrip("/").split("/", 1)
+            key = urllib.parse.unquote(rest[1]) if len(rest) > 1 else ""
+            obj = fake.objects.get(key)
+            if obj is None:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(obj["body"])))
+            self.end_headers()
 
         def do_DELETE(self):
             parsed = self._record()
@@ -644,6 +861,8 @@ class S3TestBase(ColdStoreTestBase):
         self.s3_thread.start()
         self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
         self.store.s3_base = self.s3_base_url
+        # Transport retries must not slow the suite down.
+        self.store.s3_backoff_seconds = 0
         self._r2_env = mock.patch.dict(os.environ, self.R2_ENV)
         self._r2_env.start()
 
@@ -1123,6 +1342,75 @@ class TestS3Client(S3TestBase):
         self.assertIn("R2_ACCESS_KEY_ID", str(ctx.exception))
 
 
+class TestS3TransportRetry(S3TestBase):
+    """Transport-level retries in the S3 layer: through the sandbox
+    egress proxy, R2 responses are intermittently truncated mid-body
+    or dropped outright, and before the fix those escaped
+    _s3_request as raw http.client tracebacks that killed
+    backup-supabase / evict-scan at the LIST step. Backoff is zeroed
+    in S3TestBase.setUp, so these run instantly."""
+
+    def _put_five(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+
+    def test_list_truncated_mid_body_retries_and_returns_all(self):
+        self._put_five()
+        self.s3.list_failures = ["truncate"]
+        objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual([o["key"] for o in objects], sorted(self.s3.objects))
+        # 1 truncated attempt + the 3 good pages (fake pages are 2,2,1)
+        self.assertEqual(self.s3.list_attempts, 4)
+
+    def test_list_remote_disconnect_retries(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.put("pg/muse-dev/b.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["drop"]
+        objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual([o["key"] for o in objects], sorted(self.s3.objects))
+        self.assertEqual(self.s3.list_attempts, 2)  # dropped + retried page
+
+    def test_list_permanent_truncation_raises_named_error_after_4(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * 10
+
+        # urllib exhausts its 4 attempts, then the GET curl fallback
+        # (TestS3RequestCurlFallback) is attempted and also fails —
+        # the exhaustion error must name both.
+        def failing_status(url, access, secret):
+            raise cold_store.ColdStoreError("curl fallback failed (exit 18): simulated")
+
+        with mock.patch.object(self.store, "_curl_fetch_status", failing_status):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        message = str(ctx.exception)
+        self.assertIn("S3 GET supabase-backups failed after 4 attempts", message)
+        self.assertIn("IncompleteRead", message)
+        self.assertIn("curl fallback also failed", message)
+        self.assertEqual(self.s3.list_attempts, 4)  # exactly 4, no more
+
+    def test_delete_transport_failure_retries(self):
+        # DELETE is idempotent, so it gets the transport retry too:
+        # the first attempt dies at the transport level, the retry
+        # goes through and the delete lands exactly once.
+        import http.client
+
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        real_http = cold_store.http_request
+        state = {"n": 0}
+
+        def flaky_http(method, url, headers=None, data=None, timeout=120):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise http.client.RemoteDisconnected("simulated drop")
+            return real_http(method, url, headers=headers, data=data, timeout=timeout)
+
+        with mock.patch.object(cold_store, "http_request", flaky_http):
+            self.store.s3_delete_object("supabase-backups", "pg/muse-dev/a.bin")
+        self.assertEqual(state["n"], 2)
+        self.assertEqual(self.s3.deleted, ["pg/muse-dev/a.bin"])
+
+
 class TestBackupSupabase(S3TestBase):
     def test_files_newest_non_manifest_with_truncation_retry(self):
         older = b"older backup " * 40
@@ -1155,6 +1443,327 @@ class TestBackupSupabase(S3TestBase):
         self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
         with self.assertRaises(cold_store.ColdStoreError):
             self.store.backup_supabase()
+
+
+class TestS3CurlFallback(S3TestBase):
+    """The curl fallback in s3_get_object: multi-megabyte R2
+    responses truncate SYSTEMATICALLY through the sandbox egress
+    proxy (live: every urllib attempt cut at exactly 409,600 bytes),
+    which no amount of urllib retrying survives — so once urllib is
+    exhausted, one curl attempt (stubbed here at the _curl_fetch
+    transport seam; no network, no real curl) delivers the object,
+    byte-count verified like the urllib path."""
+
+    BODY = b"large backup payload " * 500
+
+    def _persistent_truncation(self, body=None):
+        """The newest bucket object, truncated on every urllib GET."""
+        body = self.BODY if body is None else body
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        # the bucket manifest is newer still — and is never a dump filing
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        self.s3.truncate_always.add(key)
+        return key
+
+    def _stub_curl(self, body):
+        """Patch the store's curl transport; return the call log. Each
+        entry records how many urllib GETs of `key` had happened when
+        curl was invoked, proving the fallback fires only after
+        urllib exhaustion, never alongside it."""
+        calls = []
+
+        def fake_fetch(url, access, secret):
+            calls.append(
+                {
+                    "url": url,
+                    "access": access,
+                    "secret": secret,
+                    "get_requests": {
+                        k: len(self.s3.get_requests(k)) for k in self.s3.objects
+                    },
+                }
+            )
+            return body
+
+        return mock.patch.object(self.store, "_curl_fetch", fake_fetch), calls
+
+    def test_fallback_after_urllib_exhaustion_files_backup(self):
+        key = self._persistent_truncation()
+        patcher, calls = self._stub_curl(self.BODY)
+        with patcher:
+            result = self.store.backup_supabase()
+        # exactly one curl attempt, and only after urllib was fully
+        # exhausted: S3_GET_ATTEMPTS outer loops, each burning
+        # S3_TRANSPORT_ATTEMPTS transport attempts on the object GET
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0]["get_requests"][key],
+            cold_store.S3_GET_ATTEMPTS * cold_store.S3_TRANSPORT_ATTEMPTS,
+        )
+        self.assertTrue(calls[0]["url"].endswith("/" + key))
+        self.assertEqual(calls[0]["access"], "test-access-key")
+        # the fallback body was byte-verified and filed whole
+        self.assertEqual(result["source_key"], key)
+        self.assertEqual(result["sha256"], hashlib.sha256(self.BODY).hexdigest())
+        self.assertEqual(self.fake.files[result["drive_file_id"]], self.BODY)
+
+    def test_short_curl_body_named_error_nothing_filed(self):
+        key = self._persistent_truncation()
+        files_before = dict(self.fake.files)
+        patcher, calls = self._stub_curl(self.BODY[:100])
+        with patcher:
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.backup_supabase()
+        self.assertEqual(len(calls), 1)
+        message = str(ctx.exception)
+        self.assertIn("supabase-backups", message)
+        self.assertIn(key, message)
+        self.assertIn("curl fallback delivered 100 of", message)
+        self.assertNotIn("test-secret-key", message)
+        self.assertEqual(self.fake.files, files_before)
+
+    def test_curl_never_invoked_on_urllib_happy_path(self):
+        body = b"small backup " * 20
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        patcher, calls = self._stub_curl(body)
+        with patcher:
+            result = self.store.backup_supabase()
+        self.assertEqual(calls, [])
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+
+    def test_curl_fetch_keeps_credentials_out_of_argv(self):
+        """The spawned curl argv must never carry the credentials
+        (issue #983): _curl_fetch feeds curl its config on stdin
+        (--config -) instead of passing --user in argv, where the
+        local process list would see the secret for up to the 900s
+        fallback timeout. This test is the guard for cold_store.py in
+        the spirit of push-fleet-feed.guard.sh (#948/#970)."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            return subprocess.CompletedProcess(argv, 0, stdout=b"payload", stderr=b"")
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            body = self.store._curl_fetch(
+                "https://store.example/supabase-backups/some/key",
+                "test-access-key",
+                "test-secret-key",
+            )
+        self.assertEqual(body, b"payload")
+        argv = seen["argv"]
+        self.assertNotIn("--user", argv)
+        for element in argv:
+            self.assertNotIn("test-access-key", element)
+            self.assertNotIn("test-secret-key", element)
+        # the credential arrives on stdin as a curl config instead
+        config = seen["kwargs"]["input"].decode()
+        self.assertIn('user = "test-access-key:test-secret-key"', config)
+        self.assertEqual(argv[argv.index("--config") + 1], "-")
+
+    def test_fallback_sizes_via_head_when_caller_gives_none(self):
+        key = self._persistent_truncation()
+        patcher, calls = self._stub_curl(self.BODY)
+        with patcher:
+            data = self.store.s3_get_object("supabase-backups", key)
+        self.assertEqual(data, self.BODY)
+        self.assertEqual(len(calls), 1)
+        head_requests = [r for r in self.s3.requests if r["method"] == "HEAD"]
+        self.assertEqual(len(head_requests), 1)
+        self.assertTrue(head_requests[0]["path"].endswith("/" + key))
+
+
+class TestS3RequestCurlFallback(S3TestBase):
+    """The curl fallback inside _s3_request for GET-class requests:
+    on a hostile-proxy night (live 2026-10-28) EVERY urllib attempt
+    at the bucket LIST truncated at a different offset, so the
+    transport retry loop exhausted and backup-supabase / evict-scan
+    died before their first object — the object-download fallback in
+    TestS3CurlFallback never got a chance to run. A GET whose urllib
+    attempts all fail at the transport level now gets exactly one
+    curl attempt (stubbed here at the _curl_fetch_status transport
+    seam; no network, no real curl) whose response flows through the
+    same status handling as a urllib response."""
+
+    @staticmethod
+    def _list_xml(entries):
+        """A ListObjectsV2 page in the fake's shape. entries are
+        (key, size, last_modified) triples."""
+        contents = "".join(
+            f"<Contents><Key>{k}</Key><LastModified>{lm}</LastModified>"
+            f"<Size>{size}</Size></Contents>"
+            for k, size, lm in entries
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            "<Name>supabase-backups</Name><IsTruncated>false</IsTruncated>"
+            f"{contents}</ListBucketResult>"
+        ).encode()
+
+    def _stub_curl_status(self, result):
+        """Patch the store's curl-status transport; return the call
+        log. Each entry snapshots the fake's urllib list_attempts
+        count at call time, proving the fallback fires only after
+        urllib exhaustion, never alongside it."""
+        calls = []
+
+        def fake_status(url, access, secret):
+            calls.append(
+                {
+                    "url": url,
+                    "access": access,
+                    "secret": secret,
+                    "list_attempts": self.s3.list_attempts,
+                }
+            )
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return mock.patch.object(self.store, "_curl_fetch_status", fake_status), calls
+
+    def test_list_truncated_on_all_attempts_falls_back_to_curl(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.put("pg/muse-dev/b.bin", b"yy", "2026-10-02T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                ("pg/muse-dev/a.bin", 1, "2026-10-01T00:00:00.000Z"),
+                ("pg/muse-dev/b.bin", 2, "2026-10-02T00:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(
+            [o["key"] for o in objects], ["pg/muse-dev/a.bin", "pg/muse-dev/b.bin"]
+        )
+        # exactly one curl attempt, only after all 4 urllib attempts
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["list_attempts"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertIn("list-type=2", calls[0]["url"])
+        self.assertEqual(calls[0]["access"], "test-access-key")
+        self.assertEqual(self.s3.list_attempts, cold_store.S3_TRANSPORT_ATTEMPTS)
+
+    def test_backup_supabase_proceeds_when_list_falls_back(self):
+        body = b"newest backup payload " * 60
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                (key, len(body), "2026-10-21T02:00:00.000Z"),
+                ("pg/muse-dev/manifest.json", 2, "2026-10-22T02:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            result = self.store.backup_supabase()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["source_key"], key)
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(self.fake.files[result["drive_file_id"]], body)
+
+    def test_curl_http_error_surfaces_as_s3_error_not_transport(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        error_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Error><Code>AccessDenied</Code>"
+            "<Message>Access Denied</Message></Error>"
+        ).encode()
+        patcher, calls = self._stub_curl_status((403, error_xml))
+        with patcher:
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(len(calls), 1)
+        message = str(ctx.exception)
+        # the same error shape _s3_check gives a urllib 403
+        self.assertIn("S3 list of supabase-backups failed (HTTP 403)", message)
+        self.assertIn("Access Denied", message)
+        self.assertNotIn("transport error", message)
+        self.assertNotIn("failed after 4 attempts", message)
+
+    def test_curl_fetch_status_splits_status_trailer(self):
+        """The real _curl_fetch_status (subprocess.run stubbed): the
+        --write-out trailer splits status from body, an HTTP error
+        status is a normal result (no --fail), and credentials ride
+        stdin config, never argv."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            trailer = cold_store.ColdStore._CURL_STATUS_TRAILER.encode()
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=b"<xml>page</xml>" + trailer + b"403>>>", stderr=b""
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            status, body = self.store._curl_fetch_status(
+                "https://store.example/supabase-backups?list-type=2",
+                "test-access-key",
+                "test-secret-key",
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(body, b"<xml>page</xml>")
+        argv = seen["argv"]
+        self.assertNotIn("--fail", argv)
+        self.assertNotIn("--user", argv)
+        for element in argv:
+            self.assertNotIn("test-secret-key", element)
+        self.assertIn(
+            'user = "test-access-key:test-secret-key"',
+            seen["kwargs"]["input"].decode(),
+        )
+
+    def test_curl_fetch_status_transport_failure_raises_scrubbed(self):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv,
+                18,
+                stdout=b"",
+                stderr=b"curl: (18) transfer closed, keyed by test-secret-key",
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store._curl_fetch_status(
+                    "https://store.example/supabase-backups?list-type=2",
+                    "test-access-key",
+                    "test-secret-key",
+                )
+        message = str(ctx.exception)
+        self.assertIn("curl fallback failed (exit 18)", message)
+        self.assertNotIn("test-secret-key", message)
+
+    def test_delete_exhaustion_never_invokes_curl(self):
+        # DELETE is not GET-class: it keeps the plain exhaustion
+        # error and the curl fallback must not fire for it.
+        import http.client
+
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        state = {"n": 0}
+
+        def always_drop(method, url, headers=None, data=None, timeout=120):
+            state["n"] += 1
+            raise http.client.RemoteDisconnected("simulated drop")
+
+        patcher, calls = self._stub_curl_status((204, b""))
+        with patcher, mock.patch.object(cold_store, "http_request", always_drop):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_delete_object("supabase-backups", "pg/muse-dev/a.bin")
+        self.assertEqual(state["n"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertEqual(calls, [])
+        message = str(ctx.exception)
+        self.assertIn("S3 DELETE supabase-backups", message)
+        self.assertIn("failed after 4 attempts", message)
+        self.assertNotIn("curl fallback", message)
 
 
 class EvictTestBase(S3TestBase):
@@ -1568,6 +2177,360 @@ class TestLedgerTrashMigration(ColdStoreTestBase):
         ).fetchone()["n"]
         conn.close()
         self.assertEqual(n, 1)
+
+
+# ---------------------------------------------------------------- fake Turso
+class FakeTurso:
+    """State for the fake Turso Platform API + libsql dump endpoints."""
+
+    PLATFORM_TOKEN = "test-platform-token"
+    ORG = "testorg"
+    DUMP_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+        "INSERT INTO notes VALUES(1,'hello');\n"
+        "COMMIT;\n"
+    )
+    # A dump cut mid-stream: complete statements, but the transaction
+    # never commits — it would rebuild into an integrity-clean shell
+    # with every row rolled back.
+    TRUNCATED_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+        "INSERT INTO notes VALUES(1,'hello');\n"
+    )
+    # Well-formed and committed, but carries no user tables at all.
+    EMPTY_SQL = "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCOMMIT;\n"
+    # The atlas shape (#1391): an FTS5 external-content table whose
+    # CREATE carries single quotes. libsql registers it inside a
+    # writable_schema block with the embedded SQL verbatim — quotes
+    # NOT doubled — so the literal terminates early and stock parsers
+    # fail with: near "chunks": syntax error. The shadow tables and
+    # the FTS index rows (real bytes from a live FTS5 index holding
+    # the seeded row) follow as ordinary statements, as in a real
+    # dump.
+    FTS_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, text TEXT);\n"
+        "INSERT INTO chunks VALUES(1,'hello fts world');\n"
+        "PRAGMA writable_schema=ON;\n"
+        "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+        " VALUES('table','chunks_fts','chunks_fts',0,"
+        "'CREATE VIRTUAL TABLE chunks_fts\n"
+        "      USING fts5(text, content='chunks', content_rowid='id')');\n"
+        "PRAGMA writable_schema=OFF;\n"
+        "CREATE TABLE 'chunks_fts_data'(id INTEGER PRIMARY KEY, block BLOB);\n"
+        "CREATE TABLE 'chunks_fts_idx'(segid, term, pgno,"
+        " PRIMARY KEY(segid, term)) WITHOUT ROWID;\n"
+        "CREATE TABLE 'chunks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);\n"
+        "CREATE TABLE 'chunks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;\n"
+        "INSERT INTO chunks_fts_data VALUES(1, X'0103');\n"
+        "INSERT INTO chunks_fts_data VALUES(10, X'000000000101010001010101');\n"
+        "INSERT INTO chunks_fts_data VALUES(137438953473,"
+        " X'000000200430667473010203010568656C6C6F0102020105776F726C6401020404080A');\n"
+        "INSERT INTO chunks_fts_idx VALUES(1, X'', 2);\n"
+        "INSERT INTO chunks_fts_docsize VALUES(1, X'03');\n"
+        "INSERT INTO chunks_fts_config VALUES('version', 4);\n"
+        "COMMIT;\n"
+    )
+    # The same dump with the schema literal correctly escaped ('' in
+    # place of each embedded quote): the repair filter must pass it
+    # through byte-identical, so the registered SQL stays exactly as
+    # authored.
+    ESCAPED_SQL = FTS_SQL.replace("content='chunks'", "content=''chunks''").replace(
+        "content_rowid='id'", "content_rowid=''id''"
+    )
+
+    def __init__(self):
+        self.failing_dumps = set()
+        self.truncated_dumps = set()
+        self.empty_dumps = set()
+        self.fts_dumps = set()
+        self.escaped_dumps = set()
+        self.dump_accept_encodings = {}
+        self.databases = [
+            {"Name": "fake-one", "Hostname": "fake-one.example.invalid"},
+            {"Name": "fake-two", "Hostname": "fake-two.example.invalid"},
+        ]
+
+
+def make_turso_handler(fake: FakeTurso):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):  # silence
+            pass
+
+        def _send(self, code, body, content_type="application/json"):
+            data = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            parts = [p for p in self.path.split("/") if p]
+            if parts == ["v1", "organizations", FakeTurso.ORG, "databases"]:
+                if (
+                    self.headers.get("Authorization")
+                    != f"Bearer {FakeTurso.PLATFORM_TOKEN}"
+                ):
+                    return self._send(401, {"error": "bad platform token"})
+                return self._send(200, json.dumps({"databases": fake.databases}))
+            if len(parts) == 2 and parts[1] == "dump":
+                name = parts[0]
+                fake.dump_accept_encodings[name] = self.headers.get("Accept-Encoding")
+                if self.headers.get("Authorization") != f"Bearer fake-jwt-{name}":
+                    return self._send(401, {"error": "bad db token"})
+                if name in fake.failing_dumps:
+                    return self._send(500, "dump exploded", "text/plain")
+                if name in fake.truncated_dumps:
+                    return self._send(200, FakeTurso.TRUNCATED_SQL, "text/plain")
+                if name in fake.empty_dumps:
+                    return self._send(200, FakeTurso.EMPTY_SQL, "text/plain")
+                if name in fake.fts_dumps:
+                    return self._send(200, FakeTurso.FTS_SQL, "text/plain")
+                if name in fake.escaped_dumps:
+                    return self._send(200, FakeTurso.ESCAPED_SQL, "text/plain")
+                return self._send(200, FakeTurso.DUMP_SQL, "text/plain")
+            return self._send(404, {"error": "not found"})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            parts = [p for p in self.path.split("/") if p]
+            if (
+                len(parts) == 7
+                and parts[:4] == ["v1", "organizations", FakeTurso.ORG, "databases"]
+                and parts[5:] == ["auth", "tokens"]
+            ):
+                if (
+                    self.headers.get("Authorization")
+                    != f"Bearer {FakeTurso.PLATFORM_TOKEN}"
+                ):
+                    return self._send(401, {"error": "bad platform token"})
+                return self._send(200, json.dumps({"jwt": f"fake-jwt-{parts[4]}"}))
+            return self._send(404, {"error": "not found"})
+
+    return Handler
+
+
+class TestTursoExportScript(unittest.TestCase):
+    """scripts/export-turso.sh against the fake Turso HTTP API and a stub
+    cold-store executable: databases are discovered, tokens minted, dumps
+    downloaded and rebuilt, and each export filed via put-backup."""
+
+    def setUp(self):
+        self.fake = FakeTurso()
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_turso_handler(self.fake)
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.tmp = Path(tempfile.mkdtemp(prefix="cold-store-turso-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.calls_log = self.tmp / "cold-store-calls.log"
+        self.captured = self.tmp / "captured"
+        self.captured.mkdir()
+        self.stub = self.tmp / "cold-store-stub"
+        self.stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >>"{self.calls_log}"\n'
+            f'cp "$3" "{self.captured}/"\n'
+        )
+        self.stub.chmod(0o755)
+
+    def run_export(self, with_token=True, extra_env=None):
+        script = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
+        env = dict(os.environ)
+        env.pop("TURSO_PLATFORM_API_TOKEN", None)
+        if with_token:
+            env["TURSO_PLATFORM_API_TOKEN"] = FakeTurso.PLATFORM_TOKEN
+        env.update(
+            {
+                "TURSO_ORG": FakeTurso.ORG,
+                "TURSO_API_BASE": self.base,
+                "TURSO_DUMP_BASE": self.base,
+                "COLD_STORE_BIN": str(self.stub),
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+            }
+        )
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def test_files_every_database(self):
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        calls = self.calls_log.read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        for name in ("fake-one", "fake-two"):
+            self.assertTrue(
+                any(
+                    c.startswith("put-backup turso ") and f"{name}.db.gz" in c
+                    for c in calls
+                ),
+                calls,
+            )
+            raw = gzip.decompress((self.captured / f"{name}.db.gz").read_bytes())
+            check = self.tmp / f"check-{name}.db"
+            check.write_bytes(raw)
+            con = sqlite3.connect(str(check))
+            try:
+                self.assertEqual(
+                    con.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
+                self.assertEqual(
+                    con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
+                    "hello",
+                )
+            finally:
+                con.close()
+        # No token material (platform or per-database) is ever printed.
+        self.assertNotIn(FakeTurso.PLATFORM_TOKEN, proc.stdout + proc.stderr)
+        self.assertNotIn("fake-jwt", proc.stdout + proc.stderr)
+
+    def test_missing_token_skips_cleanly(self):
+        proc = self.run_export(with_token=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(
+            "turso export: skipped (TURSO_PLATFORM_API_TOKEN not set)", proc.stdout
+        )
+        self.assertFalse(self.calls_log.exists())
+
+    def test_one_dump_failure_still_files_the_other(self):
+        self.fake.failing_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_dump_download_offers_compression(self):
+        # --compressed on the client: the dump endpoint must see an
+        # Accept-Encoding offering gzip (uncompressed GB-class dumps
+        # get cut mid-stream by the sandbox proxy).
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(set(self.fake.dump_accept_encodings), {"fake-one", "fake-two"})
+        for name, encoding in self.fake.dump_accept_encodings.items():
+            self.assertIn("gzip", encoding or "", name)
+
+    def test_truncated_dump_is_rejected_and_other_still_files(self):
+        # A dump whose tail lacks COMMIT; would rebuild into an
+        # integrity-clean but empty database — it must be refused
+        # before rebuilding, by name, without starving the other DB.
+        self.fake.truncated_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("truncated", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_committed_but_tableless_dump_is_rejected(self):
+        self.fake.empty_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("no user tables", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def check_fts_export(self, name):
+        """The filed export of the FTS fixture: virtual table registered
+        with its SQL exactly as authored, MATCH serving the seeded row."""
+        raw = gzip.decompress((self.captured / f"{name}.db.gz").read_bytes())
+        check = self.tmp / f"check-{name}.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                con.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='chunks_fts'"
+                ).fetchone()[0],
+                "CREATE VIRTUAL TABLE chunks_fts\n"
+                "      USING fts5(text, content='chunks', content_rowid='id')",
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'hello'"
+                ).fetchall(),
+                [(1,)],
+            )
+        finally:
+            con.close()
+
+    def test_unescaped_virtual_table_dump_is_repaired_and_files(self):
+        # #1391: the mis-escaped writable_schema INSERT would kill the
+        # sqlite3 -bail rebuild with a syntax error; the repair filter
+        # must rewrite it so the database files, FTS index intact.
+        self.fake.fts_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
+
+    def test_escaped_virtual_table_dump_files_unchanged(self):
+        # A correctly-escaped schema INSERT needs no repair; if the
+        # filter touched it (e.g. doubled the quotes again) the
+        # registered SQL would differ from what was authored.
+        self.fake.escaped_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
+
+    def test_rebuild_streams_through_sqlite3_cli(self):
+        # SQLITE3_BIN is the rebuild seam: a recording shim that
+        # delegates to the real sqlite3 must be what builds and
+        # verifies the export (never an in-memory python read).
+        real_sqlite3 = shutil.which("sqlite3")
+        if not real_sqlite3:
+            self.skipTest("sqlite3 CLI unavailable")
+        shim_log = self.tmp / "sqlite3-shim.log"
+        shim = self.tmp / "sqlite3-shim"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >>"{shim_log}"\n'
+            f'exec "{real_sqlite3}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        proc = self.run_export(extra_env={"SQLITE3_BIN": str(shim)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = shim_log.read_text()
+        self.assertIn("-bail", calls)
+        self.assertIn("PRAGMA integrity_check;", calls)
+        raw = gzip.decompress((self.captured / "fake-one.db.gz").read_bytes())
+        check = self.tmp / "check-shim.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
+                "hello",
+            )
+        finally:
+            con.close()
 
 
 class TestWorkerDecoder(unittest.TestCase):

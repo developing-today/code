@@ -22,7 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps};
+use crate::fileops::{FileOpError, FileOps, free_archive_name};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -1451,6 +1451,50 @@ fn image_too_large_response() -> Response {
 ///
 /// Accepts a single file field, validates the MIME type against allowed
 /// image types, stores the blob, creates a named tag, and sets metadata.
+/// The hash `name` currently points at, if the name is taken (#1549).
+async fn upload_name_owner(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Result<Option<iroh_blobs::Hash>, String> {
+    store
+        .tags()
+        .get(name)
+        .await
+        .map(|info| info.map(|tag| tag.hash))
+        .map_err(|err| err.to_string())
+}
+
+/// Choose the stored name for an upload of `hash` intended as
+/// `intended` (#1549): the intended name itself when it is free or
+/// already names this exact blob (an idempotent re-upload of identical
+/// bytes keeps its name), otherwise `stem-N.ext` with the smallest
+/// N >= 1 that is free or already names this blob — so a later upload
+/// never silently un-names an earlier, different image.
+async fn uniquify_upload_name(
+    store: &iroh_blobs::api::Store,
+    intended: &str,
+    hash: iroh_blobs::Hash,
+) -> Result<String, String> {
+    match upload_name_owner(store, intended).await? {
+        None => return Ok(intended.to_owned()),
+        Some(owner) if owner == hash => return Ok(intended.to_owned()),
+        Some(_) => {}
+    }
+    let (stem, ext) = match intended.rfind('.') {
+        Some(dot) if dot > 0 => (&intended[..dot], &intended[dot..]),
+        _ => (intended, ""),
+    };
+    for n in 1.. {
+        let candidate = format!("{stem}-{n}{ext}");
+        match upload_name_owner(store, &candidate).await? {
+            None => return Ok(candidate),
+            Some(owner) if owner == hash => return Ok(candidate),
+            Some(_) => {}
+        }
+    }
+    unreachable!("the counter always finds a free name")
+}
+
 async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     // Read the first field from the multipart body
     let field = match multipart.next_field().await {
@@ -1547,6 +1591,25 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
     };
     let hash = outcome.hash;
     let hash_str = hash.to_string();
+
+    // #1549: resolve the stored name before tagging anything. The
+    // intended name is kept when free or already naming this blob; a
+    // name owned by a different blob is uniquified (stem-N.ext), and
+    // the nameless paste-{ts} fallback passes through the same
+    // uniquifier, so two uploads can never land on the same stored
+    // name. The tag, the filename-keyed metadata, and the response
+    // below all use the stored name.
+    let filename = match uniquify_upload_name(&state.store, &filename, hash).await {
+        Ok(name) => name,
+        Err(err) => {
+            tracing::error!("[routes] Failed to resolve upload name: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to resolve file name",
+            )
+                .into_response();
+        }
+    };
 
     // Set named tag
     let tag = iroh_blobs::api::Tag::from(filename.clone());
@@ -1971,7 +2034,8 @@ async fn hard_delete_handler(
 /// The format is determined by the file name extension:
 /// - `.pm.json` → `ProseMirror` JSON (serialized as-is)
 /// - `.md` → Markdown (via `prosemirror_to_markdown`)
-/// - `.txt` → Plain text (extracted from paragraphs)
+/// - `.txt` → Plain text (loss-free recursive extraction; see
+///   `extract_plain_text` for the per-block rendering policy)
 /// - Other text files → Raw text (extracted from `code_block` nodes)
 fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, String> {
     let mode = detect_mode(name);
@@ -1988,7 +2052,7 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
             Ok(markdown.into_bytes())
         }
         ContentMode::Plain => {
-            // .txt files: extract plain text from paragraphs
+            // .txt files: loss-free plain-text extraction (#1306)
             let text = extract_plain_text(doc);
             Ok(text.into_bytes())
         }
@@ -2003,62 +2067,120 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
     }
 }
 
-/// Extract plain text from a `ProseMirror` doc with paragraph nodes.
+/// Extract plain text from a `ProseMirror` doc — loss-free (#1306).
 ///
-/// Joins paragraphs with newlines, preserving `hard_break` as newlines.
+/// Plain-text rendering policy (also documented on `convert_doc_to_bytes`):
+/// every block contributes its text, one block per line, joined with
+/// `"\n"`:
+///
+/// - `paragraph` / `heading`: their inline text (see
+///   `extract_inline_text`); byte-identical to the pre-#1306 output for
+///   docs containing only paragraphs and headings.
+/// - Lists (`bullet_list` / `ordered_list` / `task_list`): each item
+///   contributes its blocks, one item per line for the usual
+///   single-paragraph item; nested lists recurse the same way.
+/// - `blockquote`: its blocks, recursively.
+/// - `code_block`: its raw text verbatim (internal newlines preserved).
+/// - `table`: each cell contributes one line, row-major (rows in order,
+///   cells in order within a row); a multi-block cell joins its blocks
+///   with a single space so the one-line-per-cell shape holds.
+/// - `horizontal_rule`: no text — contributes one empty line, acting as
+///   a separator between the blocks around it.
+/// - Any other block type: recursed into rather than dropped, so new
+///   node types degrade to their text instead of vanishing.
+///
+/// Inline content keeps `text` and `hard_break` (as a newline) and
+/// recurses into any other inline node's `content` rather than
+/// dropping it. The pre-#1306 version handled only top-level
+/// paragraphs/headings and silently deleted everything else on save.
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
-
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
-        for node in content {
-            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match node_type {
-                "paragraph" => {
-                    let mut line = String::new();
-                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
-                        for inline in inline_content {
-                            let inline_type =
-                                inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match inline_type {
-                                "text" => {
-                                    if let Some(text) = inline.get("text").and_then(|t| t.as_str())
-                                    {
-                                        line.push_str(text);
-                                    }
+        collect_plain_text_lines(content, &mut lines);
+    }
+    lines.join("\n")
+}
+
+/// Append the plain-text lines for a list of block nodes to `lines`.
+fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>) {
+    for node in nodes {
+        let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let content = node.get("content").and_then(|c| c.as_array());
+        match node_type {
+            "paragraph" | "heading" => lines.push(extract_inline_text(node)),
+            "code_block" => lines.push(extract_inline_text(node)),
+            "horizontal_rule" => lines.push(String::new()),
+            "table" => {
+                if let Some(rows) = content {
+                    for row in rows {
+                        if let Some(cells) = row.get("content").and_then(|c| c.as_array()) {
+                            for cell in cells {
+                                let mut cell_lines = Vec::new();
+                                if let Some(blocks) = cell.get("content").and_then(|c| c.as_array())
+                                {
+                                    collect_plain_text_lines(blocks, &mut cell_lines);
                                 }
-                                "hard_break" => {
-                                    line.push('\n');
-                                }
-                                _ => {}
+                                lines.push(cell_lines.join(" "));
                             }
                         }
                     }
-                    lines.push(line);
                 }
-                "heading" => {
-                    let mut text = String::new();
-                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
-                        for inline in inline_content {
-                            if let Some(t) = inline.get("text").and_then(|t| t.as_str()) {
-                                text.push_str(t);
-                            }
-                        }
+            }
+            // Lists, list items, blockquote, table rows/cells reached
+            // outside a table, and every other container block: recurse
+            // into the block content so nothing is dropped.
+            _ => {
+                if let Some(blocks) = content {
+                    if blocks.iter().any(|b| {
+                        b.get("text").is_some()
+                            || b.get("type").and_then(|t| t.as_str()) == Some("hard_break")
+                    }) {
+                        lines.push(extract_inline_text(node));
+                    } else {
+                        collect_plain_text_lines(blocks, lines);
                     }
-                    lines.push(text);
+                } else if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
+                    lines.push(text.to_owned());
                 }
-                _ => {}
             }
         }
     }
+}
 
-    lines.join("\n")
+/// Extract the inline text of one node: `text` verbatim, `hard_break`
+/// as a newline, and any other inline node recursed into (its own
+/// inline content contributes its text instead of being dropped).
+fn extract_inline_text(node: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for inline in content {
+            let inline_type = inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match inline_type {
+                "text" => {
+                    if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
+                        out.push_str(text);
+                    }
+                }
+                "hard_break" => out.push('\n'),
+                _ => out.push_str(&extract_inline_text(inline)),
+            }
+        }
+    }
+    out
 }
 
 /// Extract raw text from a `ProseMirror` doc with `code_block` nodes.
 ///
 /// Used for code and config files where the content is a single `code_block`.
+///
+/// Text nodes within one `code_block` are concatenated with NO separator:
+/// the editor and collab layer split a block's text into multiple nodes
+/// (at cursor/selection boundaries, marks, or peer edit points), and those
+/// splits are not line breaks — joining them with "\n" inserted spurious
+/// lines on Raw-mode save (#932). A single "\n" separates distinct
+/// `code_block`s, matching how the blocks were authored.
 fn extract_raw_text(doc: &serde_json::Value) -> String {
-    let mut parts = Vec::new();
+    let mut blocks = Vec::new();
 
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
         for node in content {
@@ -2066,16 +2188,18 @@ fn extract_raw_text(doc: &serde_json::Value) -> String {
             if node_type == "code_block"
                 && let Some(inline_content) = node.get("content").and_then(|c| c.as_array())
             {
+                let mut block = String::new();
                 for inline in inline_content {
                     if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
-                        parts.push(text.to_owned());
+                        block.push_str(text);
                     }
                 }
+                blocks.push(block);
             }
         }
     }
 
-    parts.join("\n")
+    blocks.join("\n")
 }
 
 /// Archive the original tag by creating a timestamped copy.
@@ -2111,7 +2235,12 @@ async fn archive_original_tag(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let archive_name = format!("{name}.archive.{timestamp}");
+    // Bump past an existing archive tag so two archives within the same
+    // second never overwrite each other (#1612).
+    let Ok(archive_name) = free_archive_name(store, name, timestamp).await else {
+        tracing::error!("[routes] Failed to find a free archive tag for {}", name);
+        return None;
+    };
     let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
 
     match store.tags().set(archive_tag, expected).await {
@@ -2384,6 +2513,137 @@ mod upload_router_tests {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/images")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"\r\n\
+                 Content-Type: {content_type}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        body
+    }
+
+    // #1549: a second upload under the same filename with different
+    // bytes must not silently un-name the first: the second is stored
+    // uniquified, both stay listed and resolvable, and the first name
+    // still resolves to the first hash. Re-uploading identical bytes
+    // under the same name is idempotent.
+    #[tokio::test]
+    async fn upload_same_name_different_bytes_uniquifies_second() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, first) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"first-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {first}");
+        assert!(first.contains("\"name\":\"image.png\""), "body: {first}");
+        let first_hash = uploaded_hash(&first);
+
+        let (status, second) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"second-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {second}");
+        assert!(
+            second.contains("\"name\":\"image-1.png\""),
+            "second upload stored uniquified: {second}"
+        );
+        assert!(second.contains("filename=image-1.png"), "body: {second}");
+        let second_hash = uploaded_hash(&second);
+        assert_ne!(first_hash, second_hash);
+
+        let (status, again) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"first-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {again}");
+        assert!(
+            again.contains("\"name\":\"image.png\""),
+            "identical re-upload keeps the plain name: {again}"
+        );
+        assert_eq!(uploaded_hash(&again), first_hash);
+
+        let images = list_images(router.clone()).await;
+        let by_name = |name: &str| {
+            images
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap_or_else(|| panic!("{name} listed in {images:?}"))
+        };
+        assert_eq!(by_name("image.png")["hash"], first_hash);
+        assert_eq!(by_name("image-1.png")["hash"], second_hash);
+
+        let (_, _, bytes) = get_blob(router.clone(), &format!("/blob/{first_hash}")).await;
+        assert_eq!(bytes, b"first-bytes");
+        let (_, _, bytes) = get_blob(router, &format!("/blob/{second_hash}")).await;
+        assert_eq!(bytes, b"second-bytes");
+    }
+
+    // #1549: the nameless paste-{secs} fallback passes through the
+    // same uniquifier, so two nameless uploads in the same second can
+    // never land on the same stored name.
+    #[tokio::test]
+    async fn upload_nameless_uploads_never_share_a_stored_name() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, first) = upload(
+            router.clone(),
+            multipart_body_noname("image/png", b"nameless-one"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {first}");
+        let (status, second) = upload(
+            router.clone(),
+            multipart_body_noname("image/png", b"nameless-two"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {second}");
+        let name_of = |body: &str| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let (first_name, second_name) = (name_of(&first), name_of(&second));
+        assert!(first_name.starts_with("paste-"), "first: {first_name}");
+        assert_ne!(
+            first_name, second_name,
+            "nameless uploads must not share a stored name"
+        );
+        let images = list_images(router).await;
+        let hash_of = |name: &str| {
+            images
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .map(|entry| entry["hash"].as_str().unwrap().to_owned())
+                .unwrap_or_else(|| panic!("{name} listed in {images:?}"))
+        };
+        assert_eq!(hash_of(&first_name), uploaded_hash(&first));
+        assert_eq!(hash_of(&second_name), uploaded_hash(&second));
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
@@ -2707,6 +2967,139 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
+        let content: Vec<serde_json::Value> = blocks
+            .iter()
+            .map(|nodes| {
+                let inline: Vec<serde_json::Value> = nodes
+                    .iter()
+                    .map(|t| serde_json::json!({"type": "text", "text": t}))
+                    .collect();
+                serde_json::json!({"type": "code_block", "content": inline})
+            })
+            .collect();
+        serde_json::json!({"type": "doc", "content": content})
+    }
+
+    #[test]
+    fn test_extract_raw_text_single_node() {
+        let doc = raw_doc(&[&["let x = 42;"]]);
+        assert_eq!(extract_raw_text(&doc), "let x = 42;");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_mid_line_no_separator() {
+        // Regression (#932): editor/collab text-node splits inside one
+        // code_block are not line breaks.
+        let doc = raw_doc(&[&["let x = ", "42;"]]);
+        assert_eq!(extract_raw_text(&doc), "let x = 42;");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_inside_string_literal() {
+        let doc = raw_doc(&[&["let s = \"hel", "lo\";"]]);
+        assert_eq!(extract_raw_text(&doc), "let s = \"hello\";");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_doc_byte_identical_to_single_node() {
+        let split = raw_doc(&[&["fn main() {", "\n    println!(\"hi\");", "\n}"]]);
+        let single = raw_doc(&[&["fn main() {\n    println!(\"hi\");\n}"]]);
+        assert_eq!(extract_raw_text(&split), extract_raw_text(&single));
+    }
+
+    #[test]
+    fn test_extract_raw_text_multiple_blocks_single_newline() {
+        let doc = raw_doc(&[&["first"], &["second"]]);
+        assert_eq!(extract_raw_text(&doc), "first\nsecond");
+    }
+
+    #[test]
+    fn test_extract_raw_text_multiple_blocks_with_splits() {
+        let doc = raw_doc(&[&["fir", "st"], &["sec", "ond"]]);
+        assert_eq!(extract_raw_text(&doc), "first\nsecond");
+    }
+
+    fn plain_doc(content: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"type": "doc", "content": content})
+    }
+
+    fn para(text: &str) -> serde_json::Value {
+        serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_extract_plain_text_paragraph_heading_byte_identical() {
+        // Pre-#1306 behaviour for paragraph/heading-only docs is unchanged.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Title"}]}),
+            para("intro"),
+            para("outro"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "Title\nintro\noutro");
+    }
+
+    #[test]
+    fn test_extract_plain_text_bullet_list_items_survive() {
+        let doc = plain_doc(vec![
+            para("intro"),
+            serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [para("apples")]},
+                {"type": "list_item", "content": [para("pears")]}
+            ]}),
+            para("outro"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "intro\napples\npears\noutro");
+    }
+
+    #[test]
+    fn test_extract_plain_text_blockquote_survives() {
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "blockquote", "content": [para("quoted words")]}),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "quoted words");
+    }
+
+    #[test]
+    fn test_extract_plain_text_code_block_survives() {
+        let doc = plain_doc(vec![
+            para("before"),
+            serde_json::json!({"type": "code_block", "attrs": {"params": "rust"}, "content": [{"type": "text", "text": "fn main() {}\n"}]}),
+            para("after"),
+        ]);
+        let out = extract_plain_text(&doc);
+        assert!(out.contains("fn main() {}"), "out: {out}");
+        assert!(out.starts_with("before\n"), "out: {out}");
+        assert!(out.ends_with("\nafter"), "out: {out}");
+    }
+
+    #[test]
+    fn test_extract_plain_text_table_cells_survive_row_major() {
+        let cell = |t: &str| serde_json::json!({"type": "table_cell", "content": [para(t)]});
+        let doc = plain_doc(vec![serde_json::json!({"type": "table", "content": [
+            {"type": "table_row", "content": [cell("a1"), cell("b1")]},
+            {"type": "table_row", "content": [cell("a2"), cell("b2")]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "a1\nb1\na2\nb2");
+    }
+
+    #[test]
+    fn test_extract_plain_text_mixed_doc_loses_nothing() {
+        // The #1306 repro shape: paragraph/list/blockquote/code/table/paragraph.
+        let doc = plain_doc(vec![
+            para("intro"),
+            serde_json::json!({"type": "bullet_list", "content": [{"type": "list_item", "content": [para("item")]}]}),
+            serde_json::json!({"type": "blockquote", "content": [para("quote")]}),
+            serde_json::json!({"type": "code_block", "content": [{"type": "text", "text": "code"}]}),
+            serde_json::json!({"type": "table", "content": [{"type": "table_row", "content": [{"type": "table_cell", "content": [para("cell")]}]}]}),
+            para("outro"),
+        ]);
+        assert_eq!(
+            extract_plain_text(&doc),
+            "intro\nitem\nquote\ncode\ncell\noutro"
+        );
+    }
 
     #[test]
     fn test_classify_tag_primary() {

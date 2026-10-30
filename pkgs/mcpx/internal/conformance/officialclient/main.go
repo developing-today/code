@@ -241,8 +241,9 @@ func callsFor(ctx context.Context, m *mcpx, scenario string) ([]toolCall, error)
 		return nil, fmt.Errorf("search: %v\n%s", err, out)
 	}
 	var hits []struct {
-		Namespace string `json:"namespace"`
-		Tool      string `json:"tool"`
+		Namespace   string         `json:"namespace"`
+		Tool        string         `json:"tool"`
+		InputSchema map[string]any `json:"inputSchema"`
 	}
 	if err := json.Unmarshal(out, &hits); err != nil {
 		return nil, fmt.Errorf("search output: %v\n%s", err, out)
@@ -250,10 +251,81 @@ func callsFor(ctx context.Context, m *mcpx, scenario string) ([]toolCall, error)
 	var calls []toolCall
 	for _, h := range hits {
 		if h.Namespace == *namespace {
-			calls = append(calls, toolCall{Name: h.Tool})
+			calls = append(calls, toolCall{Name: h.Tool, Arguments: minimalArgs(h.InputSchema)})
 		}
 	}
 	return calls, nil
+}
+
+// minimalArgs builds the smallest argument object a tool's inputSchema
+// accepts: one minimal value per required property, nothing else. This
+// fallback used to call every advertised tool with no arguments, which
+// was fine while mcpx forwarded arguments unvalidated; since #1483 the
+// client enforces inputSchema at CallTool, so a driver exercising a
+// tool it knows nothing about has to ask the schema what a call looks
+// like -- the same thing a schema-aware host does.
+func minimalArgs(schema map[string]any) map[string]any {
+	args := map[string]any{}
+	props, _ := schema["properties"].(map[string]any)
+	for _, name := range requiredNames(schema) {
+		sub, _ := props[name].(map[string]any)
+		args[name] = minimalValue(sub)
+	}
+	return args
+}
+
+func requiredNames(schema map[string]any) []string {
+	raw, _ := schema["required"].([]any)
+	names := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if s, ok := r.(string); ok {
+			names = append(names, s)
+		}
+	}
+	return names
+}
+
+func minimalValue(schema map[string]any) any {
+	if schema == nil {
+		return ""
+	}
+	if v, ok := schema["default"]; ok {
+		return v
+	}
+	if v, ok := schema["const"]; ok {
+		return v
+	}
+	if e, ok := schema["enum"].([]any); ok && len(e) > 0 {
+		return e[0]
+	}
+	typ := schema["type"]
+	if list, ok := typ.([]any); ok {
+		typ = nil
+		for _, item := range list {
+			if s, _ := item.(string); s != "" && s != "null" {
+				typ = s
+				break
+			}
+		}
+	}
+	switch typ {
+	case "string":
+		return ""
+	case "integer", "number":
+		return 0
+	case "boolean":
+		return false
+	case "array":
+		return []any{}
+	case "object":
+		return minimalArgs(schema)
+	case "null":
+		return nil
+	}
+	if _, ok := schema["properties"]; ok {
+		return minimalArgs(schema)
+	}
+	return ""
 }
 
 // schemaEcho round-trips the focal tool's inputSchema -- as mcpx holds it,
@@ -312,12 +384,8 @@ func (m *mcpx) answerElicitations(ctx context.Context) func() {
 			fmt.Fprintf(os.Stderr, "-poll: %v\n", err)
 			return
 		}
-		logs := filepath.Join(m.dir, "state", "logs")
-		if err := os.MkdirAll(logs, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "elicit store: %v\n", err)
-			return
-		}
-		b, err := elicit.Open(filepath.Join(logs, "elicit.db"))
+		state := filepath.Join(m.dir, "state")
+		b, err := elicit.OpenAt(state, filepath.Join(state, "logs", "elicit.db"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "elicit store: %v\n", err)
 			return

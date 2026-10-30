@@ -155,6 +155,53 @@ describe("projector HTTP reads (stub server, actual wire shape)", () => {
   });
 });
 
+describe("projector HTTP reads (chunking past the 431 ceiling)", () => {
+  test("600 refs are chunked under the request-line limit and merged", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        // Bun.serve rejects request lines past ~16KB with 431 — the real
+        // projector does exactly this, which is what broke the board
+        // prime once it passed ~500 refs (2026-10-27, #1199).
+        if (req.url.length > 16000) return new Response("headers too large", { status: 431 });
+        requests++;
+        const url = new URL(req.url);
+        const refs = (url.searchParams.get("refs") ?? "").split(",").filter(Boolean);
+        if (url.pathname === "/items") {
+          return Response.json({ items: refs.map((ref) => ({ ...mergedPr, ref })) });
+        }
+        if (url.pathname === "/comments") {
+          return Response.json({
+            comments: refs.map((ref) => ({
+              id: `c-${ref}`,
+              ref,
+              kind: "issue_comment",
+              author: "dezren39",
+              body: "ok",
+              created_at: "2026-10-27T00:00:00Z",
+              deleted: 0,
+            })),
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const refs = Array.from({ length: 600 }, (_, i) => `developing-today/code#${1000 + i}`);
+      const items = await projectorItems(base, refs);
+      expect(items?.size).toBe(600);
+      const comments = await projectorComments(base, refs);
+      expect(comments?.length).toBe(600);
+      // 600 refs at 200 per request = 3 requests per endpoint.
+      expect(requests).toBe(6);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
 describe("registry link merge", () => {
   test("unions cross-repo links without duplicating ref+relation", () => {
     const existing: Link[] = [{ ref: "developing-today/code#902", relation: "implements" }];

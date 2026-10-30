@@ -49,7 +49,8 @@ them into a local file only on the machine that runs the reaper:
 ```
 $COLD_STORE_HOME/            # default: ~/.config/cold-store/
   credentials.json           # mode 600: {client_id, client_secret, refresh_token}
-  state.json                 # folder IDs + cached access token (no secrets)
+  state.json                 # mode 600: folder IDs + D1 pointers — no tokens
+                             # (access tokens are kept in memory only)
   manifest.sqlite            # local manifest (schema.sql)
   bundles/                   # locally packed .csb bundles awaiting upload
 ```
@@ -75,7 +76,7 @@ cold-store pack backup-2026-10-25.sql photos.tar      # -> bundles/b_<...>.csb, 
 cold-store upload b_<...>                              # resumable upload + verify + ledger
 cold-store fetch <object-sha256> ./restored.sql       # range-pull one object back
 cold-store status                                     # counts, cold bytes, last-24h transfers,
-                                                      # 700 GB/day hard-stop + 3 TiB budget checks
+                                                      # 700 GB/day hard stop + 3 TiB budget (see below)
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
 cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
@@ -86,6 +87,25 @@ cold-store prune-backups                              # retention plan (dry-run)
 cold-store prune-backups --apply                      # ... and trash the excess
 cold-store get-backup d1 <name> ./restored.sql        # download one backup in full
 ```
+
+### Upload guardrails (enforced, not just reported)
+
+`upload` and `put-backup` refuse **before any bytes are sent** when the
+transfer would cross either limit in the manifest's `meta` table, using
+the same ledger/meta accounting as `status` (one shared implementation,
+so the readout and the refusal can never disagree):
+
+- **Daily upload hard stop** — rolling-24h `transfer_ledger` upload
+  bytes + this transfer > `daily_upload_hard_stop_bytes`
+  (700,000,000,000 B = 700 GB, sized to stay under Google Drive's own
+  ~750 GB/user/day upload ceiling).
+- **Project budget** — verified cold bytes in Drive (sum of verified
+  bundles) + this transfer > `project_budget_bytes`
+  (3,298,534,883,328 B = 3 TiB).
+
+A refusal is a `ColdStoreError` naming the limit, the current usage,
+and the refused transfer size; nothing is uploaded and the bundle is
+not marked `uploading`.
 
 ## DB backups (design section 5)
 
@@ -136,11 +156,11 @@ deleted, so Drive's own trash grace applies — and one `transfer_ledger`
 row per file is written (`direction='trash'`, `kind='backup-prune'`,
 `ref=<filename>`).
 
-One migration caveat: the `'trash'` ledger direction is a schema v1.1
+One migration note: the `'trash'` ledger direction is a schema v1.1
 extension (see `schema.sql`). Local manifests are migrated in place on
-first open, but the **D1 copy of the schema needs the same one-line
-CHECK change** before prune rows can sync — until then `sync-manifest`
-fails on the `transfer_ledger` statement with D1's own error text.
+first open, and the **D1 copy of the schema already carries the same
+CHECK change** (verified 2026-10-26, #984 — D1 already held real
+'trash' ledger rows), so prune rows sync normally.
 
 ### Scripts
 
@@ -151,11 +171,33 @@ environment only):
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
   `backup-supabase` (only when both R2 credentials are set; a skip
   notice is printed otherwise — never an error), then
-  `prune-backups --apply`, then `sync-manifest`, then `status`. Any
-  failing step aborts the run non-zero. Requires `CLOUDFLARE_API_TOKEN`
-  in the environment (materialize from Bitwarden into the cron env);
+  `scripts/export-turso.sh`, then `prune-backups --apply`, then
+  `sync-manifest`, then `status`. Steps are isolated: a failing step
+  never starves the steps after it — every step is attempted, each
+  prints an outcome line (`ok` / `FAILED` / `skipped`), the status
+  summary always prints, and the script exits non-zero at the end if
+  any step failed (guarded skips are not failures). Requires
+  `CLOUDFLARE_API_TOKEN` in the environment
+  (materialize from Bitwarden into the cron env);
   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
-  the Supabase step).
+  the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
+  Turso step).
+- `scripts/export-turso.sh` — the Turso step: discovers every
+  database in the Turso organization through the Platform API (no
+  `turso` CLI needed), mints a per-database auth token, downloads
+  the SQL dump each database's own libsql endpoint serves at
+  `/dump`, rebuilds it into a standalone SQLite file (filed only
+  when `PRAGMA integrity_check` passes), gzips it, and files it
+  with `put-backup turso`. Each dump download allows
+  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 1800; a large
+  database's dump is ~500 MB of SQL and outgrew the old fixed 300 s
+  cap) and gets one whole-request retry on transport failure. When
+  `TURSO_PLATFORM_API_TOKEN` is
+  unset it prints a one-line skip notice and exits 0 — the nightly
+  run never fails for a missing Turso setup — but a database that
+  fails to export is named in a loud error line and makes the step
+  exit non-zero once the remaining databases have been attempted.
+  Token values are never printed.
 - `scripts/restore-drill.sh` — the quarterly restore drill (design
   section 8): picks 3 pseudo-random cold objects from the local
   manifest, fetches each through the rehydrator Worker and verifies its
@@ -203,6 +245,20 @@ to 3 attempts. Filing is point-in-time, like `backup-d1`: unchanged
 content is filed again, and the command prints the content sha256 so
 the duplication is visible rather than silent.
 
+If urllib still cannot deliver the object whole, the download falls
+back to **one `curl` attempt** (curl does its own SigV4 signing via
+`--aws-sigv4` and reads the proxy from the environment). Why: through
+this sandbox's egress proxy, small responses truncate only
+intermittently — retries absorb those — but multi-megabyte responses
+truncate _systematically_ (live: every attempt cut at exactly
+409,600 bytes), and curl is immune; the Supabase backup tooling
+established the same replay-with-curl precedent, and the reaper
+already shells out to a CLI for compression (`zstd`). The curl body
+gets the same byte-count verification (the listing's size, or a HEAD
+Content-Length when the caller has none), credentials are scrubbed
+from any error text, and a missing or failing curl surfaces as a
+named `ColdStoreError`, never a traceback.
+
 ### Eviction
 
 ```sh
@@ -240,11 +296,12 @@ manifest, and recorded in the ledger (`direction='trash'`,
 does not abort the rest.
 
 The `'evicted'` state is a schema v1.2 extension (see `schema.sql`):
-local manifests are migrated in place on first open, but the **D1
-copy of the schema needs the same one-line CHECK change** before
-evicted rows can sync — until then `sync-manifest` fails on the
-`objects` statement with D1's own error text (the same caveat the
-v1.1 `'trash'` direction had).
+local manifests are migrated in place on first open, and the **D1
+copy of the schema already carries the same CHECK change** (verified
+2026-10-26, #984: D1 `sqlite_master` read plus a probe `sync-manifest`
+carrying an 'evicted' row succeeded; the probe rows were removed
+afterwards), so evicted rows sync normally — the same applied state
+the v1.1 `'trash'` direction was verified in.
 
 ## Manifest sync → D1
 
@@ -289,17 +346,19 @@ API-driven deploy procedure.
 | D1 sync                              | `CLOUDFLARE_API_TOKEN` from env only; account/db via `COLD_STORE_CF_ACCOUNT_ID` / `COLD_STORE_CF_D1_DATABASE_ID` or `state.json`; base via `COLD_STORE_D1_BASE`          |
 | R2 (S3)                              | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` from env only; host via `COLD_STORE_R2_HOST`, whole base via `COLD_STORE_S3_BASE` (tests); default bucket `supabase-backups` |
 | zstd binary                          | `/usr/local/bin/zstd`, or `$COLD_STORE_ZSTD`                                                                                                                             |
+| curl binary (S3 download fallback)   | `curl` on PATH, or `$COLD_STORE_CURL`                                                                                                                                    |
 
 ## Tests
 
 Stdlib `unittest`, no network, no credentials — a fake Drive HTTP server
 (token endpoint, folder create/list, resumable upload sessions with 308
 resume, `files.get`, Range downloads), a stubbed D1 REST endpoint, and a
-fake S3 endpoint (SigV4 capture, paginated listings, a truncate-once
-download mode) run in threads:
+fake S3 endpoint (SigV4 capture, paginated listings, truncate-once
+and truncate-always download modes) run in threads:
 
 ```sh
 python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
 ```
 
-Requirements: Python 3.12, the `zstd` CLI. Everything else is stdlib.
+Requirements: Python 3.12, the `zstd` CLI, and `curl` (runtime only,
+for the S3 download fallback). Everything else is stdlib.

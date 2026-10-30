@@ -26,11 +26,20 @@
 # aggregates the matrix result and keeps the historical required status
 # name "nix flake check". The integration suite itself is sharded too:
 # the old `test`/`test-web` checks each re-ran the whole cargo suite in
-# one derivation (~25 minutes); test-shard-0/1/2 split its targets three
-# ways (see the justfile's test-shard-sandbox) and, with test-unit and
-# the web checks, cover the same tests by composition.
+# one derivation (~25 minutes); test-shard-0/1/2/3 split its targets
+# four ways (see the justfile's test-shard-sandbox) and, with test-unit
+# and the web checks, cover the same tests by composition.
+#
+# Shape (2026-10, #551): crash-gate was the slowest single PR check
+# (~15 min) because it ran every heavy crash sweep serially in one
+# derivation. It is now split by test-name filter into four parallel
+# checks (crash-gate-sampled/-sweep/-control/-ingest in
+# id-pr-checks.txt); the aggregate still runs nightly via the full
+# flake check.
 
 name: id
+
+# CI tier policy: see .github/ci-policy.md
 
 on:
   push:
@@ -40,12 +49,18 @@ on:
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-crash-gate-coverage.sh"
   pull_request:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-crash-gate-coverage.sh"
+  schedule:
+    # Nightly backstop for the full flake check (main tier, #1781).
+    - cron: "41 8 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -67,7 +82,7 @@ jobs:
   # JSON array for the matrix. The list file stays the single source of
   # truth: adding a check to id-pr-checks.txt adds a parallel job.
   guard:
-    name: guard PR check list
+    name: "basic: guard PR check list"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -86,6 +101,12 @@ jobs:
       - name: Guard PR check list against flake drift
         run: .github/scripts/check-id-pr-checks.sh
 
+      # The crash-gate composition asserted in check-id-pr-checks.sh is
+      # itself checked (#1635): an #[ignore]d crash test matching none
+      # of the PR split filters fails here by name.
+      - name: Guard crash-gate PR partition coverage
+        run: .github/scripts/check-crash-gate-coverage.sh
+
       - name: Emit PR check list for the matrix
         id: list
         run: |
@@ -94,7 +115,7 @@ jobs:
           echo "PR checks: $checks"
 
   # One parallel job per PR check. Fast PR set: unit + integration
-  # tests, lint, format, typecheck, doc and the crash gate, listed in
+  # tests, lint, format, typecheck, doc and the crash gates, listed in
   # id-pr-checks.txt. The heavy remainder — test-e2e (Playwright),
   # nixos-serve, nixos-e2e, nixos-integration and nixos-playwright-e2e —
   # runs nightly in id-e2e-nightly.yml, which also runs the full
@@ -103,7 +124,7 @@ jobs:
   # derivation. check-id-pr-checks.sh holds the exclusion list and keeps
   # this list in sync with pkgs/id/flake.nix.
   check_each:
-    name: nix flake check (${{ matrix.check }})
+    name: "basic: nix flake check (${{ matrix.check }})"
     needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -122,6 +143,13 @@ jobs:
       # Cache the nix store on GitHub's cache so PRs do not rebuild
       # unchanged derivations from a cold store every run (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
@@ -151,3 +179,37 @@ jobs:
             echo "::error::one or more PR check jobs did not succeed (result: $result) — see the per-check jobs above."
             exit 1
           fi
+
+  # Main tier (Phase 2, #1781): the FULL flake check for pkgs/id. The PR
+  # tier above keeps guard + the affected-crate matrix from
+  # id-pr-checks.txt; the full check (including the heavy checks the PR
+  # list excludes) runs once per merge on main, plus the nightly
+  # schedule above -- and nightly in id-e2e-nightly.yml as a second
+  # backstop. Nothing from the old PR matrix is lost: the union of this
+  # job, id-e2e-nightly, and the PR matrix covers it.
+  full-flake-check:
+    name: "full (main tier): nix flake check"
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run full nix flake check
+        run: nix flake check ./pkgs/id/ -L --keep-going

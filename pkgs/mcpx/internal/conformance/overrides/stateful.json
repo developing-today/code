@@ -7,5 +7,14 @@
   },
   "mrtr-single-use-enforced": {
     "server": "n/a:binds only a server whose requestState must be consumed once; mcpx's is re-minted every round and replaying it re-enters the same running call"
+  },
+  "caching-may-refetch-early-serve-stale": {
+    "client": "n/a:a MAY mcpx does not take -- refresh is synchronous on read (decision on #1601); stale is served only when a refetch of an expired entry fails (#1603)"
+  },
+  "caching-page-refetch": {
+    "client": "n/a:not applicable by construction -- the pool caches one aggregated catalogue per configured server, never per page; an expired catalogue is re-fetched whole (#1601, #1604)"
+  },
+  "caching-key-method-params": {
+    "client": "n/a:not applicable by construction -- the pool catalogue cache is keyed by the configured server, not by method+params, and resources/read results are not cached by the pool (#1604)"
   }
 }

@@ -115,6 +115,17 @@ func (r *Registry) explainCall(ctx context.Context, server, tool string, args an
 	}
 	code, message, ok := upstreamFault(err)
 	if !ok {
+		// A client-side validation refusal (Phase 2 of #1481) never
+		// reached the server, but the failure is still the arguments'
+		// fault: the client detected the same -32602 the server would
+		// have answered with, and the error carries that code (the
+		// gateway relays it by the same interface). Explain it with
+		// its own message.
+		if c, m, coded := clientFault(err); coded {
+			code, message, ok = c, m, true
+		}
+	}
+	if !ok {
 		// A timeout, a server that would not start, a pipe that broke before
 		// the answer: nothing came back, so there is nothing to explain, and
 		// the arguments are the one thing that was not at fault.
@@ -195,6 +206,21 @@ func upstreamFault(err error) (code int, message string, ok bool) {
 			continue
 		}
 		return int(c.Int()), m.String(), true
+	}
+	return 0, "", false
+}
+
+// clientFault is a failure mcpx itself detected before the call reached
+// a server, when the error carries the JSON-RPC code it stands for.
+// Only Invalid Params is read this way: it is the one code that says the
+// arguments were at fault, which is the one thing a schema can explain.
+// The check is an interface assertion (the gateway's precedent in
+// internal/mcpserver), not a concrete type, so a validation error from
+// any layer that carries its code is explained the same way.
+func clientFault(err error) (code int, message string, ok bool) {
+	var coded interface{ RPCCode() int }
+	if errors.As(err, &coded) && coded.RPCCode() == diagnose.InvalidParams {
+		return coded.RPCCode(), err.Error(), true
 	}
 	return 0, "", false
 }

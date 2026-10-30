@@ -18,9 +18,17 @@
   makeBinaryWrapper,
   installShellFiles,
 }:
+let
+  # The mcpx version, written once here (#1895): the derivation attribute
+  # below and the ldflags build stamp both take this binding, because the
+  # argument to buildGo127Module is a non-recursive attribute set and its
+  # own attributes are not in scope for interpolation inside it.
+  # internal/buildcheck keeps cmd/mcpx/main.go default in agreement.
+  version = "0.1.0";
+in
 buildGo127Module {
   pname = "mcpx";
-  version = "0.1.0";
+  inherit version;
 
   src = lib.cleanSourceWith {
     src = ./.;
@@ -50,7 +58,7 @@ buildGo127Module {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-akA2jS8EwkJufn5OtK3DeYHyu2qlWq4SKDhYMEmi/eU=";
+  vendorHash = "sha256-XTK49aropeKTGu/zlbjgtbT0BlktvUhsOfdpHrKoc5M=";
 
   subPackages = [ "cmd/mcpx" ];
 
@@ -71,10 +79,14 @@ buildGo127Module {
     export GOFLAGS="$GOFLAGS -buildvcs=false"
   '';
 
+  # The version is written once, above, and interpolated here, so the build
+  # stamp cannot silently disagree with `package.nix`'s version. The default in
+  # cmd/mcpx/main.go is the third site and is kept honest by
+  # internal/buildcheck's version agreement test (#1895).
   ldflags = [
     "-s"
     "-w"
-    "-X main.version=0.1.0"
+    "-X main.version=${version}"
   ];
 
   nativeBuildInputs = [

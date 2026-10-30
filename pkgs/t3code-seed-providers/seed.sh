@@ -20,8 +20,16 @@
 # "opencode" id below is the back-compat single-instance default and
 # "opencode-v2" is an additional instance.
 #
-# Existing entries are left alone -- this only adds instances that are absent,
-# so anything configured in the UI survives.
+# Existing entries are mostly left alone -- this adds instances that are
+# absent, so anything configured in the UI survives. Two deliberate exceptions,
+# both scoped to fleet-owned instances / fleet-known hazards:
+#   * Refresh-on-seed: for the fleet-owned instance ids below, a stale
+#     config.binaryPath is updated in place when the unit environment provides
+#     a different binary. The seed was add-only originally, so store-path bumps
+#     stranded stale binaries forever -- the live settings still pointed
+#     opencode-v2 at a 2.0.23 build long after the fleet moved on.
+#   * Safety disable: any existing opencode-driver instance pointing at an
+#     OpenCode 1.x binary is disabled (see the V2 note in the Python below).
 
 set -euo pipefail
 
@@ -43,19 +51,22 @@ def env(name):
     v = os.environ.get(name, "").strip()
     return v or None
 
-# Default model per instance.
+# Default model per instance (T3 Code 0.1.2, Orchestrator V2).
 #
-# t3's built-in DEFAULT_MODEL_BY_PROVIDER is:
+# The V1 line's built-in DEFAULT_MODEL_BY_PROVIDER was:
 #   codex -> gpt-6-astra, claudeAgent -> claude-fable-5-1, cursor -> auto,
 #   grok -> grok-build, opencode -> openai/gpt-5, antigravity -> antigravity-default
 #
-# gpt-5 and gpt-6-astra are both superseded; Luna is the current long-context
-# line (1,050,000 context / 128,000 output on every provider except Databricks).
-# Set explicitly so new instances do not land on a stale default.
+# gpt-5 and gpt-6-astra are both superseded; Luna is still the fleet default
+# (see the route pools in opencode.jsonc), so the explicit Luna pins for
+# codex / opencode below are kept. Set explicitly so new instances do not
+# land on a stale upstream default.
 #
 # claudeAgent is deliberately NOT given a Luna model: that driver runs Claude
 # Code, which can only serve Anthropic models. Pointing it at an OpenAI slug
-# would just break it. Its "fable" default is left alone.
+# would just break it. Its "fable" default is left alone. The muse and pi
+# instances likewise get no model pin: muse serves Meta models through its
+# own CLI, and pi resolves models through its own config.
 OPENCODE_MODEL = "openai/gpt-6-luna"   # opencode driver uses provider/model form
 CODEX_MODEL = "gpt-6-luna"             # codex driver uses a bare slug
 
@@ -91,15 +102,19 @@ desired["grok"] = {
 }
 
 # Instances that need an explicit binary, pulled from the unit environment so
-# the store paths are never hard-coded here.
-for instance_id, display, var in (
-    ("opencode-v2", "opencode v2", "OPENCODE_V2_BIN"),
-    ("antigravity-acp", "Antigravity (ACP)", "ANTIGRAVITY_ACP_BIN"),
+# the store paths are never hard-coded here. Skipped entirely when the env
+# var is unset, so a host without that provider gets no broken instance.
+#
+# "muse" is T3 0.1.2's first-class Muse Code driver id (literally "muse";
+# the driver looks for the `muse` CLI and its own sign-in on this host).
+for instance_id, driver, display, var in (
+    ("opencode-v2", "opencode", "opencode v2", "OPENCODE_V2_BIN"),
+    ("antigravity-acp", "antigravity", "Antigravity (ACP)", "ANTIGRAVITY_ACP_BIN"),
+    ("muse", "muse", "Muse Code", "MUSE_BIN"),
 ):
     binary = env(var)
     if not binary:
         continue
-    driver = "opencode" if instance_id.startswith("opencode") else "antigravity"
     desired[instance_id] = {
         "driver": driver,
         "displayName": display,
@@ -111,16 +126,74 @@ for instance_id, display, var in (
         ),
     }
 
+# Pi, like Grok above, is only enabled when credentials are actually present
+# (~/.pi/agent/auth.json, written by `pi`'s own login). With none, an enabled
+# instance just shows up as a permanently unhealthy provider, so it is seeded
+# disabled instead and can be flipped on in the UI after signing in.
+pi_binary = env("PI_BIN")
+if pi_binary:
+    pi_auth = pathlib.Path(os.path.expanduser("~/.pi/agent/auth.json")).is_file()
+    desired["pi"] = {
+        "driver": "pi",
+        "displayName": "Pi" if pi_auth else "Pi (no credentials)",
+        "enabled": pi_auth,
+        "config": {"binaryPath": pi_binary},
+    }
+
 instances = doc.setdefault("providerInstances", {})
 added = [k for k in desired if k not in instances]
 for k in added:
     instances[k] = desired[k]
 
-if not added:
+# Refresh-on-seed for the fleet-owned instances: if the instance already
+# exists and the environment provides a binary path that differs from the
+# stored config.binaryPath, update binaryPath in place -- preserving
+# displayName, enabled and everything else the UI may have set. Without this,
+# every store-path bump strands the old binary in settings.json forever.
+FLEET_OWNED = ("opencode-v2", "antigravity-acp", "muse", "pi")
+refreshed = []
+for k in FLEET_OWNED:
+    if k in added or k not in instances or k not in desired:
+        continue
+    binary = (desired[k].get("config") or {}).get("binaryPath")
+    if not binary:
+        continue
+    config = instances[k].setdefault("config", {})
+    if config.get("binaryPath") != binary:
+        config["binaryPath"] = binary
+        refreshed.append(k)
+
+# Safety: T3 Code V2 must never drive an OpenCode 1.x binary against the
+# shared OpenCode 2.x session DB (~/.local/share/opencode) -- OpenChamber and
+# the opencode-v2 instance both use that DB with 2.x binaries only. Any
+# existing opencode-driver instance pointing at a 1.x build is disabled here;
+# that is reversible in the UI, but it should not be re-enabled.
+disabled = []
+for k, inst in instances.items():
+    if not isinstance(inst, dict) or inst.get("driver") != "opencode":
+        continue
+    binary = (inst.get("config") or {}).get("binaryPath") or ""
+    # Matches both an opencode-1.x directory ("/opencode-1.") and a Nix store
+    # path segment ("<hash>-opencode-1.").
+    if ("/opencode-1." in binary or "-opencode-1." in binary) and inst.get("enabled") is not False:
+        inst["enabled"] = False
+        disabled.append(k)
+
+if not added and not refreshed and not disabled:
     sys.exit(0)
 
 tmp = path.with_suffix(".seed-tmp")
 tmp.write_text(json.dumps(doc, indent=2) + "\n")
 tmp.replace(path)
-print("t3code-seed-providers: added " + ", ".join(sorted(added)), file=sys.stderr)
+changes = []
+if added:
+    changes.append("added " + ", ".join(sorted(added)))
+if refreshed:
+    changes.append("refreshed binaryPath for " + ", ".join(sorted(refreshed)))
+if disabled:
+    changes.append(
+        "disabled OpenCode 1.x instance(s) " + ", ".join(sorted(disabled))
+        + " (V2 must never drive a 1.x binary against the shared 2.x session DB)"
+    )
+print("t3code-seed-providers: " + "; ".join(changes), file=sys.stderr)
 PY

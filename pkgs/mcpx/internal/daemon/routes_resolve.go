@@ -24,9 +24,10 @@ func (s *Server) routesResolve(mux *http.ServeMux) {
 // ConfigHash is the *daemon key*: the fingerprint over every configuration
 // file that contributed, which is what names the socket and the info file.
 // It is deliberately not the hash that daemon-<key>.json carries in its
-// "configHash" field -- that one is a digest of the server definitions, used
+// "schemaHash" field -- that one is a digest of the server definitions, used
 // to invalidate the schema cache, and the two are different numbers for the
-// same daemon. Discovery needs the key, so the key is what this returns.
+// same daemon. (The info file also carries the key itself, as "daemonKey".)
+// Discovery needs the key, so the key is what this returns.
 type Resolution struct {
 	Socket     string   `json:"socket"`
 	Endpoint   string   `json:"endpoint"`

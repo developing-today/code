@@ -559,7 +559,8 @@ function createCursorDecorations(
     const anchor = isOwnCursor ? state.selection.anchor : Math.max(0, Math.min(cursor.anchor, docSize));
 
     // Check if this cursor is on the same line as the local cursor (for CSS styling)
-    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view);
+    // Pass getCachedCoords to avoid uncached view.coordsAtPos layout queries
+    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view, getCachedCoords);
     // Remote cursor opacity is based solely on age, not affected by local cursor position
     const opacity = baseOpacity;
 
@@ -643,30 +644,6 @@ function createCursorDecorations(
     // Cluster overlapping groups - only merge those that actually overlap
     const clusters = clusterOverlappingGroups(positionGroups, getLeftCoord);
 
-    // DEBUG: Log clustering results
-    if (positionGroups.length > 1) {
-      console.log("[cursor-debug] positionGroups:", positionGroups.length, "clusters:", clusters.length);
-      positionGroups.forEach((g, i) => {
-        // Debug logging must never throw on a failed coord lookup (#831).
-        let left: number | string = "no-view";
-        if (getLeftCoord) {
-          try {
-            left = getLeftCoord(g.position);
-          } catch {
-            left = "unavailable";
-          }
-        }
-        console.log(
-          `  group[${i}]: pos=${g.position}, left=${left}, cursors=${g.cursors.map((c) => c.clientID).join(",")}`,
-        );
-      });
-      clusters.forEach((c, i) => {
-        console.log(
-          `  cluster[${i}]: groups=${c.groups.length}, cursors=${c.groups.flatMap((g) => g.cursors.map((cur) => cur.clientID)).join(",")}`,
-        );
-      });
-    }
-
     clusters.forEach((cluster) => {
       // Check if own cursor is in this cluster
       const clusterHasOwnCursor = cluster.groups.some((g) => g.cursors.some((c) => c.isOwnCursor));
@@ -718,10 +695,6 @@ function createCursorDecorations(
         // Multiple groups overlap OR own cursor triggered bar formation
         // Create merged bar for all remote cursors
         const leftmostPos = Math.min(...groupsForBar.map((g) => g.position));
-
-        // Find the leftmost group (we'll attach the bar to its cursor line)
-        const leftmostGroup = groupsForBar.find((g) => g.position === leftmostPos);
-        const leftmostCursorLine: HTMLElement | null = null;
 
         // Create a cluster-wide key that includes ALL client IDs, positions, opacities, and connection state in the cluster
         // This ensures widgets are recreated when cluster membership, positions, or dynamic states change
@@ -859,7 +832,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
         if (cursorUpdate) {
           switch (cursorUpdate.type) {
             case "update": {
-              console.log("[cursor-debug] apply() UPDATE for", cursorUpdate.clientID, "at", cursorUpdate.head);
               const newCursors = new Map(pluginState.cursors);
               // If idleSecs is provided (initial load), backdate lastUpdate
               const lastUpdate = cursorUpdate.idleSecs ? Date.now() - cursorUpdate.idleSecs * 1000 : Date.now();
@@ -970,14 +942,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
       decorations(state: EditorState): DecorationSet {
         const pluginState = cursorPluginKey.getState(state);
         if (!pluginState) return DecorationSet.empty;
-
-        // DEBUG: Log cursor count
-        console.log(
-          "[cursor-debug] decorations() called, cursor count:",
-          pluginState.cursors.size,
-          "cursors:",
-          Array.from(pluginState.cursors.keys()).join(","),
-        );
 
         return createCursorDecorations(state, pluginState, myClientID, currentView);
       },

@@ -222,11 +222,52 @@ function allowedModelIds(policy, providerPolicy, ids) {
 // Helper: Clean JSONC parser (for reading only; it drops comments)
 // -----------------------------------------------------------------------------
 function parseJsonc(text) {
-  const cleanLines = text.split('\n').filter(l => {
-    const s = l.trim();
-    return !s.startsWith('//') && !s.startsWith('/*');
-  }).map(l => l.replace(/\s+\/\/.*$/, ''));
-  const cleaned = cleanLines.join('\n').replace(/,\s*([}\]])/g, '$1');
+  // #704: one string-aware scan. Comments and trailing commas are only
+  // special OUTSIDE string literals; string contents are copied verbatim.
+  // The old line-based stripper threw on multi-line block comments and on
+  // ' // ' inside strings, and silently ate ', ]' sequences inside strings
+  // (the trailing-comma regex could not tell a string from structure).
+  let stripped = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      stripped += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end < 0 ? text.length : end + 2;
+      stripped += ' '; // keep neighbouring tokens separated
+    } else {
+      stripped += ch;
+      i++;
+    }
+  }
+  // Drop trailing commas, still string-aware (a ', ]' inside a string is
+  // content, not a trailing comma).
+  let cleaned = '';
+  let inString = false;
+  for (let k = 0; k < stripped.length; k++) {
+    const ch = stripped[k];
+    if (inString) {
+      cleaned += ch;
+      if (ch === '\\') cleaned += stripped[++k] ?? '';
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') {
+      inString = true;
+      cleaned += ch;
+    } else if (ch === ',') {
+      let m = k + 1;
+      while (m < stripped.length && /\s/.test(stripped[m])) m++;
+      if (stripped[m] !== '}' && stripped[m] !== ']') cleaned += ch;
+    } else {
+      cleaned += ch;
+    }
+  }
   return JSON.parse(cleaned);
 }
 
