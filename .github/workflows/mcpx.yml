@@ -21,17 +21,6 @@ name: mcpx
 # (#297).
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/mcpx/**"
-      # The dogfood copy of the plugin under .opencode/plugin, so a PR that
-      # only touches it still runs the sync guard below (#314).
-      - ".opencode/plugin/**"
-      - "flake.nix"
-      - "flake.lock"
-      # Itself, so a bot bumping one of the actions below is tested by the
-      # job it is changing. Without this, those bumps merged unverified.
-      - ".github/workflows/mcpx.yml"
   push:
     branches: [main]
     paths:
