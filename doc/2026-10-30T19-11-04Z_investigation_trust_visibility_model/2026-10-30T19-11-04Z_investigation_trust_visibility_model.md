@@ -26,7 +26,7 @@
 ## Verdict up front
 
 The premise is **verified, and it is already the shape of the code**. In `pkgs/id`,
-ingest is a *validity* gate, not an *authority* gate, and "stored" is already separate
+ingest is a _validity_ gate, not an _authority_ gate, and "stored" is already separate
 from "counted":
 
 - `pkgs/id/src/event_store/ingest.rs:60` — the module doc states the Phase 1 rule
@@ -36,7 +36,7 @@ from "counted":
   the frozen (past an author's fork point).
 - `pkgs/id/src/event_store/claims.rs:4` — a tag event "is applied like any content
   event: the resolution decides whether it applies, and **the store keeps it either
-  way**." `tag_claims()` (`claims.rs:39`) folds only *applied* events.
+  way**." `tag_claims()` (`claims.rs:39`) folds only _applied_ events.
 - `pkgs/id/src/membership/gate.rs:8` — the admission gate "does not validate
   authority"; authority is decided by the group crate at the operation's position,
   not at the door.
@@ -64,7 +64,7 @@ piece is what §3–§5 specify and what #2238 turns into wire format.
 3. **View = projection over a writer set.** Every metric, feed, or aggregate is
    computed by a named view owned by someone (a person, a group, an app). The view
    carries a **writer set**; only objects whose author ∈ the set count. Everything
-   else is *uncounted* — present, signed, discoverable, with zero effect on the
+   else is _uncounted_ — present, signed, discoverable, with zero effect on the
    view.
 
 ```mermaid
@@ -98,7 +98,7 @@ owner's own chain — so set changes are auditable events, not silent config.
 - **Exclusion entries:** a view may exclude a single writer admitted via a group
   reference, without leaving the group (needed by abuse case 6, §6).
 - **Set changes apply prospectively by default.** Adding a writer counts their
-  *past* stored claims only if the owner explicitly chooses "include history" —
+  _past_ stored claims only if the owner explicitly chooses "include history" —
   often exactly right for a friend, exactly wrong to do silently. Removing a writer
   stops future counting immediately; their already-counted past claims stay counted
   unless the owner issues an explicit **rescind**, which excludes that writer's
@@ -106,20 +106,20 @@ owner's own chain — so set changes are auditable events, not silent config.
   set-version event.
 - **No silent history-rewriting.** Two viewers comparing "the same" metric must be
   able to see which set version produced it. Every computed view therefore names
-  *(set version, frontier)* alongside its result.
+  _(set version, frontier)_ alongside its result.
 
 The concrete object format, admission predicate, and slice plan for all of the
 above are the subject of #2238 / PR #2739 and are not duplicated here.
 
 ## 3. View-time filtering vs ingest-time rejection
 
-|  | Ingest rejection (by writer) | View-time filtering (chosen) |
-|---|---|---|
-| Who decides? | The server, once, for everyone | Each view owner, per view |
-| Same object, two viewers | Must agree, or one is refused service | Counts for one, not the other — the normal case |
-| "A stranger claims they walked my dog" | Server must judge a claim it has no standing to judge | Stored, signed, counts nowhere unless I look |
-| Reversibility | Rejection destroys evidence | Adding the writer later can count stored history |
-| Failure mode | Gatekeeper capture / censorship arguments | Storage cost (§4) |
+|                                        | Ingest rejection (by writer)                          | View-time filtering (chosen)                     |
+| -------------------------------------- | ----------------------------------------------------- | ------------------------------------------------ |
+| Who decides?                           | The server, once, for everyone                        | Each view owner, per view                        |
+| Same object, two viewers               | Must agree, or one is refused service                 | Counts for one, not the other — the normal case  |
+| "A stranger claims they walked my dog" | Server must judge a claim it has no standing to judge | Stored, signed, counts nowhere unless I look     |
+| Reversibility                          | Rejection destroys evidence                           | Adding the writer later can count stored history |
+| Failure mode                           | Gatekeeper capture / censorship arguments             | Storage cost (§4)                                |
 
 Filtering wins on the program's own terms. Its honest cost: **filtering makes spam
 ineffective, not free** — see §4.
@@ -132,16 +132,16 @@ ineffective, not free** — see §4.
 - **Author-indexed projections:** views must never scan the whole store. An
   author → objects index (the store's per-author chains already give this shape)
   means a view's cost is proportional to its writer set, not to global spam
-  volume. This is what keeps a Sybil flood from becoming a *compute* DoS on every
+  volume. This is what keeps a Sybil flood from becoming a _compute_ DoS on every
   view.
-- A view result is reproducible from *(store frontier, set version)*: same inputs,
+- A view result is reproducible from _(store frontier, set version)_: same inputs,
   same counted set. That reproducibility is what makes a disputed metric
   diagnosable ("counted via group: Dog Care, set v12") instead of an argument.
 
 ## 4. The cost side: resource controls, never authority in disguise
 
 Storage and bandwidth for objects nobody counts is the price of the model. It is
-paid with *resource* controls, never by quietly turning ingest back into an
+paid with _resource_ controls, never by quietly turning ingest back into an
 authority gate:
 
 - **Per-author and per-topic storage quotas at the relay/server**, enforced as
@@ -165,17 +165,17 @@ authority gate:
 
 ## 5. "Going looking" — discovery of uncounted claims
 
-Uncounted must mean *findable*, or the model is just a bin. The discovery surface
+Uncounted must mean _findable_, or the model is just a bin. The discovery surface
 (UI and API are the same query):
 
-- **Query by subject/topic, not by author:** "show me all claims about *this dog /
-  this event / this entity*" returns counted and uncounted, visually and
+- **Query by subject/topic, not by author:** "show me all claims about _this dog /
+  this event / this entity_" returns counted and uncounted, visually and
   structurally separated. Each uncounted claim shows: author ID (+ petname if
   known), signature status, and **why it is not counted** ("author not in this
   view's writer set").
-- **Two promotion actions, deliberately different:** *count this claim* (one-off
-  inclusion of a single object, recorded as a view-level exception) vs *add this
-  writer* (set change, prospective, optionally with history). Collapsing these
+- **Two promotion actions, deliberately different:** _count this claim_ (one-off
+  inclusion of a single object, recorded as a view-level exception) vs _add this
+  writer_ (set change, prospective, optionally with history). Collapsing these
   into one button is how writer sets quietly bloat.
 - **No ambient leakage:** uncounted claims never appear inside the counted view
   itself — no greyed-out rows in the metric, no "plus 3 hidden claims" badge that
@@ -184,7 +184,7 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
   is acceptable; default off for metrics.)
 - **Flood-shaped results:** discovery results are grouped by author with
   per-author counts and are returned paginated under a result cap, so a
-  *single-author* flood collapses into one group with a count instead of
+  _single-author_ flood collapses into one group with a count instead of
   10,000 facts. Per-author grouping is **not** a Sybil defence: an attacker
   controlling 10,000 distinct author keys produces 10,000 groups, and
   neither the grouping nor per-topic storage quotas / cold tiering
@@ -216,7 +216,7 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
    (per-IP / per-ID / per-topic windows, block lists) and the uncounted-tier
    expiry in §4. Validity is not a storage entitlement. ✅ With #2032/#2033
    controls in place; without them this is the model's real weak point.
-4. **Confusion attack:** spam claims crafted to *look* counted (similar petname,
+4. **Confusion attack:** spam claims crafted to _look_ counted (similar petname,
    copied formatting). Defence is presentational and non-negotiable: counted
    status is computed from the set, never displayed from claim-supplied data;
    uncounted claims always render author + "not counted — author not in writer
@@ -228,15 +228,15 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
    owner decision; it can make it visible and reversible. ⚠️ Accepted residual
    risk, made auditable.
 6. **Group-reference capture:** my view references a group; its admin adds a
-   spammer. One-level expansion + the view rendering *which reference admitted
-   this writer* ("counted via group: Dog Care") makes it diagnosable; I can
+   spammer. One-level expansion + the view rendering _which reference admitted
+   this writer_ ("counted via group: Dog Care") makes it diagnosable; I can
    exclude the single writer with a view-level exclusion entry (§2) without
    leaving the group. ⚠️ Requires the exclusion-entry mechanism — in the #2238
    spec.
 7. **Removed writer disputes history:** a dog-walker I removed claims their past
    walks must still count / must be erased. The default rule answers both: past
    stays counted (it was true under the set then), rescind is available to me as
-   owner, and the walker's own stored claims remain *their* evidence regardless —
+   owner, and the walker's own stored claims remain _their_ evidence regardless —
    removal from my view deletes nothing from the store. ✅
 
 ## 7. Gates and consumers — what this document unblocks
@@ -246,7 +246,7 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
   was gated on this design. That gate is now addressed: the trust model it must
   implement is the one in §1–§5, and its data model already exists
   (`doc/2026-10-29T13-04-50Z_investigation_didit_tracker_data_model/`). What
-  remains before a *permanent* build is the program's review round on the
+  remains before a _permanent_ build is the program's review round on the
   writer-set spec (#2238 / PR #2739) — a PoC may proceed against this model, a
   permanent feature may not be built on an unreviewed spec.
 - **Boards moderation
@@ -257,7 +257,7 @@ Uncounted must mean *findable*, or the model is just a bin. The discovery surfac
 - **ID core design ([#2028](https://github.com/developing-today/code/issues/2028),
   open).** This investigation is an input to the synthesis. One question is
   explicitly handed to it: whether `public` views need their own moderation
-  layer (a public *metric* is an invitation to game it; likely public views
+  layer (a public _metric_ is an invitation to game it; likely public views
   should be read-only discoveries, not metrics).
 - **Abuse controls.** Cost-side controls are owned by #2032 (investigation,
   closed) and #2033 (primitives, open) — cross-referenced in §4, not re-decided
