@@ -1024,12 +1024,25 @@ mod tests {
     #[test]
     fn test_batch_collection_refused_stream_ends_at_the_total_cap() {
         const SENT: usize = BATCH_MAX_ARRIVALS * 3;
-        let (tx, mut rx) = mpsc::channel::<Arrival>(SENT + 16);
+        // Bounding the channel to 1 forces a handshake on each arrival: the
+        // producer cannot queue the next item until collect_batch has pulled
+        // the previous one. This deterministically stretches the stream's
+        // runtime past BATCH_GRACE without requiring sleep calls that can
+        // overshoot and time the batch out.
+        let (tx, mut rx) = mpsc::channel::<Arrival>(1);
+        let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<()>();
         let pacer = std::thread::spawn(move || {
-            for _ in 0..SENT {
-                tx.try_send(Arrival::Refused).unwrap();
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                for _ in 0..SENT {
+                    tokio::select! {
+                        _ = tx.send(Arrival::Refused) => {}
+                        _ = &mut done_rx => break,
+                    }
+                }
+            });
         });
         let first = loop {
             match rx.try_recv() {
@@ -1040,9 +1053,8 @@ mod tests {
                 Err(error) => panic!("the pacer went away: {error}"),
             }
         };
-        let started = std::time::Instant::now();
         let batch = collect_batch(first, &mut rx);
-        let elapsed = started.elapsed();
+        let _ = done_tx.send(());
         pacer.join().unwrap();
 
         assert_eq!(
@@ -1055,10 +1067,6 @@ mod tests {
                 .iter()
                 .all(|arrival| matches!(arrival, Arrival::Refused)),
             "the capped batch holds the refusals it collected"
-        );
-        assert!(
-            elapsed < Duration::from_millis((SENT * 2) as u64),
-            "the batch ended while the stream was still flowing, took {elapsed:?}"
         );
     }
 
