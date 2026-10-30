@@ -23,6 +23,7 @@ health gate):
 | Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `amd-6.raptor-pumpkinseed.ts.net:7777`; no tunnel hostname | `pad/`                |
 | Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `amd-6.raptor-pumpkinseed.ts.net:8484`; no tunnel hostname | `grist/`              |
 | Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route    | `aggregator/`         |
+| Intake    | pm-dispatch     | this repo (Bun app, user unit `pm-dispatch`)                     | `127.0.0.1:4879` + tailnet; public via tunnel as `dispatch.security.cab`              | `dispatch/`           |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -32,7 +33,13 @@ Baserow — the evaluation is in the design record.
 Public address: **https://kaneo.security.cab** — a Cloudflare Tunnel
 (tunnel name `amd-6-pm-stack`, remotely managed) whose ingress maps
 that hostname to `http://localhost:5173`. The tunnel connector runs as
-the `pm-tunnel` systemd **user** unit (see `systemd/pm-tunnel.service`).
+the `pm-tunnel` systemd **user** unit (see `systemd/pm-tunnel.service`);
+the same tunnel also maps `dispatch.security.cab` to
+`http://localhost:4879` (pm-dispatch, added 2026-10-30). On `amd`, one
+`nixos-rebuild switch` deploys the whole stack: the user units
+(`pm-aggregator`, `pm-projector`, `pm-dispatch`, `pm-tunnel`) and the
+Kaneo stack's lifecycle are declared in
+[`../nixos/services/pm-stack`](../nixos/services/pm-stack).
 The tunnel has to exist before the GitHub App can be registered,
 because the app's webhook URL is
 `https://kaneo.security.cab/api/github-integration/webhook`.

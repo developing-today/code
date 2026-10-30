@@ -537,14 +537,27 @@ func applyDefaults(out any, params json.RawMessage) any {
 //     notification is sent, on its own context so it outlives the request.
 //
 // https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation
-func (c *Client) cancelled(method string, id int64) {
+// cancelled's reason is the truth about why the request died (PC-08,
+// #1924): a deadline is "timeout"; anything the caller did to their own
+// context is reported as what it was, not dressed up as a timeout.
+func cancelReason(cause error) string {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case cause != nil:
+		return cause.Error()
+	}
+	return "cancelled"
+}
+
+func (c *Client) cancelled(method string, id int64, cause error) {
 	if method == "initialize" {
 		return
 	}
 	if _, isHTTP := c.t.(*HTTPTransport); isHTTP && c.metaVersion != "" {
 		return
 	}
-	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": "timeout"})
+	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": cancelReason(cause)})
 	ctx, cancel := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 	defer cancel()
 	_ = c.notify(ctx, "notifications/cancelled", cp)

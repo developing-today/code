@@ -141,6 +141,14 @@ jobs:
           fi
           exit "$rc"
 
+      # The opencode plugin's bun tests are the one suite `go test` never
+      # sees. Bun is already installed above (the Go e2e tests shell out to
+      # it); this step runs the plugin suite itself, so a broken plugin
+      # test fails CI instead of never running (#1978).
+      - name: Plugin tests (bun)
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
+
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)
     # Only on bot branches. A human changing dependencies should see the

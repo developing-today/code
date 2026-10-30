@@ -5,12 +5,14 @@ import { join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
-/** The four fleet repos dispatch may target. */
+/** The six fleet repos dispatch may target. */
 export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today/opencode",
   "developing-today/openchamber",
   "dezren39/nix",
+  "developing-today/zettel",
+  "dezren39/dezren39",
 ] as const;
 
 /** Repo -> Supabase queue name (repo-health pilot queues). */
@@ -19,6 +21,8 @@ export const REPO_QUEUES: Record<string, string> = {
   "developing-today/opencode": "repo-health-opencode-pilot",
   "developing-today/openchamber": "repo-health-openchamber-pilot",
   "dezren39/nix": "repo-health-nix-pilot",
+  "developing-today/zettel": "repo-health-zettel-pilot",
+  "dezren39/dezren39": "repo-health-dezren39-pilot",
 };
 
 /** Repo -> default session directory: the repo's laptop primary clone. */
@@ -27,15 +31,20 @@ export const REPO_DIRS: Record<string, string> = {
   "developing-today/opencode": "/home/user/git/opencode",
   "developing-today/openchamber": "/home/user/git/openchamber-fork",
   "dezren39/nix": "/home/user/git/nix",
+  "developing-today/zettel": "/home/user/git/zettel",
+  "dezren39/dezren39": "/home/user/dezren39",
 };
 
-/** Repos where the pm-stack GitHub App is installed (issue creation works).
- * dezren39/nix is NOT covered by the installation — dispatch skips issue
- * creation there and returns a warning instead of failing. */
+/** Repos where the pm-stack GitHub App is installed (issue creation works):
+ * the developing-today installation covers code, opencode and openchamber,
+ * and the dezren39 installation covers dezren39/nix. developing-today/zettel
+ * and dezren39/dezren39 are NOT covered — dispatch skips issue creation
+ * there and returns a warning instead of failing. */
 export const APP_INSTALLED_REPOS: ReadonlySet<string> = new Set([
   "developing-today/code",
   "developing-today/opencode",
   "developing-today/openchamber",
+  "dezren39/nix",
 ]);
 
 export interface Config {

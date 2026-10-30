@@ -31,11 +31,22 @@ type CallContext struct {
 	// safe to stop the instance the moment that caller exits instead of
 	// waiting out an idle timer.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// PIDShared marks a PID that names a process shared by many callers
+	// rather than the caller's own: the mcpx daemon's own PID, which
+	// every /v1/exec run it serves reports (the script env carries the
+	// daemon's os.Getpid()). A pid: key resolved from it is a shared
+	// instance key, never caller-private, however ephemeral the run is.
+	PIDShared bool `json:"pidShared,omitempty"`
 }
 
 // CallerOwned reports whether a resolved key belongs solely to this caller and
 // may be torn down when the caller finishes: a per-call key, or one built from
 // an identity the caller minted for itself.
+//
+// The pid: case has the same trap in daemon clothing: an ephemeral
+// /v1/exec run reports the *daemon's* PID, which every overlapping run
+// shares, so PIDShared keeps that key out of caller ownership -- releasing
+// it at one run's end closed an instance another run still needed.
 //
 // Ephemeral says the *session id* is private, not that everything the caller
 // touched is. Treating it as the latter stopped the shared global, repo and
@@ -50,7 +61,7 @@ func (c CallContext) CallerOwned(key string) bool {
 		return false
 	}
 	return (c.SessionID != "" && key == "session:"+c.SessionID) ||
-		(c.PID > 0 && key == "pid:"+strconv.Itoa(c.PID))
+		(c.PID > 0 && !c.PIDShared && key == "pid:"+strconv.Itoa(c.PID))
 }
 
 // Key resolves the instance key for a scope. The returned key is opaque; only

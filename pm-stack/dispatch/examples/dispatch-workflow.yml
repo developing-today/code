@@ -11,6 +11,13 @@
 #     optionally creating a tracking issue or attaching to an existing
 #     one via issue_number.
 #
+# The prompt for either action can come from three inputs, resolved
+# in this order: prompt-file (a path in the caller's checked-out
+# workspace), then prompt-url (an https URL fetched at runtime),
+# then the inline prompt input. The dispatch-queue job below
+# demonstrates prompt-file, which is how scheduled workflows keep
+# prompts in repo files instead of inline YAML strings.
+#
 # OIDC requires the calling job to grant `permissions: id-token: write`.
 # Under the grants mesh, any allowlisted repo may target any allowlisted
 # repo (the actions' `repo` input defaults to the caller's repo).
@@ -58,12 +65,22 @@ jobs:
       id-token: write
       contents: read
     steps:
+      # prompt-file is read from the caller's workspace, so check out first.
+      - uses: actions/checkout@v4
       - name: Enqueue work only
         id: queue
         uses: developing-today/code/.github/actions/pm-dispatch-queue@main
         with:
           title: "queued from Actions"
-          prompt: ${{ inputs.prompt }}
+          # The prompt lives in a file committed in the caller's repo
+          # (here: prompts/queued-triage.md in the calling repo), instead
+          # of an inline YAML string. prompt-file takes precedence over
+          # prompt-url and over the inline prompt input; a missing or
+          # empty file fails the step.
+          prompt-file: "prompts/queued-triage.md"
+          # Alternatives, in resolution order after prompt-file:
+          # prompt-url: "https://example.com/prompts/queued-triage.md"
+          # prompt: "inline work text"
           kind: "triage"
           issue: "true"
           # issue_number: "123"  # optional: attach to this existing issue

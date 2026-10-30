@@ -1,23 +1,23 @@
-name: Jules
+name: pm-dispatch
 
-# google-labs-code/jules-action -- fires Jules (Google's async coding agent) from
-# any GitHub event. All three of upstream's shipped example triggers are wired
-# up here; each is independently disable-able by deleting its job.
+# pm-dispatch dispatch hub -- fires a tracked OpenCode session on the
+# laptop (via pm-dispatch) from any GitHub event. This workflow was
+# previously backed by the Jules service; it now uses the reusable
+# pm-dispatch starter action
+# (developing-today/code/.github/actions/pm-dispatch-start@main), which
+# creates the tracking issue, enqueues the task, and launches the
+# session. Each job is independently disable-able by deleting it.
 #
-# Requires repository secret JULES_API_KEY. Mint at
-# https://jules.google.com/settings (max 3 keys per account), then:
-#   gh secret set JULES_API_KEY
+# No repository secret is required: each job grants
+# `permissions: id-token: write`, and the starter action mints a GitHub
+# Actions OIDC token (audience pm-dispatch) to authenticate to
+# pm-dispatch. The filename stays jules.yml because other workflows
+# (main-broken.yml, repo-sweeper.yml) reference that path, and the
+# `jules` label name is unchanged -- applying it still starts
+# remediation, now via this dispatch flow instead of Jules.
 #
-# Jules also needs its GitHub App authorised on this repository before any
-# source is usable -- the API alone is not enough.
-#
-# NOTE: upstream's README still references `google-labs-code/jules-invoke@v1`.
-# That repo was renamed to jules-action; the old path 301-redirects, but the
-# current name is used here.
-#
-# Free tier is 15 tasks/day and 3 concurrent, so the cron schedules below are
-# deliberately infrequent. Raising them can exhaust the daily quota and starve
-# the interactive/CLI path.
+# Dispatch launches sessions promptly, so the cron schedules below are
+# deliberately infrequent to avoid flooding the laptop session pool.
 
 on:
   schedule:
@@ -37,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Prompt to send to Jules"
+        description: "Prompt to send to the dispatched OpenCode session"
         required: true
         type: string
 
@@ -63,11 +63,16 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch weekly cleanup via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          include_commit_log: true
+          title: "Weekly housekeeping cleanup"
           prompt: >-
             Review the repository for low-risk housekeeping: dead code,
             unused dependencies, stale TODOs and obvious documentation drift.
@@ -79,9 +84,10 @@ jobs:
             certain the PR is correct and low-risk; otherwise leave it open
             and state your confidence and what a human should check.
 
-  # Triggered by applying the `jules` label to an issue. Note this is the same
-  # convention the Jules GitHub App uses natively; keep one or the other to
-  # avoid two agents racing on the same issue.
+  # Triggered by applying the `jules` label to an issue. The label name is
+  # kept from the Jules era (main-broken.yml applies it under its
+  # remediation budget); it now starts an OpenCode session via pm-dispatch
+  # instead of a Jules session.
   issue-labeled:
     if: github.event_name == 'issues' && github.event.label.name == 'jules'
     concurrency:
@@ -90,10 +96,16 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch issue fix via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          title: ${{ github.event.issue.title }}
           prompt: >-
             Address GitHub issue #${{ github.event.issue.number }}:
             "${{ github.event.issue.title }}".
@@ -117,12 +129,16 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch CI failure fix via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          starting_branch: ${{ github.event.workflow_run.head_branch }}
-          include_last_commit: true
+          title: "CI failure: ${{ github.event.workflow_run.name }} on ${{ github.event.workflow_run.head_branch }}"
           prompt: >-
             The workflow "${{ github.event.workflow_run.name }}" failed on branch
             ${{ github.event.workflow_run.head_branch }}. Read the failing run at
@@ -137,8 +153,14 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch manual prompt via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          title: "Manual pm-dispatch run"
           prompt: ${{ inputs.prompt }}

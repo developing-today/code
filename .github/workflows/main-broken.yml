@@ -7,30 +7,33 @@ name: main broken watcher
 #   1. Identify: Breakage-ID = first 12 hex of
 #      sha256("<repo>|<workflow>|<sorted failing job names>").
 #      An open issue labelled main-broken already carrying the ID gets
-#      a comment with the new run link, and the chain stops (no
-#      duplicate Jules spend, no duplicate packet).
-#   2. File: a fresh breakage files an issue with labels kind/ci,
+#      a comment with the new run link, plus a fresh fix task queued
+#      on that same issue via the pm-dispatch queuer -- no duplicate
+#      issue is filed.
+#   2. File: a fresh breakage is queued via the pm-dispatch queuer
+#      (issue: true), which creates the issue carrying the
+#      queue/queued + source/dispatch labels; a follow-up step then
+#      applies this workflow's own label set -- kind/ci,
 #      priority/critical, main-broken, queue/queued,
-#      status/needs-triage (coined here if missing), plus an
+#      status/needs-triage (coined here if missing) -- plus an
 #      agent-note:v1 comment recording `holder: chain (filing)`.
-#   3. Jules first: if fewer than 3 open main-broken issues carry the
-#      `jules` label (the concurrent-remediation budget; the label is
-#      coined here if missing), apply `jules` -- the existing
-#      issue-labeled job in jules.yml starts remediation -- and note
+#   3. Remediation first: if fewer than 3 open main-broken issues
+#      carry the `jules` label (the concurrent-remediation budget;
+#      the label is coined here if missing), apply `jules` -- the
+#      issue-labeled job in jules.yml now starts remediation via
+#      pm-dispatch (a tracked OpenCode session) -- and note
 #      `holder: jules, since <ts>`. Otherwise note
 #      `holder: chain (jules budget exhausted)`; the issue already
 #      carries queue/queued, so the fleet monitor enqueues the
 #      priority packet from the issue itself.
 #   4. Release (separate scheduled job below): daily, any open
 #      main-broken issue whose `jules` label is >24h old with no
-#      linked Jules PR loses the label and gets an agent-note
-#      `holder: released by chain at <ts>, reason: no Jules PR
+#      linked remediation PR loses the label and gets an agent-note
+#      `holder: released by chain at <ts>, reason: no remediation PR
 #      within 24h`. The issue already carries queue/queued, so the
 #      fleet monitor enqueues the priority packet; no queue write
-#      happens from this workflow.
+#      happens from this workflow's release job.
 #
-# Deliberately NOT workflow_run on "*": that fan-out is the #304
-# lesson. This watches only the main-tier (full-suite) workflow set.
 # Dry-run: workflow_dispatch with dry_run=true and a run_id prints
 # what WOULD be filed and files nothing.
 
@@ -78,13 +81,19 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      issues: write
+      actions: read
+      pull-requests: read
+      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
-      - name: Identify breakage and file or append the issue
+      - name: Identify breakage
+        id: identify
         run: |
           set -euo pipefail
           if [ -z "${RUN_ID:-}" ]; then
@@ -100,6 +109,7 @@ jobs:
             --jq '[.jobs[] | select(.conclusion == "failure") | .name] | sort | .[]')
           if [ -z "$failing" ]; then
             echo "Run $RUN_ID ($wf) has no failed jobs; nothing to file."
+            echo "action=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           failing_csv=$(paste -sd, - <<<"$failing")
@@ -110,56 +120,149 @@ jobs:
           existing=$(gh issue list --repo "$GH_REPO" --state open --label main-broken \
             --search "$bid" --json number --jq '.[0].number // empty')
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          title="main-broken: $GH_REPO $wf @$short_sha — $first_job"
+          body=$(printf 'Main-tier workflow `%s` failed on main.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nFiled by the main-breakage chain (.github/workflows/main-broken.yml, #1782). Exactly one holder owns this breakage at a time; every transition is an agent-note:v1 comment on this issue.\n' \
+            "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid")
           if [ "$DRY_RUN" = "true" ]; then
             echo "DRY-RUN: would search open main-broken issues for Breakage-ID $bid (found: ${existing:-none})"
             if [ -n "$existing" ]; then
-              echo "DRY-RUN: would append a comment with run $run_url to issue #$existing and stop."
+              echo "DRY-RUN: would append a comment with run $run_url to issue #$existing and queue a fresh fix task on it via the pm-dispatch queuer."
             else
-              echo "DRY-RUN: would file 'main-broken: $GH_REPO $wf @$short_sha — $first_job' with Breakage-ID: $bid, labels kind/ci, priority/critical, main-broken, queue/queued, status/needs-triage; agent-note holder: chain (filing); then jules label if <3 open main-broken issues carry it."
+              echo "DRY-RUN: would queue '$title' via the pm-dispatch queuer (which creates the issue) with Breakage-ID: $bid, then apply labels kind/ci, priority/critical, main-broken, queue/queued, status/needs-triage; agent-note holder: chain (filing); then jules label if <3 open main-broken issues carry it."
             fi
+            echo "action=dry" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GH_REPO" \
-              --body "Main is still red for this breakage: $run_url (workflow \`$wf\`, head \`$short_sha\`). Breakage-ID: $bid — appending per the chain dedup rule; no duplicate issue, no duplicate Jules spend."
-            echo "Appended to existing issue #$existing; stopping."
-            exit 0
+            action=append
+            prompt=$(printf 'Fix GitHub issue #%s in %s: main-tier workflow `%s` failed on main again.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nThis is a recurrence of the breakage tracked by that issue. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #%s", so the issue closes when the fix lands.\n' \
+              "$existing" "$GH_REPO" "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid" "$existing")
+          else
+            action=create
+            prompt=$(printf '%s\nDiagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #<number>", using the number of the issue this dispatch created, so the issue closes when the fix lands.\n' "$body")
           fi
-          # Coin labels if missing (main-broken + jules included: the
-          # plain `jules` label did not exist before this workflow).
+          {
+            echo "action=${action}"
+            echo "existing_number=${existing}"
+            echo "bid=${bid}"
+            echo "ts=${ts}"
+            echo "run_url=${run_url}"
+            echo "wf=${wf}"
+            echo "short_sha=${short_sha}"
+            echo "title=${title}"
+            echo "body<<MAIN_BROKEN_BODY_EOF"
+            printf '%s\n' "$body"
+            echo "MAIN_BROKEN_BODY_EOF"
+            echo "prompt<<MAIN_BROKEN_PROMPT_EOF"
+            printf '%s\n' "$prompt"
+            echo "MAIN_BROKEN_PROMPT_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Identified breakage: action=${action} existing=${existing:-none} Breakage-ID=${bid}"
+
+      # Coin labels if missing (main-broken + jules included: the
+      # plain `jules` label did not exist before this workflow). Only
+      # needed on the create path, before the label-apply step.
+      - name: Coin chain labels if missing
+        if: steps.identify.outputs.action == 'create'
+        run: |
+          set -euo pipefail
           for spec in \
             "kind/ci|fbca04|CI/CD pipelines, workflows, and build automation" \
             "priority/critical|b60205|Drop everything: main broken" \
             "main-broken|B60205|main branch full-suite (main tier) is red; remediation chain owns this" \
             "queue/queued|7057ff|Has a queued task in the fleet agent queue" \
             "status/needs-triage|fbca04|Not yet triaged; needs a first look" \
-            "jules|57ab5a|Hand this issue to Jules (issue-labeled job in jules.yml)"; do
+            "jules|57ab5a|Hand this issue to remediation (issue-labeled job in jules.yml, via pm-dispatch)"; do
             IFS='|' read -r lname lcolor ldesc <<<"$spec"
             gh label create "$lname" --repo "$GH_REPO" --color "$lcolor" --description "$ldesc" 2>/dev/null || true
           done
-          body=$(printf 'Main-tier workflow `%s` failed on main.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nFiled by the main-breakage chain (.github/workflows/main-broken.yml, #1782). Exactly one holder owns this breakage at a time; every transition is an agent-note:v1 comment on this issue.\n' \
-            "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid")
-          issue_url=$(gh issue create --repo "$GH_REPO" \
-            --title "main-broken: $GH_REPO $wf @$short_sha — $first_job" \
-            --body "$body" \
-            --label "kind/ci" --label "priority/critical" --label "main-broken" \
-            --label "queue/queued" --label "status/needs-triage")
-          inum=${issue_url##*/}
-          echo "Filed issue #$inum: $issue_url"
-          gh issue comment "$inum" --repo "$GH_REPO" \
-            --body "agent-note:v1 — holder: chain (filing), at $ts. Breakage-ID: $bid"
-          # Jules budget: <3 concurrent remediations in flight.
+
+      # Create path: the queuer creates the issue (with the
+      # queue/queued + source/dispatch labels pm-dispatch applies).
+      - name: Queue the breakage via pm-dispatch (creates the issue)
+        id: dispatch-create
+        if: steps.identify.outputs.action == 'create'
+        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: ${{ steps.identify.outputs.title }}
+          prompt: ${{ steps.identify.outputs.prompt }}
+          issue: "true"
+
+      # The queuer only applies queue/queued + source/dispatch, so this
+      # workflow's own label set is applied here from its output.
+      - name: Apply the chain label set to the created issue
+        if: steps.identify.outputs.action == 'create'
+        env:
+          INUM: ${{ steps.dispatch-create.outputs.issue_number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INUM}" ]; then
+            echo "::error::pm-dispatch queuer returned no issue_number"; exit 1
+          fi
+          gh issue edit "$INUM" --repo "$GH_REPO" \
+            --add-label "kind/ci" --add-label "priority/critical" \
+            --add-label "main-broken" --add-label "queue/queued" \
+            --add-label "status/needs-triage"
+          echo "Filed issue #$INUM via pm-dispatch: ${{ steps.dispatch-create.outputs.issue_url }}"
+
+      - name: Record the filing holder note
+        if: steps.identify.outputs.action == 'create'
+        env:
+          INUM: ${{ steps.dispatch-create.outputs.issue_number }}
+          TS: ${{ steps.identify.outputs.ts }}
+          BID: ${{ steps.identify.outputs.bid }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$INUM" --repo "$GH_REPO" \
+            --body "agent-note:v1 — holder: chain (filing), at $TS. Breakage-ID: $BID"
+
+      # Remediation budget: <3 concurrent remediations in flight. The
+      # `jules` label application logic is unchanged; the label now
+      # triggers an OpenCode session via the migrated jules.yml.
+      - name: Apply the jules label within the remediation budget
+        if: steps.identify.outputs.action == 'create'
+        env:
+          INUM: ${{ steps.dispatch-create.outputs.issue_number }}
+          BID: ${{ steps.identify.outputs.bid }}
+        run: |
+          set -euo pipefail
+          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           jules_count=$(gh issue list --repo "$GH_REPO" --state open --label main-broken \
             --label jules --json number --jq 'length')
           if [ "$jules_count" -lt 3 ]; then
-            gh issue edit "$inum" --repo "$GH_REPO" --add-label jules
+            gh issue edit "$INUM" --repo "$GH_REPO" --add-label jules
             ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            gh issue comment "$inum" --repo "$GH_REPO" \
-              --body "agent-note:v1 — holder: jules, since $ts (jules label applied; the issue-labeled job in jules.yml starts remediation). Jules budget at filing: $jules_count/3 concurrent remediations in flight."
+            gh issue comment "$INUM" --repo "$GH_REPO" \
+              --body "agent-note:v1 — holder: jules, since $ts (jules label applied; the issue-labeled job in jules.yml starts remediation via pm-dispatch). Remediation budget at filing: $jules_count/3 concurrent remediations in flight."
           else
-            gh issue comment "$inum" --repo "$GH_REPO" \
+            gh issue comment "$INUM" --repo "$GH_REPO" \
               --body "agent-note:v1 — holder: chain (jules budget exhausted) at $ts: $jules_count open main-broken issues already carry the jules label. This issue carries queue/queued, so the fleet monitor enqueues the priority packet from the issue."
           fi
+
+      # Append path: the queuer attaches a fresh fix task to the
+      # existing Breakage-ID issue -- no second issue is created.
+      - name: Queue a fresh fix task via pm-dispatch (existing issue)
+        id: dispatch-append
+        if: steps.identify.outputs.action == 'append'
+        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: ${{ steps.identify.outputs.title }}
+          prompt: ${{ steps.identify.outputs.prompt }}
+          issue_number: ${{ steps.identify.outputs.existing_number }}
+
+      - name: Append a recurrence comment to the existing issue
+        if: steps.identify.outputs.action == 'append'
+        env:
+          EXISTING: ${{ steps.identify.outputs.existing_number }}
+          RUN_URL_OUT: ${{ steps.identify.outputs.run_url }}
+          WF: ${{ steps.identify.outputs.wf }}
+          SHORT_SHA: ${{ steps.identify.outputs.short_sha }}
+          BID: ${{ steps.identify.outputs.bid }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$EXISTING" --repo "$GH_REPO" \
+            --body "Main is still red for this breakage: $RUN_URL_OUT (workflow \`$WF\`, head \`$SHORT_SHA\`). Breakage-ID: $BID — appending per the chain dedup rule; no duplicate issue. A fresh fix task has been queued on this issue via pm-dispatch."
+          echo "Appended to existing issue #$EXISTING and queued a fresh fix task."
 
   release-check:
     name: release stale jules holds (daily)
@@ -171,7 +274,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
-      - name: Release jules holds older than 24h with no linked Jules PR
+      - name: Release jules holds older than 24h with no linked remediation PR
         run: |
           set -euo pipefail
           now=$(date -u +%s)
@@ -192,7 +295,7 @@ jobs:
               echo "#$n: jules label is ${age}s old (<24h); holding."
               continue
             fi
-            # A linked Jules PR says "Fixes #<n>" (jules.yml prompt).
+            # A linked remediation PR says "Fixes #<n>" (jules.yml prompt).
             prs=$(gh pr list --repo "$GH_REPO" --state all --search "Fixes #$n" \
               --json number --jq 'length')
             if [ "$prs" != "0" ]; then
@@ -200,12 +303,12 @@ jobs:
               continue
             fi
             if [ "$DRY_RUN" = "true" ]; then
-              echo "DRY-RUN: would release #$n (jules label from $labeled_at, no linked Jules PR)."
+              echo "DRY-RUN: would release #$n (jules label from $labeled_at, no linked remediation PR)."
               continue
             fi
             gh issue edit "$n" --repo "$GH_REPO" --remove-label jules
             gh issue comment "$n" --repo "$GH_REPO" \
-              --body "agent-note:v1 — holder: released by chain at $ts, reason: no Jules PR within 24h (jules label applied $labeled_at). This issue already carries queue/queued, so the fleet monitor enqueues the priority packet; the chain does not write the queue directly."
+              --body "agent-note:v1 — holder: released by chain at $ts, reason: no remediation PR within 24h (jules label applied $labeled_at). This issue already carries queue/queued, so the fleet monitor enqueues the priority packet; the release check does not write the queue directly."
             echo "#$n released."
           done
           echo "release-check done at $ts"

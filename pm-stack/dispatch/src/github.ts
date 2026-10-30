@@ -3,9 +3,10 @@
 // Primary route: the pm-stack GitHub App (installation token minted from
 // the app id + private key rendered into the service env from
 // ~/secrets/pm-stack.sops.yaml — the same material connect-repo.sh uses).
-// The installation covers developing-today/code, developing-today/opencode
-// and developing-today/openchamber; callers skip dezren39/nix before
-// reaching here.
+// The installations cover developing-today/code, developing-today/opencode,
+// developing-today/openchamber and dezren39/nix; callers skip repos with no
+// installation (developing-today/zettel, dezren39/dezren39) before reaching
+// here.
 //
 // Fallback: if the app route is unusable (no app credentials in env, or
 // the installation/token call fails), use the laptop's authenticated

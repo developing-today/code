@@ -152,7 +152,7 @@ func (l *listener) open(f ListenFilter) (int64, <-chan *rpcResponse, func()) {
 	gotID, ch := c.beginID(ctx, id, "subscriptions/listen", params)
 	return gotID, ch, func() {
 		cancel()
-		c.cancelled("subscriptions/listen", gotID)
+		c.cancelled("subscriptions/listen", gotID, ctx.Err())
 	}
 }
 

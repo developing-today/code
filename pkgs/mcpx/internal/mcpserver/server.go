@@ -2216,6 +2216,27 @@ func (s *Server) session(id string) (*Conn, bool) {
 	return c, ok
 }
 
+// CloseSessions ends every session this server issued and forgets them
+// all. It exists for surface replacement (#1942, PM-13 follow-up): when a
+// rebuilt surface takes over, the old server's sessions must not linger --
+// a legacy client's open GET stream exits only on request cancellation,
+// session end, or a failed write, so without this the stream, its
+// notification subscription, and its listen streams stay attached to a
+// server nothing routes to any more, and repeated rebuilds accumulate
+// them. Ending a session here is the same teardown DELETE performs.
+func (s *Server) CloseSessions() {
+	s.sessMu.Lock()
+	conns := make([]*Conn, 0, len(s.sessions))
+	for id, c := range s.sessions {
+		conns = append(conns, c)
+		delete(s.sessions, id)
+	}
+	s.sessMu.Unlock()
+	for _, c := range conns {
+		c.end()
+	}
+}
+
 func (s *Server) dropSession(id string) {
 	if id == "" {
 		return

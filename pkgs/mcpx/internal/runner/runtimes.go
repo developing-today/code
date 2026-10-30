@@ -43,7 +43,13 @@ type Runtime struct {
 	Bin  string
 	// Perms are the rendered permission flags.
 	Perms []string
-	Args  func(script string) []string
+	// ConfigArgs are the runtime's declared extra arguments (script.
+	// runtimes args), kept beside the Args closure so other stages can
+	// reuse the resolution-relevant subset: the preflight import graph
+	// must be computed with the same import map / config the execution
+	// will use, or it checks a different graph from the one that runs.
+	ConfigArgs []string
+	Args       func(script string) []string
 }
 
 // RuntimeDef declares a runtime under script.runtimes.
@@ -402,7 +408,8 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 }
 
 func build(c candidate, perms []string) *Runtime {
-	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms}
+	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms,
+		ConfigArgs: append([]string(nil), c.args...)}
 	switch c.kind {
 	case KindDeno:
 		rt.Args = func(script string) []string {

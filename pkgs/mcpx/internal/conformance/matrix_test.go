@@ -143,5 +143,9 @@ func TestMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	golden(t, conformance.MatrixPath, []byte(conformance.Render(reqs, st, inputs)))
+	auth, err := conformance.LoadAuthSplit(filepath.Join(root(t), conformance.AuthSplitPath), reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, conformance.MatrixPath, []byte(conformance.Render(reqs, st, inputs, auth)))
 }
