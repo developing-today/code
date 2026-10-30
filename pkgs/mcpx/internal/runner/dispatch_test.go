@@ -491,24 +491,60 @@ func TestDecideDispatchJSCarriesChdir(t *testing.T) {
 // The interpreter a shebang names is resolved against the PATH the
 // shebang itself assigns, not the parent process's: an executable that
 // exists only in the assigned PATH must be found (#2611 review).
-func TestDecideDispatchResolvesAgainstShebangPath(t *testing.T) {
+func TestRunResolvesAgainstShebangPath(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "myinterp-probe")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	src := "#!/usr/bin/env -S PATH=" + dir + " myinterp-probe\necho hi\n"
-	d, _, err := decideDispatch(Options{Source: src})
+	f := writeScript(t, dir, "uses-probe.sh",
+		"#!/usr/bin/env -S PATH="+dir+" myinterp-probe\necho hi\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Stdout: &stdout, Stderr: &stderr,
+	})
 	if err != nil {
-		t.Fatalf("decideDispatch(shebang PATH assignment): %v", err)
+		t.Fatalf("Run(shebang PATH assignment): %v", err)
 	}
-	if d == nil || d.bin != bin {
-		t.Errorf("dispatch = %+v; want bin %q resolved via the shebang's PATH", d, bin)
+	if res.Runtime != "myinterp-probe" {
+		t.Errorf("Runtime = %q, want the shebang's interpreter", res.Runtime)
 	}
 	// And without the assignment the same name is not found on the
 	// process PATH (it exists nowhere else), proving the assignment --
 	// not luck -- did the resolving.
-	if _, _, err := decideDispatch(Options{Source: "#!/usr/bin/env myinterp-probe\necho hi\n"}); err == nil {
-		t.Error("decideDispatch without the PATH assignment: want a not-found error")
+	g := writeScript(t, dir, "no-probe.sh",
+		"#!/usr/bin/env myinterp-probe\necho hi\n")
+	if _, err := Run(context.Background(), Options{
+		File: g, Stdout: &stdout, Stderr: &stderr,
+	}); err == nil || !strings.Contains(err.Error(), "not found on PATH") {
+		t.Errorf("Run without the PATH assignment: want a not-found error, got %v", err)
+	}
+}
+
+// Relative PATH entries in a shebang resolve against the directory the
+// run moves to (policy + the shebang's -C), not mcpx's own working
+// directory: env(1) chdirs first and execvp resolves afterwards, so an
+// interpreter that exists only there must be found (#2611 review).
+func TestRunShebangRelativePathEntryResolvesPostChdir(t *testing.T) {
+	base := t.TempDir()
+	proj := filepath.Join(base, "project")
+	if err := os.MkdirAll(filepath.Join(proj, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "bin", "custom-interp-3201"),
+		[]byte("#!/bin/sh\necho post-chdir-resolved\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := writeScript(t, base, "go.sh",
+		"#!/usr/bin/env -S -C "+proj+" PATH=bin custom-interp-3201\necho unreachable\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run(relative PATH entry + -C): %v", err)
+	}
+	if res.Runtime != "custom-interp-3201" || !strings.Contains(stdout.String(), "post-chdir-resolved") {
+		t.Errorf("res=%+v stdout=%q; want the interpreter from the -C directory", res, stdout.String())
 	}
 }

@@ -95,6 +95,15 @@ type dispatch struct {
 	chdir  string   // directory an env shebang asked to run in (-C)
 	name   string   // interpreter name reported as the run's runtime
 	source string   // "shebang" or "interpreter"
+	// lookupBin/lookupPath defer a shebang's interpreter lookup to
+	// run time: relative PATH entries resolve against the run's
+	// effective directory (policy + the shebang's -C), the way
+	// execvp resolves them after env(1) has applied -C. Resolving
+	// at decide time would check them against mcpx's own working
+	// directory, which is the wrong directory whenever the run
+	// moves elsewhere (#2611 review).
+	lookupBin  string // command name as the shebang named it (no "/")
+	lookupPath string // PATH value the shebang establishes
 }
 
 // ParseShebang splits a #! line into the interpreter command it names.
@@ -470,13 +479,24 @@ func shebangPath(sp *shebangEnv) string {
 	return path
 }
 
-// lookPathIn is exec.LookPath against one explicit PATH value.
-func lookPathIn(bin, path string) (string, error) {
-	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			dir = "."
+// lookPathInDir is exec.LookPath against one explicit PATH value,
+// with entries resolved against dir: an empty entry means the run's
+// effective directory (not mcpx's own), and so does any other relative
+// entry, the way execvp resolves them after env(1) has applied -C. The
+// result is absolute, so the later exec cannot reinterpret it against
+// a third directory.
+func lookPathInDir(bin, path, dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range filepath.SplitList(path) {
+		if entry == "" {
+			entry = abs
+		} else if !filepath.IsAbs(entry) {
+			entry = filepath.Join(abs, entry)
 		}
-		p := filepath.Join(dir, bin)
+		p := filepath.Join(entry, bin)
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
 			return p, nil
 		}
@@ -486,29 +506,33 @@ func lookPathIn(bin, path string) (string, error) {
 
 func dispatchFromTokens(source string, tokens []string, sp *shebangEnv) (*dispatch, error) {
 	bin := tokens[0]
-	resolved := bin
-	if !strings.Contains(bin, "/") {
-		var p string
-		var err error
-		if sp != nil {
-			// A shebang's command is resolved against the environment
-			// the shebang itself establishes, the way env(1) resolves
-			// it after applying its assignments.
-			p, err = lookPathIn(bin, shebangPath(sp))
-		} else {
-			p, err = exec.LookPath(bin)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("runner: %s interpreter %q not found on PATH: %w", source, bin, err)
-		}
-		resolved = p
-	}
-	return &dispatch{
-		bin:    resolved,
+	d := &dispatch{
 		args:   append([]string{}, tokens[1:]...),
 		name:   filepath.Base(bin),
 		source: source,
-	}, nil
+	}
+	if strings.Contains(bin, "/") {
+		// An explicit path is used verbatim, the way the kernel
+		// uses a slash-containing shebang path as-is.
+		d.bin = bin
+		return d, nil
+	}
+	if sp != nil {
+		// A shebang's command is resolved against the environment
+		// the shebang itself establishes, the way env(1) resolves
+		// it after applying its assignments -- but only once the
+		// run's effective directory is known (runDispatched): its
+		// relative PATH entries mean the directory the run moves
+		// to, not mcpx's own.
+		d.lookupBin, d.lookupPath = bin, shebangPath(sp)
+		return d, nil
+	}
+	p, err := exec.LookPath(bin)
+	if err != nil {
+		return nil, fmt.Errorf("runner: %s interpreter %q not found on PATH: %w", source, bin, err)
+	}
+	d.bin = p
+	return d, nil
 }
 
 // runDispatched executes a script under a non-JavaScript interpreter.
@@ -556,6 +580,18 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		return nil, err
 	}
 	dir = applyChdir(dir, d.chdir)
+	if d.lookupBin != "" {
+		// The interpreter a shebang names is resolved here, against
+		// the directory the run actually moves to: deciding earlier
+		// would check relative PATH entries against mcpx's own
+		// working directory and miss an interpreter that exists
+		// only where the run goes.
+		abs, err := lookPathInDir(d.lookupBin, d.lookupPath, dir)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s interpreter %q not found on PATH: %w", d.source, d.lookupBin, err)
+		}
+		d.bin = abs
+	}
 
 	notice := fmt.Sprintf("mcpx: running under %s (%s dispatch): no generated mcpx client is "+
 		"available to a non-JavaScript script, and script.permissions profiles are not enforced "+
