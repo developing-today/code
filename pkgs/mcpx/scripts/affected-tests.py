@@ -58,22 +58,28 @@ GUARDS = {
         ("internal/config", ["TestEveryDeclaredKeyIsRecognisedInAnyCase"]),
     ],
     "api": [
-        ("internal/api", [
-            "TestEverySchemaIsValidJSON",
-            "TestEveryParameterIsDescribed",
-            "TestEveryDaemonRouteIsDeclared",
-            "TestEveryDeclaredOpHasARoute",
-            "TestEveryNonStreamingOpIsReachableAsAnMCPTool",
-        ]),
+        (
+            "internal/api",
+            [
+                "TestEverySchemaIsValidJSON",
+                "TestEveryParameterIsDescribed",
+                "TestEveryDaemonRouteIsDeclared",
+                "TestEveryDeclaredOpHasARoute",
+                "TestEveryNonStreamingOpIsReachableAsAnMCPTool",
+            ],
+        ),
     ],
     "cli": [
-        ("internal/cli", [
-            "TestEveryCommandAppearsInGeneratedArtefacts",
-            "TestEveryDispatchedCommandIsDeclared",
-            "TestEveryOperationIsReachableFromTheCLI",
-            "TestEveryCommandIsInAListedGroup",
-            "TestEveryCommandReachesAnOperationOrSaysWhy",
-        ]),
+        (
+            "internal/cli",
+            [
+                "TestEveryCommandAppearsInGeneratedArtefacts",
+                "TestEveryDispatchedCommandIsDeclared",
+                "TestEveryOperationIsReachableFromTheCLI",
+                "TestEveryCommandIsInAListedGroup",
+                "TestEveryCommandReachesAnOperationOrSaysWhy",
+            ],
+        ),
     ],
 }
 
@@ -94,12 +100,19 @@ def run(cmd, cwd, check=True):
 
 def registry_area(path):
     """Map a pkgs/mcpx-relative path to a registry area, or None."""
-    if (path.startswith("internal/settings/") and path.endswith(".go")
-            and not path.endswith("_test.go")) or path.startswith("internal/defaults/"):
+    if (
+        path.startswith("internal/settings/")
+        and path.endswith(".go")
+        and not path.endswith("_test.go")
+    ) or path.startswith("internal/defaults/"):
         return "settings"
     if re.match(r"internal/api/ops[^/]*\.go$", path) and not path.endswith("_test.go"):
         return "api"
-    if path.startswith("internal/cli/") and path.endswith(".go") and not path.endswith("_test.go"):
+    if (
+        path.startswith("internal/cli/")
+        and path.endswith(".go")
+        and not path.endswith("_test.go")
+    ):
         return "cli"
     return None
 
@@ -154,7 +167,7 @@ def strip_go_noise(text):
     out = []
     i, n = 0, len(text)
     while i < n:
-        two = text[i:i + 2]
+        two = text[i : i + 2]
         if two == "//":
             j = text.find("\n", i)
             j = n if j < 0 else j
@@ -206,7 +219,7 @@ def e2e_tests_mentioning(mcpx, names):
                 elif syntax[i] == "}":
                     depth -= 1
                 i += 1
-            body = text[m.start():i]
+            body = text[m.start() : i]
             matched = [nm for nm in names if nm in body]
             if matched:
                 # Specificity score: a test that mentions a long, specific
@@ -216,7 +229,6 @@ def e2e_tests_mentioning(mcpx, names):
                 selected.append((m.group(1), sum(len(nm) for nm in matched)))
     selected.sort(key=lambda t: (-t[1], t[0]))
     return [name for name, _ in selected]
-
 
 
 def changed_test_names(mcpx, e2e_rel_paths, root, base):
@@ -232,8 +244,11 @@ def changed_test_names(mcpx, e2e_rel_paths, root, base):
         full = os.path.join(mcpx, p)
         if not os.path.exists(full):
             continue
-        diff = run(["git", "diff", "--unified=0", base, "--",
-                    f"pkgs/mcpx/{p}"], root, check=False)
+        diff = run(
+            ["git", "diff", "--unified=0", base, "--", f"pkgs/mcpx/{p}"],
+            root,
+            check=False,
+        )
         ranges = []
         for line in diff.splitlines():
             m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
@@ -273,6 +288,7 @@ def embedded_owners(mcpx, rel):
     embedded bytes. Directory embeds cover everything under the named
     directory; glob patterns are matched with fnmatch."""
     import fnmatch
+
     owners = set()
     non_go = [p for p in rel if not p.endswith(".go")]
     if not non_go:
@@ -291,18 +307,25 @@ def embedded_owners(mcpx, rel):
                 for pat in m.group(1).split():
                     base = pat if pkg_dir == "." else pkg_dir + "/" + pat
                     for cand in non_go:
-                        if (cand == base or cand.startswith(base + "/")
-                                or fnmatch.fnmatch(cand, base)):
+                        if (
+                            cand == base
+                            or cand.startswith(base + "/")
+                            or fnmatch.fnmatch(cand, base)
+                        ):
                             owners.add(pkg_dir)
     return owners
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--base", default="origin/main",
-                    help="diff base (default: origin/main)")
-    ap.add_argument("--run", action="store_true",
-                    help="execute the printed commands (default: dry-run)")
+    ap.add_argument(
+        "--base", default="origin/main", help="diff base (default: origin/main)"
+    )
+    ap.add_argument(
+        "--run",
+        action="store_true",
+        help="execute the printed commands (default: dry-run)",
+    )
     args = ap.parse_args()
 
     root = run(["git", "rev-parse", "--show-toplevel"], os.getcwd()).strip()
@@ -311,8 +334,10 @@ def main():
         sys.exit("pkgs/mcpx not found — run from inside the code repo")
 
     changed = set(run(["git", "diff", "--name-only", args.base], root).split())
-    changed |= set(run(["git", "ls-files", "--others", "--exclude-standard"], root).split())
-    rel = sorted(p[len("pkgs/mcpx/"):] for p in changed if p.startswith("pkgs/mcpx/"))
+    changed |= set(
+        run(["git", "ls-files", "--others", "--exclude-standard"], root).split()
+    )
+    rel = sorted(p[len("pkgs/mcpx/") :] for p in changed if p.startswith("pkgs/mcpx/"))
 
     commands = []  # (tier, command string runnable from repo root)
     notes = []
@@ -348,8 +373,10 @@ def main():
         commands.append(("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})"))
 
     if embed_owners:
-        notes.append("T1: embedded input(s) changed — owning package(s) "
-                     "selected: " + ", ".join(sorted(embed_owners)))
+        notes.append(
+            "T1: embedded input(s) changed — owning package(s) "
+            "selected: " + ", ".join(sorted(embed_owners))
+        )
 
     # T1 — unit tests of edited packages.
     for p in unit_pkgs:
@@ -361,22 +388,34 @@ def main():
     # actual defaults (embedded by internal/defaults), so a
     # defaults-only change must feed registry-name extraction below,
     # not just the area detection that already maps it to settings.
-    src += [p for p in rel if p.startswith("internal/defaults/")
-            and not p.endswith(".go")]
+    src += [
+        p for p in rel if p.startswith("internal/defaults/") and not p.endswith(".go")
+    ]
     diff_text = ""
     if src:
-        diff_text = run(["git", "diff", args.base, "--"] +
-                        [f"pkgs/mcpx/{p}" for p in src], root, check=False)
+        diff_text = run(
+            ["git", "diff", args.base, "--"] + [f"pkgs/mcpx/{p}" for p in src],
+            root,
+            check=False,
+        )
 
     # T1b — importers of packages whose exported declarations changed.
     exported = changed_exported_idents(diff_text)
     if exported:
         # TestImports/XTestImports count: a package that imports the
         # changed API only from its tests is still a dependent (T1b).
-        listing = run(["go", "list", "-f",
-                       "{{.ImportPath}} {{join .Imports \" \"}} "
-                       "{{join .TestImports \" \"}} {{join .XTestImports \" \"}}",
-                       "./..."], mcpx, check=False)
+        listing = run(
+            [
+                "go",
+                "list",
+                "-f",
+                '{{.ImportPath}} {{join .Imports " "}} '
+                '{{join .TestImports " "}} {{join .XTestImports " "}}',
+                "./...",
+            ],
+            mcpx,
+            check=False,
+        )
         importers = set()
         changed_pkgs = {p for p in unit_pkgs}
         for line in listing.splitlines():
@@ -385,8 +424,11 @@ def main():
                 continue
             imp_path, imports = parts[0], parts[1:]
             for cp in changed_pkgs:
-                full = "github.com/dezren39/mcpx" if cp == "." else \
-                    "github.com/dezren39/mcpx/" + cp
+                full = (
+                    "github.com/dezren39/mcpx"
+                    if cp == "."
+                    else "github.com/dezren39/mcpx/" + cp
+                )
                 if full in imports and imp_path != full:
                     importers.add(imp_path)
         for imp in sorted(importers):
@@ -395,8 +437,10 @@ def main():
                 continue
             commands.append(("T1b", f"(cd pkgs/mcpx && go test -count=1 ./{short}/)"))
         if importers:
-            notes.append(f"T1b: exported declarations changed ({', '.join(sorted(exported))}); "
-                         "importer packages added")
+            notes.append(
+                f"T1b: exported declarations changed ({', '.join(sorted(exported))}); "
+                "importer packages added"
+            )
 
     # Registries touched -> names for T2, guards for T3.
     areas = {registry_area(p) for p in rel}
@@ -418,8 +462,12 @@ def main():
     edited_e2e_all = {p for p in all_go_files if p.startswith("internal/e2e/")}
     changed_e2e_tests = []
     if edited_e2e_all:
-        e2e_diff = run(["git", "diff", args.base, "--"] +
-                       [f"pkgs/mcpx/{p}" for p in edited_e2e_all], root, check=False)
+        e2e_diff = run(
+            ["git", "diff", args.base, "--"]
+            + [f"pkgs/mcpx/{p}" for p in edited_e2e_all],
+            root,
+            check=False,
+        )
         if "newEnv" in e2e_diff:
             harness = True
         changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base)
@@ -428,13 +476,17 @@ def main():
         # The rule-4 sample is reserved its slots before the budget is
         # spent on anything else.
         sample = list(HARNESS_SAMPLE)
-        notes.append("T2: harness changed (internal/testsupport or newEnv) — "
-                     "rule-4 sample selected; CI runs the rest")
+        notes.append(
+            "T2: harness changed (internal/testsupport or newEnv) — "
+            "rule-4 sample selected; CI runs the rest"
+        )
     if edited_e2e:
         # Tests defined in an edited e2e file are themselves the change.
         all_names = set()
         for p in edited_e2e:
-            text = open(os.path.join(mcpx, p), encoding="utf-8", errors="replace").read()
+            text = open(
+                os.path.join(mcpx, p), encoding="utf-8", errors="replace"
+            ).read()
             all_names |= set(re.findall(r"^func (Test\w+)\(", text, re.M))
         e2e_selected |= all_names
     # Registry e2e guards are reserved their slots alongside the
@@ -461,11 +513,17 @@ def main():
     if e2e_selected:
         regex = "^(" + "|".join(e2e_selected) + ")$"
         est = E2E_SECONDS_PER_TEST * len(e2e_selected)
-        commands.append(("T2", f"(cd pkgs/mcpx && go test -count=1 ./internal/e2e -run '{regex}')"))
-        notes.append(f"T2: {len(e2e_selected)} e2e test(s) selected, estimated ~{est:g}s "
-                     "+ one binary build (budget: 15 tests / ~30s)")
+        commands.append(
+            ("T2", f"(cd pkgs/mcpx && go test -count=1 ./internal/e2e -run '{regex}')")
+        )
+        notes.append(
+            f"T2: {len(e2e_selected)} e2e test(s) selected, estimated ~{est:g}s "
+            "+ one binary build (budget: 15 tests / ~30s)"
+        )
         if truncated:
-            notes.append("T2: selection truncated at the 15-test budget; CI runs the full suite")
+            notes.append(
+                "T2: selection truncated at the 15-test budget; CI runs the full suite"
+            )
     else:
         notes.append("no e2e selected; CI runs the full suite")
 
@@ -478,14 +536,18 @@ def main():
             if key in seen_guard:
                 continue
             seen_guard.add(key)
-            commands.append(("T3", f"(cd pkgs/mcpx && go test -count=1 ./{pkg}/ -run '{regex}')"))
+            commands.append(
+                ("T3", f"(cd pkgs/mcpx && go test -count=1 ./{pkg}/ -run '{regex}')")
+            )
 
     # T4 — build only when packaging/module files changed.
     if any(os.path.basename(p) in ("go.mod", "go.sum", "package.nix") for p in rel):
         commands.append(("T4", "nix build .#mcpx"))
 
-    print(f"# affected tests for pkgs/mcpx vs {args.base} "
-          f"({len(rel)} changed file(s) under pkgs/mcpx)")
+    print(
+        f"# affected tests for pkgs/mcpx vs {args.base} "
+        f"({len(rel)} changed file(s) under pkgs/mcpx)"
+    )
     if not commands:
         print("# no tier commands selected (no code or registry changes)")
     last = None
@@ -498,7 +560,9 @@ def main():
         print("\n# notes")
         for n in notes:
             print(f"# {n}")
-    print("# full suite is CI's job — never run it locally for a routine change (TESTING.md rule 1)")
+    print(
+        "# full suite is CI's job — never run it locally for a routine change (TESTING.md rule 1)"
+    )
 
     if args.run:
         for _, cmd in commands:

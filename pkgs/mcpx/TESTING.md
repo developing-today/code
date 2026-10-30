@@ -12,15 +12,15 @@ must read the PR's check result before declaring done or merging.
 
 ## The tiers
 
-| Tier | When | Command | Typical cost |
-| --- | --- | --- | --- |
-| T0 format/vet | always, touched packages | `gofmt -l <files>`; `go vet ./internal/<pkg>/` | < 2 s |
-| T1 unit | always, each package with an edited `.go` file | `go test -count=1 ./internal/<pkg>/` | < 2 s each (tui ~9 s) |
-| T1b dependents | only when an *exported* identifier changed | T1 for the packages that import it | seconds |
-| T2 targeted e2e | when behaviour visible through the binary changed | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'` | budget below |
-| T3 guards | when a registry was touched (flag, `/v1` op, setting, default) | the guard tests for that registry (the selector's guard map) | seconds |
-| T4 build | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed | `nix build .#mcpx` | ~70 s |
-| Full suite | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | — | ~110 s of serial e2e plus compilation, and growing |
+| Tier            | When                                                                                                                 | Command                                                      | Typical cost                                       |
+| --------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------- |
+| T0 format/vet   | always, touched packages                                                                                             | `gofmt -l <files>`; `go vet ./internal/<pkg>/`               | < 2 s                                              |
+| T1 unit         | always, each package with an edited `.go` file                                                                       | `go test -count=1 ./internal/<pkg>/`                         | < 2 s each (tui ~9 s)                              |
+| T1b dependents  | only when an _exported_ identifier changed                                                                           | T1 for the packages that import it                           | seconds                                            |
+| T2 targeted e2e | when behaviour visible through the binary changed                                                                    | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'`    | budget below                                       |
+| T3 guards       | when a registry was touched (flag, `/v1` op, setting, default)                                                       | the guard tests for that registry (the selector's guard map) | seconds                                            |
+| T4 build        | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed                                                | `nix build .#mcpx`                                           | ~70 s                                              |
+| Full suite      | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | —                                                            | ~110 s of serial e2e plus compilation, and growing |
 
 **T2 budget (decided #1966):** both numbers, serving different readers —
 a **count cap of 15 tests**, which is what an agent can see before
@@ -71,7 +71,7 @@ truncates at the cap and says so; CI runs the rest.
 2. Each edited `.go` file → its package → T1. If exported identifiers
    changed, add the importing packages (T1b, via a `go list` reverse
    lookup).
-3. For e2e: take the *names* the diff touches in registry files —
+3. For e2e: take the _names_ the diff touches in registry files —
    setting paths in `internal/settings/wire.go`, op names in
    `internal/api/ops*.go`, flag and command names in `internal/cli` —
    and select e2e test functions whose bodies mention them; add the
