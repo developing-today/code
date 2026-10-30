@@ -81,6 +81,13 @@ func (c *Client) capabilities(modern bool) map[string]any {
 	}
 	if modern {
 		caps["roots"] = map[string]any{}
+		// The 2026 extensions map (register CAP-11): {} declares support
+		// with no settings. It names nothing yet -- an extension key is
+		// added only when mcpx implements that extension; declaring
+		// io.modelcontextprotocol/tasks before it is implemented would
+		// be the advertised-but-unimplemented failure. The map has no
+		// counterpart in legacy initialize, so it stays in this branch.
+		caps["extensions"] = map[string]any{}
 	}
 	if h != nil {
 		caps["sampling"] = map[string]any{}
@@ -530,14 +537,27 @@ func applyDefaults(out any, params json.RawMessage) any {
 //     notification is sent, on its own context so it outlives the request.
 //
 // https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation
-func (c *Client) cancelled(method string, id int64) {
+// cancelled's reason is the truth about why the request died (PC-08,
+// #1924): a deadline is "timeout"; anything the caller did to their own
+// context is reported as what it was, not dressed up as a timeout.
+func cancelReason(cause error) string {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case cause != nil:
+		return cause.Error()
+	}
+	return "cancelled"
+}
+
+func (c *Client) cancelled(method string, id int64, cause error) {
 	if method == "initialize" {
 		return
 	}
 	if _, isHTTP := c.t.(*HTTPTransport); isHTTP && c.metaVersion != "" {
 		return
 	}
-	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": "timeout"})
+	cp, _ := json.Marshal(map[string]any{"requestId": id, "reason": cancelReason(cause)})
 	ctx, cancel := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 	defer cancel()
 	_ = c.notify(ctx, "notifications/cancelled", cp)

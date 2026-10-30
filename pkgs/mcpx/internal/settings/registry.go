@@ -356,6 +356,28 @@ func scriptSettings() []Setting {
 				"default rather than on.",
 		},
 		{
+			Path: "script.imports", Commands: runCommands, Kind: KindEnum, Default: "report",
+			Scope: ScopeClient,
+			Enum:  []string{"off", "report"},
+			Name:  "Import graph",
+			Short: "resolve the script's import graph before running it",
+			Long: "Computes the static import graph with deno info and reports " +
+				"every unresolved specifier, with its source span, before a " +
+				"single server starts -- instead of the first one failing when " +
+				"the runtime loads it. Report only: nothing is installed. " +
+				"Default report; off disables the stage entirely.",
+		},
+		{
+			Path: "script.importsOnDynamic", Commands: runCommands, Kind: KindEnum, Default: "warn",
+			Scope: ScopeClient,
+			Enum:  []string{"warn", "fail", "ignore"},
+			Name:  "Computed dynamic imports",
+			Short: "what to do about an import() whose specifier is computed",
+			Long: "A computed import() or require() is the one edge a static " +
+				"graph cannot decide. warn names the script and the span and " +
+				"lets the run proceed; fail stops it; ignore stays silent.",
+		},
+		{
 			Path: "script.env", Commands: runCommands, Kind: KindList, Default: "", Repeatable: true,
 			Scope:       ScopeClient,
 			FlagAliases: []string{"env"},

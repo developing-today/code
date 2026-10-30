@@ -1,0 +1,211 @@
+# pm-scheduled — the fleet's single scheduled-agents runner.
+#
+# This reusable workflow is the ONE place the fleet's scheduled
+# agents are defined. The callers are the thin per-repo `agents.yml`
+# files in each fleet repo: they carry only triggers (their cron
+# lines, workflow_dispatch, ...) and pass the fired schedule (or an
+# explicit task list) through to this workflow. Nothing else about
+# the scheduled agents lives in the callers.
+#
+# To add a common task:
+#   1. Add its prompt to the pm-dispatch-task prompt library
+#      (.github/actions/pm-dispatch-task/prompts/<task>.md in this
+#      repo).
+#   2. Add ONE step for it to THE LIST in this workflow's job below.
+#   3. Add a cron line to a repo's agents.yml ONLY if the task needs
+#      a time that repo doesn't already trigger.
+# No caller changes are needed for steps 1-2.
+#
+# The slot table in the `resolve` step below is where
+# schedule -> tasks mapping lives, and where any future repo-name /
+# time filtering will be added.
+name: pm-scheduled
+
+on:
+  workflow_call:
+    inputs:
+      schedule:
+        description: "The cron expression that fired in the caller (usually github.event.schedule). Mapped to a task list by the slot table in the resolve step; empty or unknown schedules run all tasks."
+        type: string
+        required: false
+        default: ""
+      tasks:
+        description: "Explicit comma-separated task list (e.g. \"bolt,palette\"). When non-empty it is used verbatim and the slot table is not consulted."
+        type: string
+        required: false
+        default: ""
+      repo:
+        description: "Target repo (owner/name). Defaults to the caller's repository."
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  # Exactly one job. Permissions are the CALLER's: a reusable
+  # workflow runs with the calling job's token, so this workflow
+  # declares no permissions of its own. Callers grant:
+  #   permissions:
+  #     id-token: write   # pm-dispatch-task mints an OIDC token
+  #     contents: read
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve the target repo and the task list
+        id: resolve
+        shell: bash
+        env:
+          INPUT_SCHEDULE: ${{ inputs.schedule }}
+          INPUT_TASKS: ${{ inputs.tasks }}
+          INPUT_REPO: ${{ inputs.repo }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Effective repo: the explicit input wins; otherwise the
+          # repository that called this workflow.
+          repo="$INPUT_REPO"
+          if [ -z "$repo" ]; then
+            repo="$CALLER_REPO"
+          fi
+
+          # Task list: an explicit `tasks` input (trimmed) is used
+          # verbatim (a comma-separated list) and the slot table is
+          # not consulted.
+          tasks_input="$INPUT_TASKS"
+          # Trim leading/trailing whitespace.
+          tasks_input="${tasks_input#"${tasks_input%%[![:space:]]*}"}"
+          tasks_input="${tasks_input%"${tasks_input##*[![:space:]]}"}"
+
+          if [ -n "$tasks_input" ]; then
+            tasks="$tasks_input"
+          else
+            # ======================================================
+            # THE SLOT TABLE — schedule -> tasks resolution.
+            #
+            # This case statement is the SINGLE place where a fired
+            # cron schedule is mapped to the tasks it runs. All cron
+            # expressions are UTC (GitHub Actions cron is always
+            # UTC); the comments give the repo each slot belongs to
+            # and the local time in America/Chicago (CDT, UTC-5).
+            #
+            # This is also where any FUTURE repo-name / time
+            # filtering will be added: the caller repo is available
+            # to this case as $repo (already resolved above), so a
+            # slot can later be narrowed per repo (e.g. "only run
+            # suggestions on repos X and Y") here, with zero caller
+            # changes.
+            #
+            # NOTE: the patterns are quoted on purpose — quoted,
+            # they match literally; unquoted, the `*` in a cron
+            # expression would be a glob wildcard.
+            # ======================================================
+            case "$INPUT_SCHEDULE" in
+              # --- Task slots -> bolt,palette ---
+              "0 1 * * *")   tasks="bolt,palette" ;; # developing-today/code — 20:00 CDT (previous evening)
+              "0 2 * * *")   tasks="bolt,palette" ;; # developing-today/openchamber — 21:00 CDT (previous evening)
+              "0 0 * * *")   tasks="bolt,palette" ;; # developing-today/opencode — 19:00 CDT (previous evening)
+              "0 5 * * *")   tasks="bolt,palette" ;; # dezren39/nix + dezren39/dezren39 — 00:00 CDT
+              "30 13 * * *") tasks="bolt,palette" ;; # developing-today/zettel — 08:30 CDT
+
+              # --- Suggestions slots -> suggestions ---
+              "0 13 * * *") tasks="suggestions" ;; # developing-today/code — 08:00 CDT
+              "0 14 * * *") tasks="suggestions" ;; # developing-today/openchamber — 09:00 CDT
+              "0 15 * * *") tasks="suggestions" ;; # developing-today/opencode — 10:00 CDT
+              "0 16 * * *") tasks="suggestions" ;; # dezren39/nix — 11:00 CDT
+              "0 17 * * *") tasks="suggestions" ;; # developing-today/zettel — 12:00 CDT
+              "0 18 * * *") tasks="suggestions" ;; # dezren39/dezren39 — 13:00 CDT
+
+              # --- Empty or unknown schedule -> everything ---
+              *) tasks="bolt,palette,suggestions" ;;
+            esac
+          fi
+
+          # Per-task booleans for the step `if:`s in THE LIST below
+          # — cleaner than contains() on the comma string in each
+          # step. Spaces are stripped for the membership test only,
+          # so "bolt, palette" gates the same as "bolt,palette";
+          # the `tasks` output itself stays verbatim.
+          compact=",$(printf '%s' "$tasks" | tr -d '[:space:]'),"
+          has_bolt="false"
+          has_palette="false"
+          has_suggestions="false"
+          case "$compact" in *",bolt,"*) has_bolt="true" ;; esac
+          case "$compact" in *",palette,"*) has_palette="true" ;; esac
+          case "$compact" in *",suggestions,"*) has_suggestions="true" ;; esac
+
+          {
+            echo "repo=$repo"
+            echo "tasks=$tasks"
+            echo "has_bolt=$has_bolt"
+            echo "has_palette=$has_palette"
+            echo "has_suggestions=$has_suggestions"
+          } >> "$GITHUB_OUTPUT"
+          echo "pm-scheduled resolve: repo=$repo schedule='${INPUT_SCHEDULE}' tasks=$tasks has_bolt=$has_bolt has_palette=$has_palette has_suggestions=$has_suggestions"
+
+      # ==========================================================
+      # THE LIST — one step per common task.
+      #
+      # Adding a common task = one step here (gated on a resolve
+      # output, following the pattern of the steps below) + its
+      # prompt in the pm-dispatch-task prompt library. Zero caller
+      # changes.
+      # ==========================================================
+
+      - name: Dispatch bolt
+        id: bolt
+        if: steps.resolve.outputs.has_bolt == 'true'
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: bolt
+          repo: ${{ steps.resolve.outputs.repo }}
+
+      - name: Dispatch palette
+        id: palette
+        if: steps.resolve.outputs.has_palette == 'true'
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: palette
+          repo: ${{ steps.resolve.outputs.repo }}
+
+      - name: Dispatch suggestions
+        id: suggestions
+        if: steps.resolve.outputs.has_suggestions == 'true'
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        with:
+          task: suggestions
+          repo: ${{ steps.resolve.outputs.repo }}
+
+      - name: Summarize the dispatched tasks
+        if: always()
+        shell: bash
+        env:
+          RESOLVED_REPO: ${{ steps.resolve.outputs.repo }}
+          RESOLVED_TASKS: ${{ steps.resolve.outputs.tasks }}
+          BOLT_TASK_ID: ${{ steps.bolt.outputs.task_id }}
+          BOLT_SESSION_ID: ${{ steps.bolt.outputs.session_id }}
+          BOLT_ISSUE_NUMBER: ${{ steps.bolt.outputs.issue_number }}
+          BOLT_ISSUE_URL: ${{ steps.bolt.outputs.issue_url }}
+          PALETTE_TASK_ID: ${{ steps.palette.outputs.task_id }}
+          PALETTE_SESSION_ID: ${{ steps.palette.outputs.session_id }}
+          PALETTE_ISSUE_NUMBER: ${{ steps.palette.outputs.issue_number }}
+          PALETTE_ISSUE_URL: ${{ steps.palette.outputs.issue_url }}
+          SUGGESTIONS_TASK_ID: ${{ steps.suggestions.outputs.task_id }}
+          SUGGESTIONS_SESSION_ID: ${{ steps.suggestions.outputs.session_id }}
+          SUGGESTIONS_ISSUE_NUMBER: ${{ steps.suggestions.outputs.issue_number }}
+          SUGGESTIONS_ISSUE_URL: ${{ steps.suggestions.outputs.issue_url }}
+        run: |
+          set -euo pipefail
+          # A skipped task step leaves all of its outputs blank;
+          # they are reported blank here, exactly as passed in.
+          {
+            echo "## pm-scheduled — ${RESOLVED_REPO}"
+            echo ""
+            echo "Resolved tasks: ${RESOLVED_TASKS}"
+            echo ""
+            echo "| Task | task_id | session_id | issue_number | issue_url |"
+            echo "| --- | --- | --- | --- | --- |"
+            echo "| bolt | ${BOLT_TASK_ID} | ${BOLT_SESSION_ID} | ${BOLT_ISSUE_NUMBER} | ${BOLT_ISSUE_URL} |"
+            echo "| palette | ${PALETTE_TASK_ID} | ${PALETTE_SESSION_ID} | ${PALETTE_ISSUE_NUMBER} | ${PALETTE_ISSUE_URL} |"
+            echo "| suggestions | ${SUGGESTIONS_TASK_ID} | ${SUGGESTIONS_SESSION_ID} | ${SUGGESTIONS_ISSUE_NUMBER} | ${SUGGESTIONS_ISSUE_URL} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "pm-scheduled summary written for repo=${RESOLVED_REPO} tasks=${RESOLVED_TASKS}"

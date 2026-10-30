@@ -143,8 +143,21 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:    "MCPX_HOOK_PHASE",
-			SetBy:   []Setter{SetByHooks},
-			Meaning: "the hook's phase; always observe for config-declared hooks",
+			SetBy:   []Setter{SetByHooks, SetByExec},
+			Meaning: "the hook's phase; always observe for config-declared hooks, the exec hook's phase (pre, post, onError, onSuccess) for a per-call exec hook",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_POINT",
+			SetBy:   []Setter{SetByExec},
+			Meaning: "the point the hook is attached to; script for per-call exec hooks in this version",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_ERROR",
+			SetBy:   []Setter{SetByExec},
+			When:    "only for a hook running because the script failed; truncated to 1024 bytes",
+			Meaning: "the error the hook is running for, in one line; the full hook context is JSON on stdin",
 			ReadBy:  "the hook itself",
 		},
 		{

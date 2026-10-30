@@ -170,6 +170,19 @@ let
       --foreground \
       --port 3000 --host 127.0.0.1
   '';
+  # The unit launches through the checkout wrapper (bin/openchamber-start.sh),
+  # which attaches OpenChamber to the standing OpenCode server
+  # (openchamber#766) and execs the serve script above, passed as its
+  # argument. The wrapper reads the server password from
+  # ~/.local/state/opencode/service-prod.json at start time and exports
+  # OPENCODE_HOST / OPENCODE_SKIP_START / OPENCODE_PASSWORD, so the
+  # password never enters the store or a unit file. This is the durable
+  # form of the hand-applied openchamber.service.d/external-opencode.conf
+  # drop-in; same fleet pattern as commandcode-proxy (the checkout path
+  # also avoids the stale-store ExecStart failure of #883).
+  openchamberUnitStart = pkgs.writeShellScript "openchamber-start-unit" ''
+    exec /run/current-system/sw/bin/bash "$HOME/code/bin/openchamber-start.sh" "${openchamberStart}"
+  '';
   # A unit is replaced at switch time only when its start command or binaries change.
   deployKey = name: parts: "${name}:${builtins.concatStringsSep " " (map toString parts)}";
   # OpenChamber runs the OpenCode behind this link. A switch re-points it and
@@ -994,7 +1007,7 @@ in
       Requires = [ "openchamber.socket" ];
     };
     Service = {
-      ExecStart = "${openchamberStart}";
+      ExecStart = "${openchamberUnitStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
       # OpenChamber adopts it, so sessions survive a restart. The same
@@ -1014,8 +1027,11 @@ in
             pkgs.openssh
             # The start script's single-instance guard scans /proc with
             # coreutils (readlink, cat, tr, seq, sleep); without it the
-            # guard silently matches nothing.
+            # guard silently matches nothing. jq is for the checkout
+            # wrapper (bin/openchamber-start.sh), which reads the
+            # standing OpenCode server's state file.
             pkgs.coreutils
+            pkgs.jq
           ]
         }"
       ];
@@ -1027,7 +1043,7 @@ in
   # the link and reloads OpenChamber, which hands its OpenCode over in place.
   home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${deployKey "openchamber" [ openchamberStart ]}'
+    key='${deployKey "openchamber" [ openchamberStart openchamberUnitStart ]}'
     link="$HOME/.local/state/openchamber/bin/opencode"
     target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
     previous="$(readlink "$link" 2>/dev/null || true)"

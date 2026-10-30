@@ -557,13 +557,15 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Args:      args,
 		Artifacts: eo.artifactOptions(cwd),
 
-		Export:         rf.export,
-		Env:            withInputReport(sh.env, a.stdoutOverride == nil),
-		TypeCheck:      sh.typecheck,
-		Launcher:       sh.launcher,
-		LauncherName:   sh.launcherName,
-		AllowRepeat:    sh.allowRepeat,
-		CaptureConsole: &sh.captureConsole,
+		Export:           rf.export,
+		Env:              withInputReport(sh.env, a.stdoutOverride == nil),
+		TypeCheck:        sh.typecheck,
+		Imports:          sh.imports,
+		ImportsOnDynamic: sh.importsOnDynamic,
+		Launcher:         sh.launcher,
+		LauncherName:     sh.launcherName,
+		AllowRepeat:      sh.allowRepeat,
+		CaptureConsole:   &sh.captureConsole,
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {

@@ -743,8 +743,14 @@ export default (async ({ directory, worktree, project, client }, options) => {
         "`mcpx exec '<typescript>'` runs code against them. Only what the",
         "script prints returns to you, so filter before you print.",
       ].join(" ")
-      const parts = (output as any)?.parts
-      if (Array.isArray(parts)) parts.push({ type: "text", text })
+      // opencode v1 calls this hook with output = { system: string[] }
+      // (@opencode-ai/plugin's ExperimentalChatSystemTransform). There is
+      // no `parts` on it -- that shape belongs to v2's
+      // session.hook("context") SystemPart array -- and writing to it
+      // injected nothing, silently, for as long as this option has
+      // existed (#1938, register PLG-16).
+      const system = (output as any)?.system
+      if (Array.isArray(system)) system.push(text)
     },
 
     /**

@@ -550,7 +550,14 @@ func handCommands() []Command {
 		{
 			Name: "help", Group: "configuration",
 			Local: "Text about the binary, produced by the binary.",
-			Usage: "[command]", Summary: "show this help, or help for one command",
+			Usage: "[command|agents]", Summary: "show this help, or help for one command",
+			Detail: "`mcpx help agents` is a topic rather than a command: it prints " +
+				"the agent documentation (AGENTS.md) embedded in the binary, " +
+				"verbatim, so an agent with the binary but no repository or " +
+				"network still gets documentation matching its version.",
+			Examples: []string{
+				"mcpx help agents",
+			},
 		},
 		{
 			Name: "man", Group: "configuration",
@@ -610,19 +617,25 @@ func handCommands() []Command {
 		},
 		{
 			Name: "adapter", Group: "configuration",
-			Local:   "Adapter declarations are files the CLI reads; the daemon serves each adapter as a server of its own, so its tools reach every tool operation (call, types, search, catalog) like any upstream's.",
-			Usage:   "[list|check|call|tools|serve] [<name>.<tool> '<json>' | <name> [file...]]",
+			Usage:   "[list|check|call|tools|serve|import|add|remove] [<name>.<tool> '<json>' | <name> [file...] | --bare <binary>]",
 			Summary: "command-line programs declared as MCP tools",
 			Detail: "An adapter file, named by paths.adapters, declares a program and " +
 				"the tools it offers. list shows them, check says whether each " +
 				"program is installed, call runs one tool, and tools prints the " +
-				"tool definitions an MCP host would see. Every adapter is also a " +
-				"namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
+				"tool definitions an MCP host would see. import --bare writes a " +
+				"passthrough declaration for a program with no declared subcommands, " +
+				"with a loud warning about what passthrough costs. Every adapter is " +
+				"also a namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
 				"so it is in mcpx ls, types, search, catalog and the generated " +
-				"client, and a script calls it as <name>.<tool>({...}).",
+				"client, and a script calls it as <name>.<tool>({...}). add and " +
+				"remove go through the daemon (/v1/adapters): the declaration " +
+				"is written to a configured file and reloaded, so the change " +
+				"is live at once and survives a restart.",
 			Examples: []string{
 				"mcpx adapter check",
 				`mcpx adapter call jq.run '{"filter":"."}'`,
+				`mcpx adapter import --bare git --description "version control"`,
+				"mcpx adapter add demo --tool status -- git",
 			},
 		},
 		{
