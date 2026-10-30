@@ -14,7 +14,12 @@
   join (§3), a single minor-unit rate convention (§1.5/§5), cap accounting
   that counts executed conversions before receipt publication (§5 step 6),
   an explicit executor-clock expiry policy (§1.5/§5 step 2), and a dedicated
-  non-monetary `token.receipt` kind (§1.8). Placement: this doc lives in the
+  non-monetary `token.receipt` kind (§1.8). A second Codex round on the
+  amended text added three more, also addressed: the issuance burn frontier
+  (cap checks evaluated over causal ancestry, §2), definitive-only release
+  of graph-native cap reservations (§5 step 6), and anchored execution
+  states so a service-rejected intent consumes no spending authorization
+  (§2). Placement: this doc lives in the
   repo-root `doc/` store and is reachable at `pkgs/id/doc/` because
   `pkgs/id/doc` is a tracked symlink to `../../doc` — the #2251 placement
   requirement is met through that symlink, per repo convention.
@@ -250,9 +255,18 @@ on one branch and void on the other is void while the fork is unresolved.
 
 **Supply and the cap.** Counted supply = Σ applied `token.issue` − Σ applied
 `token.burn` for the currency. An issuance that would push counted supply above
-a `capped` maximum is **void** (not applied), in fold order — so when two
-issuances race past the cap, the earlier in the issuer's chain order counts and
-the later is void, deterministically. A counting view (#2030) that serves
+a `capped` maximum is **void** (not applied) — and the cap check is evaluated
+against the issuance's **causal ancestry**, not against whatever a folder
+happens to hold: counted supply *for that issuance* = applied issuance minus
+applied burns **within its ancestry**, plus its own amount, compared to the
+cap. Burns outside the ancestry do not free capacity for it, exactly as
+credits outside a spend's frontier do not fund it (§2 credit frontier) — a
+concurrent independent burn therefore cannot make an issuance's validity
+depend on fold order. Two issuances racing past the cap are both on the
+issuer's own chain, so they are causally ordered by it: the earlier counts,
+the later is void, deterministically. Supply at any snapshot frontier is the
+same per-object rule evaluated over the frontier's event set, so honest
+folders with identical events always agree on supply and balances. A counting view (#2030) that serves
 balances **must refuse to count** over-cap issuance, overdrawn transfers, and
 unresolved-fork objects; a view that counts any of those is non-conformant with
 this spec, and `supply(currency)` (§4) must return the counted value, never the
@@ -264,6 +278,24 @@ corresponding ledger transfer (§3 join) is an *intent that never executed*: it
 does not move the anchored balance, and `balance()` reads the ledger. Divergence
 between the intent fold and the ledger is a reconciliation finding (§3), not a
 fold rule change.
+
+**Anchored execution states (a rejected intent consumes no authorization).**
+For anchored currencies each outbound intent carries an execution state —
+`pending` (signed, not yet finally answered by the service), `executed` (its
+ledger transfer exists, §3 join), or `rejected` (the service finally refused
+it: `ServiceRejected`, `InsufficientFunds`, §4). The anchored authorization
+fold counts an outbound object against its holder **only while pending or
+executed**: authorization balance = ledger balance − Σ pending outbound.
+A `rejected` intent consumes nothing and blocks nothing — the holder may
+immediately re-spend the same units, and the new payment's graph object is
+applied in the anchored fold when it executes, satisfying §3 check 2. A
+pending intent that has no ledger transfer after the service's execution
+window transitions to `rejected` by the service's attestation (surfaced at
+the next reconciliation, §3); until that transition it conservatively holds
+its authorization, so a slow execution can never be double-spent against.
+Without this rule a single refused payment would permanently freeze the
+refused amount in the graph fold while the ledger still shows it spendable —
+the two layers would contradict each other on every later payment.
 
 ## 3. Snapshot anchoring and the reconciliation join
 
@@ -455,9 +487,18 @@ step aborts before any leg is submitted.
      ledger for transfers stamped with the reserved `conversion` IDs;
      graph-native, by folding for the agreement's legs. Legs found ⇒ the
      conversion executed: emit the (late) receipt and convert the
-     reservation into it. No legs ⇒ release the reservation as unexecuted.
-     A reservation is never silently expired while its legs are
-     unaccounted for.
+     reservation into it. No legs found ⇒ release the reservation as
+     unexecuted **only on a definitive condition**: anchored, the ledger
+     query is definitive because the service is the only executor — legs
+     cannot appear later without it, so an empty query closes the
+     reservation. Graph-native, absence of legs is NOT definitive while the
+     signed agreement's completion window is still open (the parties may
+     yet submit them): the reservation is released only when the window has
+     expired under the step 2 clock policy, or when both parties have
+     signed a cancellation of the agreement. Releasing earlier would let a
+     second conversion consume the allowance and the delayed legs then
+     exceed `total_cap`. A reservation is never silently expired while its
+     legs are unaccounted for.
    - **Emit the receipt** (§1.6) naming the offer version, the frontier
      checked in step 2, both leg references, and the spread. A conversion
      counts as happened when it *executed*; the receipt is the public
