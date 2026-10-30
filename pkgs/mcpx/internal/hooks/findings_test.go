@@ -34,6 +34,80 @@ func TestDescendantHookCutAtTimeout(t *testing.T) {
 	}
 }
 
+// Codex P2 on this PR: a background descendant started by a hook
+// that has already exited (sh -c '(sleep 1; printf completed) &')
+// must be allowed its configured budget. The shell exits immediately,
+// but the descendant holds the pipes until the second completes; a
+// WaitDelay that fires before the budget closes the pipes and records
+// a bogus failure.
+func TestEarlyParentExitKeepsBudget(t *testing.T) {
+	hs, err := hooks.Parse(`[{"name":"early","on":"progress","run":["sh","-c","(sleep 1; printf completed) &"],"timeoutMs":5000}]`, 15*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+	bus := events.New(16)
+	r := hooks.NewRunner(bus, hs, nil)
+	r.Start()
+	defer r.Stop()
+	bus.Publish(events.Event{Kind: events.ServerLog, Server: "early"})
+	bus.Publish(events.Event{Kind: events.ServerLog, Server: "early"})
+	bus.Publish(events.Event{Kind: events.Progress})
+	waitFor(t, "early-parent hook to succeed within budget", func() bool {
+		st := r.Stats()
+		return len(st) == 1 && st[0].Fired == 1 && st[0].Failed == 0
+	})
+	_ = out
+}
+
+// Codex P1/P2: mixed filters must not inherit drops from a bus
+// overflow the hook never saw. The progress hook and the
+// server-log hook share nothing; not one event on one kind may
+// charge a drop on the hook subscribed to the other.
+func TestMixedFiltersDoNotShareDrops(t *testing.T) {
+	hs, err := hooks.Parse(`[
+		{"name":"progress","on":["progress"],"run":["sleep","5"],"timeoutMs":30000},
+		{"name":"log","on":["server.log"],"run":["true"]}
+	]`, 35*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bus := events.New(16)
+	r := hooks.NewRunner(bus, hs, nil)
+	r.Start()
+	defer r.Stop()
+	// Block the progress worker so its subscription overflows: the
+	// first event is picked up and sleeps, the rest pile up behind it.
+	bus.Publish(events.Event{Kind: events.Progress, Server: "p"})
+	time.Sleep(200 * time.Millisecond)
+	for i := 0; i < 300; i++ {
+		bus.Publish(events.Event{Kind: events.Progress, Server: "p"})
+	}
+	waitFor(t, "progress drops to be counted", func() bool {
+		st := r.Stats()
+		var p, l uint64
+		for _, s := range st {
+			switch s.Name {
+			case "progress":
+				p = s.Dropped
+			case "log":
+				l = s.Dropped
+			}
+		}
+		if p == 0 {
+			return false
+		}
+		if l != 0 {
+			t.Fatalf("server.log hook charged %d drops for progress events it never subscribed to", l)
+		}
+		if p < 43 || p > 47 {
+			t.Fatalf("progress drops should be 43..47 (301 events, 256 buffer), got %d", p)
+		}
+		return true
+	})
+}
+
 // Codex P2 on PR #2541: events lost while the hook's worker is busy
 // must be counted in Stats.Dropped (the gap marker rides on this).
 func TestSlowHookDropsAreCounted(t *testing.T) {
@@ -47,12 +121,18 @@ func TestSlowHookDropsAreCounted(t *testing.T) {
 	defer r.Stop()
 	bus.Publish(events.Event{Kind: events.Progress})
 	time.Sleep(200 * time.Millisecond) // let the worker pick up the first event and block in sleep
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 300; i++ {
 		bus.Publish(events.Event{Kind: events.Progress})
 	}
 	waitFor(t, "dropped events to be counted", func() bool {
 		st := r.Stats()
-		return len(st) == 1 && st[0].Dropped > 0
+		if len(st) != 1 || st[0].Dropped == 0 {
+			return false
+		}
+		if got := r.Stats()[0].Dropped; got < 44 || got > 46 {
+			t.Fatalf("dropped events should be 44..46 (301 events, 256 buffer), got %d", got)
+		}
+		return true
 	})
 }
 

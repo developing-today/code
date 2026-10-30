@@ -16,13 +16,6 @@ import (
 	"github.com/dezren39/mcpx/internal/events"
 )
 
-// queueDepth bounds one hook's backlog. A hook that falls behind loses
-// events rather than memory: the loss is counted (Stats.Dropped) and
-// the next event the hook does receive carries the gap count, which is
-// #6's gap contract in miniature -- one explicit marker, never a
-// silent hole.
-const queueDepth = 32
-
 // hookOutputLimit bounds how much of a hook's combined stdout+stderr is
 // retained in daemon memory (defaults.ExecStderrLimit). Output is still
 // drained, so excess bytes are discarded, not left blocking the pipes.
@@ -43,9 +36,8 @@ type Stats struct {
 	LastError      string `json:"lastError,omitempty"`
 }
 
-// Runner subscribes to the bus once and fans events out to one serial
-// worker per declared hook, so ordering within a hook is promised and
-// ordering across hooks is not (decision 0001, delivery semantics).
+// Runner subscribes to the bus once per declared hook, using each
+// hook's own Filter, and runs one serial worker per hook.
 type Runner struct {
 	bus   *events.Bus
 	logf  func(string, ...any)
@@ -53,7 +45,7 @@ type Runner struct {
 
 	mu    sync.Mutex
 	stats map[string]*Stats
-	subs  *events.Subscription
+	subs  []*events.Subscription
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -80,68 +72,37 @@ func (r *Runner) Stats() []Stats {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Stats, 0, len(r.hooks))
-	for _, h := range r.hooks {
-		out = append(out, *r.stats[h.Name])
+	for i, h := range r.hooks {
+		st := *r.stats[h.Name]
+		if i < len(r.subs) && r.subs[i] != nil {
+			st.Dropped = r.subs[i].Dropped.Load()
+		}
+		out = append(out, st)
 	}
 	return out
 }
 
 // Start subscribes and launches the workers. Stop ends them.
-// Bus-level drops (the shared subscription overflowing before fanout)
-// are folded into every hook's Dropped counter at fanout time, so the
-// per-hook gap marker (finding 2) covers this delivery stage too.
+// Each hook subscribes with its own Filter, so drops are counted
+// accurately per hook and never misattributed across differing filters.
 func (r *Runner) Start() {
 	r.ctx, r.cancel = context.WithCancel(context.Background())
-	sub, _ := r.bus.Subscribe(events.Filter{}, 0)
-	r.subs = sub
-	queues := make(map[string]chan events.Event, len(r.hooks))
+	r.subs = make([]*events.Subscription, 0, len(r.hooks))
 	for _, h := range r.hooks {
-		q := make(chan events.Event, queueDepth)
-		queues[h.Name] = q
+		sub, _ := r.bus.Subscribe(h.Filter(), 0)
+		r.subs = append(r.subs, sub)
 		r.wg.Add(1)
-		go r.work(h, q)
+		go r.work(h, sub)
 	}
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		var lastBusDropped uint64
-		for e := range sub.C {
-			// The runner's own voice is never a hook trigger.
-			if strings.HasPrefix(string(e.Kind), "hook.") {
-				continue
-			}
-			// Bus-level drops: the shared subscription overflowed
-			// before fanout, so every matching hook missed this many
-			// events. Fold the delta into each matching hook's
-			// Dropped counter (finding 2).
-			busNow := sub.Dropped.Load()
-			busDelta := busNow - lastBusDropped
-			lastBusDropped = busNow
-			for _, h := range r.hooks {
-				if !h.Matches(e) {
-					continue
-				}
-				loss := busDelta
-				select {
-				case queues[h.Name] <- e:
-				default:
-					loss++
-				}
-				if loss > 0 {
-					r.mu.Lock()
-					r.stats[h.Name].Dropped += loss
-					r.mu.Unlock()
-				}
-			}
-		}
-	}()
 }
 
 // Stop unsubscribes and waits for the workers to drain their current
 // execution (each still bounded by its own timeout).
 func (r *Runner) Stop() {
-	if r.subs != nil {
-		r.subs.Close()
+	for _, sub := range r.subs {
+		if sub != nil {
+			sub.Close()
+		}
 	}
 	if r.cancel != nil {
 		r.cancel()
@@ -149,18 +110,29 @@ func (r *Runner) Stop() {
 	r.wg.Wait()
 }
 
-func (r *Runner) work(h Hook, q chan events.Event) {
+func (r *Runner) work(h Hook, sub *events.Subscription) {
 	defer r.wg.Done()
-	var gap uint64
+	var lastDropped uint64
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
-		case e := <-q:
-			r.mu.Lock()
-			gapNow := r.stats[h.Name].Dropped - gap
-			gap = r.stats[h.Name].Dropped
-			r.mu.Unlock()
+		case e, ok := <-sub.C:
+			if !ok {
+				return
+			}
+			// The runner's own voice is never a hook trigger.
+			if strings.HasPrefix(string(e.Kind), "hook.") {
+				continue
+			}
+			droppedNow := sub.Dropped.Load()
+			gapNow := droppedNow - lastDropped
+			lastDropped = droppedNow
+			if gapNow > 0 {
+				r.mu.Lock()
+				r.stats[h.Name].Dropped = droppedNow
+				r.mu.Unlock()
+			}
 			r.execute(h, e, gapNow)
 		}
 	}
@@ -209,7 +181,6 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 		}
 		return cmd.Process.Kill()
 	}
-	cmd.WaitDelay = time.Second
 	cmd.Stdin = bytes.NewReader(body)
 	cmd.Env = append(os.Environ(),
 		"MCPX_HOOK_NAME="+h.Name,
@@ -224,7 +195,21 @@ func (r *Runner) execute(h Hook, e events.Event, dropped uint64) {
 	cmd.Stdout = out
 	cmd.Stderr = out
 	start := time.Now()
-	runErr := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		r.recordFailure(h, e, 0, err)
+		return
+	}
+	pgid := cmd.Process.Pid
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	}()
+	runErr := cmd.Wait()
 	dur := time.Since(start)
 
 	r.mu.Lock()
