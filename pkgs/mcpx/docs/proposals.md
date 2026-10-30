@@ -298,6 +298,15 @@ duration, tool calls made — in one envelope for programmatic callers.
 status:  proposed
 ```
 
+Update (#1913): the dependency-configuration half of this area has
+shipped — the `deps.*` settings and `paths.deps` resolve where a
+script's packages come from (script specifiers, explicit request,
+nearest project manifest, the configuration directory's own packages,
+then the host), the set travels on ExecOptions as data, and the runner
+materialises it in the exec workdir per runtime. What remains proposed
+here is only the shared-code half below: a declared `lib/` and the
+`@lib/` import map.
+
 Scripts run on a real runtime, so imports already work: `npm:`, `jsr:`,
 `https:` on Deno, `node_modules` on bun and node. What is missing is a declared
 place to put shared code.
