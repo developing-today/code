@@ -666,18 +666,6 @@ function createCursorDecorations(
       // Create own cursor decoration if present in cluster
       if (clusterHasOwnCursor && ownCursor) {
         decorations.push(
-<<<<<<< HEAD
-          Decoration.widget(ownCursor.head, () => {
-            const ownCursorLine = document.createElement("span");
-            ownCursorLine.className = "collab-cursor collab-cursor-own";
-            ownCursorLine.style.borderColor = ownCursor.color;
-            ownCursorLine.setAttribute("data-client-id", String(ownCursor.clientID));
-            return ownCursorLine;
-          }, {
-            side: 1,
-            key: `cursor-own-${ownCursor.clientID}-${ownCursor.color}`,
-          }),
-=======
           Decoration.widget(
             ownCursor.head,
             () => {
@@ -692,7 +680,6 @@ function createCursorDecorations(
               key: `cursor-own-${ownCursor.clientID}-${ownCursor.color}`,
             },
           ),
->>>>>>> origin/main
         );
       }
 
@@ -709,15 +696,6 @@ function createCursorDecorations(
         // Create merged bar for all remote cursors
         const leftmostPos = Math.min(...groupsForBar.map((g) => g.position));
 
-<<<<<<< HEAD
-        // Find the leftmost group (we'll attach the bar to its cursor line)
-        const leftmostGroup = groupsForBar.find((g) => g.position === leftmostPos);
-
-        // Create a cluster-wide key that includes ALL client IDs AND positions in the cluster
-        // This ensures widgets are recreated when cluster membership OR positions change
-        const clusterKey = groupsForBar
-          .flatMap((g) => g.cursors.map((c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}`))
-=======
         // Create a cluster-wide key that includes ALL client IDs, positions, opacities, and connection state in the cluster
         // This ensures widgets are recreated when cluster membership, positions, or dynamic states change
         const clusterKey = groupsForBar
@@ -726,49 +704,12 @@ function createCursorDecorations(
               (c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}-${encodeURIComponent(c.name)}`,
             ),
           )
->>>>>>> origin/main
           .sort()
           .join("-");
 
         // Create cursor lines for each position group (no attached labels)
         groupsForBar.forEach((group) => {
           decorations.push(
-<<<<<<< HEAD
-            Decoration.widget(group.position, () => {
-              const firstCursor = group.cursors[0];
-              const allClientIDs = group.cursors.map((c) => c.clientID);
-              const cursorLine = createCursorLine(firstCursor, true, connectionState, allClientIDs);
-              cursorLine.style.borderColor = group.mostRecentColor;
-
-              // For merged cursor lines with bars, use full opacity on the line
-              // (the bar segments handle their own individual opacities)
-              if (group === leftmostGroup) {
-                cursorLine.style.opacity = "1";
-                cursorLine.style.setProperty("--base-opacity", "1");
-                cursorLine.style.animation = "none"; // No strobe on bar container
-
-                // Create merged tooltip bar and attach to leftmost cursor line
-                const mergedBar = createMergedBar(groupsForBar, handleMouseEnter, handleMouseLeave, connectionState);
-                cursorLine.appendChild(mergedBar);
-              }
-
-              // Register all cursors in this group for strobe tracking
-              if (viewState) {
-                group.cursors.forEach((cursor) => {
-                  viewState.strobeInfos.set(cursor.clientID, {
-                    element: cursorLine,
-                    baseOpacity: cursor.opacity,
-                    paused: false,
-                  });
-                });
-              }
-
-              return cursorLine;
-            }, {
-              side: 1,
-              key: `cursor-cluster-${group.position}-${clusterKey}-${connectionState}`,
-            }),
-=======
             Decoration.widget(
               group.position,
               () => {
@@ -808,24 +749,12 @@ function createCursorDecorations(
                 key: `cursor-cluster-${group.position}-${clusterKey}`,
               },
             ),
->>>>>>> origin/main
           );
         });
       } else {
         // Single remote cursor, no overlap - simple standalone cursor
         const group = groupsForBar[0];
         const cursor = group.cursors[0];
-<<<<<<< HEAD
-        decorations.push(
-          Decoration.widget(cursor.head, () => {
-            return viewState
-              ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
-              : createCursorLine(cursor, false, connectionState);
-          }, {
-            side: 1,
-            key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}`,
-          }),
-=======
 
         decorations.push(
           Decoration.widget(
@@ -839,7 +768,6 @@ function createCursorDecorations(
               key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}-${encodeURIComponent(cursor.name)}`,
             },
           ),
->>>>>>> origin/main
         );
       }
     });
@@ -861,11 +789,7 @@ function createCursorDecorations(
               style: `background-color: ${cursor.color}${selectionOpacity};`,
             },
             {
-<<<<<<< HEAD
-              key: `selection-${cursor.clientID}-${selectionOpacity}-${cursor.color}`,
-=======
               key: `selection-${cursor.clientID}-${cursor.opacity}-${cursor.color}`,
->>>>>>> origin/main
             },
           ),
         );
