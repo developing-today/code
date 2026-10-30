@@ -12,6 +12,12 @@ only moves down: a run with fewer skips becomes the new ceiling, so a skip
 cannot creep back in. With no record yet the run is reported and becomes the
 record when saved on main.
 
+One exemption: a skip whose reason is a testsupport.Quarantine notice
+("quarantined until <date> (<issue link>)", #1973) is reported but does NOT
+count against the record. A quarantine is a tracked, expiring exemption
+with its own guard test; counting it here would make the documented
+quarantine path unusable the first time anyone used it.
+
 Exits 1 when any test failed or more tests were skipped than the record.
 <new-record-file> is written when the record should change; saving it is the
 workflow's decision, on main only.
@@ -44,7 +50,9 @@ def read(path):
     for k in skipped:
         lines = [o.strip() for o in out[k] if o.strip() and not o.lstrip().startswith(("=== ", "--- "))]
         reasons[k] = (lines[-1] if lines else "(no reason given)")[:200]
-    return counts, sorted(skipped), sorted(failed), reasons
+    quarantined = sorted(k for k in skipped if "quarantined until " in reasons[k])
+    counted = sorted(k for k in skipped if k not in quarantined)
+    return counts, counted, sorted(failed), reasons, quarantined, sorted(skipped)
 
 
 def decide(skipped, passed, failed_n, stored, run, now):
@@ -64,7 +72,7 @@ def decide(skipped, passed, failed_n, stored, run, now):
 
 
 def main(path, stored_raw, run, now, summary, new_file):
-    counts, skipped, failed, reasons = read(path)
+    counts, skipped, failed, reasons, quarantined, all_skipped = read(path)
     stored = json.loads(stored_raw) if stored_raw.strip() else None
     new, rose, new_names, gone = decide(skipped, counts["pass"], counts["fail"], stored, run, now)
     ceiling = stored["skipped_count"] if stored else None
@@ -90,16 +98,19 @@ def main(path, stored_raw, run, now, summary, new_file):
             f.write(f"Same number skipped, different tests. Newly skipped: "
                     f"{', '.join(f'`{k}`' for k in new_names) or 'none'}; no longer skipped: "
                     f"{', '.join(f'`{k}`' for k in gone) or 'none'}.\n\n")
-        if skipped:
+        if quarantined:
+            f.write(f"{len(quarantined)} quarantined under #1973 (issue + expiry, exempt from the record): "
+                    + ", ".join(f"`{k}`" for k in quarantined) + ".\n\n")
+        if all_skipped:
             f.write("<details><summary>Every skipped test, with its reason</summary>\n\n"
                     "| test | reason |\n| --- | --- |\n")
-            for k in skipped:
+            for k in all_skipped:
                 f.write(f"| `{k}` | {reasons[k].replace('|', chr(92) + '|')} |\n")
             f.write("\n</details>\n")
 
     print(f"go tests: {counts['pass']} passed, {counts['fail']} failed, {len(skipped)} skipped "
           f"(record: {ceiling if ceiling is not None else 'none yet'})")
-    for k in skipped:
+    for k in all_skipped:
         print(f"  skip  {k}  -- {reasons[k]}")
     if rose:
         print(f"::error::{len(skipped)} Go tests skipped, more than the record of {ceiling}; newly skipped: "

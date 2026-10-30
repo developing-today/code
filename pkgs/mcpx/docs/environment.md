@@ -95,7 +95,9 @@ and read by name for that reason.
 | `MCPX_RUN` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`) | always | this execution's run id, which groups the artifacts it produces | the generated client, when storing an artifact |
 | `MCPX_INPUT` | `mcpx exec` / `mcpx run` | mcpx exec and mcpx run, locally and with --remote; not when mcpx serve collects the output | report: nothing in this run can answer a server's question mid-call, so a call that asks one exits 75 with the question instead of waiting for it to expire | the generated client, sent as X-Mcpx-Input |
 | `MCPX_HOOK_NAME` | the declared-hook runner, for a hook it runs | always | the declared name of the hook being run | the hook itself |
-| `MCPX_HOOK_PHASE` | the declared-hook runner, for a hook it runs | always | the hook's phase; always observe for config-declared hooks | the hook itself |
+| `MCPX_HOOK_PHASE` | the declared-hook runner, for a hook it runs; the exec service (`/v1/exec`, `mcpx_exec`) | always | the hook's phase; always observe for config-declared hooks, the exec hook's phase (pre, post, onError, onSuccess) for a per-call exec hook | the hook itself |
+| `MCPX_HOOK_POINT` | the exec service (`/v1/exec`, `mcpx_exec`) | always | the point the hook is attached to; script for per-call exec hooks in this version | the hook itself |
+| `MCPX_HOOK_ERROR` | the exec service (`/v1/exec`, `mcpx_exec`) | only for a hook running because the script failed; truncated to 1024 bytes | the error the hook is running for, in one line; the full hook context is JSON on stdin | the hook itself |
 | `MCPX_HOOK_EVENT_KIND` | the declared-hook runner, for a hook it runs | always | the kind of the event the hook is running for; the full event is JSON on stdin | the hook itself |
 | `MCPX_HOOK_EVENT_SEQ` | the declared-hook runner, for a hook it runs | always | the event's sequence number on the daemon's bus | the hook itself |
 | `MCPX_HOOK_EVENT_SERVER` | the declared-hook runner, for a hook it runs | empty when the event names no server | the server the event is about | the hook itself |

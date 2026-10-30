@@ -1,30 +1,51 @@
 # PM stack (Drew, 2026-10-27: "make nixos switch deploy all these
 # components like everything else. enable projector and all the other
-# features.")
+# features."; Drew, 2026-10-30: "make pm stack build run with nixos
+# switch" — pm-dispatch, pm-tunnel, and the Kaneo stack join the module
+# below, so one switch deploys the whole pm stack.)
 #
-# The project-management dashboard components for this host, declared as
+# The project-management components for this host, declared as
 # home-manager user services so `nixos-rebuild switch` deploys them like
-# everything else on this machine — replacing the hand-written units that
-# used to live in ~/.config/systemd/user (pm-aggregator, pm-projector,
-# pm-git-sync, quota-gatherer; the pre-NixOS files are kept beside this
-# history in git, and home-manager renames any same-named hand file to
-# *.backup on the first switch that lands this module).
+# everything else on this machine — replacing the hand-written units
+# that used to live in ~/.config/systemd/user (pm-aggregator,
+# pm-projector, pm-git-sync, quota-gatherer, and — until the 2026-10-30
+# extension — pm-dispatch and pm-tunnel; the pre-NixOS files are kept
+# beside this history in git, and home-manager renames any same-named
+# hand file to *.backup on the first switch that lands this module).
+# The Kaneo docker stack had no hand unit at all: it only ran when
+# someone ran pm-stack/deploy.sh by hand, and stayed down otherwise.
 #
-# Code source: the services run the aggregator/projector straight out of
-# the primary code checkout (~/git/code, pm-stack/aggregator and
-# pm-stack/projector) at latest origin/main — the keep-primaries-clean
-# model. pm-git-sync (below) keeps that checkout on a clean, current main
-# and restarts a service when its subtree changes, so code updates land
-# by git pull while unit definitions, environment, and lifecycle land by
-# switch. (mcpx-style store-pinned packages were the alternative; the PM
-# stack has no package.nix and iterates daily, and the checkout model is
-# what the fleet standardized on 2026-10-27.)
+# Code source: the services run the aggregator/projector/dispatch
+# straight out of the primary code checkout (~/git/code,
+# pm-stack/aggregator, pm-stack/projector, pm-stack/dispatch) at latest
+# origin/main — the keep-primaries-clean model. pm-git-sync (below)
+# keeps that checkout on a clean, current main and restarts a service
+# when its subtree changes, so code updates land by git pull while unit
+# definitions, environment, and lifecycle land by switch. (mcpx-style
+# store-pinned packages were the alternative; the PM stack has no
+# package.nix and iterates daily, and the checkout model is what the
+# fleet standardized on 2026-10-27.)
 #
 # Runtime state + secrets stay on the machine, never in this repo:
 # ~/.local/state/pm-aggregator/.env and ~/.local/state/pm-projector/.env
 # (mode 600, rendered from the pm-stack SOPS file; they carry the
 # PM_AGG_*_FILE paths, Kaneo/Grist credentials, and the GitHub App
 # credentials BY NAME, exactly as the hand units consumed them).
+# pm-dispatch's env files are external the same way:
+# ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
+# from the same SOPS file) and ~/secrets/dispatch.env (operator secrets
+# that are not in SOPS). install.sh remains the env renderer and the
+# fallback installer; this module owns the unit lifecycle.
+#
+# The Kaneo stack is the exception to the checkout model: pm-kaneo
+# runs deploy.sh from the ~/pm-stack deployment dir, because the
+# rendered .env, the compose project, and the pm-stack_postgres_data
+# volume live there. deploy.sh also renders ~/pm-stack/tunnel.env,
+# which pm-tunnel consumes — systemd expands TUNNEL_TOKEN from that
+# EnvironmentFile in the tunnel's ExecStart, exactly as the
+# hand-written unit relied on. (The tunnel's ingress is managed in
+# Cloudflare: kaneo.security.cab -> http://localhost:5173 and
+# dispatch.security.cab -> http://localhost:4879.)
 #
 # The projector is ENABLED: the aggregator's environment pins
 # PM_PROJECTOR_URL to the local projector service (the env file said
@@ -43,10 +64,13 @@
 let
   cfg = config.services.pm-stack;
   bun = "${pkgs.bun}/bin/bun";
+  cloudflared = "${pkgs.cloudflared}/bin/cloudflared";
+  docker = "/run/current-system/sw/bin/docker";
   home = "/home/${cfg.user}";
   repo = "${home}/git/code";
   aggState = "${home}/.local/state/pm-aggregator";
   projState = "${home}/.local/state/pm-projector";
+  stackDir = "${home}/pm-stack";
 
   projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
@@ -57,7 +81,7 @@ let
 in
 {
   options.services.pm-stack = {
-    enable = lib.mkEnableOption "the PM dashboard stack (aggregator + projector) as NixOS-managed user services";
+    enable = lib.mkEnableOption "the PM stack (aggregator, projector, dispatch, tunnel, Kaneo) as NixOS-managed user services";
 
     user = lib.mkOption {
       type = lib.types.str;
@@ -111,6 +135,31 @@ in
           Install.WantedBy = [ "default.target" ];
         };
 
+        pm-dispatch = {
+          Unit = {
+            Description = "pm-dispatch — authenticated intake: launch/track OpenCode sessions + queue intake (NixOS; runs from ~/git/code checkout)";
+            After = [ "network-online.target" ];
+            Wants = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "simple";
+            WorkingDirectory = "${repo}/pm-stack/dispatch";
+            ExecStart = "${bun} run src/server.ts";
+            # The env files stay outside the module, exactly like the
+            # aggregator's: install.sh renders the sops-derived file,
+            # and the operator file is laptop-only. The "-" keeps the
+            # hand unit's semantics — a missing operator file degrades
+            # the service instead of crash-looping it.
+            EnvironmentFile = [
+              "${stackDir}/dispatch/.env"
+              "-${home}/secrets/dispatch.env"
+            ];
+            Restart = "on-failure";
+            RestartSec = 5;
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
+
         pm-git-sync = {
           Unit = {
             Description = "pm-git-sync — keep ~/git/code on clean main; redeploy PM services on subtree changes";
@@ -152,6 +201,62 @@ in
             ExecStart = "${bun} run ${repo}/pm-stack/aggregator/scripts/gather-quota.ts";
           };
         };
+
+        pm-tunnel = {
+          Unit = {
+            Description = "Cloudflare Tunnel connector for the pm stack — kaneo + dispatch ingress (NixOS)";
+            After = [
+              "network-online.target"
+              "docker.service"
+            ];
+            Wants = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "simple";
+            WorkingDirectory = "${stackDir}";
+            # tunnel.env is rendered by the pm-kaneo deploy flow
+            # (deploy.sh); systemd expands TUNNEL_TOKEN from this
+            # EnvironmentFile in ExecStart, exactly as the hand-written
+            # unit relied on.
+            EnvironmentFile = "${stackDir}/tunnel.env";
+            ExecStart = "${cloudflared} tunnel --no-autoupdate run --token \${TUNNEL_TOKEN}";
+            Restart = "on-failure";
+            RestartSec = 5;
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
+
+        # The Kaneo stack is a oneshot, not a daemon: deploy.sh renders
+        # the env, pulls the images, and (re)creates the containers,
+        # which then run under docker's own restart policy. A user unit
+        # cannot order itself against the system docker.service, so if
+        # dockerd is not ready when this first runs, the pm-kaneo timer
+        # below retries it until it has succeeded once (a succeeded
+        # oneshot stays active, so later timer elapses are no-ops) —
+        # the same self-heal shape as the projector reconcile.
+        pm-kaneo = {
+          Unit = {
+            Description = "Kaneo stack — render env + docker compose up via pm-stack/deploy.sh (NixOS)";
+            After = [
+              "network-online.target"
+              "docker.service"
+            ];
+            Wants = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            # The first activation pulls both images and then waits
+            # out deploy.sh's health gate; give it room.
+            TimeoutStartSec = 1200;
+            WorkingDirectory = "${stackDir}";
+            ExecStart = "${stackDir}/deploy.sh";
+            # No -v: stopping the stack never deletes the postgres
+            # data volume.
+            ExecStop = "${docker} compose down";
+          };
+          Install.WantedBy = [ "default.target" ];
+        };
       };
 
       systemd.user.timers = {
@@ -184,6 +289,16 @@ in
             RandomizedDelaySec = 20;
             Persistent = true;
             Unit = "quota-gatherer.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        pm-kaneo = {
+          Unit.Description = "Retry pm-kaneo until the Kaneo stack is up (docker-ordering self-heal)";
+          Timer = {
+            OnBootSec = "1min";
+            OnUnitActiveSec = "30min";
+            Unit = "pm-kaneo.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };

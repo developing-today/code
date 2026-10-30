@@ -818,7 +818,11 @@ func TestMessagesClient(t *testing.T) {
 		p := newPeer(t, rev)
 		dialClient(t, p, clientOpts())
 		caps := asMap(asMap(asMap(p.sent()[0]["params"])["_meta"])[mcpserver.MetaClientCapabilities])
-		if _, ok := caps["extensions"]; ok {
+		// Register CAP-11 (#1918, code#2653): the client deliberately
+		// declares an EMPTY extensions map on modern connections -- it
+		// names no extension, so it owes no extension ResultType values.
+		// Only a non-empty map declares values the client must handle.
+		if ext := asMap(caps["extensions"]); len(ext) > 0 {
 			t.Errorf("declares extensions it does not handle: %v", caps)
 		}
 	})

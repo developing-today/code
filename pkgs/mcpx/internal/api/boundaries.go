@@ -66,7 +66,8 @@ func Boundaries() []Boundary {
 		{
 			Name: "elicit.confirmDestructive",
 			Declares: "with it on, a call to a tool that may be destructive (annotated " +
-				"destructiveHint, or unannotated) does not run unless somebody confirms it",
+				"destructiveHint, or unannotated) does not run unless somebody confirms it; " +
+				"a remote server's annotation never clears the call (#2191)",
 			State: Enforced,
 			Refusals: []string{
 				"TestADestructiveCallIsRefusedWhenNobodyConfirms",

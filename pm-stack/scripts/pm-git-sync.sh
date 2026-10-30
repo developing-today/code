@@ -81,3 +81,9 @@ else
   proj_dep=""
 fi
 redeploy pm-stack/projector pm-projector.service "$proj_dep"
+
+# pm-dispatch has no dependency step: its package.json carries only
+# type-level devDependencies (the runtime is pure Bun), and its env
+# files are rendered by dispatch/install.sh, not on git pulls — a
+# subtree change is a plain restart.
+redeploy pm-stack/dispatch pm-dispatch.service ""

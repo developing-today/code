@@ -14,8 +14,9 @@ func settingsOps() []Op {
 	return []Op{
 		{
 			Name: "settings_list", Method: "GET", Path: "/v1/settings",
-			Command: "settings list",
-			Summary: "Every setting, its effective value and where that value came from",
+			Permission: PermissionRead,
+			Command:    "settings list",
+			Summary:    "Every setting, its effective value and where that value came from",
 			Description: "The whole registry: path, kind, effective value, default, " +
 				"the file or variable or flag that decided it, the environment " +
 				"variable and flag that would change it, its scope, and whether " +
@@ -34,6 +35,7 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "settings_get", Method: "GET", Path: "/v1/settings/{path}",
+			Permission:  PermissionRead,
 			Command:     "settings get",
 			Summary:     "One setting",
 			Description: "The same record the listing carries, for one dotted path.",
@@ -44,6 +46,7 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "settings_set", Method: "PUT", Path: "/v1/settings/{path}",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Command:    "settings set",
 			Summary:    "Change a setting",
@@ -65,6 +68,7 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "settings_unset", Method: "DELETE", Path: "/v1/settings/{path}",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Command:    "settings unset",
 			Summary:    "Drop a runtime override",
@@ -78,8 +82,9 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "servers_list", Method: "GET", Path: "/v1/servers",
-			Command: "servers list",
-			Summary: "Every configured server as it is written in the configuration",
+			Permission: PermissionRead,
+			Command:    "servers list",
+			Summary:    "Every configured server as it is written in the configuration",
 			Description: "The entries themselves -- command, arguments, environment " +
 				"keys, URL -- and which file each came from, with whether each can run " +
 				"now: the secrets it requires, those with no value, and active. " +
@@ -88,8 +93,9 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "servers_get", Method: "GET", Path: "/v1/servers/{name}",
-			Command: "servers show",
-			Summary: "One configured server, and whether it can run now",
+			Permission: PermissionRead,
+			Command:    "servers show",
+			Summary:    "One configured server, and whether it can run now",
 			Description: "The entry servers_list shows, for one server. A server is inactive " +
 				"while a secret it requires has no value, or while a server it requires " +
 				"is inactive; its calls are then refused with secret_required before " +
@@ -101,8 +107,9 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "servers_add", Method: "POST", Path: "/v1/servers",
-			Command: "servers add",
-			Summary: "Add a server, live",
+			Permission: PermissionAdmin,
+			Command:    "servers add",
+			Summary:    "Add a server, live",
 			Description: "Writes the entry to a configuration file and reloads, so the " +
 				"server is callable immediately and is still there after a " +
 				"restart. Existing instances of other servers are untouched.",
@@ -131,6 +138,7 @@ func settingsOps() []Op {
 		},
 		{
 			Name: "servers_remove", Method: "DELETE", Path: "/v1/servers/{name}",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Command:    "servers remove",
 			Summary:    "Remove a server, live",
@@ -141,6 +149,55 @@ func settingsOps() []Op {
 				{Name: "name", In: InPath, Type: "string", Required: true, Desc: "the server to remove, by its name in the configuration"},
 				{Name: "scope", In: InQuery, Type: "string", Enum: []string{"project", "user"},
 					Desc: "which file to edit; by default, the one that defines it"},
+			},
+		},
+		{
+			Name: "adapters_add", Method: "POST", Path: "/v1/adapters",
+			Permission: PermissionAdmin,
+			Command:    "adapter add",
+			Summary:    "Add an adapter declaration, live",
+			Description: "Writes the declaration to the first file paths.adapters " +
+				"names and reloads, so the adapter is callable immediately and " +
+				"is still there after a restart. The body is the declaration " +
+				"itself: name, command, and its tools. A name another configured " +
+				"file already declares is refused rather than duplicated across " +
+				"files, and a replacement edits the file that defines it. " +
+				"Refused, with the remedy, when paths.adapters names no file, " +
+				"because a declaration written somewhere nothing reads would " +
+				"report success and change nothing.",
+			Admin: true, Mutating: true,
+			Params: []Param{
+				{Name: "name", In: InBody, Type: "string", Required: true,
+					Desc: "the adapter's name, which is also its namespace"},
+				{Name: "command", In: InBody, Type: "string", Required: true,
+					Desc: "the executable the declaration wraps"},
+				{Name: "runtime", In: InBody, Type: "string",
+					Desc: "the interpreter a script command needs: bash, js, ts or py"},
+				{Name: "args", In: InBody, Type: "array", Desc: "arguments prepended to every invocation",
+					Schema: `{"type":"array","items":{"type":"string"}}`},
+				{Name: "env", In: InBody, Type: "object", Desc: "environment added to every invocation",
+					Schema: `{"type":"object","additionalProperties":{"type":"string"}}`},
+				{Name: "description", In: InBody, Type: "string",
+					Desc: "one line shown beside the namespace"},
+				{Name: "tools", In: InBody, Type: "array", Desc: "the subcommands worth exposing",
+					Schema: `{"type":"array","items":{"type":"object","additionalProperties":true}}`},
+				{Name: "replace", In: InBody, Type: "boolean",
+					Desc: "overwrite a declaration of the same name instead of refusing"},
+			},
+		},
+		{
+			Name: "adapters_remove", Method: "DELETE", Path: "/v1/adapters/{name}",
+			Permission: PermissionAdmin,
+			Idempotent: true,
+			Command:    "adapter remove",
+			Summary:    "Remove an adapter declaration, live",
+			Description: "Deletes the declaration from whichever configured " +
+				"adapters file defines it and reloads. Instances of that " +
+				"adapter stop; a caller mid-call against it fails.",
+			Admin: true, Mutating: true, Destructive: true,
+			Params: []Param{
+				{Name: "name", In: InPath, Type: "string", Required: true,
+					Desc: "the adapter to remove, by its declared name"},
 			},
 		},
 	}
