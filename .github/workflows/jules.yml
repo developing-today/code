@@ -47,6 +47,9 @@ on:
 # carries its own group below, keyed by its target, so a run whose jobs all
 # skip can never displace a run that would act.
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
   issues: read

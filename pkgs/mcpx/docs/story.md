@@ -839,21 +839,29 @@ daemon.
 
 ```
 created:      2026-09-25T18:10:00-05:00
-last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
+last-updated: 2026-10-30T00:00:00-05:00
+increment:    3
 status:       standard
 tags:         area:discovery
 description:  ranked tool search, all-terms first with an any-term fallback.
 ```
 
-Exact name match scores 100, prefix 60, substring 40, function path 30,
-namespace 20, description 10. Every term must match by default, which narrows
-well; when that returns nothing the query is retried as any-term, so
-`mcpx search screenshot click` returns both tools rather than neither.
+Exact name match scores 100, prefix 60, a config tag 50, substring 40, a
+split/stemmed name word 40, function path 30, namespace 20, description 10.
+Names and terms are split on `_` and camelCase boundaries and folded
+through a light suffix stemmer, so `screenshots` finds `take_screenshot`.
+Every term must match by default, which narrows well; when that returns
+nothing the query is retried as any-term, so `mcpx search screenshot click`
+returns both tools rather than neither.
+
+A server's config may declare `tags` (inherited by all its tools) and
+per-tool `toolTags`; `--tag <tag>` filters on them exactly, and catalog
+`--bias` counts a tag hit like a name hit. `--explain` prints the per-term,
+per-field breakdown behind each hit's score.
 
 `-n <count>` caps results, default 20.
 
-2026-09-27T05:05:00-05:00
+2026-10-30T00:00:00-05:00
 
 ## Lifecycle and operations
 

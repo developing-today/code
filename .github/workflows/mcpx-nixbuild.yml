@@ -18,17 +18,6 @@ name: mcpx nix build
 # changes to this workflow are exercised by it, like mcpx.yml does.
 
 on:
-  pull_request:
-    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
-    # changes (lockfiles, module roots, flake files, build definitions,
-    # workflow files, shared libs); on push to main they always run.
-    paths:
-      - "pkgs/mcpx/go.mod"
-      - "pkgs/mcpx/go.sum"
-      - "pkgs/mcpx/package.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/**"
   push:
     branches: [main]
 

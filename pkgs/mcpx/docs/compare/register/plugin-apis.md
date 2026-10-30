@@ -36,7 +36,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | PLG-13 | `shell.env` hook vs `shell.hook("create.before")` without session | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode v1 sessionID, callID · v2 neither` | ✗ — `MCPX_SESSION_ID` lost under v2 (#47) | + high | M | high |
 | PLG-14 | v1 `shell.env` has no session id on PTY terminals | `opencode v1 has` | `opencode v1 bash tool and ! shell ✓ · PTY —` | partial — terminal-run `mcpx` gets no session | + low | S | low |
 | PLG-15 | v2 per-session environment route replaces the whole env | `opencode v2 has` | `opencode v2 only; TUI-owned; in-memory` | n/a — docs propose it; it would break shells | − harmful | S | high |
-| PLG-16 | `experimental.chat.system.transform` output is `{system: string[]}` | `opencode v1 has` `mcpx missing` | `opencode v1 ✓ · v2 no hook of that name` | ✗ broken — writes `output.parts`; never injected (#217) | + med | S | med |
+| PLG-16 | `experimental.chat.system.transform` output is `{system: string[]}` | `opencode v1 has` `mcpx has` | `opencode v1 ✓ · v2 no hook of that name` | ✓ fixed — pushes the text onto `output.system` (#1938; regression test `plugin/opencode/mcpx/instructions.test.ts`) | + med | S | med |
 | PLG-17 | v2 `session.hook("context")` edits system, messages, tools | `opencode v2 has` | `opencode v1 three hooks · v2 one; invented tools dropped` | n/a — not used | + med | S | med |
 | PLG-18 | `chat.message` vs `session.hook("prompt")` | `opencode v1 has` `opencode v2 has` | `opencode v1 chat.message · v2 prompt` | n/a — not used | + low | S | low |
 | PLG-19 | `chat.params`/`chat.headers` vs `context.options`/`model.request.headers` | `opencode v1 has` `opencode v2 has` | `opencode v1 two hooks · v2 context, model.request (+ v2-only)` | n/a — not used | + low | S | low |
@@ -284,14 +284,15 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 ## PLG-16 `experimental.chat.system.transform` output is `{system: string[]}`
 
-- **What.** v1 triggers the hook with `output = { system }`, an array of strings. mcpx's handler reads `output.parts`,
-  finds nothing, and returns, so the plugin's `instructions` option has never injected anything.
+- **What.** v1 triggers the hook with `output = { system }`, an array of strings. mcpx's handler read `output.parts`,
+  found nothing, and returned, so the plugin's `instructions` option never injected anything. Fixed by #1938: the
+  handler now pushes the text onto `output.system`, with a regression test against v1's real call shape.
 - **Where.** opencode v1 (both trigger sites pass `{system}`); v2 has no hook of this name.
 - **mcpx @ 05c78b2.** `const parts = (output as any)?.parts; if (Array.isArray(parts)) parts.push({ type: "text", text })`
   (`plugin/opencode/mcpx-session.ts:745-746`, hook at `:737`).
 - **Value to mcpx.** + med: a one-line fix, `output.system.push(text)`.
 - **Effort.** S.
-- **Risk.** Med: users who set `instructions: true` believe the model is told about mcpx; it is not.
+- **Risk.** Was Med: users who set `instructions: true` believed the model was told about mcpx; it was not. Resolved by #1938.
 - **Detail.** v1 request preparation re-joins extra system entries into one message when a plugin pushes more than one
   (`v1:packages/opencode/src/session/llm/request.ts:74`). The v2 analogue is `session.hook("context")`, whose `system` is
   `Array<SystemPart>` (`{type: "text", text}`): the shape mcpx pushes, on a different key (PLG-17).

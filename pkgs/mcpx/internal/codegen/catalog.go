@@ -220,6 +220,16 @@ func oneLine(s string) string {
 	return firstLine(s)
 }
 
+// hasTag reports whether term equals one of the tags, case-insensitively.
+func hasTag(tags []string, term string) bool {
+	for _, tag := range tags {
+		if strings.EqualFold(tag, term) {
+			return true
+		}
+	}
+	return false
+}
+
 func biasScore(ns Namespace, t Tool, terms []string) int {
 	if len(terms) == 0 {
 		return 0
@@ -233,6 +243,10 @@ func biasScore(ns Namespace, t Tool, terms []string) int {
 		}
 		switch {
 		case strings.Contains(strings.ToLower(t.Name), term):
+			score += 10
+		case hasTag(t.Tags, term):
+			// A tag is vocabulary chosen for exactly this word (#1923):
+			// worth a name hit, not a passing mention in prose.
 			score += 10
 		case strings.Contains(hay, term):
 			score += 3
