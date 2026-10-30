@@ -82,7 +82,7 @@ jobs:
   # JSON array for the matrix. The list file stays the single source of
   # truth: adding a check to id-pr-checks.txt adds a parallel job.
   guard:
-    name: guard PR check list
+    name: "basic: guard PR check list"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -124,7 +124,7 @@ jobs:
   # derivation. check-id-pr-checks.sh holds the exclusion list and keeps
   # this list in sync with pkgs/id/flake.nix.
   check_each:
-    name: nix flake check (${{ matrix.check }})
+    name: "basic: nix flake check (${{ matrix.check }})"
     needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -144,7 +144,12 @@ jobs:
       # unchanged derivations from a cold store every run (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
           use-flakehub: false
+          use-gha-cache: true
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
@@ -183,7 +188,7 @@ jobs:
   # backstop. Nothing from the old PR matrix is lost: the union of this
   # job, id-e2e-nightly, and the PR matrix covers it.
   full-flake-check:
-    name: nix flake check (full, main tier)
+    name: "full (main tier): nix flake check"
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -195,7 +200,12 @@ jobs:
             accept-flake-config = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
         with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
           use-flakehub: false
+          use-gha-cache: true
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

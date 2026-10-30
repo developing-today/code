@@ -97,10 +97,15 @@ describe a knob nobody wired.
 
 ### Left open
 
-`paths.config` is circular by construction (#5): the config search path is what
-produces the settings, so the settings cannot decide it. It is declared so that
-`mcpx config --schema` names the thing, and `config.SearchPath` reads
-`MCPX_PATHS_CONFIG` directly. It is the only entry on the allowlist.
+`paths.config` was circular by construction (#5): the config search path is
+what produces the settings, so the settings cannot decide it. It is no longer
+left open. `config.ResolveChainFrom` resolves the chain in two passes
+(issue #1842): a discovery pass over the default locations, seeded by
+`MCPX_PATHS_CONFIG` / `--paths-config`, reads only `paths.config`; the load
+pass then resolves that list, nearest last. A `paths.config` found in pass 2
+that differs is reported by `mcpx config --sources`, not applied, and a cycle
+is refused naming the path that closed it. `MCPX_CONFIG` bypasses both
+passes.
 
 ### The inverse bug
 
