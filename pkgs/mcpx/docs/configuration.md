@@ -654,6 +654,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp |
+| `transport.bearerToken` | string | *(empty)* | daemon | no | `--transport-bearer-token` | `MCPX_TRANSPORT_BEARER_TOKEN` | when set, every /v1 and /mcp request must carry this token as a Bearer credential |
 | `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins |
 | `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line |
 | `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes |

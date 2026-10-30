@@ -16,7 +16,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import {
+  DaemonClient,
   discover,
+  withDaemonAuth,
   goDurationMs,
   liveCandidates,
   rank,
@@ -431,5 +433,49 @@ describe("goDurationMs", () => {
     expect(goDurationMs("soon")).toBeUndefined()
     expect(goDurationMs("60s please")).toBeUndefined()
     expect(goDurationMs("-30s")).toBeUndefined()
+  })
+})
+
+describe("withDaemonAuth (#1975)", () => {
+  const TOKEN = "fixture-token-0123456789abcdef01"
+  const realFetch = globalThis.fetch
+  const realToken = process.env.MCPX_TRANSPORT_BEARER_TOKEN
+  const seen: RequestInit[] = []
+
+  const stubFetch = () => {
+    seen.length = 0
+    ;(globalThis as any).fetch = async (_url: any, init: any) => {
+      seen.push(init ?? {})
+      return new Response("{}")
+    }
+  }
+
+  afterEach(() => {
+    ;(globalThis as any).fetch = realFetch
+    if (realToken === undefined) delete process.env.MCPX_TRANSPORT_BEARER_TOKEN
+    else process.env.MCPX_TRANSPORT_BEARER_TOKEN = realToken
+  })
+
+  test("raw attaches the daemon Bearer [REDACTED] when configured", async () => {
+    stubFetch()
+    process.env.MCPX_TRANSPORT_BEARER_TOKEN = TOKEN
+    const c = new DaemonClient({ kind: "url", base: "http://127.0.0.1:1" })
+    await c.raw("/v1/status")
+    expect(new Headers(seen[0].headers as any).get("Authorization")).toBe(`Bearer ${TOKEN}`)
+  })
+
+  test("raw sends no Authorization header when unset", async () => {
+    stubFetch()
+    delete process.env.MCPX_TRANSPORT_BEARER_TOKEN
+    const c = new DaemonClient({ kind: "url", base: "http://127.0.0.1:1" })
+    await c.raw("/v1/status")
+    expect(new Headers(seen[0].headers as any).get("Authorization")).toBeNull()
+  })
+
+  test("an existing Authorization header is replaced, not duplicated", async () => {
+    stubFetch()
+    process.env.MCPX_TRANSPORT_BEARER_TOKEN = TOKEN
+    const out = withDaemonAuth({ headers: { Authorization: "Bearer stale" } })
+    expect(new Headers(out.headers as any).get("Authorization")).toBe(`Bearer ${TOKEN}`)
   })
 })

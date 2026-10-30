@@ -133,6 +133,7 @@ var EffectExemptions = map[string]string{
 	"proto.askTTL":                       "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
 	"proto.stateTTL":                     "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
 	"proto.sessionIdle":                  "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
+	"transport.bearerToken":              "auth gate (#1975): the with/without difference is proven at the daemon HTTP layer (internal/daemon bearer tests: unset passes, wrong token 401, correct token passes), but no e2e probe yet starts a token'd daemon and drives a caller against it; replace this exemption with that probe",
 	"transport.allowedOrigins":           "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
 	"transport.sessionMetaKeys":          "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
 	"transport.sseKeepAlive":             "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
@@ -247,7 +248,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 180
+const EffectExemptionPin = 181
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

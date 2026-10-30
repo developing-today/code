@@ -381,6 +381,21 @@ const withTimeout = (ms: number): RequestInit => {
 }
 
 /**
+ * #1975: attach the daemon Bearer [REDACTED] when one is configured
+ * (MCPX_TRANSPORT_BEARER_TOKEN, the transport.bearerToken setting
+ * env-sourced). Unset, the init passes through untouched, so plugin calls
+ * are byte-for-byte what they were before the setting existed. Read at
+ * call time so tests can set and clear the variable around a call.
+ */
+export const withDaemonAuth = (init: RequestInit): RequestInit => {
+  const tok = (globalThis as any).process?.env?.MCPX_TRANSPORT_BEARER_TOKEN ?? ""
+  if (!tok) return init
+  const headers = new Headers(init.headers as any)
+  headers.set("Authorization", `Bearer ${tok}`)
+  return { ...init, headers }
+}
+
+/**
  * A client that reuses its connection.
  *
  * Bun dials a unix socket by passing `unix` to fetch, so there is one code
@@ -414,7 +429,7 @@ export class DaemonClient {
 
   /** The raw response, for the few callers that need the status code. */
   async raw(path: string, init: RequestInit = {}): Promise<Response> {
-    return fetch(this.url(path), this.init(init))
+    return fetch(this.url(path), this.init(withDaemonAuth(init)))
   }
 
   async get<T>(path: string, timeoutMs?: number): Promise<T> {
