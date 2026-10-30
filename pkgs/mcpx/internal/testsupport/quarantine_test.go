@@ -1,6 +1,7 @@
 package testsupport
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,16 +44,36 @@ func (f *fakeTB) Helper() {}
 func (f *fakeTB) Skipf(format string, args ...any) {
 	f.skipped = true
 }
-func (f *fakeTB) Fatalf(format string, args ...any) { f.failed = true }
+// errFakeFatal is the panic a fake Fatalf raises to model what the real
+// testing.T.Fatalf does: it does not return. Without this the flow under
+// test continues past the fatal call and the double records a skip after
+// a failure, which no real test can do.
+var errFakeFatal = errors.New("fakeTB: Fatalf called")
+
+func (f *fakeTB) Fatalf(format string, args ...any) {
+	f.failed = true
+	panic(errFakeFatal)
+}
+
+// callQuarantine runs Quarantine against a fakeTB and absorbs the
+// fake-fatal panic, so the caller can assert on what was recorded.
+func callQuarantine(f *fakeTB, issue, expiry string) {
+	defer func() {
+		if r := recover(); r != nil && r != errFakeFatal {
+			panic(r)
+		}
+	}()
+	Quarantine(f, issue, expiry)
+}
 
 func TestQuarantineSkipsAndFails(t *testing.T) {
 	ok := &fakeTB{}
-	Quarantine(ok, "https://github.com/developing-today/code/issues/1973", "2999-01-01")
+	callQuarantine(ok, "https://github.com/developing-today/code/issues/1973", "2999-01-01")
 	if !ok.skipped || ok.failed {
 		t.Fatalf("valid quarantine: skipped=%v failed=%v, want skip only", ok.skipped, ok.failed)
 	}
 	bad := &fakeTB{}
-	Quarantine(bad, "https://github.com/developing-today/code/issues/1973", "2000-01-01")
+	callQuarantine(bad, "https://github.com/developing-today/code/issues/1973", "2000-01-01")
 	if !bad.failed || bad.skipped {
 		t.Fatalf("expired quarantine: failed=%v skipped=%v, want fail only", bad.failed, bad.skipped)
 	}
