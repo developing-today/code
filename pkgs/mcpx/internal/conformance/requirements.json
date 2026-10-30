@@ -9698,7 +9698,7 @@
     "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#cache-key",
     "quote": "\"Clients **MUST NOT** serve a cached response for a request whose method or parameters differ from the request that produced it.\"",
     "applicability": {
-      "client": "applies",
+      "client": "n/a:not applicable by construction -- the pool catalogue cache is keyed by the configured server, not by method+params, and resources/read results are not cached by the pool (#1604)",
       "server": "n/a:addresses the other side"
     },
     "notes": {
@@ -9869,7 +9869,7 @@
     "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#freshness-calculation",
     "quote": "\"Clients **MAY** re-fetch before the TTL expires…\" \"Clients **MAY** serve stale responses if errors occur during re-fetching\"",
     "applicability": {
-      "client": "applies",
+      "client": "n/a:a MAY mcpx does not take -- refresh is synchronous on read (decision on #1601); stale is served only when a refetch of an expired entry fails (#1603)",
       "server": "n/a:addresses the other side"
     },
     "notes": {
@@ -9945,7 +9945,7 @@
     "url": "https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching#interaction-with-pagination",
     "quote": "\"When a cached page expires, the client **SHOULD** re-fetch that page using its cursor.\" / \"…**SHOULD** re-fetch from the beginning (without a cursor).\" / \"If a cursor becomes invalid … **SHOULD** discard all cached pages and re-fetch from the beginning.\"",
     "applicability": {
-      "client": "applies",
+      "client": "n/a:not applicable by construction -- the pool caches one aggregated catalogue per configured server, never per page; an expired catalogue is re-fetched whole (#1601, #1604)",
       "server": "n/a:addresses the other side"
     },
     "notes": {

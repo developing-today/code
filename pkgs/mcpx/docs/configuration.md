@@ -53,6 +53,17 @@ Lowest to highest:
 what it displaced. "Why is this not what my config says" is the most common
 configuration question there is, and the answer is always in that list.
 
+The search path itself is decided before any of those layers exist, in two
+passes. The discovery pass walks the default locations, seeded by
+`MCPX_PATHS_CONFIG` / `--paths-config`, and reads only `paths.config`. The
+load pass resolves that list and loads everything on it, nearest last: a
+file's `paths.config` governs the rest of the chain from that point, a null
+entry stands for the locations the default walk provided, and a list with
+no null replaces the farther remainder. A `paths.config` found only in the
+load pass is reported by `mcpx config --sources`, not applied, and a cycle
+is refused naming the path that closed it. `MCPX_CONFIG` bypasses both
+passes and loads exactly one file.
+
 Two spellings of one setting at the same level is an error rather than a race:
 `--log-level` and `--logging-level` together, or two variables that mean the
 same thing with different values. The environment has no order, so there is
@@ -66,7 +77,7 @@ with no symptom.
 
 A daemon is started once, in whatever environment it happened to have, and
 then serves every command for hours. A flag on one of those commands that
-governs something the *daemon* does was simply lost: accepted, validated,
+governs something the _daemon_ does was simply lost: accepted, validated,
 printed back, and then ignored, because the process that would act on it had
 read its configuration an hour earlier. Nothing anywhere said so.
 
@@ -95,22 +106,22 @@ would be silently inert.
 
 ## Reaching them
 
-| surface | read | change |
-| --- | --- | --- |
-| config file | any `mcpx` config on the search path | edit it |
-| environment | `MCPX_*` | export it |
-| CLI | `mcpx settings list`, `mcpx settings get <path>` | `mcpx settings set <path> <value> [--persist runtime\|project\|user]`, `mcpx settings unset <path>` |
-| `/v1` | `GET /v1/settings`, `GET /v1/settings/{path}` | `PUT /v1/settings/{path}`, `DELETE /v1/settings/{path}` |
-| MCP | `mcpx_settings_list`, `mcpx_settings_get` | `mcpx_settings_set`, `mcpx_settings_unset` |
+| surface     | read                                             | change                                                                                              |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| config file | any `mcpx` config on the search path             | edit it                                                                                             |
+| environment | `MCPX_*`                                         | export it                                                                                           |
+| CLI         | `mcpx settings list`, `mcpx settings get <path>` | `mcpx settings set <path> <value> [--persist runtime\|project\|user]`, `mcpx settings unset <path>` |
+| `/v1`       | `GET /v1/settings`, `GET /v1/settings/{path}`    | `PUT /v1/settings/{path}`, `DELETE /v1/settings/{path}`                                             |
+| MCP         | `mcpx_settings_list`, `mcpx_settings_get`        | `mcpx_settings_set`, `mcpx_settings_unset`                                                          |
 
-`mcpx settings list` resolves locally, which is what the *client* will use.
+`mcpx settings list` resolves locally, which is what the _client_ will use.
 `--daemon` asks the daemon what it resolved, which is what a daemon-scoped
 setting actually is. The two differing is information, not a bug: it is
 exactly the case that used to be invisible.
 
 `--persist runtime` changes the running daemon and nothing on disk, which is
 what an experiment wants. `project` and `user` write the corresponding
-configuration file *and* apply at once where the setting allows it -- a change
+configuration file _and_ apply at once where the setting allows it -- a change
 written to a file but not applied would leave `mcpx settings get` answering
 with the old value, which reads as the write having failed.
 
@@ -119,11 +130,11 @@ with the old value, which reads as the write having failed.
 Servers are configuration too, and until now adding one meant an editor and a
 restart.
 
-| surface | list | add | remove |
-| --- | --- | --- | --- |
-| CLI | `mcpx servers list` | `mcpx servers add <name> -- <cmd>...`, `mcpx registry add <n> --write` | `mcpx servers remove <name>` |
-| `/v1` | `GET /v1/servers` | `POST /v1/servers` | `DELETE /v1/servers/{name}` |
-| MCP | `mcpx_servers_list` | `mcpx_servers_add` | `mcpx_servers_remove` |
+| surface | list                | add                                                                    | remove                       |
+| ------- | ------------------- | ---------------------------------------------------------------------- | ---------------------------- |
+| CLI     | `mcpx servers list` | `mcpx servers add <name> -- <cmd>...`, `mcpx registry add <n> --write` | `mcpx servers remove <name>` |
+| `/v1`   | `GET /v1/servers`   | `POST /v1/servers`                                                     | `DELETE /v1/servers/{name}`  |
+| MCP     | `mcpx_servers_list` | `mcpx_servers_add`                                                     | `mcpx_servers_remove`        |
 
 The entry is written to a configuration file and the daemon reloads, so the
 server is callable immediately and is still there tomorrow. A server whose
@@ -137,14 +148,14 @@ edit by hand therefore takes effect within `daemon.reapInterval` without
 anything being restarted.
 
 Making that work required changing what identifies a daemon. The socket used
-to be keyed to the *contents* of the config files, so that editing one got a
+to be keyed to the _contents_ of the config files, so that editing one got a
 fresh daemon rather than a stale one. A daemon that reloads changes the
 contents of the files it is keyed by, which moves its own key, which makes it
 unreachable by the client that just edited it -- and hands the next command a
 different daemon that happens to match the new key with old servers loaded.
 That was observed: `mcpx servers remove` succeeded, the file was correct, and
 the next `mcpx servers list` showed the removed server. The key is now the
-file *set*, and staleness is handled where it belongs.
+file _set_, and staleness is handled where it belongs.
 
 ### Hiding tools
 
@@ -157,19 +168,18 @@ the MCP pass-through -- and a call to it by name is refused with 400.
 {
   "pool": { "excludeTools": ["delete_*"] },
   "mcpServers": {
-    "datadog": { "command": "mcp-remote", "args": ["..."],
-      "mcpx": { "excludeTools": ["execute_*", "/^(update|upsert)_.*dashboard/"] } }
+    "datadog": { "command": "mcp-remote", "args": ["..."], "mcpx": { "excludeTools": ["execute_*", "/^(update|upsert)_.*dashboard/"] } }
   }
 }
 ```
 
 Each entry is one of:
 
-| entry | means | example |
-| --- | --- | --- |
-| `/.../` | a Go regular expression, unanchored as regexps are | `/delete/`, `/^delete_/` |
-| contains `*`, `?` or `[` | a glob over the whole name: `*` any run, `?` one character, `[a-z]` / `[!a-z]` a class | `delete_*`, `*_monitor` |
-| anything else | the exact tool name | `delete_datadog_workflow` |
+| entry                    | means                                                                                  | example                   |
+| ------------------------ | -------------------------------------------------------------------------------------- | ------------------------- |
+| `/.../`                  | a Go regular expression, unanchored as regexps are                                     | `/delete/`, `/^delete_/`  |
+| contains `*`, `?` or `[` | a glob over the whole name: `*` any run, `?` one character, `[a-z]` / `[!a-z]` a class | `delete_*`, `*_monitor`   |
+| anything else            | the exact tool name                                                                    | `delete_datadog_workflow` |
 
 A pattern that cannot compile is a configuration error naming the field, not
 a rule that silently matches nothing.
@@ -218,7 +228,7 @@ drifted: two settings were missing an alias their flag really answers to.
 `mcpx config --schema --plumbing` prints the same inventory, and
 `mcpx settings list` prints it with the values that are actually in force.
 
-Entries marked *(plumbing)* are internals. They work and they are supported,
+Entries marked _(plumbing)_ are internals. They work and they are supported,
 but there is no ordinary reason to change one, so they are kept out of
 ordinary help rather than hidden -- a flag a user can find in the source and
 that `--help` denies exists is worse than a long list.
@@ -308,6 +318,10 @@ and a switch to turn the report off would have kept it quiet.
 | `daemon.saveInterval` | duration | `5m` | daemon | no | `--daemon-save-interval` | `MCPX_DAEMON_SAVE_INTERVAL` | *(plumbing)* how often daemon state is written to disk |
 | `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
 | `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
+| `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name |
+| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate |
+| `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard |
+| `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard |
 | `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup |
 | `daemon.warmTimeout` | duration | `3m0s` | daemon | no | `--daemon-warm-timeout` | `MCPX_DAEMON_WARM_TIMEOUT` | *(plumbing)* how long the background schema fetch may take |
 | `daemon.watchConfig` | bool | `true` | daemon | yes | `--daemon-watch-config` | `MCPX_DAEMON_WATCH_CONFIG` | re-read the configuration files when they change on disk |
@@ -364,7 +378,9 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `hooks` | string | *(empty)* | daemon | no | `--hooks` | `MCPX_HOOKS` | config-declared hooks over the event bus: a JSON array of hook objects |
 | `hooks.autonomy` | enum | `run` | call | yes | `--hooks-autonomy` | `MCPX_HOOKS_AUTONOMY` | whether configured script hooks (before, onSuccess, onError) run |
+| `hooks.timeout` | duration | `2s` | daemon | no | `--hooks-timeout` | `MCPX_HOOKS_TIMEOUT` | the hard timeout for a declared hook that does not set its own |
 
 ### http
 
@@ -431,6 +447,7 @@ and a switch to turn the report off would have kept it quiet.
 | `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for |
 | `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching |
 | `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders |
+| `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins |
 | `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for |
 | `paths.state` | string | *(empty)* | client | no | `--paths-state` | `MCPX_PATHS_STATE`, `MCPX_STATE_DIR` | where the daemon socket, logs and index live |
 
@@ -622,6 +639,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp |
+| `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins |
 | `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line |
 | `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes |
 
@@ -634,3 +652,29 @@ and a switch to turn the report off would have kept it quiet.
 | `upstream.protocol` | enum | `prefer-discover` | daemon | no | `--upstream-protocol` | `MCPX_UPSTREAM_PROTOCOL` | which request to send first to a server that names no protocol of its own; one of prefer-discover (also modern, prefer-modern, prefer-stateless, prefer-newest), prefer-initialize (also legacy, prefer-legacy, prefer-session, prefer-oldest), force-discover (also force-modern, force-stateless), force-initialize (also force-legacy, force-session), follow |
 
 <!-- END GENERATED -->
+
+## Adapter declarations
+
+An entry in a `paths.adapters` file names a program and the subcommands worth
+exposing. `command` is normally a binary on `PATH`; `runtime` makes it a
+script instead, and resolves the interpreter for you:
+
+```jsonc
+{ "adapters": [{
+  "name": "reports", "command": "./tools/report.py", "runtime": "py",
+  "tools": [{ "name": "daily", "params": [{ "name": "day", "required": true }] }]
+}] }
+```
+
+`runtime` is `bash`, `js`, `ts` or `py`. bash resolves `bash` (then `sh`), py
+resolves `python3` (then `python`), and js/ts use the same deno/bun/node order
+`script.runtimeOrder` chooses for `mcpx exec`. This is a separate resolver on
+purpose: `script.runtime` names the runtime mcpx itself executes generated
+scripts on, not the one a declaration asks for. A relative `command` resolves
+against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
+changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
+check` reports a missing interpreter or script.
+
+`mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
+exposed against the recipe budget, and which recipes were kept out by a name
+collision or the cap.

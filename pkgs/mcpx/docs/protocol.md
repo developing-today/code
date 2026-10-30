@@ -303,6 +303,22 @@ the rest of this page:
   2026-07-28 request. Every `/mcp` client used to share the daemon's pid and
   cwd, and so one stateful instance and one set of artifacts.
 
+#### MCP over ssh
+
+An MCP host that can only spawn a process gets a remote daemon the same way
+the CLI does: with ssh as the transport and no streamable-HTTP endpoint to
+configure.
+
+```json
+{"mcpServers":{"mcpx":{"command":"ssh","args":["buildbox","mcpx","serve","--transport","stdio"]}}}
+```
+
+`mcpx serve` on the remote host is a stdio shim over the daemon **there**, so
+the tool calls, elicitations and artifact bytes all belong to that daemon. No
+port is opened and the only credential is the ssh one. For a client that sets
+a daemon endpoint instead, `ssh://buildbox` is the shorter form and the client
+starts ssh itself — see [`remote.md`](./remote.md).
+
 ---
 
 ### 2.5 Pass-through: upstreams under their own names

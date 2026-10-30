@@ -432,15 +432,44 @@ export class ActionsStore {
   }
 
   private async doLoad(): Promise<void> {
+    // #1452: a missing file is the only silent empty start ("no store
+    // yet"). An unparseable or wrongly-shaped file is NOT an empty
+    // store: it is the append-only audit history, so quarantine the
+    // original bytes to <file>.corrupt-<timestamp>, start empty, and
+    // log loudly — the next persist then writes a fresh valid file and
+    // never touches the quarantined copy.
+    let raw: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as ActionsFile).actions)) {
-        this.actions = (parsed as ActionsFile).actions.filter(
-          (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
-        );
-      }
+      raw = await readFile(this.file, "utf8");
     } catch {
       this.actions = []; // no store yet — the first write creates it
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ActionsFile).actions)) {
+        throw new Error("store file does not have the expected { actions: [...] } shape");
+      }
+      this.actions = (parsed as ActionsFile).actions.filter(
+        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
+      );
+    } catch (err) {
+      this.actions = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
     }
   }
 

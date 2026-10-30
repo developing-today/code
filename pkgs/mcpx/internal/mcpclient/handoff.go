@@ -295,6 +295,7 @@ func Resume(t Transport, s Session, o Options) *Client {
 		c.probeTimeout = defaults.UpstreamProbeTimeout
 	}
 	c.modern.Store(s.Era == EraModern)
+	c.negotiated.Store(s.Negotiated)
 	return c
 }
 
