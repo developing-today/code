@@ -358,6 +358,12 @@ describe("renderProgramProject", () => {
     const labHtml = renderProgramProject(buildProjectDetail(lab, items, pool, rows), items, PROV);
     expect(labHtml).toContain("Status report:");
     expect(labHtml).toContain("doc/2026-10-27T03-14-08Z_status_basement-cluster");
+    // #1123: projects without a statusReport say so explicitly instead of
+    // silently omitting the layer; lab-cluster (the one project with a
+    // report) must not carry the note.
+    expect(labHtml).not.toContain("No status report yet");
+    expect(mcpxHtml).toContain("No status report yet for this project.");
+    expect(cloudHtml).toContain("No status report yet for this project.");
     expect(labHtml).toContain("CPCOE-29381");
 
     const id = projectConfigById("id")!;

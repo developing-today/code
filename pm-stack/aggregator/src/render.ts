@@ -4759,6 +4759,8 @@ export function renderProgramProject(
   }
   if (config.statusReport) {
     linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
+  } else {
+    linkBits.push(`<span class="muted">No status report yet for this project.</span>`);
   }
   for (const l of config.dashboardLinks ?? []) {
     linkBits.push(
