@@ -34,11 +34,11 @@ import (
 // another machine cannot be asked to. POST /v1/exec is the same execution
 // through the same service, with the daemon as the host.
 func (s *Server) routesExec(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/exec", s.handleExec)
-	mux.HandleFunc("POST /v1/artifacts", s.handleArtifactPut)
-	mux.HandleFunc("GET /v1/artifacts", s.handleArtifactList)
-	mux.HandleFunc("GET /v1/artifacts/{id}", s.handleArtifactGet)
-	mux.HandleFunc("DELETE /v1/artifacts/{id}", s.handleArtifactDelete)
+	s.route(mux, "POST /v1/exec", s.handleExec)
+	s.route(mux, "POST /v1/artifacts", s.handleArtifactPut)
+	s.route(mux, "GET /v1/artifacts", s.handleArtifactList)
+	s.route(mux, "GET /v1/artifacts/{id}", s.handleArtifactGet)
+	s.route(mux, "DELETE /v1/artifacts/{id}", s.handleArtifactDelete)
 }
 
 // ---- resolved settings, daemon side ----

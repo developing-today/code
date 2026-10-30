@@ -1433,6 +1433,9 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	if err := c.call(ctx, "prompts/get", params, &raw); err != nil {
 		return nil, err
 	}
+	if err := ValidatePromptResult(raw); err != nil {
+		return nil, fmt.Errorf("prompts/get %q: invalid result from upstream: %w", name, err)
+	}
 	return raw, nil
 }
 
