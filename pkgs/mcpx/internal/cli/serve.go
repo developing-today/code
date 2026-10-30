@@ -296,6 +296,31 @@ func renderExec(res execsvc.Result) (string, error) {
 		}
 		return "", errors.New(res.Error)
 	}
+	// A hook may have replaced the result after the script ran -- an
+	// onSuccess transform, or an onError recovery for a script that
+	// printed nothing. res.Result then no longer matches what stdout
+	// parses to, and the replacement is the outcome the caller must
+	// see; the raw stdout stays available after it.
+	if res.Result != nil {
+		if b, merr := json.Marshal(res.Result); merr == nil {
+			fromStdout := false
+			if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
+				var sv any
+				if json.Unmarshal([]byte(trimmed), &sv) == nil {
+					if sb2, serr := json.Marshal(sv); serr == nil && string(sb2) == string(b) {
+						fromStdout = true
+					}
+				}
+			}
+			if !fromStdout {
+				if text != "" {
+					text = string(b) + "\n\nstdout:\n" + text
+				} else {
+					text = string(b)
+				}
+			}
+		}
+	}
 	if text == "" && len(res.Artifacts) == 0 {
 		return "(the script printed nothing; use console.log or emit to return a value)", nil
 	}

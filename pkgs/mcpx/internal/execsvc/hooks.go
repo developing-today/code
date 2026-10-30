@@ -193,6 +193,14 @@ func (s *Service) runHooks(ctx context.Context, phase string, hooks []Hook, hctx
 
 	var runs []hookRun
 	for _, h := range hooks {
+		// The context is refreshed from the current outcome before every
+		// hook, so a transform sees what the hook before it produced and
+		// transformations compose in declaration order rather than every
+		// hook reading the outcome the script itself left.
+		hctx.Result, hctx.Error = res.Result, res.Error
+		hctx.Diagnostic = hookDiagnostic(res.Error)
+		hctx.ExitCode = res.ExitCode
+		hctx.Artifacts = res.Artifacts
 		run := s.runOneHook(ctx, phase, h, hctx, ropts, res, emit)
 		run.Frame.Effect = effectFor(phase)
 		run.Frame.Original = applyHookResult(&run, phase, res)
@@ -260,7 +268,11 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 		res.Emits = append(res.Emits, v.Value)
 		emit(Frame{Type: FrameEmit, Value: v.Value})
 	}
-	opts.OnArtifact = nil
+	// The run's own artifact handler stays: an artifact a hook produces is
+	// an artifact of the run, recorded and framed the same way. RunWith
+	// reconciles and delivers after the post-execution hooks, so a hook's
+	// artifacts reach the caller like the script's own.
+	opts.OnArtifact = ropts.OnArtifact
 	opts.Timeout = hookTimeout
 
 	// A hook named as a file is run as a file, so it can be the ordinary
@@ -270,7 +282,10 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 	if p, ok := s.hookFile(script, opts.Dir); ok {
 		opts.File, opts.Source = p, ""
 	} else {
-		opts.File, opts.Source = "", opts.Prelude+script+"\n"
+		// Source alone: runner.Run prepends opts.Prelude itself, so folding
+		// the prelude in here would bind the generated imports twice and
+		// every inline hook would fail with a syntax error.
+		opts.File, opts.Source = "", script+"\n"
 	}
 
 	hctxCtx, cancel := context.WithTimeout(ctx, hookTimeout)
@@ -342,6 +357,13 @@ func applyHookResult(r *hookRun, phase string, res *Result) json.RawMessage {
 	case HookOnSuccess:
 		res.Result = v
 	case HookOnError:
+		// The original outcome on this path is the error, not the result
+		// value (usually nil for a thrown exception): record it before it
+		// is cleared, or the frame claims a replacement happened while
+		// showing the consumer nothing of what was replaced.
+		if res.Error != "" {
+			original, _ = json.Marshal(map[string]any{"error": res.Error})
+		}
 		res.Result = v
 		res.Error = ""
 		res.ExitCode = 0

@@ -565,15 +565,24 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
-	rres, rerr := runner.Run(runCtx, ropts)
-	if s.Release != nil && session != "" {
-		relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
-		_ = s.Release(relCtx, session)
-		relCancel()
+	// Session release happens after every hook has run, not here: the
+	// daemon wires Release to stopping the session's caller-private
+	// instances, and an onSuccess/onError/suffix hook may still need the
+	// servers the script used -- or start ones that this release must also
+	// stop. One closure, called on every exit path below.
+	release := func() {
+		if s.Release != nil && session != "" {
+			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
+			_ = s.Release(relCtx, session)
+			relCancel()
+		}
 	}
+
+	rres, rerr := runner.Run(runCtx, ropts)
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.
+		release()
 		return res, sinkErr
 	}
 	if rres == nil {
@@ -588,6 +597,17 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		res.Error = msg
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
+		// Suffix is documented as running on both paths: a `before` hook
+		// that allocated something is owed its cleanup even when the main
+		// script never started (a type error, an unreadable launcher).
+		if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
+			hookCtx.Phase = HookSuffix
+			hookCtx.Error = res.Error
+			hookCtx.Diagnostic = hookDiagnostic(res.Error)
+			hookCtx.ExitCode = res.ExitCode
+			s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
+		}
+		release()
 		code := res.ExitCode
 		emitFrame(Frame{Type: FrameEnd, ExitCode: &code})
 		if rerr == nil {
@@ -616,6 +636,14 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
+	if res.Error == "" && res.ExitCode != 0 {
+		// A script that exits nonzero without writing anything -- the
+		// plain `process.exit(1)` -- has still failed: without an error
+		// here it would be classified onSuccess and its onError hooks
+		// would never run. The exit status itself is the context.
+		res.Error = fmt.Sprintf("script exited with code %d", res.ExitCode)
+	}
+
 	// A script whose stdout is JSON almost always means it as its answer, so
 	// it is offered parsed as well as raw. The same rule `mcpx --json run`
 	// has always followed, kept identical so the two agree.
@@ -624,20 +652,6 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
 		}
-	}
-
-	// Anything the script registered that did not reach the stderr channel
-	// -- a crash after the upload, a runtime that buffered the last line --
-	// is still in the index. Reconciled here so the result is the store's
-	// account rather than the script's.
-	s.reconcile(res, runID)
-
-	if s.Limits.InterceptImages && opts.WantsArtifacts() {
-		s.interceptMedia(res, runID, session)
-	}
-
-	if err := s.deliver(res, opts); err != nil {
-		res.Error = strings.TrimSpace(res.Error + "\n" + err.Error())
 	}
 
 	// `onSuccess` and `onError` finish before the result or error frame, so
@@ -660,6 +674,22 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
+	// Anything the script -- or a post-execution hook -- registered that
+	// did not reach the stderr channel (a crash after the upload, a runtime
+	// that buffered the last line) is still in the index. Reconciled only
+	// now, after the outcome hooks, so artifacts a hook produced are in
+	// the result and delivered like the script's own.
+	s.reconcile(res, runID)
+
+	if s.Limits.InterceptImages && opts.WantsArtifacts() {
+		s.interceptMedia(res, runID, session)
+	}
+
+	if err := s.deliver(res, opts); err != nil {
+		res.Error = strings.TrimSpace(res.Error + "\n" + err.Error())
+		hookCtx.Error = res.Error
+	}
+
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})
 	} else if res.Result != nil {
@@ -677,6 +707,8 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		hookCtx.Result, hookCtx.Error = res.Result, res.Error
 		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
 	}
+
+	release()
 
 	code := res.ExitCode
 	emitFrame(Frame{Type: FrameEnd, ExitCode: &code, DurationMs: res.DurationMs})

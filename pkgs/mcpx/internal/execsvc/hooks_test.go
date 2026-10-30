@@ -170,3 +170,91 @@ func TestAnUnknownHookPhaseIsRefusedBeforeAnythingRuns(t *testing.T) {
 		t.Errorf("an unknown phase must be refused up front: %v", err)
 	}
 }
+
+// Regression: successive transforms must compose. Each hook reads the
+// outcome the previous hook left, so two +1 hooks on {total: 2} give 4,
+// not 3 (Codex review on #2616).
+func TestSuccessiveOnSuccessHooksCompose(t *testing.T) {
+	svc := service(t, store(t))
+	inc := readCtx + `
+console.log(JSON.stringify({ apply: { total: (ctx.result?.total ?? 0) + 1 } }));`
+	res, _ := run(t, svc, `
+console.log(JSON.stringify({ total: 2 }));
+`, execsvc.Options{Hooks: []execsvc.Hook{
+		{Phase: execsvc.HookOnSuccess, Script: inc},
+		{Phase: execsvc.HookOnSuccess, Script: inc},
+	}})
+	m, ok := res.Result.(map[string]any)
+	if !ok || m["total"] != float64(4) {
+		t.Fatalf("two +1 transforms on {total: 2} should compose to 4: %#v", res.Result)
+	}
+}
+
+// Regression: a script that exits nonzero without writing anything has
+// still failed -- it takes the onError path, and without a hook the exit
+// status itself is the recorded error (Codex review on #2616).
+func TestNonzeroExitWithoutOutputTakesTheErrorPath(t *testing.T) {
+	svc := service(t, store(t))
+	exit1 := `
+const g = globalThis as any;
+if (g.Deno?.exit) g.Deno.exit(1); else if (g.process?.exit) g.process.exit(1);
+`
+	res, _ := run(t, svc, exit1, execsvc.Options{})
+	if res.Error == "" || !strings.Contains(res.Error, "code 1") {
+		t.Fatalf("a bare nonzero exit should record the exit status as the error: %+v", res)
+	}
+
+	res, frames := run(t, svc, exit1, execsvc.Options{Hooks: []execsvc.Hook{
+		{Phase: execsvc.HookOnError, Script: readCtx + `
+console.log(JSON.stringify({ apply: { recovered: true, saw: ctx.error ?? "" } }));`},
+	}})
+	if res.Error != "" {
+		t.Fatalf("the onError hook should have recovered the bare exit: %q", res.Error)
+	}
+	if m, ok := res.Result.(map[string]any); !ok || m["recovered"] != true ||
+		!strings.Contains(m["saw"].(string), "code 1") {
+		t.Errorf("the recovery should carry the exit-status error it saw: %#v", res.Result)
+	}
+	if hs := hookFrames(frames); len(hs) != 1 || hs[0].Hook.Phase != execsvc.HookOnError {
+		t.Errorf("a bare nonzero exit must run onError hooks, frames = %v", frames)
+	}
+}
+
+// Regression: when an onError hook replaces a failure, its frame's
+// original carries the error it replaced -- for a thrown exception the
+// result value is nil, so recording the result recorded nothing
+// (Codex review on #2616).
+func TestOnErrorFramePreservesTheOriginalError(t *testing.T) {
+	svc := service(t, store(t))
+	_, frames := run(t, svc, `
+throw new Error("boom-original");
+`, execsvc.Options{Hooks: []execsvc.Hook{
+		{Phase: execsvc.HookOnError, Script: `console.log(JSON.stringify({ apply: { recovered: true } }));`},
+	}})
+	hs := hookFrames(frames)
+	if len(hs) != 1 || !hs[0].Hook.Changed {
+		t.Fatalf("expected one changed onError hook frame: %v", frames)
+	}
+	if !strings.Contains(string(hs[0].Hook.Original), "boom-original") {
+		t.Errorf("the frame's original must preserve the replaced error: %s", hs[0].Hook.Original)
+	}
+}
+
+// Regression: suffix cleanup runs when the main script never starts --
+// a before hook that allocated something is owed its cleanup on the
+// preflight-failure path too (Codex review on #2616).
+func TestSuffixHookRunsWhenTheScriptNeverStarts(t *testing.T) {
+	svc := service(t, store(t))
+	res, frames := run(t, svc, `
+const broken = ;
+`, execsvc.Options{Hooks: []execsvc.Hook{
+		{Phase: execsvc.HookSuffix, Script: `console.log(JSON.stringify({ advise: "cleaned up" }));`},
+	}})
+	if res.Error == "" {
+		t.Fatalf("the type-broken script should have failed: %+v", res)
+	}
+	hs := hookFrames(frames)
+	if len(hs) != 1 || hs[0].Hook.Phase != execsvc.HookSuffix || hs[0].Hook.Advice != "cleaned up" {
+		t.Errorf("the suffix hook should have run on the startup-failure path: %v", frames)
+	}
+}
