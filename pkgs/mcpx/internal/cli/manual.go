@@ -550,7 +550,14 @@ func handCommands() []Command {
 		{
 			Name: "help", Group: "configuration",
 			Local: "Text about the binary, produced by the binary.",
-			Usage: "[command]", Summary: "show this help, or help for one command",
+			Usage: "[command|agents]", Summary: "show this help, or help for one command",
+			Detail: "`mcpx help agents` is a topic rather than a command: it prints " +
+				"the agent documentation (AGENTS.md) embedded in the binary, " +
+				"verbatim, so an agent with the binary but no repository or " +
+				"network still gets documentation matching its version.",
+			Examples: []string{
+				"mcpx help agents",
+			},
 		},
 		{
 			Name: "man", Group: "configuration",
