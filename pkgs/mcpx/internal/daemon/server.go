@@ -1189,6 +1189,10 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		dur := time.Since(start).Truncate(time.Millisecond)
+		// Batch items bypass the single-call handlers, so report each
+		// completed one here: a script's batch(...) calls belong in
+		// its exec stream like any other call.
+		s.reportCallFrame(ctx, server, tool, args, start, res, err)
 
 		if err != nil {
 			return map[string]any{

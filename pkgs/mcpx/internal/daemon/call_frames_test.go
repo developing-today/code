@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -104,6 +105,35 @@ func TestHandleCallReportingEmitsCallFrame(t *testing.T) {
 	}
 	if len(*frames) != 1 {
 		t.Fatalf("frames = %v, want the one completed call reported", *frames)
+	}
+	c := (*frames)[0].Call
+	if c == nil || c.Server != "nope" || c.Tool != "x" || c.OK {
+		t.Fatalf("call frame = %+v, want a failed nope.x frame", c)
+	}
+}
+
+// Batch calls go through handleBatch, not the single-call handlers, so
+// it must report each completed item itself: a script's batch(...)
+// calls belong in its exec stream like any other call.
+func TestHandleBatchEmitsCallFrames(t *testing.T) {
+	srv, err := NewServer(handoffOptions(handoffPaths(t),
+		&config.Config{MCPServers: map[string]*config.Server{}}, "v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := collectFrames(srv, "run-10")
+	body := []byte(`{"calls":[{"server":"nope","tool":"x","args":{}}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/batch", bytes.NewReader(body))
+	req.Header.Set("X-Mcpx-Run", "run-10")
+	w := httptest.NewRecorder()
+
+	srv.handleBatch(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch: status %d (body %s)", w.Code, w.Body.String())
+	}
+	if len(*frames) != 1 {
+		t.Fatalf("frames = %v, want the one completed batch item reported", *frames)
 	}
 	c := (*frames)[0].Call
 	if c == nil || c.Server != "nope" || c.Tool != "x" || c.OK {

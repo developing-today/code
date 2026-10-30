@@ -249,24 +249,47 @@ func ArgsHash(args any) string {
 // is executing are dropped, by design: there is no stream to join.
 type CallRegistry struct {
 	mu    sync.Mutex
-	sinks map[string]func(Frame)
+	sinks map[string]*callSink
+}
+
+// callSink is one run's registered sink plus its delivery lifetime:
+// closed stops new reports, and wg counts the reports in flight, so
+// unregistering can drain them instead of racing them.
+type callSink struct {
+	sink   func(Frame)
+	closed bool
+	wg     sync.WaitGroup
 }
 
 // NewCallRegistry builds an empty registry.
 func NewCallRegistry() *CallRegistry {
-	return &CallRegistry{sinks: map[string]func(Frame){}}
+	return &CallRegistry{sinks: map[string]*callSink{}}
 }
 
 // Register installs sink for runID and returns the function that
 // removes it. Registering the same run twice replaces the first sink.
+//
+// The returned unregister is idempotent and draining: it closes the
+// sink to new reports, then waits for any report already being
+// delivered to finish. A run's stream can therefore be closed before
+// its terminal frames with a guarantee that no call frame lands
+// after them — or after the stream's handler has returned.
 func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func()) {
+	entry := &callSink{sink: sink}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sinks[runID] = sink
+	r.sinks[runID] = entry
+	r.mu.Unlock()
+	var once sync.Once
 	return func() {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		delete(r.sinks, runID)
+		once.Do(func() {
+			r.mu.Lock()
+			if r.sinks[runID] == entry {
+				delete(r.sinks, runID)
+			}
+			entry.closed = true
+			r.mu.Unlock()
+			entry.wg.Wait()
+		})
 	}
 }
 
@@ -274,11 +297,20 @@ func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func
 // for runID. It reports whether a sink was there to receive it.
 func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time.Duration, callErr error, destructive *bool) bool {
 	r.mu.Lock()
-	sink, ok := r.sinks[runID]
+	entry, ok := r.sinks[runID]
+	if ok && !entry.closed {
+		// Counted under mu: unregister closes the entry under the
+		// same lock before it waits, so an Add can never race its
+		// Wait once the entry is closed.
+		entry.wg.Add(1)
+	} else {
+		ok = false
+	}
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
+	defer entry.wg.Done()
 	info := &CallInfo{
 		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
 		DurationMs: dur.Milliseconds(), OK: callErr == nil,
@@ -287,7 +319,7 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	if callErr != nil {
 		info.Error = callErr.Error()
 	}
-	sink(Frame{Type: FrameCall, RunID: runID, Call: info})
+	entry.sink(Frame{Type: FrameCall, RunID: runID, Call: info})
 	return true
 }
 
@@ -564,9 +596,13 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// to make: the daemon's call path finds it by run id and reports
 	// each call as a call frame, interleaved with the run's own output
 	// exactly where it happened.
+	unregisterCalls := func() {}
 	if s.Calls != nil {
-		defer s.Calls.Register(runID, emitFrame)()
+		unregisterCalls = s.Calls.Register(runID, emitFrame)
 	}
+	// Safety net only: the explicit close below, before the terminal
+	// frames, is the one that orders call frames ahead of them.
+	defer unregisterCalls()
 
 	var stdout strings.Builder
 	priorStdout := ropts.Stdout
@@ -641,6 +677,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		_ = s.Release(relCtx, session)
 		relCancel()
 	}
+	// Close call-frame delivery before the terminal frames below:
+	// unregistering drains a report already in flight (a tool request
+	// finishing just as the script exits or times out) so its call
+	// frame lands here, in order, and drops any report that comes
+	// later — nothing may be written to the stream after end.
+	unregisterCalls()
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.

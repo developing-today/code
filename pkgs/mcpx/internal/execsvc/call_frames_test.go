@@ -48,6 +48,48 @@ func TestCallRegistryReportsOnlyToTheRegisteredRun(t *testing.T) {
 	}
 }
 
+// Unregistering must drain a report that is already being delivered:
+// the frame lands, unregister returns only after it does, and later
+// reports for the run are dropped. Without the drain, a call finishing
+// as its run ends could be written after the run's terminal frames —
+// or after the stream's handler has returned.
+func TestCallRegistryUnregisterDrainsInFlightReports(t *testing.T) {
+	reg := execsvc.NewCallRegistry()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unregister := reg.Register("run-1", func(f execsvc.Frame) {
+		once.Do(func() { close(entered) })
+		<-release
+	})
+	reported := make(chan bool, 1)
+	go func() {
+		reported <- reg.ReportCall("run-1", "srv", "tool", nil, time.Millisecond, nil, nil)
+	}()
+	<-entered
+	unregistered := make(chan struct{})
+	go func() {
+		unregister()
+		close(unregistered)
+	}()
+	select {
+	case <-unregistered:
+		t.Fatal("unregister returned while a report was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if ok := <-reported; !ok {
+		t.Fatal("the in-flight report should be delivered, not dropped")
+	}
+	<-unregistered
+	if reg.ReportCall("run-1", "srv", "tool", nil, time.Millisecond, nil, nil) {
+		t.Fatal("a report after unregister must be dropped")
+	}
+	// Unregister is idempotent: RunWith defers it after calling it
+	// explicitly before the terminal frames.
+	unregister()
+}
+
 // documentedGroups reads the frame-order block in docs/exec.md and
 // returns its groups in order: one entry per line of the block, each
 // the set of frame kinds that line allows.
