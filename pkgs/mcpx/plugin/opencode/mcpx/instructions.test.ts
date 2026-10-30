@@ -47,7 +47,15 @@ const tempRoot = (): string => {
 
 const savedEnv = { ...process.env }
 afterEach(() => {
-  process.env = { ...savedEnv }
+  // Restore in place, on the original process.env object: replacing
+  // process.env wholesale does not restore the native environment that
+  // node:os.tmpdir() reads under Bun, so the scratch TMPDIR leaked into
+  // later test files (daemon.test.ts then failed with ENOENT creating
+  // temp directories). Delete added keys, reassign saved ones.
+  for (const key of Object.keys(process.env)) {
+    if (!(key in savedEnv)) delete process.env[key]
+  }
+  Object.assign(process.env, savedEnv)
   for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
