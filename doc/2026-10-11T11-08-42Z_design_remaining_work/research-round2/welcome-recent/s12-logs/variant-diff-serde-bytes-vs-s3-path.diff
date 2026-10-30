@@ -7,16 +7,16 @@ diff -ru /home/user/work/spikes/s3-history/patched/p2panda-encryption/src/two_pa
      /// Secret message for the receiver.
 +    #[serde(with = "serde_bytes")]
      plaintext: Vec<u8>,
- 
+
      /// Newly generated secret for the receiver, to be used in future 2SM rounds.
 diff -ru /home/user/work/spikes/s3-history/patched/p2panda-encryption/src/two_party/x3dh.rs variants/serde-bytes/p2panda-encryption/src/two_party/x3dh.rs
 --- /home/user/work/spikes/s3-history/patched/p2panda-encryption/src/two_party/x3dh.rs	2026-10-11 02:54:44.411136581 -0500
 +++ variants/serde-bytes/p2panda-encryption/src/two_party/x3dh.rs	2026-10-11 07:14:27.153120068 -0500
 @@ -38,6 +38,7 @@
      pub prekey_id: PreKeyId,
- 
+
      /// Encrypted payload for the receiver.
 +    #[serde(with = "serde_bytes")]
      pub ciphertext: Vec<u8>,
- 
+
      /// Ephemeral public key used for this session.

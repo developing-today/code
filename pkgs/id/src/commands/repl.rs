@@ -97,8 +97,8 @@ use crate::discovery::PeerAnnouncement;
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
 use crate::{
-    CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
-    export_blob, is_node_id, load_or_create_keypair, open_store,
+    CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, StoreType, export_blob,
+    is_node_id, load_or_create_keypair, open_store,
 };
 
 /// The current Unix time in seconds, or `0` if the clock is before the epoch.

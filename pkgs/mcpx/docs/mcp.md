@@ -46,7 +46,7 @@ default (`serve.mode` = `code-mode`) is the gateway: the named
 tools (`mcpx_exec` to run code next to the servers, `mcpx_call` for
 one direct call, `mcpx_search` / `mcpx_types` / `mcpx_catalog` for
 discovery) plus a generated `mcpx_<op>` tool for every operation in
-the `/v1` table — every one of them a way to *reach* the upstreams
+the `/v1` table — every one of them a way to _reach_ the upstreams
 through mcpx, never the upstreams' own schemas pasted into the
 list. Prompts are offered as `<namespace>_<prompt>` and resources
 as `mcpx://<namespace>/<uri>`.
@@ -85,13 +85,13 @@ rules are [protocol.md](./protocol.md) §4.
 
 The server-initiated requests mcpx answers for its upstreams:
 
-| request | how mcpx answers |
-| --- | --- |
-| `ping` | `{}` |
-| `roots/list` | the daemon's configured roots |
-| `elicitation/create` | through the broker — the question is routed to whoever can answer it, a host client included |
-| `sampling/createMessage` | through the broker; a decline becomes an error, because sampling has no decline result |
-| anything else | a `-32601` error — always answered, because silence is indistinguishable from a hung server |
+| request                  | how mcpx answers                                                                             |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `ping`                   | `{}`                                                                                         |
+| `roots/list`             | the daemon's configured roots                                                                |
+| `elicitation/create`     | through the broker — the question is routed to whoever can answer it, a host client included |
+| `sampling/createMessage` | through the broker; a decline becomes an error, because sampling has no decline result       |
+| anything else            | a `-32601` error — always answered, because silence is indistinguishable from a hung server  |
 
 A modern server asks the same things by answering `input_required`
 instead of sending a request; mcpx resolves those through the
@@ -127,9 +127,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const client = new Client({ name: "my-host", version: "1.0.0" });
-await client.connect(
-  new StreamableHTTPClientTransport(new URL("http://127.0.0.1:8899/mcp")),
-);
+await client.connect(new StreamableHTTPClientTransport(new URL("http://127.0.0.1:8899/mcp")));
 const tools = await client.listTools();
 const status = await client.callTool({ name: "mcpx_status", arguments: {} });
 ```
@@ -159,13 +157,13 @@ server SDK would be promising a thing nobody maintains.
 mcpx serves five revisions, in two eras, and speaks the same five
 upstream:
 
-| revision | era | mcpx serves | mcpx speaks upstream |
-| --- | --- | --- | --- |
+| revision     | era    | mcpx serves                                                                      | mcpx speaks upstream                                           |
+| ------------ | ------ | -------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | `2024-11-05` | legacy | yes, over stdio and Streamable HTTP; its HTTP+SSE server transport is not hosted | when the server answers with it; HTTP+SSE as the last fallback |
-| `2025-03-26` | legacy | yes | when the server answers with it |
-| `2025-06-18` | legacy | yes | when the server answers with it |
-| `2025-11-25` | legacy | yes | offered on every `initialize` |
-| `2026-07-28` | modern | yes | probed first |
+| `2025-03-26` | legacy | yes                                                                              | when the server answers with it                                |
+| `2025-06-18` | legacy | yes                                                                              | when the server answers with it                                |
+| `2025-11-25` | legacy | yes                                                                              | offered on every `initialize`                                  |
+| `2026-07-28` | modern | yes                                                                              | probed first                                                   |
 
 The split that matters: a legacy implementation negotiates once and
 can send its peer a request at any time afterwards; a modern one
@@ -192,7 +190,7 @@ for legacy clients that predate them — and sends nothing the
 client's revision never defined: every result is built in the
 newest shape and spelled down once, at the edge, so an older client
 is never handed a field it was never told about. The rule stops at
-removal: a method a client's revision *removed* is answered
+removal: a method a client's revision _removed_ is answered
 `-32601`, because the removal is the specification naming a
 replacement, and answering it anyway would hide which era the
 server is speaking.

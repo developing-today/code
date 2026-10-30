@@ -164,7 +164,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -204,8 +204,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
         html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
         html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add bulk tag\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" aria-label=\"Clear file selection\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
         html.push_str("<ul class=\"list-none m-0 p-0\">");
@@ -455,7 +455,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" aria-label=\"Save document\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
     html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
@@ -472,9 +472,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
     // Rename button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
@@ -641,8 +641,8 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -691,8 +691,8 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -1273,6 +1273,56 @@ mod tests {
     // ========================================================================
 
     #[test]
+    fn test_render_editor_action_buttons_have_aria_labels() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
+        assert!(
+            html.contains("aria-label=\"Save document\""),
+            "save button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "copy button should have aria-label"
+        );
+    }
+
+    #[test]
+    fn test_render_file_list_bulk_action_buttons_have_aria_labels() {
+        let page = FileListPage {
+            total: 1,
+            files: vec![FileInfo {
+                name: "test.txt".to_owned(),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            }],
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(
+            html.contains("aria-label=\"Add bulk tag\""),
+            "bulk tag button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Clear file selection\""),
+            "clear selection button should have aria-label"
+        );
+    }
+
+    #[test]
     fn test_render_editor_has_rename_button() {
         let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
         assert!(
@@ -1325,6 +1375,19 @@ mod tests {
     // ========================================================================
     // Media viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_media_viewer_action_buttons_have_aria_labels() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "media viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "media viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_media_viewer_has_rename_button() {
@@ -1426,6 +1489,19 @@ mod tests {
     // ========================================================================
     // Binary viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_binary_viewer_action_buttons_have_aria_labels() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "binary viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "binary viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_binary_viewer_has_rename_button() {

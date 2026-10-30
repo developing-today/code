@@ -27,8 +27,8 @@ proptest: If this test was run on a CI system, you may wish to add the following
 cc 8cd89d6c63862769cfd732a1acbc8561d6c3ee2a34f3e97f6d4adb6c3b4eb698
 
 thread 'concurrent_adds_survive_a_clear_that_did_not_see_them' (3407870) panicked at tests/props.rs:185:1:
-Test failed: assertion failed: `(left == right)` 
-  left: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}`, 
+Test failed: assertion failed: `(left == right)`
+  left: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}`,
  right: `{Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}`: replica 3 disagrees at tests/props.rs:227.
 minimal failing input: k = 1, seed = 261960309796579012
 	successes: 1
@@ -44,7 +44,7 @@ proptest: If this test was run on a CI system, you may wish to add the following
 cc 57d2a52eb0900310561132edf1c0ac794717944ed85ea61dc5d9de0ce9d48507
 
 thread 'clear_naming_unseen_dots_does_not_remove_them' (3407869) panicked at tests/props.rs:185:1:
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
   left: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }}`,
  right: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }}` at tests/props.rs:264.
 minimal failing input: seen = 3, unseen = 3, seed = 4086123853813234648

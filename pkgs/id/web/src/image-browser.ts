@@ -69,6 +69,9 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   // Dialog
   const dialog = document.createElement("div");
   dialog.className = "pm-image-browser-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Image Browser");
 
   // Header
   const header = document.createElement("div");
@@ -81,6 +84,7 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   const closeBtn = document.createElement("button");
   closeBtn.className = "pm-image-browser-close";
   closeBtn.textContent = "✕";
+  closeBtn.setAttribute("aria-label", "Close image browser");
   closeBtn.addEventListener("click", close);
 
   header.appendChild(title);
@@ -153,6 +157,9 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
         const card = document.createElement("div");
         card.className = "pm-image-browser-card";
         card.dataset.hash = img.hash;
+        card.setAttribute("role", "button");
+        card.setAttribute("tabindex", "0");
+        card.setAttribute("aria-label", `Select image ${img.name}`);
 
         const thumb = document.createElement("img");
         thumb.src = img.url;
@@ -187,6 +194,14 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
             console.warn("[image-browser] Insert failed:", err);
           } finally {
             close();
+          }
+        });
+
+        // Keyboard navigation (Enter / Space to select)
+        card.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            card.click();
           }
         });
 

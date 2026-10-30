@@ -78,6 +78,7 @@ var unreadAllowed = map[string]string{
 	// names nothing that exists, and config.ResolveChainFrom consumes
 	// the file-layer values to govern the chain itself in two passes
 	// (issue #1842) -- so it no longer belongs on this list.
+	"daemon.tsnetUpTimeout": "read by transport_tsnet.go without an accessor",
 	"paths.configFile": "a bootstrap setting: it names the file the settings are " +
 		"read from, so config.SearchPathFrom reads MCPX_CONFIG before any Set " +
 		"exists, and the global --config reaches App.ConfigPath the same way.",

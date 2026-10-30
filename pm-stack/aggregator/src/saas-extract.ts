@@ -10,8 +10,9 @@
 // Backblaze B2, Fly.io, and Baseten are deliberately NOT services
 // here: B2 is omitted until an account exists (§1.4), and Fly/Baseten
 // are unheld candidates with no meter and no renewal date.
-import { sectionOf } from "./quota-extract.ts";
+
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
+import { sectionOf } from "./quota-extract.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -651,6 +652,93 @@ export function extractSaasServices(doc: string): SaasService[] {
     const zoneDate = freshestDate(bullet(zone, /\*\*Last checked:\*\*/)) ?? freshestDate(zone);
     if (zoneDate && (!cf.measuredAt || zoneDate > cf.measuredAt)) cf.measuredAt = zoneDate;
   }
+  return services;
+}
+
+// --- Cloudflare live export overlay (#1048) ----------------------------------
+
+/** One metric row of a cloudflare-quota-export document. */
+export interface CloudflareExportMetric {
+  id: string;
+  used: number;
+  unit?: string;
+  source?: string;
+  detail?: string;
+  /** `used` is a lower bound (capped query), not an exact total. */
+  lowerBound?: boolean;
+}
+
+/** The file-export document written by pm-stack/cloudflare-export. */
+export interface CloudflareExportDoc {
+  service?: string;
+  source?: string;
+  status?: string;
+  measuredAt?: string | null;
+  cycleStart?: string;
+  billing?: { status?: string };
+  metrics?: CloudflareExportMetric[];
+}
+
+/** Freshness bound for preferring export values: the #1151 tick is
+ * 15 minutes, so > 30 min means the producer is unreachable/stale. */
+export const CLOUDFLARE_EXPORT_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Prefer a fresh cloudflare-export document's live values on the
+ * Cloudflare card (#1048): matching metric ids get `used` (and the
+ * derived percent) from the export, with the measured-at + source on
+ * the metric note. Limits stay the tracker's — the export carries no
+ * limits. A missing, failed, unparseable, or stale document changes
+ * nothing: the prose/null behaviour is the fallback, never an error.
+ */
+export function applyCloudflareExport(
+  services: SaasService[],
+  doc: CloudflareExportDoc | null,
+  nowMs: number = Date.now(),
+): SaasService[] {
+  if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
+  const measuredMs = Date.parse(doc.measuredAt);
+  if (!Number.isFinite(measuredMs)) return services;
+  if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
+  // A tick that ran just before a UTC month rollover carries the
+  // previous cycle's totals; overlaying them would compare a full month
+  // against a fresh one's limits. Documents without cycleStart (older
+  // producers) stay backwards compatible.
+  if (doc.cycleStart) {
+    const cycleMs = Date.parse(doc.cycleStart);
+    if (!Number.isFinite(cycleMs)) return services;
+    const cycle = new Date(cycleMs);
+    const current = new Date(nowMs);
+    if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
+      return services;
+    }
+  }
+  const cf = services.find((s) => s.id === "cloudflare");
+  if (!cf) return services;
+  const byId = new Map(
+    doc.metrics
+      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .map((m) => [m.id, m]),
+  );
+  if (!byId.size) return services;
+  cf.metrics = cf.metrics.map((m) => {
+    const live = byId.get(m.id);
+    if (!live) return m;
+    return {
+      ...m,
+      used: live.used,
+      ...(live.lowerBound ? { lowerBound: true } : {}),
+      percent: m.limit != null && m.limit > 0 ? Math.round((live.used / m.limit) * 1000) / 10 : m.percent,
+      note: `Live via ${live.source ?? doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}.${live.detail ? ` ${live.detail}` : ""}`,
+    };
+  });
+  cf.measuredAt = doc.measuredAt.slice(0, 10);
+  cf.sourceClass = "api";
+  cf.sourceNote = `Cloudflare live collector (#1048): ${doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}; limits + plan from quota-view.md Part (b)${
+    doc.billing?.status === "invoice-only"
+      ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)"
+      : ""
+  }`;
   return services;
 }
 
