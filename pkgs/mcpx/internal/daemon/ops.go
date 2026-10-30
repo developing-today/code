@@ -28,15 +28,15 @@ import (
 // route table. They live in their own file so the surface can grow without
 // the file that owns the daemon's lifecycle growing with it.
 func (s *Server) routesV1Ops(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/log", s.handleLogQuery)
-	mux.HandleFunc("GET /v1/stats", s.handleStats)
-	mux.HandleFunc("GET /v1/registry/search", s.handleRegistrySearch)
-	mux.HandleFunc("POST /v1/complete", s.handleComplete)
-	mux.HandleFunc("GET /v1/tasks", s.handleTasksList)
-	mux.HandleFunc("GET /v1/tasks/{id}", s.handleTaskGet)
-	mux.HandleFunc("GET /v1/tasks/{id}/result", s.handleTaskResult)
-	mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
-	mux.HandleFunc("GET /v1/openapi.json", s.handleOpenAPI)
+	s.route(mux, "GET /v1/log", s.handleLogQuery)
+	s.route(mux, "GET /v1/stats", s.handleStats)
+	s.route(mux, "GET /v1/registry/search", s.handleRegistrySearch)
+	s.route(mux, "POST /v1/complete", s.handleComplete)
+	s.route(mux, "GET /v1/tasks", s.handleTasksList)
+	s.route(mux, "GET /v1/tasks/{id}", s.handleTaskGet)
+	s.route(mux, "GET /v1/tasks/{id}/result", s.handleTaskResult)
+	s.route(mux, "POST /v1/tasks/{id}/cancel", s.handleTaskCancel)
+	s.route(mux, "GET /v1/openapi.json", s.handleOpenAPI)
 }
 
 // ---- the log ----

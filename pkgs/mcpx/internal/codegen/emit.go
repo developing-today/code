@@ -355,6 +355,26 @@ const makeFetcher = (): { fetch: Fetcher; via: string } => {
 
 const TRANSPORT = makeFetcher();
 
+/**
+ * #1975: when the daemon requires a Bearer [REDACTED] (transport.bearerToken),
+ * every call through TRANSPORT carries it. The token is read from the
+ * script's environment (MCPX_TRANSPORT_BEARER_TOKEN), which the CLI runner
+ * populates from its own resolved settings -- a config-file token reaches
+ * scripts that way too, not only an env-sourced one. Unset, fetch is
+ * untouched: requests are byte-for-byte what they were before the setting
+ * existed. Wrapping here covers every call site (/v1/call, /v1/batch,
+ * /v1/resource, /v1/artifacts) through the one choke point.
+ */
+const DAEMON_TOKEN = env("MCPX_TRANSPORT_BEARER_TOKEN");
+if (DAEMON_TOKEN) {
+  const direct = TRANSPORT.fetch;
+  TRANSPORT.fetch = (u, i) => {
+    const headers = new Headers((i as any)?.headers);
+    headers.set("Authorization", "Bearer " + DAEMON_TOKEN);
+    return direct(u, { ...(i as any), headers });
+  };
+}
+
 /** Where calls are going, for a script that wants to know. */
 export const transport = (): string => TRANSPORT.via;
 
@@ -1336,6 +1356,7 @@ export async function batch(
       "x-mcpx-cwd": env("MCPX_CWD"),
       "x-mcpx-pid": env("MCPX_PID"),
       "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
+      "x-mcpx-run": env("MCPX_RUN"),
     },
     body: JSON.stringify({
       calls: calls.map((c) => ({

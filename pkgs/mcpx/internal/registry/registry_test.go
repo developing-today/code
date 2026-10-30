@@ -174,3 +174,80 @@ func TestTheDefaultIsTheOfficialRegistry(t *testing.T) {
 		t.Errorf("got %q", c.BaseURL)
 	}
 }
+
+func TestToInstallNixPackageBecomesAProgramSpec(t *testing.T) {
+	// A nix package is not run by a launcher command: the install's
+	// command is the nix: program spec the spawn path resolves once to
+	// a store path (#1921). A bare attribute name means nixpkgs.
+	for _, tc := range []struct{ identifier, want string }{
+		{"github:owner/repo#tool", "nix:github:owner/repo#tool"},
+		{"github:owner/repo", "nix:github:owner/repo"},
+		{"hello", "nix:nixpkgs#hello"},
+	} {
+		s := registry.Server{Name: "a/b", Packages: []registry.Package{
+			{RegistryType: "nix", Identifier: tc.identifier},
+		}}
+		in, err := s.ToInstall(true)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.identifier, err)
+		}
+		if in.Command != tc.want {
+			t.Errorf("%s: Command = %q, want %q", tc.identifier, in.Command, tc.want)
+		}
+	}
+}
+
+func TestToInstallBrokenNixPackageIsSkipped(t *testing.T) {
+	// An empty identifier makes the spec nix:nixpkgs#, which progspec
+	// rejects: the offer must be skipped (not installed as a command
+	// that fails at launch), so a later usable offer is selected.
+	s := registry.Server{Name: "a/b", Packages: []registry.Package{
+		{RegistryType: "nix", Identifier: ""},
+		{RegistryType: "npm", Identifier: "somepkg"},
+	}}
+	in, err := s.ToInstall(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Command == "nix:nixpkgs#" || in.Command == "" {
+		t.Fatalf("Command = %q, want the npm offer selected", in.Command)
+	}
+	// And with no usable offer at all, ToInstall errors rather than
+	// returning the broken spec.
+	broken := registry.Server{Name: "a/b", Packages: []registry.Package{
+		{RegistryType: "nix", Identifier: ""},
+	}}
+	if _, err := broken.ToInstall(true); err == nil {
+		t.Fatal("a lone broken nix offer must not install")
+	}
+}
+
+func TestToInstallNixPackageKeepsPackageMetadata(t *testing.T) {
+	// A nix package's declared arguments, environment defaults and
+	// required variables belong to the install exactly as they do for a
+	// launcher-run package (Codex finding on #2585: the nix early return
+	// used to discard them).
+	s := registry.Server{Name: "a/b", Packages: []registry.Package{{
+		RegistryType: "nix", Identifier: "github:owner/repo#tool",
+		PackageArguments: []registry.Argument{
+			{Type: "named", Name: "--mode", Value: "mcp"},
+		},
+		EnvironmentVars: []registry.Variable{
+			{Name: "REGION", Default: "us-east-1"},
+			{Name: "API_KEY", IsRequired: true, IsSecret: true},
+		},
+	}}}
+	in, err := s.ToInstall(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Args) != 2 || in.Args[0] != "--mode" || in.Args[1] != "mcp" {
+		t.Errorf("Args = %v, want [--mode mcp]", in.Args)
+	}
+	if in.Env["REGION"] != "us-east-1" {
+		t.Errorf("Env = %v, want REGION default kept", in.Env)
+	}
+	if len(in.Needs) != 1 || in.Needs[0].Name != "API_KEY" {
+		t.Errorf("Needs = %v, want [API_KEY]", in.Needs)
+	}
+}

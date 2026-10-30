@@ -34,11 +34,11 @@ import (
 // another machine cannot be asked to. POST /v1/exec is the same execution
 // through the same service, with the daemon as the host.
 func (s *Server) routesExec(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/exec", s.handleExec)
-	mux.HandleFunc("POST /v1/artifacts", s.handleArtifactPut)
-	mux.HandleFunc("GET /v1/artifacts", s.handleArtifactList)
-	mux.HandleFunc("GET /v1/artifacts/{id}", s.handleArtifactGet)
-	mux.HandleFunc("DELETE /v1/artifacts/{id}", s.handleArtifactDelete)
+	s.route(mux, "POST /v1/exec", s.handleExec)
+	s.route(mux, "POST /v1/artifacts", s.handleArtifactPut)
+	s.route(mux, "GET /v1/artifacts", s.handleArtifactList)
+	s.route(mux, "GET /v1/artifacts/{id}", s.handleArtifactGet)
+	s.route(mux, "DELETE /v1/artifacts/{id}", s.handleArtifactDelete)
 }
 
 // ---- resolved settings, daemon side ----
@@ -187,6 +187,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
 	svc := &execsvc.Service{
+		Calls:    s.callRegistry(),
 		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
 		Store:    store,
 		Endpoint: s.endpoint,
@@ -194,8 +195,14 @@ func (s *Server) ExecService() *execsvc.Service {
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
-		Local:  true,
-		Limits: lim,
+		Local: true,
+		// #1975: scripts this daemon hosts must be able to authenticate
+		// back to it. Hand the service the token this server enforces,
+		// resolved from the same set the bearer middleware reads, so a
+		// file- or flag-configured token reaches daemon-hosted scripts
+		// and not only ones the daemon's environment exported.
+		BearerToken: BearerToken(s.set),
+		Limits:      lim,
 		// Kept between runs so the runtime's module cache stays warm, and
 		// one directory per catalogue so two configurations cannot
 		// overwrite each other's generated client.

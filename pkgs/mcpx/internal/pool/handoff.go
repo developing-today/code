@@ -224,7 +224,7 @@ func (p *Pool) AdoptSessions(hs []InstanceHandoff) ([]*Adopted, error) {
 		if h.HTTP == nil {
 			continue
 		}
-		tr, err := p.dial()
+		tr, err := p.dial(context.Background())
 		if err != nil {
 			abortAll(out)
 			return nil, fmt.Errorf("instance %s: %w", h.ID, err)

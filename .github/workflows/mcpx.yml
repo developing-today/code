@@ -30,10 +30,12 @@ on:
       # also marks its commits [skip ci] — both addendum fixes).
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
-  # Added for the flake-policy jobs below (#1973): the PR stress job
-  # runs on pull requests, the full-suite stress job nightly. The
-  # original jobs keep their original event coverage via their own
-  # `if:` conditions, so these triggers change nothing for them.
+  # Pull requests run the same test job, so the full-suite check
+  # TESTING.md rule 3 tells agents to read before merging actually
+  # exists (#1966); the trigger also carries the flake-policy jobs
+  # (#1973): the PR stress job runs on pull requests, the full-suite
+  # stress job nightly. The original jobs keep their original event
+  # coverage via their own `if:` conditions.
   pull_request:
     paths:
       - "pkgs/mcpx/**"
@@ -72,8 +74,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The Renovate branch itself, so a fixed hash can be pushed back.
-          ref: ${{ github.head_ref || github.ref }}
+          # Fork-safe: on a pull_request run, check out the PR head SHA
+          # (a bare head_ref names a branch in THIS repository, which a
+          # fork's branch is not — the checkout would fail, or worse,
+          # validate a coincidentally same-named branch). On push runs
+          # this falls back to the pushed ref. The vendorhash-repair
+          # job keeps its own writable-branch checkout below.
+          ref: ${{ github.event.pull_request.head.sha || github.head_ref || github.ref }}
           fetch-depth: 0
 
       # The repo dogfoods the plugin: .opencode/plugin is a copy of

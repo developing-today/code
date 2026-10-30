@@ -533,7 +533,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	defer cancel()
 	launched := time.Now()
 
-	tr, err := p.dial()
+	tr, err := p.dial(sctx)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -573,7 +573,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(); err != nil {
+		} else if tr, err = p.dial(sctx); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -604,7 +604,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(); err != nil {
+		if tr, err = p.dial(sctx); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -695,8 +695,10 @@ func (p *Pool) connectSSE(ctx context.Context, tr mcpclient.Transport, opts mcpc
 	return cl, sse, nil
 }
 
-// dial creates the transport for one instance.
-func (p *Pool) dial() (mcpclient.Transport, error) {
+// dial creates the transport for one instance. ctx is the caller's
+// startup context: it bounds any nix: program-spec resolution at spawn,
+// so a slow build cannot outlive the startup budget that owns it.
+func (p *Pool) dial(ctx context.Context) (mcpclient.Transport, error) {
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
@@ -709,6 +711,7 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        p.cfg.Cwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	if p.cfg.Stdio() {
@@ -718,6 +721,7 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        p.cfg.Cwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	ho, err := p.httpOptions()

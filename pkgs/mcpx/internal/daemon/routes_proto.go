@@ -30,13 +30,13 @@ import (
 // routesProto registers the operations that let a client of mcpx answer a
 // question an upstream server asked, and say what mcpx speaks.
 func (s *Server) routesProto(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/ask", s.handleAskBegin)
-	mux.HandleFunc("GET /v1/ask/{id}", s.handleAskPoll)
-	mux.HandleFunc("POST /v1/ask/{id}/answers", s.handleAskAnswers)
-	mux.HandleFunc("POST /v1/ask/{id}/abandon", s.handleAskAbandon)
-	mux.HandleFunc("GET /v1/protocol", s.handleProtocol)
-	mux.HandleFunc("POST /v1/tools/{tool}", s.handleToolInvoke)
-	mux.HandleFunc("POST /v1/call/{server}/{tool}", s.handleCallPath)
+	s.route(mux, "POST /v1/ask", s.handleAskBegin)
+	s.route(mux, "GET /v1/ask/{id}", s.handleAskPoll)
+	s.route(mux, "POST /v1/ask/{id}/answers", s.handleAskAnswers)
+	s.route(mux, "POST /v1/ask/{id}/abandon", s.handleAskAbandon)
+	s.route(mux, "GET /v1/protocol", s.handleProtocol)
+	s.route(mux, "POST /v1/tools/{tool}", s.handleToolInvoke)
+	s.route(mux, "POST /v1/call/{server}/{tool}", s.handleCallPath)
 }
 
 // ---- a call that can be interrupted ----
@@ -848,7 +848,9 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	}
 	cc := callContext(r, config.CallContext{}, r.URL.Query().Get("session"))
 	start := time.Now()
-	res, err := s.reg.Call(withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run")), r.PathValue("server"), r.PathValue("tool"), cc, args)
+	callCtx := withRun(withCallSettings(r.Context(), s.callSettings(r)), r.Header.Get("X-Mcpx-Run"))
+	res, err := s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
+	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
 		return

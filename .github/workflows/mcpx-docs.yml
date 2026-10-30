@@ -1,0 +1,132 @@
+name: mcpx docs
+
+# CI tier policy: see .github/ci-policy.md
+
+# Build the mcpx book (#1941, Approach C) and publish it to GitHub Pages.
+#
+# Pull requests build .#mcpx-docs and upload the rendered site as an
+# ordinary build artifact — no deploy, no PR previews (reviewers download
+# the artifact). Pushes to main and manual dispatches deploy the same
+# build to Pages via the Actions artifact flow: Pages source for this
+# repository is "GitHub Actions" (build_type=workflow), no generated
+# HTML is ever committed, and no extra repository or secret is needed.
+#
+# The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
+# #1939 / PR #2629): the same `nix build` locally and in CI. The
+# derivation takes the base URL as its `siteUrl` argument, baked in as
+# mdBook's site-url: PR/local builds use the default "/", the Pages
+# deploy overrides it with "/code/" (the project site's path) — builds
+# differ only in that one value (#1941).
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/mcpx-docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/mcpx-docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "build: nix build .#mcpx-docs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # Same cache posture as mcpx-nixbuild.yml (#2120): no
+          # FlakeHub, the GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Nix build
+        run: nix build .#mcpx-docs --print-build-logs
+
+      # The nix result is a symlink into the store; copy it dereferenced
+      # so the artifact is a plain static site tree.
+      - name: Stage site
+        run: |
+          rm -rf site
+          cp -rL result site
+          test -f site/index.html
+
+      - name: Upload site artifact (PR builds only)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-docs-site
+          path: site
+          if-no-files-found: error
+
+  deploy:
+    name: "deploy: GitHub Pages"
+    # Deploys only from main: pushes to main and manual dispatches
+    # (a dispatch on a non-main ref is refused here rather than
+    # publishing a branch build).
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Serialise deploys: two deploys must never interleave, and a queued
+    # deploy is never cancelled by a later one (#1941).
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      # The deployed book is served from the project Pages path
+      # (https://developing-today.github.io/code/), and mdBook needs
+      # that path as its site-url: with "/" the generated 404 page
+      # points its CSS/JS and navigation at the domain root and breaks.
+      # Same derivation as the PR build, differing only in the siteUrl
+      # argument (#1941).
+      - name: Nix build (deploy variant, siteUrl /code/)
+        run: |
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.mcpx-docs.override { siteUrl = "/code/"; }'
+
+      - name: Stage site
+        run: |
+          rm -rf site
+          cp -rL result site
+          test -f site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

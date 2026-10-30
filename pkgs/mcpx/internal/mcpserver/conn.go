@@ -308,6 +308,39 @@ func (q Question) carriesSamplingTools() bool {
 	return tools || choice
 }
 
+// carriesMultiSelect reports whether an elicitation question's
+// requestedSchema carries a multi-select property: type:array with an
+// items.enum (untitled) or items.anyOf (titled). Presence is what
+// matters, following carriesSamplingTools: the shape is what a
+// pre-2025-11-25 host cannot be sent, whatever the values are (#2078).
+func (q Question) carriesMultiSelect() bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(q.Params, &m) != nil {
+		return false
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Type  string                     `json:"type"`
+			Items map[string]json.RawMessage `json:"items"`
+		} `json:"properties"`
+	}
+	if json.Unmarshal(m["requestedSchema"], &schema) != nil {
+		return false
+	}
+	for _, prop := range schema.Properties {
+		if prop.Type != "array" {
+			continue
+		}
+		if _, ok := prop.Items["enum"]; ok {
+			return true
+		}
+		if _, ok := prop.Items["anyOf"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // AnswersInline reports whether this client can answer a question raised
 // mid-call, by either mechanism.
 func (p Peer) AnswersInline() bool { return p.CanElicit("form") || p.CanSample() }
@@ -505,7 +538,13 @@ type Question struct {
 func (q Question) Sendable(p Peer) bool {
 	switch q.Method {
 	case "elicitation/create":
-		return p.CanElicit(q.Mode)
+		// A multi-select question goes only to a 2025-11-25-or-later
+		// host. It is refused whole for an older host, never flattened
+		// or downgraded: flattening would change the answer's type
+		// (string[] to string) and the upstream would reject the
+		// elicited answer. Unsendable questions stay with the broker
+		// via sendableTo (#2078).
+		return p.CanElicit(q.Mode) && !(q.carriesMultiSelect() && !AtLeast(p.Version, "2025-11-25"))
 	case "sampling/createMessage":
 		// A tools-carrying question goes only to a client that declared
 		// sampling.tools. It is refused whole, never stripped and
@@ -517,6 +556,68 @@ func (q Question) Sendable(p Peer) bool {
 		return p.Declared("roots")
 	}
 	return false
+}
+
+// downgradeEnumSchemaForOldHost rewrites a requestedSchema in place
+// into the shapes a pre-2025-11-25 host's schema defines (#2078,
+// register ELI-04/ELI-05):
+//
+//   - a titled single-select property (oneOf of {const, title}) becomes
+//     {type: string, enum: [const...], enumNames: [title...]} -- the
+//     legacy titled shape the old host already understands. The host's
+//     answer is the const string, the value in both eras, so no answer
+//     back-mapping is needed. Untitled single-select (enum) and legacy
+//     titled (enum+enumNames) properties are already old shapes and
+//     pass through unchanged.
+//   - the default key is stripped from every non-boolean property:
+//     2025-06-18 allows default only on a boolean schema (ELI-05), so a
+//     2025-11-25 string/enum/number default is a field a strict old
+//     host rejects the whole request over. Boolean defaults stay.
+func downgradeEnumSchemaForOldHost(schema map[string]any) {
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, raw := range props {
+		prop, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		downgradeTitledSingleSelect(prop)
+		if prop["type"] != "boolean" {
+			delete(prop, "default")
+		}
+	}
+}
+
+// downgradeTitledSingleSelect rewrites one property's titled
+// single-select oneOf into enum+enumNames. A oneOf whose entries are
+// not all {const: string, title: string} is not that shape and is left
+// exactly as the upstream sent it.
+func downgradeTitledSingleSelect(prop map[string]any) {
+	arr, ok := prop["oneOf"].([]any)
+	if !ok || len(arr) == 0 {
+		return
+	}
+	enums := make([]any, 0, len(arr))
+	names := make([]any, 0, len(arr))
+	for _, e := range arr {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			return
+		}
+		c, cok := entry["const"].(string)
+		title, tok := entry["title"].(string)
+		if !cok || !tok {
+			return
+		}
+		enums = append(enums, c)
+		names = append(names, title)
+	}
+	delete(prop, "oneOf")
+	prop["type"] = "string"
+	prop["enum"] = enums
+	prop["enumNames"] = names
 }
 
 // paramsFor renders a question into the shape the client's revision defines.
@@ -547,6 +648,9 @@ func (q Question) paramsFor(p Peer) (json.RawMessage, error) {
 			// refused it.
 			delete(m, "mode")
 			delete(m, "elicitationId")
+			if schema, ok := m["requestedSchema"].(map[string]any); ok {
+				downgradeEnumSchemaForOldHost(schema)
+			}
 		case p.Modern:
 			// 2026-07-28 dropped elicitationId along with the
 			// notifications/elicitation/complete it correlated: a url
