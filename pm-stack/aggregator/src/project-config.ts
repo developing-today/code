@@ -34,6 +34,20 @@ export interface ProjectStatusReport {
   url: string;
 }
 
+/** One working repo's card on a fleet-style project page (#1126).
+ * The role is editorial; the open-issue count is an explicitly dated
+ * GitHub-search snapshot (openIssuesAsOf) — never presented as live.
+ * Pool items and roadmap rows are NOT stored here: the detail builder
+ * splits the page's live pool/roadmap sections by repo at request
+ * time, so those halves cannot drift from the sections above them. */
+export interface ProjectRepoCard {
+  repo: string;
+  role: string;
+  openIssues: number;
+  openIssuesAsOf: string;
+  trackedRefs: RefKey[];
+}
+
 export interface ProjectEditorial {
   done: ProgramEntry[];
   next: ProgramEntry[];
@@ -59,10 +73,20 @@ export interface ProjectConfig {
   trackedRefs: RefKey[];
   /** Extra architecture entries (the pm-dashboard doc renders its from here). */
   architecture?: ProgramEntry[];
+  /** Per-repo cards (fleet pages, #1126); pool/roadmap halves are
+   * derived live by the detail builder, split by repo. */
+  repoCards?: ProjectRepoCard[];
+  /** Sweep-health entries (#1126): editorial entries whose claims
+   * rest only on already-published fleet data (the orchestration
+   * section this aggregator serves, the fleet's tracked issues) —
+   * no new data pipeline feeds this section. */
+  sweepHealth?: ProgramEntry[];
   editorial?: ProjectEditorial;
 }
 
 const CODE = "developing-today/code";
+const OPENCODE = "developing-today/opencode";
+const OPENCHAMBER = "developing-today/openchamber";
 const NIX = "dezren39/nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
 const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
@@ -346,6 +370,57 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       code(310),
       code(311),
     ],
+    repoCards: [
+      {
+        repo: CODE,
+        role: "The fleet's home repo: the id train, mcpx, this PM stack / aggregator, and the repo queue/worker pilot itself.",
+        openIssues: 1033,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [code(911), code(1233), code(1130)],
+      },
+      {
+        repo: OPENCODE,
+        role: "The OpenCode fork: the agent runtime the fleet's sessions run on. Upstream of openchamber — its updates are carried into openchamber and then into code's opencode pieces.",
+        openIssues: 35,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(OPENCODE, 365), ref(OPENCODE, 371)],
+      },
+      {
+        repo: OPENCHAMBER,
+        role: "The OpenChamber fork: session UI and orchestration over opencode. Carries opencode updates downstream into code.",
+        openIssues: 36,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(OPENCHAMBER, 214)],
+      },
+      {
+        repo: NIX,
+        role: "Drew's Nix config: machines, packages, and the deployed builds of mcpx and the forks (mcpx fixes land here and in code as one set).",
+        openIssues: 15,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(NIX, 512)],
+      },
+    ],
+    sweepHealth: [
+      {
+        title: "Work runs through the repo queue, not ad-hoc sweeps",
+        detail:
+          "Since the 2026-10-25 pilot, producers (issue creator, PR diff review, curators) enqueue structured repo-task packets and worker lanes claim them atomically in shifts; the lifecycle labels (queue/*, work/*, user/*) on each issue mirror its queue state, and the hourly fleet monitor repairs any divergence. This section's claims rest on that published queue/label state and the fleet's tracked issues — no separate sweep-health pipeline exists.",
+        refs: [code(1233), code(1130), code(1131)],
+      },
+      {
+        title: "The orchestrator's published section is the health signal",
+        detail:
+          "The hourly orchestration job reconciles the org Project from issue/PR/session signals and publishes the orchestration section this aggregator serves; its freshness is rendered live on the program index above. A stale or absent section says so on the page rather than being smoothed over.",
+        refs: [code(899)],
+        links: [{ label: "/api/orchestration.json", url: "/api/orchestration.json" }],
+      },
+      {
+        title: "What the fleet watches",
+        detail:
+          "Queue reliability (claims must end in a terminal verb — complete, park, or block — never evaporate), merge-queue stalls, and per-repo backlog growth measured by the dated GitHub-search counts on the cards above. The counts are snapshots with a date, refreshed by hand when this page is next edited; the pool and roadmap sections are the live halves.",
+        refs: [code(911)],
+      },
+    ],
     editorial: {
       done: [
         {
@@ -397,9 +472,9 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       ],
       gaps: [
         {
-          title: "The pool is a fleet-level slice, not the fleet backlog (2026-10-27)",
+          title: "The pool is a fleet-level slice, not the fleet backlog (2026-10-29)",
           detail:
-            "As of 2026-10-27, this page's fleet-ops pool carries 4 items, while GitHub issue search counts 665 open issues across the four repos (developing-today/code 372, developing-today/opencode 51, developing-today/openchamber 64, dezren39/nix 178). Most work stays in each repo's own backlog; this page tracks the fleet-level program only.",
+            "As of 2026-10-29, GitHub issue search counts 1,119 open issues across the four repos (developing-today/code 1,033, developing-today/opencode 35, developing-today/openchamber 36, dezren39/nix 15), while this page's fleet-ops pool — counted live above — is a small fleet-level slice of that total. Most work stays in each repo's own backlog; this page tracks the fleet-level program only and does not claim pool completeness.",
         },
         {
           title: "Home doc scope is CI/automation only",
@@ -605,6 +680,16 @@ export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
         errors.push(`${where}: dashboardLinks route "${l.route}" is neither a dashboard route nor an https URL`);
     }
     checkRefs(c.trackedRefs, errors, where);
+    for (const card of c.repoCards ?? []) {
+      if (!card.repo.includes("/")) errors.push(`${where}: repoCard repo "${card.repo}" is not owner/repo`);
+      if (!card.role.trim()) errors.push(`${where}: repoCard ${card.repo} role is empty`);
+      if (!Number.isInteger(card.openIssues) || card.openIssues < 0)
+        errors.push(`${where}: repoCard ${card.repo} openIssues is not a non-negative integer`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf))
+        errors.push(`${where}: repoCard ${card.repo} openIssuesAsOf "${card.openIssuesAsOf}" is not a YYYY-MM-DD date`);
+      checkRefs(card.trackedRefs, errors, where);
+    }
+    checkEntries(c.sweepHealth, errors, where);
     checkEntries(c.architecture, errors, where);
     checkEntries(c.editorial?.done, errors, where);
     checkEntries(c.editorial?.next, errors, where);
@@ -684,6 +769,16 @@ export function unsetPoolCount(pool: ProjectPoolItem[]): number {
   return pool.filter((p) => p.area === null).length;
 }
 
+export interface RepoCardDetail {
+  card: ProjectRepoCard;
+  /** This project's live pool items whose issue lives in the card's repo. */
+  poolItems: ProjectPoolItem[];
+  /** This project's live roadmap rows tied to the card's repo (by
+   * title or by a linked ref in that repo). */
+  roadmapRows: RoadmapRow[];
+  tracked: TrackedIssue[];
+}
+
 export interface ProjectDetail {
   config: ProjectConfig;
   route: string;
@@ -691,6 +786,10 @@ export interface ProjectDetail {
   poolByStatus: Count[];
   roadmapRows: RoadmapRow[];
   tracked: TrackedIssue[];
+  /** Per-repo card halves, derived live from the same pool/roadmap
+   * data as the sections above them (#1126). Empty when the config
+   * carries no repoCards. */
+  repoCards: RepoCardDetail[];
   /** Whole-pool items with no Area (the gap note for null-area projects). */
   unsetPoolCount: number;
 }
@@ -707,13 +806,22 @@ export function buildProjectDetail(
       : pool
           .filter((p) => p.area === config.poolArea)
           .sort((a, b) => (a.status ?? "").localeCompare(b.status ?? "") || a.title.localeCompare(b.title));
+  const roadmapRows = config.roadmapArea === null ? [] : rows.filter((r) => r.area === config.roadmapArea);
   return {
     config,
     route: projectRoute(config.id),
     poolItems,
     poolByStatus: counts(poolItems.map((p) => p.status)),
-    roadmapRows: config.roadmapArea === null ? [] : rows.filter((r) => r.area === config.roadmapArea),
+    roadmapRows,
     tracked: config.trackedRefs.map((ref) => ({ ref, item: items.get(ref) ?? null })),
+    repoCards: (config.repoCards ?? []).map((card) => ({
+      card,
+      poolItems: poolItems.filter((p) => p.repo === card.repo),
+      roadmapRows: roadmapRows.filter(
+        (r) => r.title.includes(card.repo) || r.links.some((l) => l.ref.startsWith(`${card.repo}#`)),
+      ),
+      tracked: card.trackedRefs.map((ref) => ({ ref, item: items.get(ref) ?? null })),
+    })),
     unsetPoolCount: unsetPoolCount(pool),
   };
 }
@@ -732,8 +840,10 @@ export function allProjectRefs(configs: ProjectConfig[] = PROJECT_CONFIGS): RefK
   };
   for (const c of configs) {
     for (const r of c.trackedRefs) add(r);
+    for (const card of c.repoCards ?? []) for (const r of card.trackedRefs) add(r);
     const sections = [
       c.architecture ?? [],
+      c.sweepHealth ?? [],
       c.editorial?.done ?? [],
       c.editorial?.next ?? [],
       c.editorial?.longTerm ?? [],

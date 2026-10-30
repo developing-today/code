@@ -4817,6 +4817,26 @@ export function renderProgramProject(
     roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
   }
 
+  const repoCardsHtml = detail.repoCards.length
+    ? `<h2>Per-repo cards</h2>
+<p class="muted">One card per working repo. Open-issue counts are a dated GitHub-search snapshot (date on each card), never a live claim; the pool items and roadmap rows are split live from the same sections above, by repo.</p>${detail.repoCards
+        .map(({ card, poolItems, roadmapRows, tracked }) => {
+          const refs = tracked
+            .map(
+              ({ ref, item }) =>
+                `<a class="badge src" href="${esc(refUrl(ref))}">${esc(ref)}</a>${item ? ` <span class="badge ${item.state === "open" ? "open" : "closed"}">${esc(item.state)}</span>` : ""}`,
+            )
+            .join(" ");
+          return `<div class="card"><strong><a href="https://github.com/${esc(card.repo)}">${esc(card.repo)}</a></strong><br>${esc(card.role)}<br><span class="muted">Open issues (GitHub search, ${esc(card.openIssuesAsOf)}): <strong>${card.openIssues}</strong> · fleet pool items in this repo: ${poolItems.length} · roadmap rows: ${roadmapRows.length}</span>${refs ? `<br>${refs}` : ""}</div>`;
+        })
+        .join("")}`
+    : "";
+
+  const sweepHealthHtml = config.sweepHealth?.length
+    ? `<h2>Sweep health — published fleet state</h2>
+<p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
+    : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -4834,6 +4854,8 @@ ${trackedTable(detail.tracked)}
 ${poolHtml}
 <h2>Roadmap — live</h2>
 ${roadmapHtml}
+${repoCardsHtml}
+${sweepHealthHtml}
 ${editorialHtml}`;
   return layout(
     config.title,

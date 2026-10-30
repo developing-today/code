@@ -245,8 +245,8 @@ describe("project registry", () => {
     const fleetDone = (fleet.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(fleetDone).toContain("closed in GitHub");
     const fleetGaps = (fleet.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
-    expect(fleetGaps).toContain("2026-10-27");
-    expect(fleetGaps).toContain("665 open issues");
+    expect(fleetGaps).toContain("2026-10-29");
+    expect(fleetGaps).toContain("1,119 open issues");
 
     const cloud = projectConfigById("cloud-program")!;
     expect(cloud.roadmapArea).toBe("Cloud program");
@@ -279,6 +279,39 @@ describe("project registry", () => {
     expect(cloudLongTerm).toContain("Egress offload");
     expect(cloudLongTerm).toContain("zero-egress");
     expect(cloudLongTerm).toContain("Always-free maximization");
+  });
+
+  test("repo-fleet carries four per-repo cards and a sweep-health section (#1126)", () => {
+    const fleet = projectConfigById("repo-fleet")!;
+    const cards = fleet.repoCards ?? [];
+    expect(cards.map((c) => c.repo)).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+      "developing-today/openchamber",
+      "dezren39/nix",
+    ]);
+    for (const card of cards) {
+      expect(card.role.length).toBeGreaterThan(0);
+      // Dated snapshot counts, taken 2026-10-29 — never live claims.
+      expect(card.openIssuesAsOf).toBe("2026-10-29");
+      expect(card.openIssues).toBeGreaterThan(0);
+      expect(card.trackedRefs.length).toBeGreaterThan(0);
+    }
+    expect(cards.reduce((n, c) => n + c.openIssues, 0)).toBe(1119);
+    // Sweep health rests on published fleet data only (orchestration
+    // section + tracked issues), and says so.
+    expect((fleet.sweepHealth ?? []).length).toBeGreaterThan(0);
+    const sweepText = (fleet.sweepHealth ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(sweepText).toContain("orchestration");
+    // The scope note is refreshed, dated, and claims no completeness.
+    const gaps = (fleet.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(gaps).toContain("2026-10-29");
+    expect(gaps).toContain("does not claim pool completeness");
+    // Card + sweep-health refs resolve through the shared ref set.
+    const refs = allProjectRefs();
+    expect(refs).toContain("developing-today/opencode#365");
+    expect(refs).toContain("developing-today/openchamber#214");
+    expect(refs).toContain("dezren39/nix#512");
   });
 
   test("validation catches duplicates and malformed entries", () => {
@@ -400,7 +433,38 @@ describe("renderProgramProject", () => {
     const fleet = projectConfigById("repo-fleet")!;
     const fleetHtml = renderProgramProject(buildProjectDetail(fleet, items, pool, rows), items, PROV);
     expect(fleetHtml).toContain("Queue fleet reliability");
-    expect(fleetHtml).toContain("665 open issues");
+    expect(fleetHtml).toContain("1,119 open issues");
+    // Per-repo cards + sweep health render (#1126).
+    expect(fleetHtml).toContain("Per-repo cards");
+    for (const repo of ["developing-today/code", "developing-today/opencode", "developing-today/openchamber", "dezren39/nix"]) {
+      expect(fleetHtml).toContain(repo);
+    }
+    expect(fleetHtml).toContain("Open issues (GitHub search, 2026-10-29)");
+    expect(fleetHtml).toContain("Sweep health — published fleet state");
+    expect(fleetHtml).toContain("No new data pipeline feeds this section");
+  });
+
+  test("detail builder splits pool and roadmap by repo for the fleet cards (#1126)", () => {
+    const pool = [
+      poolItem({ area: "fleet-ops", repo: "developing-today/code", ref: "developing-today/code#1", title: "code item" }),
+      poolItem({ area: "fleet-ops", repo: "dezren39/nix", ref: "dezren39/nix#2", number: 2, title: "nix item" }),
+      poolItem({ area: "pm-dashboard", repo: "developing-today/code", ref: "developing-today/code#3", number: 3, title: "other area" }),
+    ];
+    const fleet = projectConfigById("repo-fleet")!;
+    const detail = buildProjectDetail(fleet, new Map(), pool, FIXTURE_ROADMAP);
+    expect(detail.repoCards.map((c) => c.card.repo)).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+      "developing-today/openchamber",
+      "dezren39/nix",
+    ]);
+    const byRepo = new Map(detail.repoCards.map((c) => [c.card.repo, c]));
+    expect(byRepo.get("developing-today/code")?.poolItems.map((p) => p.title)).toEqual(["code item"]);
+    expect(byRepo.get("dezren39/nix")?.poolItems.map((p) => p.title)).toEqual(["nix item"]);
+    expect(byRepo.get("developing-today/opencode")?.poolItems).toEqual([]);
+    // Fixture roadmap rows name their repo in the title / links.
+    expect(byRepo.get("developing-today/opencode")?.roadmapRows.length).toBeGreaterThan(0);
+    expect(byRepo.get("developing-today/openchamber")?.roadmapRows.length).toBeGreaterThan(0);
   });
 
   test("pm-dashboard page retains the full #1046 document", async () => {
