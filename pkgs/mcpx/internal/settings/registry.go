@@ -390,7 +390,7 @@ func depsSettings() []Setting {
 	return []Setting{
 		{
 			Path: "deps.source", Kind: KindEnum, Default: "host",
-			Scope: ScopeClient,
+			Scope: ScopeClient, Commands: runCommands,
 			Enum:  []string{"host", "config", "cwd", "explicit", "none"},
 			Name:  "Dependency source",
 			Short: "where a script's packages come from when nothing more specific says",
@@ -404,7 +404,7 @@ func depsSettings() []Setting {
 		},
 		{
 			Path: "deps.manifest", Kind: KindSource, Default: "",
-			Scope: ScopeClient,
+			Scope: ScopeClient, Commands: runCommands,
 			Name:  "Dependency manifest",
 			Short: "the package.json or package.jsonc naming a script's packages",
 			Long: "An explicit manifest replaces project discovery: the named file " +
@@ -415,7 +415,7 @@ func depsSettings() []Setting {
 		},
 		{
 			Path: "deps.packages", Kind: KindList, Default: "", Repeatable: true,
-			Scope:       ScopeClient,
+			Scope: ScopeClient, Commands: runCommands,
 			FlagAliases: []string{"package"},
 			Name:        "Dependency packages",
 			Short:       "packages a script may import, as name or name@version",
@@ -428,7 +428,7 @@ func depsSettings() []Setting {
 		},
 		{
 			Path: "deps.autoInstall", Kind: KindEnum, Default: "off",
-			Scope: ScopeClient,
+			Scope: ScopeClient, Commands: runCommands,
 			Enum:  []string{"off", "fallback", "always"},
 			Name:  "Dependency auto-install",
 			Short: "whether the runtime may fetch a missing package on its own",
@@ -457,7 +457,7 @@ func pathSettings() []Setting {
 		},
 		{
 			Path: "paths.deps", Kind: KindPathList, Default: "", Repeatable: true,
-			Scope: ScopeClient,
+			Scope: ScopeClient, Commands: runCommands,
 			Name:  "Dependency manifest search path",
 			Short: "where a script's package.json / package.jsonc is looked for",
 			Long: "A script's packages normally come from the project it sits in, and " +
