@@ -514,6 +514,11 @@ const startMetaStub = async (mode) => {
         return;
       }
       if (req.url === '/v1/responses') {
+        if (mode === 'attest') {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 'client_attestation_denied', message: 'This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only.', type: 'permission_error' } }));
+          return;
+        }
         if (mode === '429') {
           res.writeHead(429, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Subscription quota exhausted', type: 'rate_limit_error' } }));
@@ -528,11 +533,13 @@ const startMetaStub = async (mode) => {
         try { parsed = JSON.parse(body || '{}'); } catch { /* keep empty */ }
         if (parsed.stream) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-          res.end(RESPONSES_SSE_FIXTURE);
+          res.end(mode === 'shell' ? RESPONSES_SSE_FIXTURE.replaceAll('get_weather', 'run_command') : RESPONSES_SSE_FIXTURE);
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(RESPONSES_FIXTURE));
+        res.end(mode === 'shell'
+          ? JSON.stringify(RESPONSES_FIXTURE).replaceAll('get_weather', 'run_command')
+          : JSON.stringify(RESPONSES_FIXTURE));
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -696,6 +703,42 @@ test('direct mode: upstream 429 passes through and never falls back to exec (#27
   assert.equal(meta.requests.filter(r => r.url === '/v1/responses').length, 1, 'a quota wall is never retried');
   const stubLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '';
   assert.ok(!stubLog.includes('--prompt-file'), 'no muse exec invocation after Meta answered');
+});
+
+test('direct mode: the shell tool is aliased upstream and its calls translate back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, {
+    messages: [
+      { role: 'user', content: 'run echo hi' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'shell', arguments: '{"command":"echo hi"}' } }] },
+      { role: 'tool', tool_call_id: 'call_0', content: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', function: { name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } } }]
+  }));
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.deepEqual(upstream.tools.map(x => x.name), ['run_command'], 'the shell tool is presented upstream under its alias');
+  const historyCall = upstream.input.find(i => i.type === 'function_call');
+  assert.equal(historyCall.name, 'run_command', 'history tool calls are aliased too');
+  assert.equal(plain.choices[0].message.tool_calls[0].function.name, 'shell', 'the model call is translated back to the client name');
+});
+
+test('direct mode: an attestation denial falls back to the CLI door', async (t) => {
+  const meta = await startMetaStub('attest');
+  t.after(() => meta.close());
+  const { port, stop, home, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI fallback ran');
+  const stubLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '';
+  assert.ok(stubLog.includes('--prompt-file'), 'the CLI door took over after the denial');
 });
 
 test('direct mode: /v1/responses passes the body through verbatim, swapping only Authorization (#2753)', async (t) => {
