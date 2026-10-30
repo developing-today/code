@@ -756,3 +756,37 @@ test('direct mode: missing auth.json leaves the exec path in charge (#2753)', as
   assert.equal(health.direct.credentialFound, false);
   assert.equal(health.direct.mintedKeyCached, false);
 });
+
+test('direct mode: contributor ids reach upstream verbatim, effort suffix parses after contributor (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const wonder = JSON.parse(await chat(port, {
+    model: 'muse-wonder-1.0-contributor-high',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(wonder.model, 'muse-wonder-1.0-contributor-high');
+
+  const spark = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3-contributor',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(spark.model, 'muse-spark-1.3-contributor-high', 'no explicit effort means the default effort, contributor intact');
+
+  const plainBase = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(plainBase.model, 'muse-spark-1.3-high', 'a plain request is NOT rewritten to contributor');
+
+  const sent = meta.requests.filter(r => r.url === '/v1/responses').map(r => JSON.parse(r.body));
+  assert.equal(sent.length, 3);
+  assert.equal(sent[0].model, 'muse-wonder-1.0-contributor', 'contributor id goes upstream verbatim');
+  assert.deepEqual(sent[0].reasoning, { effort: 'high' }, 'the effort suffix after -contributor is the effort');
+  assert.equal(sent[1].model, 'muse-spark-1.3-contributor');
+  assert.deepEqual(sent[1].reasoning, { effort: 'high' });
+  assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
+});
