@@ -244,6 +244,19 @@ func handCommands() []Command {
 				"needs one, or `mcpx serve`.",
 		},
 		{
+			Name: "cache", Group: "daemon",
+			Local:   "Reads and prunes the cache directory on this machine; no daemon is involved.",
+			Usage:   "[prune | remove <kind> <key>]",
+			Summary: "list, prune or remove entries in the shared cache",
+			Detail: "The one cache mechanism (#1908) keeps every kind of cached " +
+				"state under the cache root as <kind>/<key>. With no arguments " +
+				"this lists each entry with its size and whether a running " +
+				"process leases it; prune runs eviction against the configured " +
+				"byte and age bounds (cache.maxBytes, cache.maxAge); remove " +
+				"deletes one entry and refuses while it is leased. Like status, " +
+				"this never starts a daemon.",
+		},
+		{
 			Name: "daemons", Group: "daemon",
 			Local: "Reads every daemon's info file on this machine; one daemon cannot see the others. " +
 				"Daemons with their own state directory mirror their record into the default one, " +
