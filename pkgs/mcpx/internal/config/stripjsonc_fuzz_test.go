@@ -23,9 +23,14 @@ func FuzzStripJSONC(f *testing.F) {
 	f.Add([]byte("no comments at all"))
 	f.Add([]byte{0x00, 0x01, '/', '/', '\n', '"', 0xff})
 	f.Fuzz(func(t *testing.T, data []byte) {
+		// The input length comes from len(data), NOT a draw from the
+		// source: drawing a size first (the old gen.Intn call) consumed
+		// the first eight payload bytes as a length, so the seed corpus
+		// never reached StripJSONC intact (Codex P2 on PR #2636).
+		// Bytes over a BytesSource round-trips, so the full payload —
+		// corpus seeds included — reaches the stripper unchanged.
 		src := gen.NewBytesSource(data)
-		size := gen.Intn(src, 4096)
-		input := gen.Bytes(src, size)
+		input := gen.Bytes(src, len(data))
 		out := config.StripJSONC(input)
 		if len(out) > len(input) {
 			t.Fatalf("StripJSONC grew its input: %d bytes in, %d out", len(input), len(out))
