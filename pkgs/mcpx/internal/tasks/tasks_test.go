@@ -12,7 +12,7 @@ import (
 
 func TestAResultIsWaitedForRatherThanPolledFor(t *testing.T) {
 	st := tasks.New()
-	task := st.Start(0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
 		time.Sleep(20 * time.Millisecond)
 		return map[string]any{"ok": true}, nil
 	})
@@ -36,7 +36,7 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 	// The specification's own note on TaskStatus. Reporting it as completed
 	// makes a client that checks only the status miss every failure.
 	st := tasks.New()
-	task := st.Start(0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
 		return map[string]any{"isError": true}, nil
 	})
 	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
@@ -51,7 +51,7 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 func TestCancellingStopsTheWorkAndStands(t *testing.T) {
 	st := tasks.New()
 	released := make(chan struct{})
-	task := st.Start(0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		close(released)
 		return "too late", nil
@@ -94,7 +94,7 @@ func TestAnUnknownHandleSaysItMayHaveExpired(t *testing.T) {
 
 func TestWaitingIsBoundedByTheCallersContext(t *testing.T) {
 	st := tasks.New()
-	task := st.Start(0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -116,7 +116,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	}
 
 	// 1. Completed task
-	t1 := st1.Start(60000, func(ctx context.Context) (any, *tasks.Fault) {
+	t1, _ := st1.Start("tester", 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		return map[string]any{"data": "persisted-result"}, nil
 	})
 	// Wait for t1 to complete
@@ -126,7 +126,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	}
 
 	// 2. Working task that was interrupted
-	t2 := st1.Start(60000, func(ctx context.Context) (any, *tasks.Fault) {
+	t2, _ := st1.Start("tester", 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -174,7 +174,7 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 	cooperativeCalled := false
 	var cancelReason string
 
-	task := st.Start(0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -193,5 +193,115 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 	}
 	if cancelReason != "user aborted run" {
 		t.Errorf("expected reason 'user aborted run', got %q", cancelReason)
+	}
+}
+
+// --- Phase 1 of #2497 (#2498): task-store limits ---
+
+func TestStartClampsTTLToTheStoreMax(t *testing.T) {
+	st := tasks.New()
+	st.MaxTTL = 90 * time.Second
+	task, err := st.Start("alice", 10*60*1000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if task.TTL != 90*1000 {
+		t.Errorf("a TTL above protoTasks.maxTTL is clamped on the returned task, got %d ms", task.TTL)
+	}
+	under, err := st.Start("alice", 1000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if under.TTL != 1000 {
+		t.Errorf("a TTL under the max is untouched, got %d ms", under.TTL)
+	}
+}
+
+func TestStartRefusesBeyondThePerRequestorCap(t *testing.T) {
+	st := tasks.New()
+	st.MaxPerRequestor = 2
+	block := make(chan struct{})
+	defer close(block)
+	fn := func(ctx context.Context) (any, *tasks.Fault) {
+		<-block
+		return "ok", nil
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := st.Start("alice", 60000, fn); err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+	}
+	_, err := st.Start("alice", 60000, fn)
+	if !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Fatalf("the 3rd non-terminal task is refused with the named sentinel, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxPerRequestor") {
+		t.Errorf("the refusal names the limit, got %q", err.Error())
+	}
+	// Another requestor is unaffected, and the unbound bucket is capped
+	// the same way rather than being an unlimited escape hatch.
+	if _, err := st.Start("bob", 60000, fn); err != nil {
+		t.Errorf("another requestor still starts: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := st.Start("", 60000, fn); err != nil {
+			t.Fatalf("unbound start %d: %v", i, err)
+		}
+	}
+	if _, err := st.Start("", 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Errorf("the unbound bucket is capped too, got %v", err)
+	}
+}
+
+func TestACompletedTaskFreesItsCapSlot(t *testing.T) {
+	st := tasks.New()
+	st.MaxPerRequestor = 1
+	first, err := st.Start("alice", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, _, err := st.Result(context.Background(), first.TaskID); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if _, err := st.Start("alice", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	}); err != nil {
+		t.Errorf("a terminal task no longer counts against the cap: %v", err)
+	}
+}
+
+func TestNewIDIs128Bit(t *testing.T) {
+	id := tasks.NewID()
+	hexPart, ok := strings.CutPrefix(id, "tsk-")
+	if !ok || len(hexPart) != 32 {
+		t.Errorf("task ids carry 128 bits (tsk- + 32 hex chars), got %q", id)
+	}
+}
+
+func TestAdmitCountsAgainstThePerMinuteWindow(t *testing.T) {
+	st := tasks.New()
+	st.PerMinute = 3
+	for i := 0; i < 3; i++ {
+		if !st.Admit("alice") {
+			t.Fatalf("call %d is admitted", i)
+		}
+	}
+	if st.Admit("alice") {
+		t.Error("the 4th call in the minute is refused")
+	}
+	if !st.Admit("bob") {
+		t.Error("another requestor has its own window")
+	}
+	st.PerMinute = -1
+	for i := 0; i < 10; i++ {
+		if !st.Admit("alice") {
+			t.Fatal("protoTasks.perMinute = 0 disables the window")
+		}
 	}
 }

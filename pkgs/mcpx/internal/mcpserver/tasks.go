@@ -39,7 +39,11 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore = s.TaskStore
 		} else {
 			s.taskStore = tasks.New()
-			s.taskStore.PollInterval = s.Timing.resolved().TaskPoll
+			tm := s.Timing.resolved()
+			s.taskStore.PollInterval = tm.TaskPoll
+			s.taskStore.MaxTTL = tm.TaskMaxTTL
+			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
+			s.taskStore.PerMinute = tm.TaskWindowPerMinute
 		}
 	}
 	return s.taskStore
@@ -70,21 +74,26 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 // The store is one per server, and over HTTP one server answers every
 // client: without an owner, any client could list -- and then read -- the
 // results of every other client's calls.
-func (s *Server) startTask(owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) Task {
-	t := s.tasks().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+func (s *Server) startTask(owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
+	t, err := s.tasks().Start(owner, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)
 		if err != nil {
 			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data}
 		}
 		return result, nil
 	})
+	if err != nil {
+		// The store's limits speaking (protoTasks.maxPerRequestor):
+		// -32603 naming the limit, per the triage settlement (task 3733).
+		return Task{}, &rpcError{Code: codeInternal, Message: err.Error()}
+	}
 	s.mu.Lock()
 	if s.taskOwners == nil {
 		s.taskOwners = map[string]string{}
 	}
 	s.taskOwners[t.TaskID] = owner
 	s.mu.Unlock()
-	return t
+	return t, nil
 }
 
 // visible reports whether a connection may see a task.
@@ -245,7 +254,10 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
 				Message: "this tool does not support task-augmented execution (execution.taskSupport is forbidden)"}}
 		}
-		t := s.startTask(c.id, ttl, s.runInner(c, req))
+		t, terr := s.startTask(c.id, ttl, s.runInner(c, req))
+		if terr != nil {
+			return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
+		}
 		return &response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"task": t}}
 	}
 	support := s.taskSupportOf(ctx, req.Params)
@@ -274,7 +286,10 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if eager {
 		after = tm.TaskEager
 	}
-	t := s.startTask("", tasks.DefaultTTL(), s.runInner(c, req))
+	t, terr := s.startTask("", tasks.DefaultTTL(), s.runInner(c, req))
+	if terr != nil {
+		return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
+	}
 	wait, cancel := context.WithTimeout(ctx, after)
 	defer cancel()
 	result, fault, err := s.tasks().Result(wait, t.TaskID)
@@ -338,9 +353,15 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 		}
 	}
 
-	t := s.tasks().Start(tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	// The ask seam holds no connection identity (Peer is capabilities
+	// only), so this task counts against the unbound bucket, capped like
+	// any other requestor.
+	t, terr := s.tasks().Start(tasks.UnboundRequestor, tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
+	if terr != nil {
+		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeInternal, Message: terr.Error()}}, true
+	}
 	s.mu.Lock()
 	if s.askedTasks == nil {
 		s.askedTasks = map[string]askedTask{}
@@ -496,6 +517,12 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 	}
 	fail := func(code int, msg string) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: msg}}
+	}
+	// The tasks/* admission window (protoTasks.perMinute), counted per
+	// connection at admission for every tasks/* method, tasks/result
+	// included (triage settlement, task 3733).
+	if !s.tasks().Admit(c.id) {
+		return fail(codeInternal, tasks.ErrRateWindow.Error())
 	}
 	var p struct {
 		TaskID string `json:"taskId"`

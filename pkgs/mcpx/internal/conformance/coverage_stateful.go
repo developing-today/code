@@ -15,6 +15,11 @@ func init() {
 		S("ext-tasks-notifications-via-listen", "mcpserver.TestSubscriptionsListen/2026-07-28/subscriptions/taskIds-without-the-extension-is-32021", "mcpserver.TestListenDeliversTaskStatusNotifications@2026-07-28", "mcpserver.TestListenReportsATaskThatAlreadyFinished@2026-07-28"),
 		S("ext-tasks-durable-before-response", "mcpserver.TestInjectedStoreKeepsMCPTasksAcrossReopen@2026-07-28"),
 		S("tasks-unidentified-no-list", "mcpserver.TestTasksPerEra/2025-11-25/tasks/another-connection-cannot-list-or-read-it"),
+		// The tasks-rate-limit and tasks-resource-limits gaps were retired
+		// by #2498 (Phase 1 of #2497): the store's limits are covered by
+		// the internal/tasks tests below.
+		S("tasks-rate-limit", "tasks.TestAdmitCountsAgainstThePerMinuteWindow@all"),
+		S("tasks-resource-limits", "tasks.TestStartClampsTTLToTheStoreMax@all", "tasks.TestStartRefusesBeyondThePerRequestorCap@all", "tasks.TestNewIDIs128Bit@all"),
 		C("caching-ttl-zero-stale", "pool.TestPoolCacheTTLZeroStale@2026-07-28", "mcpclient.TestListToolsWithHintsAggregatesPages@2026-07-28"),
 		C("caching-ttl-positive-fresh", "pool.TestPoolCacheTTLPositiveFresh@2026-07-28", "pool.TestPoolCacheTTLPositiveExpires@2026-07-28"),
 		C("caching-ttl-absent-zero", "pool.TestPoolCacheTTLAbsentStale@2026-07-28", "mcpclient.TestListPromptsWithHintsAbsent@2026-07-28"),
@@ -117,8 +122,6 @@ func init() {
 		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#209", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
 		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#209", Why: "a task failed by an isError tool result carries no statusMessage"},
 		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#209", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
-		Gap{ID: "tasks-rate-limit", Side: Server, Issue: "#209", Why: "tasks/* has no rate limit"},
-		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#209", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
 		Gap{ID: "tasks-audit", Side: Server, Issue: "#209", Why: "task creation, completion and retrieval are not logged"},
 		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#209", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
 	)

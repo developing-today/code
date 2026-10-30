@@ -1102,8 +1102,13 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	// from /v1/tasks, rather than holding this request open for however long
 	// the tool takes.
 	if req.Task != nil {
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"task": s.startCallTask(req.Task.TTL, req.Server, req.Tool, cc, args)})
+		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, cc, args)
+		if terr != nil {
+			// The store's per-requestor cap (protoTasks.maxPerRequestor).
+			writeErr(w, http.StatusTooManyRequests, terr)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"task": task})
 		return
 	}
 

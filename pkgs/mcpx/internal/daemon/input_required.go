@@ -97,7 +97,7 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	ready := make(chan string, 1)
 	start := time.Now()
 	run := r.Header.Get("X-Mcpx-Run")
-	t := s.taskStore().Start(s.set.Duration("proto.askTTL").Milliseconds(),
+	t, terr := s.taskStore().Start(cc.SessionID, s.set.Duration("proto.askTTL").Milliseconds(),
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withRun(ctx, run)
@@ -114,6 +114,11 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 			return map[string]any{"result": res, "kind": "tools/call", "server": req.Server,
 				"durationMs": time.Since(start).Milliseconds()}, nil
 		})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	// Polled rather than signalled: the call registers itself only once its

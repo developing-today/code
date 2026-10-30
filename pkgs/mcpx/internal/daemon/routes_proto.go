@@ -431,7 +431,7 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
-	t := s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	t, terr := s.taskStore().Start(cc.SessionID, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over
@@ -473,6 +473,11 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{"result": raw, "kind": req.Kind, "server": req.Server,
 			"durationMs": time.Since(start).Milliseconds()}, nil
 	})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"callId": t.TaskID, "task": t})

@@ -603,6 +603,9 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once |
+| `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped |
+| `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |
 | `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries |
 
 ### recipes
