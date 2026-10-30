@@ -7,6 +7,15 @@
 > about one MCP connection per server per location, and what that does to
 > Chrome sharing, still holds. See
 > [`docs/opencode-plugin.md`](./docs/opencode-plugin.md).
+>
+> **Corrections, 2026-10-30.** Two more. The comparison table's
+> "no dependencies" for mcpx is wrong: it carries nine direct Go
+> dependencies (see [`docs/dependencies.md`](./docs/dependencies.md)).
+> And the claim below that staying on opencode v1 makes "none of v2's
+> Code Mode available" contradicts the 2026-09-29 correction above:
+> v1 ships code mode behind `OPENCODE_EXPERIMENTAL_CODE_MODE`, so a
+> v1 user can turn it on; what v1 does not give them is v2's Code
+> Mode as the default MCP path.
 
 
 Reviewed against `anomalyco/opencode` branch `v2` at `37049a5` (2026-09-26), and
@@ -149,7 +158,7 @@ templates, most typed arrays. `this`/`call`/`apply`/`bind`, `WeakMap`/`WeakSet` 
 | Remote MCP | Streamable HTTP + OAuth + elicitation | Streamable HTTP, no OAuth |
 | OpenAPI specs as tools | yes (`OpenAPI.fromSpec`) | yes (`mcpx api`, `paths.apis`) |
 | Portable to other agents | no | yes |
-| Implementation | ~10.8 k LOC interpreter + ~2.7 k glue, TypeScript/Effect | ~4.2 k LOC, Go, no dependencies |
+| Implementation | ~10.8 k LOC interpreter + ~2.7 k glue, TypeScript/Effect | ~4.2 k LOC, Go, nine direct dependencies |
 | Tests | 34 files / 20 k lines, incl. test262 | 84 tests |
 
 ## How to read this

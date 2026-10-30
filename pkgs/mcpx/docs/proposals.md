@@ -768,6 +768,15 @@ or a unix path would let the CLI drive a remote daemon. The blocker is not
 parsing but authentication and trust, which loopback currently provides for
 free. Worth specifying before building.
 
+*Correction, 2026-10-30: the remote half of this was specified and
+built — as an identity transport, not raw addressing. Since #1967 the
+daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity (a MagicDNS name) from another network, with the tailnet
+providing exactly the authentication and trust this entry named as
+the blocker. Generic internet addressing (`example.com:8008` and
+friends) remains unbuilt and unendorsed.*
+
 **Load.** Untested beyond 12 concurrent runs. Discovery is a map read and
 should be flat; the interesting limits are process count and the reaper's
 O(instances) sweep. A benchmark should come before any optimisation.
@@ -922,6 +931,15 @@ Beyond `mcpx types <ns>.<tool>`:
 status:  proposed
 effort:  medium
 ```
+
+*Correction, 2026-10-30: the re-export proposed here is still the
+open part — but "remote daemon" itself is no longer unbuilt. Since
+#1967 the daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity, and the settings registry ships the client half
+(`daemon.endpoint`, `daemon.address`). What remains proposal is the
+code-mode MCP server / OpenAPI endpoint re-export above, not remote
+reachability as such.*
 
 Distinct from importing or emitting OpenAPI: this makes mcpx itself something
 other tools connect *to*.
