@@ -38,7 +38,10 @@ func (a *App) recipeToolExtras(ctx context.Context, c *Client, taken map[string]
 		if cerr != nil {
 			return "", cerr
 		}
-		res, rerr := c.RunRecipe(ctx, name, values, "run", a.mcpSession())
+		// The caller's own session, not this process's: recipes may call
+		// session-scoped namespaces, and two MCP clients must not share
+		// one upstream session by accident (see mcpCaller).
+		res, rerr := c.RunRecipe(ctx, name, values, "run", a.mcpCaller(ctx).SessionID)
 		if rerr != nil {
 			return "", rerr
 		}
@@ -74,6 +77,12 @@ func renderRecipeResult(res *Resolution) (string, error) {
 	}
 	if res.Result.Error != "" {
 		return b.String(), errors.New(res.Result.Error)
+	}
+	if res.Result.ExitCode != 0 {
+		// A failed recipe is a failed tool call: the output above stays
+		// attached, but the MCP result must carry an error or callers
+		// read the failure as success.
+		return b.String(), fmt.Errorf("recipe exited with code %d", res.Result.ExitCode)
 	}
 	if b.Len() == 0 {
 		return "(no output)", nil

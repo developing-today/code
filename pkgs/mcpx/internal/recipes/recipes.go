@@ -255,7 +255,9 @@ func refs(src string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, line := range strings.Split(src, "\n") {
-		if declLine.MatchString(line) {
+		if declLine.MatchString(line) || toolDecl.MatchString(line) {
+			// Declaration and marker lines describe the recipe; the
+			// `@param`/`@tool` words in them are not placeholders.
 			continue
 		}
 		for i := 0; i < len(line); i++ {

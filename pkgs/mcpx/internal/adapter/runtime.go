@@ -107,6 +107,11 @@ func (s Spec) command() (bin string, prefix []string, script string, err error) 
 		command = filepath.Join(s.Dir, command)
 	}
 	script, err = scriptPath(command)
+	if err != nil && command != s.Command {
+		// Not beside the declaration's files: the bare name may still be
+		// a script installed on PATH, which is the documented fallback.
+		script, err = scriptPath(s.Command)
+	}
 	if err != nil {
 		return "", nil, "", err
 	}

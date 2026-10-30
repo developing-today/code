@@ -312,3 +312,32 @@ func TestARuntimeWithNoScriptIsRefusedClearly(t *testing.T) {
 		t.Errorf("the message should say what is wrong: %v", err)
 	}
 }
+
+func TestAScriptOnPathFallsBackWhenAbsentFromDir(t *testing.T) {
+	// A runtime adapter may name a bare script that lives on PATH while
+	// its working dir is elsewhere: the dir-relative file is tried first,
+	// then the documented PATH fallback, not a stat error on the join.
+	if _, _, err := adapter.RuntimeInterpreter("bash"); err != nil {
+		t.Skip("no bash on this machine: ", err)
+	}
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "onpath.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho frompath\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	spec := adapter.Spec{
+		Name: "s", Command: "onpath.sh", Runtime: "bash", Dir: t.TempDir(),
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("a PATH script with a working dir elsewhere should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "frompath") {
+		t.Errorf("got %q", res.Stdout)
+	}
+}
