@@ -57,7 +57,7 @@ fi
 owed_file() { echo "$STATE_DIR/owed-$1"; }
 
 record_owed() { # <unit> <subtree> <dep-step-or-empty>
-  mkdir -p "$STATE_DIR"
+  mkdir -p "$STATE_DIR" || return 1
   printf '%s\n%s\n' "$2" "$3" >"$(owed_file "$1")"
 }
 
@@ -68,6 +68,7 @@ clear_owed() { # <unit>
 }
 
 ATTEMPTED=" "
+OWED_PERSIST_FAILED=0
 
 # attempt_redeploy <subtree> <unit> <dep-step-or-empty>
 # Runs the dependency step (when given) and then the restart. A failed
@@ -76,12 +77,21 @@ ATTEMPTED=" "
 attempt_redeploy() {
   local subtree="$1" unit="$2" dep="$3"
   ATTEMPTED="$ATTEMPTED$unit "
+  # Merge a persisted dependency obligation into this attempt: if an
+  # earlier run owed this unit a dependency step, a newer pull that
+  # does not itself change the dependency inputs must not restart the
+  # service past the still-unresolved install (#2391, Codex P1).
+  local of
+  of="$(owed_file "$unit")"
+  if [ -z "$dep" ] && [ -e "$of" ]; then
+    dep="$(sed -n '2p' "$of")"
+  fi
   if [ -n "$dep" ]; then
     if (cd "$subtree" && eval "$dep"); then
       echo "pm-git-sync: dep step done for $subtree"
     else
       echo "pm-git-sync: FAIL dep step failed for $subtree — $unit NOT restarted; redeploy owed"
-      record_owed "$unit" "$subtree" "$dep"
+      record_owed "$unit" "$subtree" "$dep" || OWED_PERSIST_FAILED=1
       return 1
     fi
   fi
@@ -91,7 +101,7 @@ attempt_redeploy() {
     return 0
   fi
   echo "pm-git-sync: FAIL $unit restart failed — redeploy owed"
-  record_owed "$unit" "$subtree" "$dep"
+  record_owed "$unit" "$subtree" "$dep" || OWED_PERSIST_FAILED=1
   return 1
 }
 
@@ -124,6 +134,10 @@ finish() {
   retry_owed
   local owed
   owed="$(owed_summary)"
+  if [ "$OWED_PERSIST_FAILED" -ne 0 ]; then
+    echo "pm-git-sync: FAIL could not persist an owed-redeploy record in $STATE_DIR — a failed redeploy may not be retried"
+    exit 1
+  fi
   if [ -n "$owed" ]; then
     echo "pm-git-sync: FAIL redeploy(s) still owed for: $(echo "$owed" | tr '\n' ' ')"
     exit 1

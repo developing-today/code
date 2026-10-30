@@ -85,7 +85,7 @@ run_sync() {
   PM_GIT_SYNC_REPO="$REPO" \
     PM_GIT_SYNC_BUN="$STUB/bun" \
     PM_GIT_SYNC_SYSTEMCTL="$STUB/systemctl" \
-    PM_GIT_SYNC_STATE_DIR="$STATE_DIR" \
+    PM_GIT_SYNC_STATE_DIR="${TEST_STATE_DIR:-$STATE_DIR}" \
     bash "$SYNC"
 }
 
@@ -122,6 +122,16 @@ check "owed retry re-ran the dep step" log_has "bun install"
 check "aggregator still NOT restarted" log_lacks "restart pm-aggregator"
 check "owed record still exists" test -e "$OWED_AGG"
 
+# --- 2b. a newer source-only pull must not skip the owed dep step -------------
+# (Codex P1 on PR 2860: the merged obligation survives HEAD moving.)
+push_change pm-stack/aggregator/index.ts 'agg v2'
+: >"$STUB_LOG"
+run_sync >/dev/null 2>&1
+check "source-only pull with owed dep exits non-zero" test $? -ne 0
+check "owed dep step merged into the new attempt" log_has "bun install"
+check "aggregator NOT restarted past the owed dep step" log_lacks "restart pm-aggregator"
+check "owed record survives the source-only pull" test -e "$OWED_AGG"
+
 # --- 3. dep recovers: retry restarts and clears the owed record ---------------
 rm -f "$PM_TEST_BUN_FAIL"
 : >"$STUB_LOG"
@@ -142,6 +152,14 @@ run_sync >/dev/null 2>&1
 check "old==new retry after restart failure exits 0" test $? -eq 0
 check "dispatch restarted by retry" log_has "restart pm-dispatch"
 check "dispatch owed record cleared" test ! -e "$OWED_DISPATCH"
+
+# --- 5. an unpersistable owed record must fail the run -------------------------
+# (Codex P2 on PR 2860: absent record != successful deployment.)
+push_change pm-stack/dispatch/index.ts 'dispatch v3'
+touch "$SCRATCH/blocker" "$PM_TEST_RESTART_FAIL"
+TEST_STATE_DIR="$SCRATCH/blocker/state" run_sync >/dev/null 2>&1
+check "run with unusable state dir exits non-zero on failed redeploy" test $? -ne 0
+rm -f "$PM_TEST_RESTART_FAIL"
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "pm-git-sync.test: $FAILURES check(s) failed"
