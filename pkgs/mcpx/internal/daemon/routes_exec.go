@@ -187,6 +187,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
 	svc := &execsvc.Service{
+		Calls:    s.callRegistry(),
 		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
 		Store:    store,
 		Endpoint: s.endpoint,

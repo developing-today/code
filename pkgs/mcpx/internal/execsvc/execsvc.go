@@ -17,7 +17,9 @@ package execsvc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -192,6 +194,9 @@ type Frame struct {
 
 	Artifact *Artifact `json:"artifact,omitempty"`
 
+	// Call carries one tool call the script made, under FrameCall.
+	Call *CallInfo `json:"call,omitempty"`
+
 	// Hook carries what one hook did, under type "hook".
 	Hook *HookFrame `json:"hook,omitempty"`
 
@@ -211,6 +216,7 @@ const (
 	FrameStart        = "start"
 	FrameLog          = "log"
 	FrameEmit         = "emit"
+	FrameCall         = "call"
 	FrameStdout       = "stdout"
 	FrameArtifact     = "artifact"
 	FrameResult       = "result"
@@ -220,6 +226,115 @@ const (
 	FrameArtifactData = "artifact.chunk"
 	FrameArtifactEnd  = "artifact.end"
 )
+
+// CallInfo is one tool call a script made during a run, as a FrameCall
+// frame carries it. The arguments travel as a hash, never in clear: an
+// exec stream is a thing other people read, and a call's arguments are
+// the script's business. DestructiveHint is nil when the tool's
+// annotations declare nothing the daemon could read.
+type CallInfo struct {
+	Server          string `json:"server"`
+	Tool            string `json:"tool"`
+	ArgsHash        string `json:"argsHash"`
+	DurationMs      int64  `json:"durationMs"`
+	OK              bool   `json:"ok"`
+	Error           string `json:"error,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+}
+
+// ArgsHash is the stable fingerprint of a call's arguments: sha256 of
+// their canonical JSON, hex-encoded. Two calls with the same arguments
+// hash alike, which is what a reader comparing calls wants.
+func ArgsHash(args any) string {
+	b, err := json.Marshal(args)
+	if err != nil {
+		b = []byte(fmt.Sprintf("%#v", args))
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// CallRegistry is the run-scoped sink registry between the daemon's
+// call path and the exec streams the daemon is running: a run registers
+// its stream's sink under its run id, and a tool call made with that
+// run id in its context (the x-mcpx-run header a generated client sends)
+// is reported to the sink as a call frame. Calls for runs nobody here
+// is executing are dropped, by design: there is no stream to join.
+type CallRegistry struct {
+	mu    sync.Mutex
+	sinks map[string]*callSink
+}
+
+// callSink is one run's registered sink plus its delivery lifetime:
+// closed stops new reports, and wg counts the reports in flight, so
+// unregistering can drain them instead of racing them.
+type callSink struct {
+	sink   func(Frame)
+	closed bool
+	wg     sync.WaitGroup
+}
+
+// NewCallRegistry builds an empty registry.
+func NewCallRegistry() *CallRegistry {
+	return &CallRegistry{sinks: map[string]*callSink{}}
+}
+
+// Register installs sink for runID and returns the function that
+// removes it. Registering the same run twice replaces the first sink.
+//
+// The returned unregister is idempotent and draining: it closes the
+// sink to new reports, then waits for any report already being
+// delivered to finish. A run's stream can therefore be closed before
+// its terminal frames with a guarantee that no call frame lands
+// after them — or after the stream's handler has returned.
+func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func()) {
+	entry := &callSink{sink: sink}
+	r.mu.Lock()
+	r.sinks[runID] = entry
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			if r.sinks[runID] == entry {
+				delete(r.sinks, runID)
+			}
+			entry.closed = true
+			r.mu.Unlock()
+			entry.wg.Wait()
+		})
+	}
+}
+
+// ReportCall builds a call frame and delivers it to the sink registered
+// for runID. It reports whether a sink was there to receive it.
+func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time.Duration, callErr error, destructive *bool) bool {
+	r.mu.Lock()
+	entry, ok := r.sinks[runID]
+	if ok && !entry.closed {
+		// Counted under mu: unregister closes the entry under the
+		// same lock before it waits, so an Add can never race its
+		// Wait once the entry is closed.
+		entry.wg.Add(1)
+	} else {
+		ok = false
+	}
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	defer entry.wg.Done()
+	info := &CallInfo{
+		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
+		DurationMs: dur.Milliseconds(), OK: callErr == nil,
+		DestructiveHint: destructive,
+	}
+	if callErr != nil {
+		info.Error = callErr.Error()
+	}
+	entry.sink(Frame{Type: FrameCall, RunID: runID, Call: info})
+	return true
+}
 
 // Artifact is one artifact as a caller receives it: always the metadata,
 // plus whatever the declared delivery adds.
@@ -333,6 +448,12 @@ type Service struct {
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
+	// Calls, when set, is the registry this service's runs register
+	// their streams in, so the daemon's call path can report the calls
+	// a script makes as call frames on its own stream. The daemon
+	// shares one registry between the services it builds and its call
+	// handlers.
+	Calls *CallRegistry
 }
 
 // Request is one execution.
@@ -491,6 +612,18 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
+	// The run's stream is registered for the calls the script is about
+	// to make: the daemon's call path finds it by run id and reports
+	// each call as a call frame, interleaved with the run's own output
+	// exactly where it happened.
+	unregisterCalls := func() {}
+	if s.Calls != nil {
+		unregisterCalls = s.Calls.Register(runID, emitFrame)
+	}
+	// Safety net only: the explicit close below, before the terminal
+	// frames, is the one that orders call frames ahead of them.
+	defer unregisterCalls()
+
 	var stdout strings.Builder
 	priorStdout := ropts.Stdout
 	ropts.Stdout = writerFunc(func(p []byte) (int, error) {
@@ -585,8 +718,13 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			relCancel()
 		}
 	}
-
 	rres, rerr := runner.Run(runCtx, ropts)
+	// Close call-frame delivery before the terminal frames below:
+	// unregistering drains a report already in flight (a tool request
+	// finishing just as the script exits or times out) so its call
+	// frame lands here, in order, and drops any report that comes
+	// later — nothing may be written to the stream after end.
+	unregisterCalls()
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.

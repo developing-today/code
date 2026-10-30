@@ -24,6 +24,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
+	"github.com/dezren39/mcpx/internal/execsvc"
 	"github.com/dezren39/mcpx/internal/hooks"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/logstore"
@@ -154,6 +155,12 @@ type Server struct {
 	// first use, because a daemon that never runs one should carry nothing.
 	taskOnce sync.Once
 	tasks    *tasks.Store
+
+	// calls is the exec call-frame registry shared between the exec
+	// services this daemon builds and its /v1/call handlers (#1927).
+	// Created on first use, like tasks.
+	callOnce sync.Once
+	calls    *execsvc.CallRegistry
 
 	tokenStore *logstore.TokenStore
 
@@ -1099,6 +1106,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	dur := time.Since(start).Truncate(time.Millisecond)
+	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, res, err)
 
 	toolKey := req.Server + ":" + req.Tool
 	var inBytes, outBytes []byte
@@ -1213,6 +1221,10 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		dur := time.Since(start).Truncate(time.Millisecond)
+		// Batch items bypass the single-call handlers, so report each
+		// completed one here: a script's batch(...) calls belong in
+		// its exec stream like any other call.
+		s.reportCallFrame(ctx, server, tool, args, start, res, err)
 
 		if err != nil {
 			return map[string]any{
@@ -1641,4 +1653,54 @@ func (s *Server) handleLogRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sink.Write(rec, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// callRegistry returns the daemon's shared exec call-frame registry,
+// creating it on first use.
+func (s *Server) callRegistry() *execsvc.CallRegistry {
+	s.callOnce.Do(func() { s.calls = execsvc.NewCallRegistry() })
+	return s.calls
+}
+
+// reportCallFrame tells the exec stream that is running this call, if
+// any, that the call happened: a call frame with the tool's resolved
+// destructiveHint. A call with no run id, or a run this daemon is not
+// executing, has no stream to join and is not reported.
+func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args any, start time.Time, res json.RawMessage, callErr error) {
+	run := runFrom(ctx)
+	if run == "" {
+		return
+	}
+	// A tool that ran and returned isError failed, even though the
+	// transport call itself succeeded: the frame must say so, the way
+	// the path-per-tool handler already does with resultFailed.
+	if callErr == nil && resultFailed(res) {
+		callErr = errors.New("tool returned an error result (isError)")
+	}
+	var dh *bool
+	tools := s.reg.Tools([]string{server})
+	// Dispatch resolves an exact server name before a namespace
+	// (Registry.Pool), so the annotations must be picked the same way:
+	// a server whose namespace equals another server's name must not
+	// lend its annotations to that server's calls.
+	var picked *ToolInfo
+	for i := range tools {
+		if tools[i].Tool == tool && tools[i].Server == server {
+			picked = &tools[i]
+			break
+		}
+	}
+	if picked == nil {
+		for i := range tools {
+			if tools[i].Tool == tool && tools[i].Namespace == server {
+				picked = &tools[i]
+				break
+			}
+		}
+	}
+	if picked != nil {
+		d := destructiveHint(picked.Annotations)
+		dh = &d
+	}
+	s.callRegistry().ReportCall(run, server, tool, args, time.Since(start), callErr, dh)
 }
