@@ -2189,9 +2189,12 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             }
+            let clamped_width = usize::from(width).min(crate::world_presentation::MAX_SCREEN_WIDTH);
+            let clamped_height =
+                usize::from(height).min(crate::world_presentation::MAX_SCREEN_HEIGHT);
             *viewport = Some(Viewport {
-                width: usize::from(width),
-                height: usize::from(height),
+                width: clamped_width,
+                height: clamped_height,
             });
             return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
         }

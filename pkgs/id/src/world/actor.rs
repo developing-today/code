@@ -1206,10 +1206,26 @@ impl WorldActor {
                                 if let Some(text) = &view {
                                     if text.len() > self.core.limits.presentation_bytes {
                                         self.view_failures = self.view_failures.saturating_add(1);
-                                        Err(anyhow::anyhow!(
-                                            "world presentation exceeds {} bytes",
-                                            self.core.limits.presentation_bytes
-                                        ))
+                                        // A trapping layout degrades to an error screen and does not poison the world.
+                                        // Fall back to the default view, and crop to the requested dimensions.
+                                        match self.program.view(&viewer) {
+                                            Ok(fallback_view) => {
+                                                if let Some(fallback_text) = fallback_view {
+                                                    if let Ok(Some(crate::world_presentation::WorldSurface::Screen(surface))) = crate::world_presentation::parse_surface(&fallback_text) {
+                                                        let cropped = surface.fit(usize::from(width), usize::from(height));
+                                                        Ok(Some(serde_json::to_string(&cropped).unwrap_or(fallback_text)))
+                                                    } else {
+                                                        Ok(Some(fallback_text))
+                                                    }
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                            Err(error) => {
+                                                Err(error
+                                                    .context("world program view fallback failed"))
+                                            }
+                                        }
                                     } else {
                                         Ok(view)
                                     }
