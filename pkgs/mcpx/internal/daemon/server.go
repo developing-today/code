@@ -242,6 +242,13 @@ func NewServer(opts Options) (*Server, error) {
 		opts.Logger.Printf("elicitation disabled: %v", berr)
 		broker = nil
 	}
+	if broker != nil && opts.Settings != nil {
+		// The declared elicit.ttl / elicit.maxAge settings govern the
+		// broker's touch-on-read convention; without this the registry
+		// entries would be promises nothing honours.
+		broker.Configure(opts.Settings.Duration("elicit.ttl"),
+			opts.Settings.Duration("elicit.maxAge"))
+	}
 	reg.UseSettings(opts.Settings)
 	reg.InstallHooks(srv.Events, broker, nil)
 	if raw := opts.Settings.String("hooks"); raw != "" {

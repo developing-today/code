@@ -38,7 +38,13 @@ type ExitCoder interface {
 func (a *App) broker() (*elicit.Broker, error) {
 	dir := firstNonEmpty(a.Settings().String("logging.dir"),
 		filepath.Join(a.Paths.State, "logs"))
-	return elicit.OpenAt(a.Paths.State, filepath.Join(dir, "elicit.db"))
+	b, err := elicit.OpenAt(a.Paths.State, filepath.Join(dir, "elicit.db"))
+	if err != nil {
+		return nil, err
+	}
+	b.Configure(a.Settings().Duration("elicit.ttl"),
+		a.Settings().Duration("elicit.maxAge"))
+	return b, nil
 }
 
 // CmdElicit answers, lists and follows outstanding questions.

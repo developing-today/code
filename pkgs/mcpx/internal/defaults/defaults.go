@@ -89,6 +89,7 @@ type Defaults struct {
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
+		MaxAge         string `json:"maxAge"`
 		PollInterval   string `json:"pollInterval"`
 		HandlerTimeout string `json:"handlerTimeout"`
 		InputRounds    int    `json:"inputRounds"`
@@ -524,7 +525,11 @@ var (
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
 
-	ElicitTTL            = mustDur(builtin.Elicit.TTL, "elicit.ttl")
+	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
+	// ElicitMaxAge is the absolute ceiling on a question's life under the
+	// touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
+	// renewal by use can never push a deadline past creation plus this.
+	ElicitMaxAge         = mustDur(builtin.Elicit.MaxAge, "elicit.maxAge")
 	ElicitPollInterval   = mustDur(builtin.Elicit.PollInterval, "elicit.pollInterval")
 	ElicitHandlerTimeout = mustDur(builtin.Elicit.HandlerTimeout, "elicit.handlerTimeout")
 	// InputRounds bounds how many times one 2026-07-28 request may come back

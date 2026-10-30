@@ -148,6 +148,7 @@
   },
   "elicit": {
     "ttl": "120s",
+    "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
     "inputRounds": 8
