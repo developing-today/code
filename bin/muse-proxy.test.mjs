@@ -768,6 +768,60 @@ test('direct mode: /v1/responses passes the body through verbatim, swapping only
   assert.equal(upstream[0].body, JSON.stringify(clientBody), 'byte-for-byte passthrough on the wire');
 });
 
+test('direct mode: /v1/responses aliases the shell tool and translates calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const clientBody = {
+    model: 'muse-spark-1.3',
+    stream: false,
+    input: [
+      { type: 'function_call', call_id: 'call_0', name: 'shell', arguments: '{"command":"echo hi"}' },
+      { type: 'function_call_output', call_id: 'call_0', output: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.equal(upstream.tools[0].name, 'run_command', 'the tool definition is aliased upstream');
+  assert.equal(upstream.input[0].name, 'run_command', 'history function calls are aliased upstream');
+  const respBody = JSON.parse(await res.text());
+  const call = respBody.output.find(i => i.type === 'function_call');
+  assert.equal(call.name, 'shell', 'the returned call is translated back to the client name');
+});
+
+test('direct mode: /v1/responses streaming translates aliased tool calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify({
+      model: 'muse-spark-1.3',
+      stream: true,
+      input: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', name: 'shell', description: 'Run', parameters: { type: 'object' } }]
+    })
+  });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.ok(sse.includes('"name":"shell"'), 'the streamed function_call carries the client name');
+  assert.ok(!sse.includes('run_command'), 'the alias never leaks to the client');
+});
+
 test('direct mode: MUSE_PROXY_DIRECT=0 leaves the exec path in charge (#2753)', async (t) => {
   const meta = await startMetaStub('chat');
   t.after(() => meta.close());
