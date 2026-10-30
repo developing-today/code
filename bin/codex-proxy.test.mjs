@@ -9,7 +9,7 @@
 // produced nothing, and carrying the truncated text when it produced
 // partial output.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -193,11 +193,12 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async (reuse, extraEnv = {}) => {
+const startProxy = async (reuse, extraEnv = {}, seedHome = null) => {
   const tmp = reuse ? reuse.tmp : fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-test-'));
   const home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(home, '.local', 'bin', 'codex'), STUB, { mode: 0o755 });
+  if (seedHome) seedHome(home);
   const stateHome = path.join(tmp, 'state');
   const port = await freePort();
   const child = spawn(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
@@ -222,7 +223,7 @@ const startProxy = async (reuse, extraEnv = {}) => {
     if (Date.now() > deadline) throw new Error(`proxy did not start:\n${log}`);
     await new Promise(r => setTimeout(r, 50));
   }
-  return { port, tmp, home, stateHome, stop: () => child.kill('SIGKILL') };
+  return { port, tmp, home, stateHome, stop: () => child.kill('SIGKILL'), log: () => log };
 };
 
 const post = (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
@@ -545,4 +546,80 @@ test('CODEX_PROXY_TRANSPORT=exec-resume bypasses the app-server entirely (#480)'
   assert.equal(res.status, 200);
   assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
   assert.equal(fake.requests.length, 0, 'exec-resume transport must not touch the daemon');
+});
+
+// ---------------------------------------------------------------------------
+// Codex -> OpenCode token sync (#2533). The proxy runs the sync at startup
+// against $HOME: seed a fake ~/.codex/auth.json plus a scratch opencode.db
+// (via python3's sqlite3, the same interpreter the sync shells out to) and
+// assert what the sync did — and did not — touch.
+// ---------------------------------------------------------------------------
+const runPy = (script, env = {}) =>
+  execFileSync('python3', ['-c', script], { encoding: 'utf-8', env: { ...process.env, ...env } });
+
+const SEED_SYNC_DB = `
+import os, sqlite3, json
+db = os.environ['SYNC_TEST_DB']
+os.makedirs(os.path.dirname(db), exist_ok=True)
+conn = sqlite3.connect(db)
+conn.execute("""CREATE TABLE credential (
+  id text PRIMARY KEY, integration_id text, label text NOT NULL, value text NOT NULL,
+  connector_id text, method_id text, active integer,
+  time_created integer NOT NULL, time_updated integer NOT NULL)""")
+rows = [
+  ('cred-active', 'openai', 'OpenAI', {'type': 'oauth', 'access': 'OLD-ACCESS', 'refresh': 'OLD-REFRESH', 'expires': 1, 'metadata': {}}, 1, 111),
+  ('cred-inactive', 'openai', 'OpenAI 2', {'type': 'oauth', 'access': 'OLD2-ACCESS', 'refresh': 'OLD2-REFRESH', 'expires': 1, 'metadata': {}}, 0, 222),
+  ('cred-alt', 'openai.alternate', 'OpenAI Alternate', {'type': 'oauth', 'access': 'ALT-ACCESS', 'refresh': 'ALT-REFRESH', 'expires': 1, 'metadata': {}}, 1, 333),
+]
+for rid, integ, label, val, active, tu in rows:
+    conn.execute('INSERT INTO credential VALUES (?,?,?,?,NULL,NULL,?,?,?)', (rid, integ, label, json.dumps(val), active, tu, tu))
+conn.commit()
+conn.close()
+`;
+
+const READ_SYNC_DB = `
+import os, sqlite3, json
+conn = sqlite3.connect(os.environ['SYNC_TEST_DB'])
+out = {}
+for rid, value, tu in conn.execute('SELECT id, value, time_updated FROM credential'):
+    out[rid] = {'value': json.loads(value), 'time_updated': tu}
+print(json.dumps(out))
+`;
+
+const seedSyncHome = (home, { corruptDb = false } = {}) => {
+  fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.codex', 'auth.json'), JSON.stringify({
+    tokens: { access_token: 'NEW-ACCESS', refresh_token: 'NEW-REFRESH', account_id: 'acct-new' }
+  }));
+  const dbPath = path.join(home, '.local', 'share', 'opencode', 'opencode.db');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  if (corruptDb) {
+    fs.writeFileSync(dbPath, 'this is not a sqlite database');
+  } else {
+    runPy(SEED_SYNC_DB, { SYNC_TEST_DB: dbPath });
+  }
+  return dbPath;
+};
+
+test('token sync updates only the active base openai row (#2533)', async (t) => {
+  let dbPath;
+  const started = await startProxy(null, {}, (home) => { dbPath = seedSyncHome(home); });
+  t.after(started.stop);
+  const rows = JSON.parse(runPy(READ_SYNC_DB, { SYNC_TEST_DB: dbPath }));
+  assert.equal(rows['cred-active'].value.access, 'NEW-ACCESS');
+  assert.equal(rows['cred-active'].value.refresh, 'NEW-REFRESH');
+  assert.equal(rows['cred-active'].value.metadata.accountID, 'acct-new');
+  assert.ok(rows['cred-active'].time_updated > 111, 'active row time_updated must advance');
+  assert.ok(rows['cred-active'].value.expires > Date.now(), 'active row expiry must be pushed out');
+  assert.equal(rows['cred-inactive'].value.access, 'OLD2-ACCESS', 'inactive openai row must not be touched');
+  assert.equal(rows['cred-inactive'].time_updated, 222);
+  assert.equal(rows['cred-alt'].value.access, 'ALT-ACCESS', 'openai.alternate row must not be touched');
+  assert.equal(rows['cred-alt'].time_updated, 333);
+  assert.match(started.log(), /codex-token-sync: updated 1 credential row\(s\)/);
+});
+
+test('token sync failure is logged, not swallowed (#2533)', async (t) => {
+  const started = await startProxy(null, {}, (home) => { seedSyncHome(home, { corruptDb: true }); });
+  t.after(started.stop);
+  assert.match(started.log(), /codex-token-sync FAILED:/);
 });
