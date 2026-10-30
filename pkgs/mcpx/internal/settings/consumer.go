@@ -83,6 +83,26 @@ func consumerSettings() []Setting {
 				"otherwise have already happened.",
 		},
 		{
+			Path: "elicit.ttl", Scope: ScopeDaemon, Kind: KindDuration, Default: defaults.Builtin().Elicit.TTL,
+			Name:  "Question time to live",
+			Short: "how long a question waits for an answer, renewed by use",
+			Long: "The idle deadline on a broker question, under the touch-on-read " +
+				"convention (docs/decisions/0005-ttl-touch-on-read.md): an item " +
+				"read of a pending question renews its deadline to now plus this " +
+				"long, bounded by elicit.maxAge from its creation. A question " +
+				"nobody looks at expires this long after it was last touched. " +
+				"Listing questions is a collection read and does not renew them.",
+		},
+		{
+			Path: "elicit.maxAge", Scope: ScopeDaemon, Kind: KindDuration, Default: defaults.Builtin().Elicit.MaxAge,
+			Name:  "Question maximum age",
+			Short: "the absolute ceiling on a question's life, however often it is read",
+			Long: "Touch-on-read renewal (elicit.ttl) can never push a question's " +
+				"deadline past its creation plus this long. The ceiling is what " +
+				"keeps a question somebody keeps glancing at from living forever: " +
+				"renewal exists for a human mid-answer, not for immortality.",
+		},
+		{
 			Path: "diagnose.preflight", Scope: ScopeCall, Hot: true, Kind: KindBool, Default: boolDefault(defaults.DiagnosePreflight),
 			Commands: []string{"run", "exec", "diagnose"},
 			Name:     "Diagnose before running",

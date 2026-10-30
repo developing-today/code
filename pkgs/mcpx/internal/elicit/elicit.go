@@ -104,8 +104,19 @@ type Request struct {
 	Audience  Audience        `json:"audience"`
 	Created   time.Time       `json:"created"`
 	ExpiresAt time.Time       `json:"expiresAt"`
-	State     State           `json:"state"`
-	PID       int             `json:"pid,omitempty"`
+	// LastTouched is when a pending question was last looked at: its
+	// creation, or the latest item read that renewed it. It is the
+	// anchor of the idle deadline under the touch-on-read convention
+	// (docs/decisions/0005-ttl-touch-on-read.md).
+	LastTouched time.Time `json:"lastTouched"`
+	// TTLRemainingMs is ExpiresAt minus the moment this representation
+	// was produced, in milliseconds, never negative. It is the shared
+	// vocabulary every expiring mcpx representation carries beside its
+	// RFC 3339 expiresAt, so a reader never has to do clock arithmetic
+	// -- or guess which of two clocks -- to know how long is left.
+	TTLRemainingMs int64 `json:"ttlRemainingMs"`
+	State          State `json:"state"`
+	PID            int   `json:"pid,omitempty"`
 	// Reason records why the audience was chosen, because a routing
 	// decision nobody can inspect is one nobody can correct.
 	Reason string `json:"reason,omitempty"`
@@ -118,6 +129,28 @@ func (r Request) TTLRemaining() time.Duration {
 		return 0
 	}
 	return d
+}
+
+// deadline is the effective expiry of a question under the
+// touch-on-read convention: the earlier of the idle deadline
+// (lastTouched + ttl) and the absolute ceiling (created + maxAge).
+// Renewal by use is the default; the ceiling is what an abandoned --
+// or merely much-glimpsed -- question still dies by.
+func deadline(created, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
+	d := lastTouched.Add(ttl)
+	if ceiling := created.Add(maxAge); ceiling.Before(d) {
+		d = ceiling
+	}
+	return d
+}
+
+// refreshTTLRemaining restamps TTLRemainingMs against now.
+func (r *Request) refreshTTLRemaining(now time.Time) {
+	ms := r.ExpiresAt.Sub(now).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	r.TTLRemainingMs = ms
 }
 
 // Answer is what came back.
@@ -133,6 +166,12 @@ type Answer struct {
 // Broker stores questions and hands back answers.
 type Broker struct {
 	db *sql.DB
+
+	// ttl and maxAge are the touch-on-read convention's two durations
+	// (elicit.ttl / elicit.maxAge). They start at the built-in defaults
+	// and are replaced by Configure when a settings set is resolved.
+	ttl    time.Duration
+	maxAge time.Duration
 
 	mu      sync.Mutex
 	waiters map[string][]chan Answer
@@ -155,7 +194,55 @@ func Open(path string) (*Broker, error) {
 		db.Close()
 		return nil, fmt.Errorf("creating elicitation tables: %w", err)
 	}
-	return &Broker{db: db, waiters: map[string][]chan Answer{}, poll: defaults.ElicitPollInterval}, nil
+	if err := ensureLastTouched(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrating elicitation tables: %w", err)
+	}
+	return &Broker{db: db, waiters: map[string][]chan Answer{},
+		poll: defaults.ElicitPollInterval,
+		ttl:  defaults.ElicitTTL, maxAge: defaults.ElicitMaxAge}, nil
+}
+
+// Configure sets the TTL convention's two durations, from the settings
+// registry (elicit.ttl / elicit.maxAge). A non-positive value is
+// ignored: a broker nobody configured keeps the built-in defaults, and
+// a resolved set that somehow produced zero must not make questions
+// immortal or instantly dead.
+func (b *Broker) Configure(ttl, maxAge time.Duration) {
+	if ttl > 0 {
+		b.ttl = ttl
+	}
+	if maxAge > 0 {
+		b.maxAge = maxAge
+	}
+}
+
+// ensureLastTouched adds the last_touched_ms column to a store written
+// before the touch-on-read convention. Rows that predate it read back
+// with a zero stamp, which scanRequests renders as their creation time
+// -- the correct anchor, since creation is the one touch they have had.
+func ensureLastTouched(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(elicitations)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "last_touched_ms" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE elicitations ADD COLUMN last_touched_ms INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (b *Broker) Close() error { return b.db.Close() }
@@ -173,6 +260,7 @@ CREATE TABLE IF NOT EXISTS elicitations (
   reason     TEXT,
   created_ms INTEGER NOT NULL,
   expires_ms INTEGER NOT NULL,
+  last_touched_ms INTEGER NOT NULL DEFAULT 0,
   state      TEXT NOT NULL,
   pid        INTEGER
 );
@@ -208,9 +296,13 @@ func (b *Broker) OpenRequest(r Request) (Request, error) {
 	if r.Created.IsZero() {
 		r.Created = time.Now()
 	}
-	if r.ExpiresAt.IsZero() {
-		r.ExpiresAt = r.Created.Add(defaults.ElicitTTL)
+	if r.LastTouched.IsZero() {
+		r.LastTouched = r.Created
 	}
+	if r.ExpiresAt.IsZero() {
+		r.ExpiresAt = deadline(r.Created, r.LastTouched, b.ttl, b.maxAge)
+	}
+	r.refreshTTLRemaining(time.Now())
 	if r.Audience == "" {
 		r.Audience, r.Reason = Route(r)
 	}
@@ -221,11 +313,12 @@ func (b *Broker) OpenRequest(r Request) (Request, error) {
 
 	_, err := b.db.Exec(`INSERT INTO elicitations
 		(id,trace,parent,session,server,tool,mode,message,schema_json,url,
-		 audience,reason,created_ms,expires_ms,state,pid)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 audience,reason,created_ms,expires_ms,last_touched_ms,state,pid)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ID, r.Trace, r.Parent, r.Session, r.Server, r.Tool, string(r.Mode),
 		r.Message, string(r.Schema), r.URL, string(r.Audience), r.Reason,
-		r.Created.UnixMilli(), r.ExpiresAt.UnixMilli(), string(r.State), r.PID)
+		r.Created.UnixMilli(), r.ExpiresAt.UnixMilli(), r.LastTouched.UnixMilli(),
+		string(r.State), r.PID)
 	return r, err
 }
 
@@ -276,7 +369,7 @@ func (b *Broker) Await(ctx context.Context, id string) (Answer, error) {
 			} else if ok {
 				return a, nil
 			}
-			r, ok, err := b.Get(id)
+			r, ok, err := b.get(id)
 			if err != nil {
 				return Answer{}, err
 			}
@@ -302,7 +395,7 @@ func (b *Broker) Respond(a Answer) error {
 	if a.PID == 0 {
 		a.PID = os.Getpid()
 	}
-	r, ok, err := b.Get(a.ID)
+	r, ok, err := b.get(a.ID)
 	if err != nil {
 		return err
 	}
@@ -366,8 +459,30 @@ func (b *Broker) Respond(a Answer) error {
 	return nil
 }
 
-// Get returns one question.
+// Get returns one question. An item read is use, so a pending
+// question is touched: its lastTouched becomes now and its deadline
+// renews under the convention (see touch). Collection reads (Pending)
+// do not touch -- listing what is waiting must not keep it alive.
 func (b *Broker) Get(id string) (Request, bool, error) {
+	r, ok, err := b.get(id)
+	if err != nil || !ok {
+		return r, ok, err
+	}
+	if r.State == Pending {
+		if terr := b.touch(&r, time.Now()); terr != nil {
+			return r, true, terr
+		}
+	}
+	r.refreshTTLRemaining(time.Now())
+	return r, true, nil
+}
+
+// get returns one question without touching it. The broker's own
+// machinery (Await's poll, Respond's validation) reads through here:
+// waiting for an answer is not the answerer looking at the question,
+// and a read that renewed the deadline it is enforcing would never
+// let it fall.
+func (b *Broker) get(id string) (Request, bool, error) {
 	rows, err := b.db.Query(selectRequests+` WHERE id=?`, id)
 	if err != nil {
 		return Request{}, false, err
@@ -378,6 +493,30 @@ func (b *Broker) Get(id string) (Request, bool, error) {
 		return Request{}, false, err
 	}
 	return out[0], true, nil
+}
+
+// touch renews a pending question after an item read: lastTouched
+// becomes now and the deadline becomes min(created+maxAge,
+// lastTouched+ttl). Touch never shortens a deadline -- a question
+// opened with an explicit expiry keeps it, create being the one place
+// an explicit lifetime is honoured -- and never revives one whose
+// deadline has already passed.
+func (b *Broker) touch(r *Request, now time.Time) error {
+	if now.After(r.ExpiresAt) {
+		return nil
+	}
+	expires := deadline(r.Created, now, b.ttl, b.maxAge)
+	if expires.Before(r.ExpiresAt) {
+		expires = r.ExpiresAt
+	}
+	if _, err := b.db.Exec(`UPDATE elicitations
+		SET last_touched_ms=?, expires_ms=? WHERE id=? AND state='pending'`,
+		now.UnixMilli(), expires.UnixMilli(), r.ID); err != nil {
+		return err
+	}
+	r.LastTouched = now
+	r.ExpiresAt = expires
+	return nil
 }
 
 // Lookup returns an answer if one exists.
@@ -468,18 +607,18 @@ func (b *Broker) expireOverdue() error {
 }
 
 const selectRequests = `SELECT id,trace,parent,session,server,tool,mode,message,
-	schema_json,url,audience,reason,created_ms,expires_ms,state,pid FROM elicitations`
+	schema_json,url,audience,reason,created_ms,expires_ms,last_touched_ms,state,pid FROM elicitations`
 
 func scanRequests(rows *sql.Rows) ([]Request, error) {
 	var out []Request
 	for rows.Next() {
 		var r Request
 		var trace, parent, session, server, tool, schemaJSON, url, reason sql.NullString
-		var created, expires int64
+		var created, expires, lastTouched int64
 		var pid sql.NullInt64
 		if err := rows.Scan(&r.ID, &trace, &parent, &session, &server, &tool,
 			&r.Mode, &r.Message, &schemaJSON, &url, &r.Audience, &reason,
-			&created, &expires, &r.State, &pid); err != nil {
+			&created, &expires, &lastTouched, &r.State, &pid); err != nil {
 			return nil, err
 		}
 		r.Trace, r.Parent, r.Session = trace.String, parent.String, session.String
@@ -490,6 +629,13 @@ func scanRequests(rows *sql.Rows) ([]Request, error) {
 		}
 		r.Created = time.UnixMilli(created)
 		r.ExpiresAt = time.UnixMilli(expires)
+		r.LastTouched = time.UnixMilli(lastTouched)
+		if r.LastTouched.IsZero() {
+			// A row written before the convention: creation is the
+			// one touch it has had.
+			r.LastTouched = r.Created
+		}
+		r.refreshTTLRemaining(time.Now())
 		r.PID = int(pid.Int64)
 		// Route on read when the stored row has no audience. A question
 		// written by an older version, or by something else holding the same

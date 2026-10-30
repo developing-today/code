@@ -344,7 +344,9 @@ and a switch to turn the report off would have kept it quiet.
 | `elicit.confirmDestructive` | bool | `false` | daemon | no | `--elicit-confirm-destructive` | `MCPX_ELICIT_CONFIRM_DESTRUCTIVE` | ask before a call to a tool that may be destructive |
 | `elicit.disambiguate` | enum | `never` | daemon | no | `--elicit-disambiguate` | `MCPX_ELICIT_DISAMBIGUATE` | ask which instance of a stateful server to use when several are live and the script did not choose |
 | `elicit.disambiguateDefault` | enum | `new` | daemon | no | `--elicit-disambiguate-default` | `MCPX_ELICIT_DISAMBIGUATE_DEFAULT` | which instance is used when nobody answers in time: the one the scope would have chosen, or the most recently used |
+| `elicit.maxAge` | duration | `30m` | daemon | no | `--elicit-max-age` | `MCPX_ELICIT_MAX_AGE` | the absolute ceiling on a question's life, however often it is read |
 | `elicit.pendingLimit` | int | `100` | daemon | yes | `--elicit-pending-limit` | `MCPX_ELICIT_PENDING_LIMIT` | *(plumbing)* how many unanswered questions one listing returns |
+| `elicit.ttl` | duration | `120s` | daemon | no | `--elicit-ttl` | `MCPX_ELICIT_TTL` | how long a question waits for an answer, renewed by use |
 
 ### embeddings
 

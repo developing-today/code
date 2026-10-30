@@ -206,3 +206,103 @@ func TestTTLRemainingNeverGoesNegative(t *testing.T) {
 		t.Errorf("got %v", r.TTLRemaining())
 	}
 }
+
+func TestItemReadRenewsButCollectionReadDoesNot(t *testing.T) {
+	// The convention (docs/decisions/0005-ttl-touch-on-read.md): an item
+	// read is use and renews; a collection read is a listing and does not.
+	b := open(t)
+	b.Configure(2*time.Second, time.Hour)
+	created := time.Now().Add(-1500 * time.Millisecond)
+	r := ask(t, b, elicit.Request{Created: created})
+	// Deadline at creation: created + ttl.
+	if want := created.Add(2 * time.Second); !r.ExpiresAt.Truncate(time.Millisecond).Equal(want.Truncate(time.Millisecond)) {
+		t.Fatalf("initial deadline = %v, want %v", r.ExpiresAt, want)
+	}
+
+	pending, err := b.Pending(elicit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	if !pending[0].ExpiresAt.Equal(r.ExpiresAt.Truncate(time.Millisecond)) {
+		t.Errorf("collection read renewed the deadline: %v -> %v",
+			r.ExpiresAt, pending[0].ExpiresAt)
+	}
+	if !pending[0].LastTouched.Equal(created.Truncate(time.Millisecond)) {
+		t.Errorf("collection read touched: lastTouched = %v, want %v",
+			pending[0].LastTouched, created)
+	}
+
+	got, ok, err := b.Get(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if !got.ExpiresAt.After(r.ExpiresAt) {
+		t.Errorf("item read did not renew: deadline still %v", got.ExpiresAt)
+	}
+	if got.LastTouched.Before(created) || time.Since(got.LastTouched) > time.Minute {
+		t.Errorf("lastTouched = %v, want ~now", got.LastTouched)
+	}
+	if got.TTLRemainingMs <= 0 || got.TTLRemainingMs > 2000 {
+		t.Errorf("ttlRemainingMs = %d, want in (0, 2000]", got.TTLRemainingMs)
+	}
+}
+
+func TestTouchNeverPassesTheMaxAgeCeiling(t *testing.T) {
+	// Renewal is bounded: however often a question is read, it dies at
+	// created + maxAge.
+	b := open(t)
+	b.Configure(2*time.Second, 2500*time.Millisecond)
+	created := time.Now().Add(-time.Second)
+	r := ask(t, b, elicit.Request{Created: created})
+	ceiling := created.Add(2500 * time.Millisecond)
+	if !r.ExpiresAt.Truncate(time.Millisecond).Equal(created.Add(2 * time.Second).Truncate(time.Millisecond)) {
+		t.Fatalf("initial deadline = %v, want created+ttl (below ceiling)", r.ExpiresAt)
+	}
+	time.Sleep(600 * time.Millisecond)
+	got, ok, err := b.Get(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if got.ExpiresAt.After(ceiling) {
+		t.Errorf("touch pushed the deadline past the ceiling: %v > %v", got.ExpiresAt, ceiling)
+	}
+	if got.ExpiresAt.Before(ceiling.Add(-100 * time.Millisecond)) {
+		t.Errorf("deadline = %v, want ~ceiling %v", got.ExpiresAt, ceiling)
+	}
+}
+
+func TestTouchNeverShortensAnExplicitExpiry(t *testing.T) {
+	// An explicit lifetime at creation is the exception the convention
+	// honours: a read renews the default family, it does not cut down a
+	// deadline the creator chose.
+	b := open(t)
+	b.Configure(2*time.Second, time.Hour)
+	explicit := time.Now().Add(time.Hour)
+	r := ask(t, b, elicit.Request{ExpiresAt: explicit})
+	got, ok, err := b.Get(r.ID)
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if !got.ExpiresAt.Equal(r.ExpiresAt.Truncate(time.Millisecond)) {
+		t.Errorf("touch shortened an explicit expiry: %v -> %v", r.ExpiresAt, got.ExpiresAt)
+	}
+}
+
+func TestAnAbandonedQuestionStillExpires(t *testing.T) {
+	// Touch-on-read changes nothing for a question nobody reads: it
+	// expires on the idle schedule, exactly as before.
+	b := open(t)
+	b.Configure(300*time.Millisecond, time.Hour)
+	r := ask(t, b, elicit.Request{})
+	time.Sleep(450 * time.Millisecond)
+	pending, err := b.Pending(elicit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("abandoned question %s still pending after its ttl", r.ID)
+	}
+}
