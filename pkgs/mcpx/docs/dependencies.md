@@ -5,7 +5,7 @@ something breaks without it.
 
 ## Go libraries
 
-**Five**, and `pkgs/mcpx/package.nix` states the trade for each one beside
+**Nine**, and `pkgs/mcpx/package.nix` states the trade for each one beside
 the `vendorHash` that pays for them.
 
 | module | what it is for |
@@ -15,6 +15,10 @@ the `vendorHash` that pays for them.
 | `github.com/charmbracelet/bubbles` | its widgets |
 | `github.com/charmbracelet/lipgloss` | its layout |
 | `gopkg.in/yaml.v3` | OpenAPI documents, which are published as YAML as often as JSON, and which one you get is not the caller's choice |
+| `github.com/santhosh-tekuri/jsonschema/v6` | the JSON Schema validator (`internal/schemaval`): tool input/output schemas and elicitation schemas are checked with a real validator, not by hand |
+| `github.com/tetratelabs/wazero` | the WebAssembly runtime: wasm tooling and the embeddings worker run without a cgo toolchain |
+| `golang.org/x/sys` | the OS-specific syscalls the standard library does not expose (peer credentials on the daemon socket, process groups) |
+| `tailscale.com` | the tsnet identity transport (#1967): the daemon embeds a Tailscale node and is reachable by its tailnet identity, still as a pure-Go `CGO_ENABLED=0` binary |
 
 The three `charmbracelet` modules are one decision, not three: they cost about
 1.2 MB in the stripped binary and replace raw terminal handling -- escape
@@ -86,10 +90,14 @@ entries — MCP has no separate configuration channel.
 
 ## Network
 
-The daemon binds two listeners, both local: a unix socket for the CLI, and
-`127.0.0.1` on an OS-assigned ephemeral port for generated script clients,
-because `fetch()` over a unix socket is not portable across the three
-runtimes. Neither is reachable off the machine.
+The daemon binds two listeners, both local: a unix socket, and
+`127.0.0.1` on an OS-assigned ephemeral port. Generated script clients
+prefer the socket — Deno fetches over it with a custom HTTP client and
+Bun with a `fetch` option (`internal/codegen/emit.go`) — and fall back
+to the TCP port where a runtime cannot address a socket (Node's
+`fetch` cannot, without undici). Neither listener is reachable off the
+machine; the tailnet identity transport (#1967) is the separate,
+authenticated exception, and it is opt-in.
 
 Outbound traffic happens only when a configured server is a `url` server, or
 when a script makes its own requests.

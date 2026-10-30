@@ -1,5 +1,17 @@
 # lootbox: assessment and path forward
 
+> **Corrections, 2026-10-30.** This assessment is a record of its
+> moment; three of its claims have not aged with the code. The
+> replacement was not "dependency-free Go" for long: mcpx now carries
+> nine direct dependencies (see
+> [`docs/dependencies.md`](./docs/dependencies.md)), and the test and
+> binary figures in the summary are as-of-writing, not current. Step 3
+> of the adoption plan names `nix/darwin-module.nix`, which does not
+> exist in this repository — mcpx's Nix packaging here is
+> `pkgs/mcpx/package.nix`; a Darwin service module lives with the
+> consumer's own Nix configuration, not in this tree. The findings
+> about lootbox itself are unchanged.
+
 Written after auditing `jx-codes/lootbox` (and the `dezren39` fork) against the
 live installation in `~/.config/nix`, profiling it, and building a replacement.
 

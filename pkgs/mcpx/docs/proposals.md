@@ -768,6 +768,15 @@ or a unix path would let the CLI drive a remote daemon. The blocker is not
 parsing but authentication and trust, which loopback currently provides for
 free. Worth specifying before building.
 
+*Correction, 2026-10-30: the remote half of this was specified and
+built — as an identity transport, not raw addressing. Since #1967 the
+daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity (a MagicDNS name) from another network, with the tailnet
+providing exactly the authentication and trust this entry named as
+the blocker. Generic internet addressing (`example.com:8008` and
+friends) remains unbuilt and unendorsed.*
+
 **Load.** Untested beyond 12 concurrent runs. Discovery is a map read and
 should be flat; the interesting limits are process count and the reaper's
 O(instances) sweep. A benchmark should come before any optimisation.
