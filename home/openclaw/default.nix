@@ -88,6 +88,8 @@ in
     # the token itself never enters the store.
     environment = {
       OPENCLAW_GATEWAY_TOKEN = "${homeDir}/.secrets/openclaw/gateway-token";
+      OPENCLAW_SLACK_BOT_TOKEN = "/home/user/.secrets/openclaw/slack-bot-token";
+      OPENCLAW_SLACK_APP_TOKEN = "/home/user/.secrets/openclaw/slack-app-token";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -115,11 +117,7 @@ in
 
     # nix-openclaw tool plugins (CLI tools + skills, packaged in Nix).
     bundledPlugins = {
-      # summarize.enable = true; # summarize URLs / PDFs / videos —
-      # disabled 2026-10-26: its ~780-package pnpm deps fetch kept dying
-      # on the laptop's flaky route to registry.npmjs.org (timeouts /
-      # HTTP2 framing errors). Re-enable and rebuild when the route is
-      # healthy; nothing else depends on it.
+      summarize.enable = true; # summarize URLs / PDFs / videos
       gogcli.enable = true; # Google Workspace CLI (gog)
       goplaces.enable = true; # Google Places CLI
       # peekaboo / poltergeist are macOS-only in the nix-openclaw
@@ -151,6 +149,9 @@ in
       "firecrawl"
       "perplexity"
       "duckduckgo"
+      "searxng" # keyless web search (added 2026-10-26, Drew: more plugins)
+      "lobster" # typed workflow runtime for resumable automations
+      "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
     ];
 
@@ -234,6 +235,30 @@ in
         };
       };
 
+      # Chat channels. Slack wired 2026-10-26: app A0CD7L3S81W, bot
+      # @openclaw (U0CC72H7KA7); tokens via env SecretRefs fed from
+      # laptop files (interim home for sops-managed secrets). DMs from
+      # Drew only; channel access gets allowlisted per channel later.
+      channels = {
+        slack = {
+          enabled = true;
+          mode = "socket";
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_BOT_TOKEN";
+          };
+          appToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_APP_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
+        };
+      };
+
       # Model routing: local plan proxies only (see QUOTAS.md). Primary is
       # DeepSeek Flash on the CommandCode plan; fallbacks stay on plan
       # routes; the Codex/OpenAI proxy is registered for explicit use as
@@ -275,6 +300,12 @@ in
         };
       };
 
+      # One DM session per channel+peer, so a future second channel
+      # never shares a transcript with Slack DMs.
+      session = {
+        dmScope = "per-channel-peer";
+      };
+
       agents = {
         defaults = {
           model = {
@@ -285,7 +316,15 @@ in
               "commandcode/moonshotai/kimi-k2.6"
             ];
           };
-          heartbeat.every = "1h";
+          heartbeat = {
+            every = "30m";
+            lightContext = true;
+            isolatedSession = true;
+            activeHours = {
+              start = "07:00";
+              end = "23:00";
+            };
+          };
         };
         ownership = "explicit";
         entries = {
