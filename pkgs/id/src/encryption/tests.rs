@@ -2535,7 +2535,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
     // so CBOR encodes it as an integer array at ~1.9 bytes per byte - roughly
     // 12 MiB encoded: over half the 16 MiB cap, under the cap itself.
     let big = vec![7_u8; 6 * 1024 * 1024];
-    let first = cast.session_mut(1).send(&big, &rng).expect("send");
+    let first = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
@@ -2545,7 +2545,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
     );
-    let second = cast.session_mut(1).send(&big, &rng).expect("send");
+    let second = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     match cast.session_mut(3).process(&second) {
         Err(SchemeError::HeldFull {
             count,
@@ -2570,7 +2570,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     let mut cast = removed_member_cast();
     let rng = Rng::default();
     let big = vec![9_u8; 6 * 1024 * 1024];
-    let held = cast.session_mut(1).send(&big, &rng).expect("send");
+    let held = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&held).expect("process"),
         vec![Received::Withheld(held.id())]
@@ -2598,7 +2598,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     // tracked count and byte totals.
     let remove = cast.remove(1, 3);
     cast.deliver(&remove, &[2, 3]);
-    let again = cast.session_mut(1).send(&big, &rng).expect("send");
+    let again = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&again).expect("process"),
         vec![Received::Withheld(again.id())]
