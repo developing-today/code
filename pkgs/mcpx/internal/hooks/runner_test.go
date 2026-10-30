@@ -56,10 +56,14 @@ func TestDeclaredHookFiresOnMatchingKindsOnly(t *testing.T) {
 		!strings.Contains(string(body), `"hook":"rec"`) {
 		t.Fatalf("hook stdin payload wrong: %s", body)
 	}
-	st := r.Stats()
-	if len(st) != 1 || st[0].Fired != 1 || st[0].Failed != 0 {
-		t.Fatalf("stats wrong: %+v", st)
-	}
+	// The stats counter is recorded asynchronously after the hook
+	// process finishes; asserting it immediately races the recording
+	// under load (the second #2609 flake, seen in the full-system
+	// build). Poll the real postcondition.
+	waitFor(t, "hook stats to record the firing", func() bool {
+		st := r.Stats()
+		return len(st) == 1 && st[0].Fired == 1 && st[0].Failed == 0
+	})
 }
 
 func TestPythonModuleHookRuns(t *testing.T) {
