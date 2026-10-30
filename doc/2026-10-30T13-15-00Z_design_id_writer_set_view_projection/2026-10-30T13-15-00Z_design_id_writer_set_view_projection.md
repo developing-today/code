@@ -313,6 +313,12 @@ entry, explicitly.
 old set version. Re-expansion is a new set version. Without pinning, "set version 7" would mean
 different things on two devices, which breaks §D2's "which set version produced this number".
 
+A frontier is necessary and **not sufficient**: a fork proof that invalidates a membership grant
+changes the expansion of an unchanged group at an unchanged frontier, because resolution drops the
+excluded action before the membership layer sees it (§4.5). So the reproducible unit is the pair
+*(frontier, `R`)*, and §4.5's cache key says so. This is the one place the spec corrects its own
+earlier "the frontier is immutable, so the expansion is permanent" reasoning.
+
 ### D5 — `Public` is not `Join::Open`
 
 `Join::Open` ([`groups/policy.rs:21-22`](../../pkgs/id/src/groups/policy.rs)) governs who may
@@ -381,7 +387,7 @@ Reasons: this is the only rule under which two viewers can compare numbers at al
 retroactively un-counted history, then "Alice walked the dog 40 times in October" would change
 answer depending on when you asked, with no event to point at. The substrate already refuses
 mutation (`event_store/mod.rs:1-30`), so retroactive erasure would have to be a projection lie
-rather than a data change — precisely the silent rewrite §0.5 forbids.
+rather than a data change — precisely the silent history rewriting principle 5 of §0 forbids.
 
 ### 3.3 `rescind` is an explicit, visible set-version event
 
@@ -414,10 +420,13 @@ Three things this pins down that the prose left open:
 - **`through` bounds the erasure to claims in that event's causal past.** It is the "up to here"
   form, so an owner can draw a line at a point rather than at a moment — the only option available
   in a substrate with no timestamps in the envelope (§3.1).
-- **A rescind is a set version but not an admission version.** It can carry no `entries`, so
-  `expand(r)` and `expand_retro(r)` are both empty and §4.1's `admitted_at`/`retro` are unaffected by
-  its presence in `versions(S)`. Only clause 3 reads it. A rescind that tried to add an entry is
-  rejected at decode: the two kinds are separate for exactly this reason.
+- **A rescind is a set version but not an admission version.** It carries no `entries`, so
+  `expand(r)` and `expand_retro(r)` are empty. That is exactly why §4.1's `seen_by` and `retro`
+  quantify over `adm_versions(S)` — the `idset.writer` versions only — rather than over
+  `versions(S)`: a rescind is not an admission state, and letting it stand in for one would make a
+  version that admits nobody the latest thing its author had seen, rejecting every admitted writer's
+  claims until the next `idset.writer` arrived. Only clause 3 reads a rescind. A rescind that tried
+  to add an entry is rejected at decode: the two kinds are separate for precisely this reason.
 
 ### 3.4 Every computed view names *(view config, set version, frontier, resolution)*
 
@@ -485,10 +494,17 @@ versions(S)     ⇔  the applied prefix of set_id's chain, truncated at S.set_se
                     // the view's own set version is forked, so there is nothing to project.
                     // Refusing is the answer; silently projecting the surviving branch would
                     // attribute a total to an input the owner did not select.
-seen_by(S, c)   ⇔  max{ v ∈ versions(S) : v ∈ causal_past(c) }   // the version IN FORCE at c
+adm_versions(S) ⇔  { v ∈ versions(S) : v.kind = idset.writer }
+                    // admission-bearing versions only. A rescind is a version but carries no
+                    // entries (§3.3), so counting it in `seen_by` would make the newest thing an
+                    // author had seen a version that admits nobody — and empty `expand(r)` would
+                    // then reject every admitted writer's claims, world-wide, until the owner
+                    // happened to publish another `idset.writer`. Rescinds act through clause 3
+                    // alone.
+seen_by(S, c)   ⇔  max{ v ∈ adm_versions(S) : v ∈ causal_past(c) }  // the version IN FORCE at c
 admitted_at(S, c)  ⇔  seen_by(S, c) is defined
                         ∧ author(c) ∈ expand(seen_by(S, c))   // that version's expansion, not any
-retro(S, c)     ⇔  ∃ v ∈ versions(S):  c ∈ causal_past(v)         // v saw the claim
+retro(S, c)     ⇔  ∃ v ∈ adm_versions(S):  c ∈ causal_past(v)     // v saw the claim
                         ∧ author(c) ∈ expand_retro(v)     // only entries marked include_history
 in_scope(C, c)  ⇔  subject(c) ∈ C.subject_scope ∧ kind(c) ∈ C.kind_scope
                     // exceptions are handled by clause 5, not inside in_scope,
@@ -766,8 +782,9 @@ claim before it syncs without the exception silently vanishing.
 
 ### 4.5 Group expansion must be frontier-aware, not `members(group)`
 
-**Decision:** `expand(v)` resolves group references **at *v*'s pinned frontier** using
-`is_member_at(author, group, after)` / `access_at_position(after, group, member)`
+**Decision:** `expand(v)` resolves group references **at *v*'s pinned frontier, under the view's
+pinned resolution state `R`**, using `is_member_at(author, group, after)` /
+`access_at_position(after, group, member)`
 ([`membership/layer.rs:338-364`](../../pkgs/id/src/membership/layer.rs)), and **must not use
 `Members::members(group)`**.
 
@@ -780,9 +797,24 @@ exactly the group-capture surface abuse case 6 is about.
 
 The cost difference is real and is stated rather than hidden: a frontier-aware expansion does
 historical replay over the group's causal past instead of one snapshot read. For a set with *g*
-group entries this is *g* replays, cached against `(group, frontier)` — the frontier is immutable,
-so every cache entry is permanent. `members(group)` remains correct for *current-state* questions
-(e.g. "who is in this group right now"), and the spec uses it only for those.
+group entries this is *g* replays, and `members(group)` remains correct for *current-state*
+questions (e.g. "who is in this group right now"), which is the only thing the spec uses it for.
+
+**The cache key is `(group, frontier, R)`, not `(group, frontier)`** — and an earlier draft of this
+section got that wrong. A frontier alone is *not* enough to make a group expansion permanent,
+because the replay is not a pure function of the group's causal past: `resolve` drops fork-excluded
+membership actions before they reach the layer, replacing their role with `Role::Other`
+([`event_store/resolve.rs:82,124-133`](../../pkgs/id/src/event_store/resolve.rs)). So a membership
+grant that a later fork proof invalidates changes the expansion of an *unchanged* group at an
+*unchanged* frontier. Caching by `(group, frontier)` would serve pre-proof membership to a
+projection evaluating under the newer `R`, while a cold evaluator would compute a different total
+from the same named inputs — the exact reproducibility failure §3.4 and §D4 exist to prevent.
+
+Adding `R` to the key keeps the useful property and states its real precondition: within one
+resolution state an expansion is immutable and cacheable forever; across resolution states it must
+be recomputed. The number of live `R` values is small (it changes only when a fork proof arrives),
+so the cost is a bounded multiple of the replay cost, paid only when the store's resolution state
+actually moves.
 
 ### 4.6 Live validity is a separate, explicitly-named query
 
@@ -1020,8 +1052,10 @@ Each is independently reviewable and small enough to land alone.
    per entry and one flagged friend must not import another's backlog. Frontier-aware via
    `is_member_at`/`access_at_position` (**not** `members(group)`, §4.5), one-level flattening and
    `role_min` filtering (§D3/D4). Property tests: expansion is order-independent, frontier-pinned,
-   **unchanged by a later group-membership event** (the reproducibility guarantee), and
-   `expand_retro(v) ⊆ expand(v)`.
+   **unchanged by a later group-membership event** (the reproducibility guarantee),
+   `expand_retro(v) ⊆ expand(v)`, and — the one finding 23 added — **a fork proof that invalidates a
+   group grant changes the expansion, and the cache does not serve the stale one** (cache key is
+   `(group, frontier, R)`, §4.5).
 3. **`AuthorEvents` index** — kind-generic `(author, seq) → (event_id, kind, subject?)`, persisted
    and incremental, built by ranging the `events` table per writer (§4.2). Tests, keyed to §4.2's
    three queries:
@@ -1056,9 +1090,11 @@ Each is independently reviewable and small enough to land alone.
      total nor the silent rewrite happens;
    - a named exception for a **stranger's** claim is retrieved by ID and counted, even though the
      stranger is absent from the writer set and from the author-range scan;
-   - a **rescind** version erases the claims it saw and leaves later ones alone (§3.3), and a
-     rescind's own presence in `versions(S)` changes nothing about `admitted_at`/`retro` because it
-     carries no entries;
+   - a **rescind** version erases the claims it saw and leaves later ones alone (§3.3), and — the
+     regression finding 22 caught — **a claim written after a rescind is still counted for every
+     writer the rescind did not target.** `seen_by` quantifies over `adm_versions`, so a rescind is
+     never mistaken for the admission state in force, and its empty `expand` cannot reject the
+     world's claims;
    - a **forked set version** is not a version: a set chain forked at `set_seq` does not make
      `seen_by` ambiguous, and a never-applied `idset.writer` cannot admit an author (finding 17 —
      the set-side counterpart of the fork test above).
@@ -1158,19 +1194,43 @@ Round 5 is also why `versions(S)` is spelled out in the pseudocode rather than l
 `versions(set_id)`: the set's own fork discipline is as load-bearing as the claim's, and three
 rounds of review had only ever examined the latter.
 
+**Round 6** (Codex, on the round-5 fix commit) found two P2s, and **both were defects round 5
+introduced** — which is the clearest evidence in this document that the clause-patching style was
+the problem, since even a rewrite leaves a seam. Both accepted and fixed.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 22 | Defining `expand(r)` as empty for a rescind (§3.3) while `seen_by` quantified over **all** versions meant a claim written after a rescind selected that rescind as the version in force — which admits nobody — so `admitted_at` rejected **every** admitted writer's claims until the owner published another `idset.writer`. A rescind would have been a global outage of the metric, not a targeted erasure. | **Fixed.** §4.1 now separates `versions(S)` (all applied set versions) from **`adm_versions(S)`** (`idset.writer` only), and `seen_by`/`retro` quantify over the latter. A rescind acts through clause 3 alone, which is what §3.3 always intended. Slice 4 gained the regression test. |
+| 23 | `expand(v)` was cached by `(group, frontier)`, but a group's expansion is **not** a pure function of its causal past: `resolve` drops fork-excluded membership actions before the layer sees them, replacing the role with `Role::Other` ([`event_store/resolve.rs:82,124-133`](../../pkgs/id/src/event_store/resolve.rs)). A later fork proof could therefore change an unchanged group at an unchanged frontier, and the cache would serve pre-proof membership to a projection under a newer `R`. | **Fixed.** §4.5 requires replay **under `R`** and gives the cache key as `(group, frontier, R)`. Immutability within one resolution state is kept; across states it must recompute. The number of live `R` values is small, so this is a bounded multiple of the replay cost. |
+
+Round 6 is why the doc no longer says a frontier is sufficient to make anything permanent: §D4, §4.1
+and §4.5 each pin a frontier, and only the pair *(frontier, `R`)* makes a replay reproducible.
+
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what five rounds actually shows.** Every round found a real defect, and rounds 2–5 each
-found one that the round before had *introduced*: an interval predicate patched into a snapshot, an
-exception placed outside a gate, a scope applied twice, a `max` over a non-linear sequence. That is
-the argument for the shape this document settled on — one statement over a fully-named input tuple,
-with retrieval specified to match it — rather than for confidence that the current text is
-defect-free. A reviewer should treat §4.1 as a claim to attack, not as settled: the two places most
-likely to still be wrong are the interaction of `retro` with a set that later revokes an entry
-(§3.1's flag is monotone by design, and only `rescind` retracts), and the cost bound for a `Public`
-set (§4.2), where the complexity claim is explicitly qualified rather than proved.
+**A note on what six rounds actually shows.** Every round found a real defect, and rounds 2–6 each
+found at least one that the round before had *introduced*: an interval predicate patched into a
+snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
+sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
+resolution state. That is the argument for the shape this document settled on — one statement over a
+fully-named input tuple, with retrieval specified to match it — rather than for confidence that the
+current text is defect-free. A reviewer should treat §4.1 as a claim to attack, not as settled.
+
+Three places are the most likely to still be wrong, and naming them is more useful than a claim of
+completeness:
+
+1. **`retro` against a set that later revokes the flag** (§3.1). The import is monotone by design and
+   only `rescind` retracts it. That is a deliberate choice, but it means "I removed `include_history`"
+   does not do what an owner may expect, and the only affordance is a second signed act.
+2. **The cost bound for a `Public` set** (§4.2), where the complexity claim is explicitly qualified
+   rather than proved, because `Entry::Public` admits every author and collapses source 1 into a
+   store-shaped scan.
+3. **The resolution-state plumbing** (§4.5, §4.6, §D4). `R` now has to reach more places than any
+   other input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6
+   each found a place it had not reached. Any remaining input that is evaluated without `R` is a
+   reproducibility bug of the same shape as findings 16, 23.
 
 ---
 
