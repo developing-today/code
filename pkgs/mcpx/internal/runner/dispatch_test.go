@@ -659,3 +659,81 @@ func TestSplitEnvStringUsesEnvSemantics(t *testing.T) {
 		t.Error("SplitEnvString(unterminated ${): want an error")
 	}
 }
+
+// A JavaScript shebang's runtime may exist only on the PATH the shebang
+// sets, and that PATH is applied after the run's directory is known.
+// Resolve runs first, against mcpx's inherited PATH, and must not reject
+// the runtime before the shebang's own PATH is consulted (#2611 review,
+// Major).
+func TestRunJSRuntimeShebangFoundOnlyOnShebangPath(t *testing.T) {
+	dir := t.TempDir()
+	// A stand-in runtime of the node kind: it has to be found and
+	// executed, not be a real Node, because the point is resolution.
+	fake := writeScript(t, dir, "node", "#!/bin/sh\necho fake-node-ran\nexit 0\n")
+	_ = fake
+	script := writeScript(t, dir, "app.mjs",
+		"#!/usr/bin/env -S PATH="+dir+" node\nexport default () => 1\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: script, Stdout: &stdout, Stderr: &stderr,
+		ClientSource: codegen.Module(nil, "", ""),
+	})
+	if err != nil {
+		t.Fatalf("Run(node on the shebang's PATH only): %v", err)
+	}
+	if res.Runtime != "node" {
+		t.Errorf("Runtime = %q, want node", res.Runtime)
+	}
+	if !strings.Contains(stdout.String(), "fake-node-ran") {
+		t.Errorf("stdout = %q; the shebang's own node must have run", stdout.String())
+	}
+}
+
+// A configured script.interpreter is looked up against the directory the
+// run moves to, the way a shebang's is: a relative PATH entry means the
+// run's directory, so an interpreter that exists only there must be
+// found (#2611 review).
+func TestRunInterpreterResolvedInRunDirectory(t *testing.T) {
+	base := t.TempDir()
+	scriptDir := filepath.Join(base, "project")
+	if err := os.MkdirAll(filepath.Join(scriptDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "bin", "custom-interp-3201"),
+		[]byte("#!/bin/sh\necho interpreter-from-run-dir\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := writeScript(t, scriptDir, "run.sh", "echo unreachable\n")
+	t.Setenv("PATH", "bin")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Dir: scriptDir, CwdPolicy: "script", Interpreter: "custom-interp-3201",
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run(relative PATH entry, script.interpreter): %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(stdout.String(), "interpreter-from-run-dir") {
+		t.Errorf("res=%+v stdout=%q; want the interpreter from the run directory", res, stdout.String())
+	}
+}
+
+// An env option mcpx does not implement fails the run instead of being
+// dropped: dropping it runs a different command than the shebang names,
+// and -0/-v are not inert (#2611 review).
+func TestRunRejectsUnsupportedEnvOption(t *testing.T) {
+	dir := t.TempDir()
+	for _, opt := range []string{"--bogus", "-0", "-v", "--debug"} {
+		f := writeScript(t, dir, "opt.sh", "#!/usr/bin/env -S "+opt+" sh\necho unreachable\n")
+		var stdout, stderr bytes.Buffer
+		_, err := Run(context.Background(), Options{
+			File: f, Stdout: &stdout, Stderr: &stderr,
+		})
+		if err == nil || !strings.Contains(err.Error(), "not a supported env option") {
+			t.Errorf("option %s: want a precise option error, got %v", opt, err)
+		}
+		if strings.Contains(stdout.String(), "unreachable") {
+			t.Errorf("option %s: the script ran despite the unsupported option", opt)
+		}
+	}
+}

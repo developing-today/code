@@ -249,6 +249,21 @@ field. This is deliberately not a setting: it is how `mcpx init` wrote
 `"mode": "session"` into every new config for months without anyone noticing,
 and a switch to turn the report off would have kept it quiet.
 
+A script whose first line names its interpreter (`#!`) runs under that
+interpreter, ahead of every setting below: a `-S`/`--split-string`
+payload is re-split with shell quoting rules (so `-S sh -c "printf
+hello"` keeps `printf hello` one argument; an unterminated quote fails
+the run), `VAR=value` assignments reach the child even when the value
+contains `/`, `env -u`/`env -i` apply (the child starts from the parent's
+environment minus what they remove, or from an empty one), and
+`env -C`/`env --chdir` moves the run, beating `script.cwd` the way the
+interpreter choice beats `script.runtime`. An env option mcpx does not
+implement fails the run rather than being dropped. A dispatched run
+never inherits `MCPX_CLIENT`, `MCPX_RUNTIME`, `MCPX_ENTRY` or
+`MCPX_DISPATCH` from an outer run, and its notice names anything else it
+goes without (no generated client, no enforced permission profiles,
+skipped launcher phases).
+
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
 ### artifacts
@@ -599,18 +614,6 @@ and a switch to turn the report off would have kept it quiet.
 | `script.runtimes` | string | *(empty)* | client | no | `--script-runtimes` | `MCPX_SCRIPT_RUNTIMES` | named runtime binaries: {name: {kind, bin, args}} |
 | `script.suffix` | source | *(empty)* | client | no | `--script-suffix` | `MCPX_SCRIPT_SUFFIX` | runs last on both paths, like a finally |
 | `script.typecheck` | enum | `off` | client | no | `--script-typecheck` | `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it |
-
-A script whose first line names its interpreter (`#!`) runs under that
-interpreter, ahead of every setting above: a `-S`/`--split-string`
-payload is re-split with shell quoting rules (so `-S sh -c "printf
-hello"` keeps `printf hello` one argument; an unterminated quote fails
-the run), `VAR=value` assignments reach the child even when the value
-contains `/`, `env -u`/`env -i` apply, and `env -C`/`env --chdir` moves
-the run, beating `script.cwd` the way the interpreter choice beats
-`script.runtime`. A dispatched run never inherits `MCPX_CLIENT`,
-`MCPX_RUNTIME`, `MCPX_ENTRY` or `MCPX_DISPATCH` from an outer run, and
-its notice names anything else it goes without (no generated client, no
-enforced permission profiles, skipped launcher phases).
 
 ### search
 
