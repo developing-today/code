@@ -1,0 +1,15 @@
+# The mcpx book (issue #1939, Approach C: mdBook).
+#
+# The book's source is this directory itself: the markdown that renders
+# on GitHub is the book, organised by SUMMARY.md, with no content
+# rewritten for the site. Built by the flake output .#mcpx-docs
+# (pkgs/mcpx/docs.nix) so CI checks it like every other flake output.
+
+[book]
+title = "mcpx"
+authors = ["developing-today"]
+language = "en"
+src = "."
+
+[output.html]
+git-repository-url = "https://github.com/developing-today/code/tree/main/pkgs/mcpx/docs"
