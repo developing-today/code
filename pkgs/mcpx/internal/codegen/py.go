@@ -224,7 +224,12 @@ def _post(path: str, body: bytes) -> "tuple[int, Any]":
     else:
         conn_http = http.client.HTTPConnection(ENDPOINT.split("//")[-1].split("/")[0], timeout=None)
         try:
-            conn_http.request("POST", path, body=body, headers=headers)
+            # http.client encodes str header values as Latin-1 and
+            # raises on anything outside it (a non-Latin-1 MCPX_CWD, say);
+            # bytes values are sent raw, matching the socket branch's
+            # UTF-8 encoding of the same headers.
+            conn_http.request("POST", path, body=body,
+                              headers={k: v.encode("utf-8") for k, v in headers.items()})
             got = conn_http.getresponse()
             payload = got.read()
             status = got.status
@@ -849,7 +854,9 @@ var pyRuntimeNames = map[string]bool{"_MISSING": true, "_call_raw": true, "_unwr
 // the local variable is renamed.
 func pyArgName(prop string, taken map[string]bool) string {
 	name := pyParam(prop)
-	for pyRuntimeNames[name] || taken[name] {
+	// "self" is taken by every generated method's own first parameter:
+	// a property named self would emit a duplicate argument.
+	for name == "self" || pyRuntimeNames[name] || taken[name] {
 		name += "_"
 	}
 	taken[name] = true
@@ -863,6 +870,9 @@ func pyParam(name string) string {
 	safe := ToolFuncName(name)
 	safe = strings.ReplaceAll(safe, "-", "_")
 	safe = strings.ReplaceAll(safe, ".", "_")
+	// "$" is legal in TypeScript identifiers (ToolFuncName keeps it)
+	// but a SyntaxError in Python; rename it like "-" and ".".
+	safe = strings.ReplaceAll(safe, "$", "_")
 	if safe == "" {
 		safe = "value"
 	}

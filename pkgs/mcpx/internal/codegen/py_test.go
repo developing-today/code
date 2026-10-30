@@ -404,3 +404,74 @@ func TestPythonCodexRound3(t *testing.T) {
 		t.Errorf("python declarations missing %q:\n%s", want, decl)
 	}
 }
+
+// TestPythonCodexRound4 covers the three Codex round-4 findings on the
+// current head: a property named "self" colliding with the method's own
+// first parameter, "$" surviving into Python identifiers, and TCP
+// header values being encoded as Latin-1 instead of UTF-8.
+func TestPythonCodexRound4(t *testing.T) {
+	l := pythonLang(t)
+	ns := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{{
+			Name: "ping",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{
+				"self":{"type":"string"},
+				"$id":{"type":"string"}
+			}}`),
+		}},
+	}
+	out := l.EmitModule([]codegen.Namespace{ns}, "http://127.0.0.1:1234", "sess-4")
+	for _, want := range []string{
+		// "self" is allocated around the method's own parameter.
+		"self_: Optional[str] = _MISSING",
+		// "$" is renamed out of Python identifiers.
+		"_id: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "$id:") || strings.Contains(out, "*, self:") {
+		t.Errorf("python module keeps an invalid identifier:\n%s", out)
+	}
+
+	// Drive the client over TCP with a non-Latin-1 MCPX_CWD: the call
+	// must go out (no UnicodeEncodeError) and the daemon must see the
+	// cwd header as the UTF-8 path, as on the socket transport.
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	cwd := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cwd <- r.Header.Get("X-Mcpx-Cwd")
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"ok":true}}}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	module := l.EmitModule([]codegen.Namespace{ns}, srv.URL, "sess-4")
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(module), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"from mcpx_client import tools\n" +
+		"print(tools.Demo.ping(self_=\"a\", _id=\"b\"))\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	cmd.Env = append(os.Environ(),
+		"MCPX_ENDPOINT="+srv.URL, "MCPX_SESSION=sess-4", "MCPX_SOCKET=",
+		"MCPX_CWD=/tmp/项目")
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated python client failed over TCP: %v\n%s\n--- module ---\n%s", err, got, module)
+	}
+	if gotCwd, want := <-cwd, "/tmp/项目"; gotCwd != want {
+		t.Fatalf("fixture daemon got x-mcpx-cwd = %q, want %q", gotCwd, want)
+	}
+}
