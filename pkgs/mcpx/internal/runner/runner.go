@@ -163,6 +163,18 @@ type Result struct {
 
 const clientFileName = "mcpx-client.ts"
 
+// warnSink is where preflight warnings go: the caller's configured
+// diagnostic writer (execsvc installs a buffer there, so daemon callers
+// receive the warnings with the result), or the process's stderr for a
+// direct CLI run. Writing to os.Stderr unconditionally sent daemon
+// warnings to the daemon's own log, where the caller never saw them.
+func warnSink(opts Options) io.Writer {
+	if opts.Stderr != nil {
+		return opts.Stderr
+	}
+	return os.Stderr
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -284,7 +296,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(os.Stderr, "mcpx:", w.String())
+			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
 	}
 
@@ -320,7 +332,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(os.Stderr, "mcpx:", w.String())
+			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
 	}
 

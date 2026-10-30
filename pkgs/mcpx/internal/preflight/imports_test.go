@@ -143,3 +143,61 @@ func TestTextModeReportsBareSpecifiersAsUnverifiable(t *testing.T) {
 		t.Errorf("relative imports are the caller's own files, not bare specifiers:\n%s", all)
 	}
 }
+
+// Codex on PR #2575: deno can store a resolution failure on the dependency
+// edge itself ({error, span}, no resolved specifier, no broken module).
+// The edge must still be reported, with its span.
+func TestParseGraphFindsEdgeLevelErrors(t *testing.T) {
+	const fixture = `{
+	  "version": 1,
+	  "roots": ["file:///work/main.ts"],
+	  "modules": [
+	    {
+	      "kind": "esm",
+	      "specifier": "file:///work/main.ts",
+	      "local": "/work/main.ts",
+	      "dependencies": [
+	        {"specifier": "unmapped-pkg", "code": {"error": "Unknown package unmapped-pkg", "span": {"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 30}}}}
+	      ]
+	    }
+	  ]
+	}`
+	g, err := preflight.ParseGraph([]byte(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Missing) != 1 {
+		t.Fatalf("the edge-level failure should be reported, got %+v", g.Missing)
+	}
+	ms := g.Missing[0]
+	if ms.Specifier != "unmapped-pkg" || !strings.Contains(ms.Err, "Unknown package") {
+		t.Errorf("missing entry should carry the as-written specifier and deno's error: %+v", ms)
+	}
+	if ms.Span == nil || ms.Span.Line != 1 || ms.Span.Character != 17 {
+		t.Errorf("span should come from the edge, 1-based: %+v", ms.Span)
+	}
+}
+
+// Codex on PR #2575: the dynamic-import scanner must not treat a regex
+// literal or a property method call as a module load — both became fatal
+// under script.importsOnDynamic=fail.
+func TestScanDynamicImportsSkipsRegexesAndPropertyCalls(t *testing.T) {
+	src := "const matcher = /require(foo)/;\n" +
+		"const other = /import\\(bar\\)/g;\n" +
+		"obj.require(value);\n" +
+		"obj.import(value);\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 0 {
+		t.Fatalf("regex literals and property calls are not module loads, got %+v", dyn)
+	}
+	// A real computed import in the same file is still found.
+	src += "import(name);\n"
+	dyn := preflight.ScanDynamicImports("a.ts", src)
+	if len(dyn) != 1 || dyn[0].Kind != "import" {
+		t.Fatalf("the real dynamic import should survive, got %+v", dyn)
+	}
+	// Division is not a regex: a / b stays scannable after it.
+	src2 := "const q = a / b;\nrequire(name);\n"
+	if dyn := preflight.ScanDynamicImports("b.ts", src2); len(dyn) != 1 {
+		t.Fatalf("division must not swallow the file, got %+v", dyn)
+	}
+}

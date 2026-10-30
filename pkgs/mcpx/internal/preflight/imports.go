@@ -115,6 +115,11 @@ type denoDependency struct {
 type denoEdge struct {
 	Specifier string   `json:"specifier"`
 	Span      denoSpan `json:"span"`
+	// Error is set instead of Specifier when deno itself could not
+	// resolve this edge (an unmapped bare import, say): deno_graph's
+	// serializer stores the failure on the dependency, not as a broken
+	// module, and joining on the resolved specifier never sees it.
+	Error string `json:"error"`
 }
 
 type denoSpan struct {
@@ -175,6 +180,21 @@ func ParseGraph(data []byte) (*Graph, error) {
 		for _, d := range m.Dependencies {
 			for _, edge := range []*denoEdge{d.Code, d.Type} {
 				if edge == nil {
+					continue
+				}
+				if edge.Error != "" {
+					// The failure lives on the edge itself; there is
+					// no resolved specifier to join on.
+					add(MissingSpecifier{
+						Specifier: d.Specifier,
+						From:      m.Specifier,
+						Span: &SourceSpan{
+							Path:      fileURLToPath(m.Specifier),
+							Line:      edge.Span.Start.Line + 1,
+							Character: edge.Span.Start.Character + 1,
+						},
+						Err: edge.Error,
+					})
 					continue
 				}
 				errText, isBroken := broken[edge.Specifier]
@@ -405,6 +425,16 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 	for i := 0; i < len(src); {
 		c := src[i]
 		switch {
+		case c == '/' && regexContext(prevWord):
+			// A regex literal in a position where a value is expected:
+			// its contents are not code, so an identifier+paren inside
+			// one (/require(foo)/) is not a module load.
+			if end, ok := scanRegexIn(src, i); ok {
+				i = end
+				prevWord = ""
+				continue
+			}
+			i++
 		case c == '/' && i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*'):
 			i = skipCommentIn(src, i)
 			prevWord = ""
@@ -417,7 +447,7 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 			i = end
 		case isIdentStartIn(c):
 			word, next := readIdentIn(src, i)
-			if word == "import" || word == "require" {
+			if (word == "import" || word == "require") && !precededByDot(src, i) {
 				j := skipSpaceIn(src, next)
 				if j < len(src) && src[j] == '(' {
 					line, char := pos(i)
@@ -442,6 +472,58 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 	}
 	sort.Strings(bare)
 	return bare, dynamics
+}
+
+// precededByDot reports whether the identifier at off is a property
+// access (obj.require, obj.import): the last non-space byte before it is
+// a dot, so the name is a method, not the module loader.
+func precededByDot(src string, off int) bool {
+	k := off - 1
+	for k >= 0 && isSpaceIn(src[k]) {
+		k--
+	}
+	return k >= 0 && src[k] == '.'
+}
+
+// regexContext reports whether a '/' here starts a regex literal rather
+// than dividing: only where a value could begin — at the start, after an
+// operator or punctuation (which clear prevWord), or after a keyword
+// that takes an expression.
+func regexContext(prevWord string) bool {
+	switch prevWord {
+	case "", "return", "typeof", "case", "in", "of", "new", "delete",
+		"void", "instanceof", "yield", "await", "throw":
+		return true
+	}
+	return false
+}
+
+// scanRegexIn skips a regex literal starting at off (src[off] == '/'),
+// honouring escapes and character classes. ok is false when no closing
+// slash appears on the line — a division, not a literal.
+func scanRegexIn(src string, off int) (int, bool) {
+	inClass := false
+	for j := off + 1; j < len(src); j++ {
+		switch src[j] {
+		case '\n':
+			return 0, false
+		case '\\':
+			j++
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				j++
+				for j < len(src) && isIdentStartIn(src[j]) { // flags
+					j++
+				}
+				return j, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // scanCallArg inspects the argument of import(/require( starting at the
