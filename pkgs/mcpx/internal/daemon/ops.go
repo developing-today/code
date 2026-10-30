@@ -539,8 +539,16 @@ func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallCon
 
 // ---- the specification ----
 
-func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	doc := api.OpenAPI(s.version)
+	// The static variant (?static=1, #1883 item 4) returns only the
+	// ops-table document, without the live catalogue merged in: a docs
+	// build that fetches it publishes the API surface, not the builder's
+	// configured servers. The live default below stays the default.
+	if staticOpenAPI(r) {
+		writeJSON(w, http.StatusOK, doc)
+		return
+	}
 	// Generated per request rather than once, so a server that appears after
 	// startup is described without a restart. The per-tool paths were served
 	// only by `mcpx serve --transport http`; a document without them
@@ -551,6 +559,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, doc)
+}
+
+// staticOpenAPI reports whether the request asks for the static
+// (ops-table only) OpenAPI document: ?static=1 or ?static=true.
+func staticOpenAPI(r *http.Request) bool {
+	switch r.URL.Query().Get("static") {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 // toolPaths describes every upstream tool as its own POST path.
