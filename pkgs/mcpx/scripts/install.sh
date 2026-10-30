@@ -22,6 +22,8 @@
 # Overrides, all optional:
 #   MCPX_VERSION   version to install (default: the latest mcpx release)
 #   MCPX_PREFIX    install directory (default: ~/.local/bin)
+#   MCPX_RELEASES_URL  releases-list endpoint used to resolve the default
+#                  version; CI points it at a fixture file:// URL
 #   MCPX_BASE_URL  where the tarballs and SHA256SUMS live; defaults to the
 #                  release download URL. A local directory or file:// URL
 #                  works, which is how CI exercises this script against a
@@ -66,12 +68,31 @@ esac
 
 version=${MCPX_VERSION:-}
 if [ -z "$version" ]; then
-  # Ask the API for the latest mcpx tag. `gh` is not assumed; this is a
+  # Ask the API for the latest mcpx release. `gh` is not assumed; this is a
   # curl|sh installer, so it uses curl.
-  latest_url="https://api.github.com/repos/${repo}/releases/latest"
-  version=$(curl -fsSL "$latest_url" |
-    sed -n 's/.*"tag_name": *"mcpx\/v\([^"]*\)".*/\1/p' | head -1) ||
-    die "could not ask GitHub for the latest mcpx release"
+  #
+  # NOT /releases/latest: that endpoint returns the newest release of the
+  # whole repository, and this monorepo publishes other packages' releases
+  # too (graph, via .github/workflows/goreleaser.yml) — when one of those
+  # is newest there is no mcpx version to extract and the default install
+  # breaks. List releases instead (the API returns them newest-first) and
+  # take the first non-prerelease mcpx/v tag. In each release object
+  # tag_name precedes prerelease, so the awk below can carry the candidate
+  # from one line to the other.
+  releases_url=${MCPX_RELEASES_URL:-"https://api.github.com/repos/${repo}/releases?per_page=100"}
+  version=$(curl -fsSL "$releases_url" | awk '
+    /"tag_name":/ {
+      pending = ""
+      if (match($0, /"tag_name": *"mcpx\/v[^"]*"/)) {
+        pending = substr($0, RSTART, RLENGTH)
+        sub(/"tag_name": *"mcpx\/v/, "", pending)
+        sub(/"$/, "", pending)
+      }
+      next
+    }
+    /"prerelease": *true/ { pending = "" }
+    /"prerelease": *false/ && pending != "" { print pending; exit }
+  ') || die "could not ask GitHub for the latest mcpx release"
   [ -n "$version" ] ||
     die "no mcpx release found; set MCPX_VERSION to a version that exists (see https://github.com/${repo}/releases)"
 fi

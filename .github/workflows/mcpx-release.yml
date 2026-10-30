@@ -145,6 +145,45 @@ jobs:
           *) echo "::error::installed binary reports '$got', expected $MCPX_VERSION"; exit 1 ;;
           esac
 
+      - name: Resolve the default version past another package's release
+        # The default (no MCPX_VERSION) resolution must not use
+        # /releases/latest: that is the newest release of the whole repo,
+        # and other packages publish here too. Feed the installer a fixture
+        # releases list whose newest entry is a graph release, followed by
+        # an mcpx prerelease, followed by the real mcpx release.
+        env:
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+          MCPX_PREFIX: ${{ runner.temp }}/prefix-default
+        run: |
+          set -euo pipefail
+          version="${{ needs.artifacts.outputs.version }}"
+          cat >"$RUNNER_TEMP/releases.json" <<EOF
+          [
+            {
+              "tag_name": "graph/v9.9.9",
+              "draft": false,
+              "prerelease": false
+            },
+            {
+              "tag_name": "mcpx/v9.9.9",
+              "draft": false,
+              "prerelease": true
+            },
+            {
+              "tag_name": "mcpx/v$version",
+              "draft": false,
+              "prerelease": false
+            }
+          ]
+          EOF
+          MCPX_RELEASES_URL="file://$RUNNER_TEMP/releases.json" sh pkgs/mcpx/scripts/install.sh
+          got=$("$MCPX_PREFIX/mcpx" --version)
+          echo "default-resolved install reports: $got"
+          case "$got" in
+          *"$version"*) ;;
+          *) echo "::error::default resolution installed '$got', expected $version"; exit 1 ;;
+          esac
+
       - name: Refuse a tampered artifact
         # The installer verifies the checksum; prove it by breaking one. An
         # installer that only *says* it verifies teaches the wrong habit.
