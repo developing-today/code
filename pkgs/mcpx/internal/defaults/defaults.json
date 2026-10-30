@@ -198,6 +198,9 @@
     "promptMaxTokens": 1500,
     "runTimeout": "5m"
   },
+  "model": {
+    "timeout": "90s"
+  },
   "exec": {
     "timeout": "120s",
     "workDirs": 8,

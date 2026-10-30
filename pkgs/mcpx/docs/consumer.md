@@ -236,11 +236,24 @@ through it. It is one function, marked, for exactly that reason.
 
 **Scope — "anything that makes mcpx call a model has to justify that it isn't
 rebuilding the harness."** Three of the four things built here never call one.
-The fourth has no model of its own and never will: option 3 from the issue, a
-configured provider with an API key, was not built and should not be. It is
-the one that makes mcpx an agent. Sampling through the caller is the opposite
-— it is mcpx asking the harness it already sits under, which is what the
-specification is for.
+The fourth originally stopped there: option 3 from the issue, a configured
+provider with an API key, was not built, on the grounds that it is the one
+that makes mcpx an agent. That conclusion has since been reversed by the
+facts #1925 records: the 2026-07-28 MCP revision deprecates sampling
+(SEP-2577) and names integrating directly with provider APIs as the
+migration, and no opencode — the primary consumer — declares sampling at
+all. So a configured provider now exists, as one backend of the thin
+provider layer in `internal/model`: a `Provider` interface with a single
+`Generate`, reached only through the `model.*` settings, with
+`model.provider` defaulting to `none` — a user who configures nothing gets
+exactly the behaviour described above. Sampling through the caller survives
+as another backend of the same layer: it is mcpx asking the harness it
+already sits under, which remains right where a client declares it. What
+has not changed is the guard that made the original refusal coherent: no
+operation calls a model on a path where a deterministic answer exists, and
+a provider error returns the deterministic result plus a note that the
+model was unavailable. A `Generate` function is not an agent; the harness
+mcpx sits under still owns the loop, the tools and the session.
 
 **Trust — "generated code runs with the user's credentials."** Return the
 script by default (`prompt.autonomy: propose`, one level of the dial in
