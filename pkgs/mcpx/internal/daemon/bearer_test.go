@@ -88,3 +88,20 @@ func TestValidateBearerToken(t *testing.T) {
 		t.Errorf("error leaks the token value: %v", err)
 	}
 }
+
+func TestTakeoverRequest(t *testing.T) {
+	// Unset: byte-for-byte the request the successor always wrote.
+	got := takeoverRequest("")
+	want := "POST " + takeoverRoute + " HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n\r\n"
+	if got != want {
+		t.Fatalf("unset rendering changed:\n%q\nwant:\n%q", got, want)
+	}
+	// Set: the predecessor's gate protects /v1/takeover too, so the
+	// successor presents the token.
+	got = takeoverRequest(fixtureToken)
+	want = "POST " + takeoverRoute + " HTTP/1.1\r\nHost: mcpx\r\nContent-Length: 0\r\n" +
+		"Authorization: Bearer " + fixtureToken + "\r\n\r\n"
+	if got != want {
+		t.Fatalf("set rendering wrong:\n%q\nwant:\n%q", got, want)
+	}
+}

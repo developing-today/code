@@ -150,7 +150,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
-	if authHdr := r.Header.Get("Authorization"); authHdr != "" {
+	// #1975: with daemon bearer auth on, the Authorization header is the
+	// daemon credential the gate just verified -- not the caller's upstream
+	// key. The configured upstream key stands; otherwise the daemon token
+	// would be forwarded to the provider (and the provider key would fail
+	// the gate). Unset, a caller-supplied header still selects the key,
+	// exactly as before.
+	if authHdr := r.Header.Get("Authorization"); authHdr != "" && BearerToken(s.set) == "" {
 		apiKey = strings.TrimPrefix(authHdr, "Bearer ")
 	}
 
