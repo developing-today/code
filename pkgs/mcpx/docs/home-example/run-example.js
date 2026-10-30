@@ -85,15 +85,44 @@ export function formatRecordLine(line) {
   if (record.kind === "log") {
     const attrs = record.attrs ?? {};
     const { args, ...rest } = attrs;
-    const parts = [String(record.msg ?? "")];
+    // The client sends the message uninterpolated, plus the template;
+    // the real runner interpolates {name} from attrs (internal/logging:
+    // Interpolate — {{ and }} are escapes, a missing key stays as-is)
+    // and does not repeat the consumed attributes afterwards.
+    const template = String(record.template ?? record.msg ?? "");
+    const used = new Set();
+    const rendered = template.replace(
+      /\{\{|\}\}|\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}/g,
+      (m, name) => {
+        if (m === "{{") return "{";
+        if (m === "}}") return "}";
+        if (!(name in rest)) return m;
+        used.add(name);
+        return valueString(rest[name]);
+      },
+    );
+    const parts = [rendered];
     for (const a of args ?? []) parts.push(format(a));
-    const keys = Object.keys(rest);
-    if (keys.length > 0) {
-      parts.push(keys.map((k) => `${k}=${format(rest[k])}`).join(" "));
+    const leftover = Object.keys(rest).filter((k) => !used.has(k));
+    if (leftover.length > 0) {
+      parts.push(leftover.map((k) => `${k}=${format(rest[k])}`).join(" "));
     }
     return parts.filter((x) => x !== "").join(" ");
   }
   return null;
+}
+
+/** A log attribute as the runner renders it in a message
+ *  (internal/logging: valueString). */
+function valueString(v) {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return String(v);
+  }
 }
 
 function format(value) {

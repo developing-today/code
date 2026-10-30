@@ -154,6 +154,22 @@ const check = (name, ok, detail = "") => {
   );
 }
 
+// --- 1d3. strip-types: an assertion never eats its literal operand ----------
+{
+  check(
+    "strip: a cast on a string literal keeps the literal",
+    stripTypes('console.log("hello" as string);') ===
+      'console.log("hello");',
+    stripTypes('console.log("hello" as string);'),
+  );
+  check(
+    "strip: a cast in a declaration keeps the value",
+    stripTypes('const message = "hello" as string;') ===
+      'const message = "hello";',
+    stripTypes('const message = "hello" as string;'),
+  );
+}
+
 // --- 1e. run-example: script globals + client record lines ------------------
 {
   const fakeClient = { log: () => {}, emit: () => {}, describe: () => "" };
@@ -192,6 +208,30 @@ const check = (name, ok, detail = "") => {
   check(
     "run: a non-record console.error line is not a record",
     formatRecordLine("some plain error") === null,
+  );
+  check(
+    "run: a log template is interpolated and its attrs consumed",
+    formatRecordLine(
+      sentinel +
+        JSON.stringify({
+          kind: "log",
+          msg: "fetched {count} pages",
+          template: "fetched {count} pages",
+          attrs: { count: 3 },
+        }),
+    ) === "fetched 3 pages",
+  );
+  check(
+    "run: escaped braces render literally, missing keys stay, leftovers append",
+    formatRecordLine(
+      sentinel +
+        JSON.stringify({
+          kind: "log",
+          msg: "use {{x}} for {missing}",
+          template: "use {{x}} for {missing}",
+          attrs: { other: 1 },
+        }),
+    ) === "use {x} for {missing} other=1",
   );
 }
 

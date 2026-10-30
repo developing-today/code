@@ -388,6 +388,53 @@ function maskProtected(source) {
     .join("");
 }
 
+/**
+ * The [start, end) ranges of the original that are protected literals
+ * or comments. A deletion span must never cut into one: a pass can
+ * legitimately reach into a masked literal — the `as` pass's leading
+ * \\s+ happily eats the spaces a masked string became — and cutting
+ * there would delete the literal itself from the output.
+ */
+function protectedRanges(source) {
+  const ranges = [];
+  let offset = 0;
+  for (const s of segmentize(source)) {
+    if (!s.code) ranges.push([offset, offset + s.text.length]);
+    offset += s.text.length;
+  }
+  return ranges;
+}
+
+function subtractRanges(spans, ranges, source) {
+  const out = [];
+  for (const [a, b] of spans) {
+    let pieces = [[a, b]];
+    for (const [pa, pb] of ranges) {
+      const next = [];
+      for (const [x, y] of pieces) {
+        if (pb <= x || pa >= y) {
+          next.push([x, y]);
+          continue;
+        }
+        if (pa > x) next.push([x, pa]);
+        if (pb < y) next.push([pb, y]);
+      }
+      pieces = next;
+    }
+    // A piece that is only whitespace is dropped too: splitting a span
+    // at a literal can leave the space before the literal as its own
+    // piece (`= "x" as string`), and cutting it would weld the literal
+    // to whatever precedes it. No real deletion is whitespace-only —
+    // every pass deletes at least a colon, a keyword, or a brace.
+    out.push(
+      ...pieces.filter(
+        ([x, y]) => y > x && !/^\s*$/.test(source.slice(x, y)),
+      ),
+    );
+  }
+  return out;
+}
+
 export function stripTypes(source) {
   const masked = maskProtected(source);
   if (
@@ -424,7 +471,11 @@ export function stripTypes(source) {
   ];
   collectParamSpans(masked, 0, spans);
 
-  spans.sort((a, b) => a[0] - b[0]);
+  // No deletion may cut into a protected literal or comment.
+  const cut = subtractRanges(spans, protectedRanges(source), source);
+  cut.sort((a, b) => a[0] - b[0]);
+  spans.length = 0;
+  spans.push(...cut);
   let out = "";
   let last = 0;
   for (const [a, b] of spans) {
