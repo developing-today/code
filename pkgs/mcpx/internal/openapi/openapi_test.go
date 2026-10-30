@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/openapi"
+	"github.com/developing-today/code/pkgs/mcpx/internal/openapi"
 )
 
 const petstore = `{

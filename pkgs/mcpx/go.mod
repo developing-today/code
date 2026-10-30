@@ -1,4 +1,4 @@
-module github.com/dezren39/mcpx
+module github.com/developing-today/code/pkgs/mcpx
 
 go 1.27.2
 

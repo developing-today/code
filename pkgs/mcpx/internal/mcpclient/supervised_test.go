@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // TestMain doubles as the supervisor re-exec target and as scripted

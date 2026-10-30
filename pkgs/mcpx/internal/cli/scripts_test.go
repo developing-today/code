@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // chdir moves into dir and isolates the search from the real user.

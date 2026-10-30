@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // paramDecl is the head of a recipe declaration, the same shape

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // Transport conformance for mcpx as a server. Each case is named

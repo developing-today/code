@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Optional bearer-token auth for the daemon's HTTP surfaces (#1975).

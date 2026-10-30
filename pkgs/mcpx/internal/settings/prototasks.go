@@ -1,6 +1,6 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // protoTasksSettings govern the tasks mcpx hands out, over MCP and /v1 alike.
 func protoTasksSettings() []Setting {

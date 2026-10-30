@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // The 2026-07-28 tasks extension as the official conformance suite's

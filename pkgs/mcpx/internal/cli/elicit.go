@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // ExitInputRequired is returned when a call stopped to ask something.

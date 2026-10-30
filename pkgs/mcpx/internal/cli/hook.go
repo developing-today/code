@@ -9,7 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
 )
 
 // CmdHook inspects the config-declared hooks (the `hooks` setting,

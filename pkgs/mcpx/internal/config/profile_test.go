@@ -3,7 +3,7 @@ package config_test
 import (
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 func res(t *testing.T, c *config.Config, name string) *config.Resolved {

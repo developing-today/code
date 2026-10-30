@@ -14,11 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/recipes"
-	"github.com/dezren39/mcpx/internal/scripting"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/scripting"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // routesConsumer registers the operations behind the things mcpx asks for

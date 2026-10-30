@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // Source is everything the view reads.

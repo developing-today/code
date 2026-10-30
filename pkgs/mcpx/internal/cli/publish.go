@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"os"
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // toolPaths renders every upstream tool as an OpenAPI path.

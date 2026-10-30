@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Issue #1555 (Phase 1 of #1554): when a store is injected, the MCP

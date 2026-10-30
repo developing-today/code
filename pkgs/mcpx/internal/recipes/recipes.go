@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // Type is the type of a placeholder value.

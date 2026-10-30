@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
 )
 
 // The transport rules of both eras, kept out of server.go so that the wire
