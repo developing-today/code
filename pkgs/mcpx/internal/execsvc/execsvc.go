@@ -249,6 +249,10 @@ type Result struct {
 	Runtime    string            `json:"runtime,omitempty"`
 	TimedOut   bool              `json:"timedOut,omitempty"`
 	Error      string            `json:"error,omitempty"`
+	// Notice carries the runner's one-line statement of what a
+	// dispatched (non-JavaScript) run does not have: no generated
+	// client, no enforced permission profiles.
+	Notice string `json:"notice,omitempty"`
 }
 
 // Source supplies the generated client the script is run against.
@@ -593,6 +597,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	res.DurationMs = rres.Duration.Milliseconds()
 	res.Runtime = rres.Runtime
 	res.TimedOut = rres.TimedOut
+	res.Notice = rres.Notice
 	if rerr != nil {
 		res.Error = rerr.Error()
 	}

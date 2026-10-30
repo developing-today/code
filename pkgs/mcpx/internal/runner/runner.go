@@ -178,14 +178,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// runs the script under that interpreter, before any JavaScript
 	// runtime is considered. Rank 3 (language/extension) is reserved
 	// for #1917; rank 4 is everything below, unchanged.
-	if d, jsRuntime, derr := decideDispatch(opts); derr != nil {
+	var jsEnv jsChoice
+	if d, js, derr := decideDispatch(opts); derr != nil {
 		return nil, derr
 	} else if d != nil {
 		return runDispatched(ctx, opts, d)
-	} else if jsRuntime != "" {
+	} else if js.runtime != "" {
 		// A JavaScript shebang chose this runtime (rank 1); the harness
 		// below runs under it instead of the configured preference.
-		opts.Runtime = jsRuntime
+		// The env(1) wrapper's environment changes ride along, so the
+		// harness path honours what the raw path preserves.
+		opts.Runtime = js.runtime
+		jsEnv = js
 	}
 	rt, err := Resolve(opts.Runtime, opts.Permissions, opts.Setup)
 	if err != nil {
@@ -332,7 +336,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	cmd.Dir = dir
 	// The kind, not the configured name: a script branching on its runtime
 	// cares whether it is under Deno, not what somebody called the binary.
-	cmd.Env = append(os.Environ(), "MCPX_RUNTIME="+rt.Kind)
+	// A JavaScript shebang's env(1) changes apply here too, and names the
+	// run owns are never inherited (a stale outer value would shadow the
+	// contract: first duplicate wins).
+	cmd.Env = append(childBaseEnv(jsEnv.set, jsEnv.unset, jsEnv.clear), "MCPX_RUNTIME="+rt.Kind)
 	// Resolved here rather than by the caller: only the runner knows the final
 	// location of the entry script and the client it wrote beside it.
 	cmd.Env = append(cmd.Env, "MCPX_ENTRY="+scriptPath, "MCPX_CLIENT="+clientPath)

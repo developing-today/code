@@ -92,6 +92,7 @@ type dispatch struct {
 	env    []string // VAR=value assignments an env shebang carried
 	unset  []string // names an env shebang removed from the environment (-u)
 	clear  bool     // an env shebang asked for an empty environment (-i)
+	chdir  string   // directory an env shebang asked to run in (-C)
 	name   string   // interpreter name reported as the run's runtime
 	source string   // "shebang" or "interpreter"
 }
@@ -124,12 +125,22 @@ type shebangEnv struct {
 	set    []string // VAR=value assignments
 	unset  []string // names removed from the inherited environment (-u)
 	clear  bool     // start from an empty environment (-i)
+	chdir  string   // directory env(1) would have moved to (-C/--chdir)
+	// splitErr is why an env -S payload could not be re-split (an
+	// unterminated quote). It is reported by decideDispatch; the
+	// exported ParseShebang wrappers keep best-effort tokens.
+	splitErr error
 }
 
 // parseShebang reads a #! line. Options of an env(1) shebang are
 // consumed as env itself would consume them, including the operand of
 // -u NAME and -C DIR, so that what remains is the command: without
 // that, "#!/usr/bin/env -S -u SECRET sh" would try to run SECRET.
+//
+// A -S/--split-string payload is re-split with shell quoting rules,
+// because the kernel hands env the line already flattened: without
+// that, `#!/usr/bin/env -S sh -c "printf hello"` would run sh with
+// the two words '"printf' and 'hello"' and fail on the quotes.
 func parseShebang(line string) (shebangEnv, bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if !strings.HasPrefix(line, "#!") {
@@ -159,6 +170,8 @@ func parseShebang(line string) (shebangEnv, bool) {
 				}
 				if f == "-u" || f == "--unset" {
 					sp.unset = append(sp.unset, fields[1])
+				} else {
+					sp.chdir = fields[1]
 				}
 				fields = fields[2:]
 			case strings.HasPrefix(f, "--unset="):
@@ -167,14 +180,22 @@ func parseShebang(line string) (shebangEnv, bool) {
 			case strings.HasPrefix(f, "-u") && len(f) > 2:
 				sp.unset = append(sp.unset, f[2:])
 				fields = fields[1:]
-			case strings.HasPrefix(f, "-C") && len(f) > 2, strings.HasPrefix(f, "--chdir="):
+			case f == "-S" || f == "--split-string":
+				fields = sp.resplit(strings.Join(fields[1:], " "))
+			case strings.HasPrefix(f, "--split-string="):
+				fields = sp.resplit(strings.TrimPrefix(f, "--split-string=") + " " + strings.Join(fields[1:], " "))
+			case strings.HasPrefix(f, "-S") && len(f) > 2:
+				fields = sp.resplit(f[2:] + " " + strings.Join(fields[1:], " "))
+			case strings.HasPrefix(f, "-C") && len(f) > 2:
+				sp.chdir = f[2:]
+				fields = fields[1:]
+			case strings.HasPrefix(f, "--chdir="):
+				sp.chdir = strings.TrimPrefix(f, "--chdir=")
 				fields = fields[1:]
 			case strings.HasPrefix(f, "-"):
-				// -S and the other operand-free options. The words
-				// arrive already split, which is what -S would have
-				// done to them.
+				// The other operand-free options.
 				fields = fields[1:]
-			case strings.Contains(f, "=") && !strings.Contains(f, "/"):
+			case strings.Contains(f, "="):
 				sp.set = append(sp.set, f)
 				fields = fields[1:]
 			default:
@@ -184,6 +205,19 @@ func parseShebang(line string) (shebangEnv, bool) {
 	}
 	sp.tokens = fields
 	return sp, true
+}
+
+// resplit parses an env -S payload the way env(1) would: honouring
+// single and double quotes and backslash escapes, so quoted text
+// stays one argument. A payload that does not parse records the
+// error for decideDispatch and yields no tokens.
+func (sp *shebangEnv) resplit(payload string) []string {
+	fields, err := SplitCommandLine(payload)
+	if err != nil {
+		sp.splitErr = err
+		return nil
+	}
+	return fields
 }
 
 // filterEnv drops the named variables from env, leaving everything else
@@ -292,10 +326,22 @@ func fileFirstLine(path string) (string, error) {
 	return line, nil
 }
 
+// jsChoice is a shebang's choice of JavaScript runtime (rank 1): the
+// runtime the harness must use, plus the environment changes the
+// env(1) wrapper around it asked for. The environment rides with the
+// runtime so the harness path cannot silently drop what
+// ParseShebangEnv preserves for the raw path (#2611 review).
+type jsChoice struct {
+	runtime string
+	set     []string
+	unset   []string
+	clear   bool
+}
+
 // decideDispatch applies ranks 1 and 2 of the dispatch order. A nil
 // dispatch means the run falls through to the TypeScript runtime; the
-// second return value then names the runtime a JavaScript shebang
-// chose, so the harness honours the shebang's choice instead of the
+// second return value then carries a JavaScript shebang's runtime
+// choice, so the harness honours the shebang's choice instead of the
 // configured preference.
 //
 // A shebang naming a JavaScript runtime, with no extra arguments, is
@@ -306,7 +352,7 @@ func fileFirstLine(path string) (string, error) {
 // shebang's runtime as its preference. A JavaScript shebang WITH extra
 // arguments keeps raw dispatch: the arguments are part of the command
 // the file names, and the harness has nowhere to put them.
-func decideDispatch(opts Options) (*dispatch, string, error) {
+func decideDispatch(opts Options) (*dispatch, jsChoice, error) {
 	first := ""
 	if opts.Source != "" {
 		first = firstLineOf(opts.Source)
@@ -319,34 +365,58 @@ func decideDispatch(opts Options) (*dispatch, string, error) {
 		}
 	}
 	if sp, ok := parseShebang(first); ok {
+		if sp.splitErr != nil {
+			return nil, jsChoice{}, fmt.Errorf("runner: shebang -S payload: %w", sp.splitErr)
+		}
 		if len(sp.tokens) == 0 {
-			return nil, "", errors.New("runner: the script's shebang line (#!) names no interpreter")
+			return nil, jsChoice{}, errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
 		if len(sp.tokens) == 1 && isJSRuntimeName(opts.Setup, sp.tokens[0]) {
-			return nil, sp.tokens[0], nil
+			return nil, jsChoice{runtime: sp.tokens[0], set: sp.set, unset: sp.unset, clear: sp.clear}, nil
 		}
 		d, err := dispatchFromTokens("shebang", sp.tokens)
 		if err != nil {
-			return nil, "", err
+			return nil, jsChoice{}, err
 		}
-		d.env, d.unset, d.clear = sp.set, sp.unset, sp.clear
-		return d, "", nil
+		d.env, d.unset, d.clear, d.chdir = sp.set, sp.unset, sp.clear, sp.chdir
+		return d, jsChoice{}, nil
 	}
 	if strings.TrimSpace(opts.Interpreter) != "" {
 		tokens, err := SplitCommandLine(opts.Interpreter)
 		if err != nil {
-			return nil, "", fmt.Errorf("runner: script.interpreter: %w", err)
+			return nil, jsChoice{}, fmt.Errorf("runner: script.interpreter: %w", err)
 		}
 		if len(tokens) == 0 {
-			return nil, "", errors.New("runner: script.interpreter is set but names no command")
+			return nil, jsChoice{}, errors.New("runner: script.interpreter is set but names no command")
 		}
 		d, err := dispatchFromTokens("interpreter", tokens)
 		if err != nil {
-			return nil, "", err
+			return nil, jsChoice{}, err
 		}
-		return d, "", nil
+		return d, jsChoice{}, nil
 	}
-	return nil, "", nil
+	return nil, jsChoice{}, nil
+}
+
+// ownedEnvNames are the MCPX_* variables a run sets itself. A child
+// never inherits them: with duplicate keys the first wins, so a stale
+// value from an outer run (a MCPX_CLIENT path, a MCPX_RUNTIME naming
+// another interpreter) would silently beat the run's own contract.
+var ownedEnvNames = []string{"MCPX_CLIENT", "MCPX_RUNTIME", "MCPX_ENTRY", "MCPX_DISPATCH"}
+
+// childBaseEnv is the environment a diverted run starts from: the
+// inherited environment (or nothing, with -i), minus the names env(1)
+// was told to unset and the run's own contract variables, plus the
+// assignments the shebang carried.
+func childBaseEnv(set, unset []string, clear bool) []string {
+	var base []string
+	if !clear {
+		drop := make([]string, 0, len(unset)+len(ownedEnvNames))
+		drop = append(drop, unset...)
+		drop = append(drop, ownedEnvNames...)
+		base = filterEnv(os.Environ(), drop)
+	}
+	return append(base, set...)
 }
 
 func dispatchFromTokens(source string, tokens []string) (*dispatch, error) {
@@ -411,11 +481,27 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	if err != nil {
 		return nil, err
 	}
+	if d.chdir != "" {
+		// A shebang's -C/--chdir is the program's own directory
+		// choice, so like its interpreter choice it beats
+		// configuration: the rank-1 rationale in decideDispatch
+		// applies to the directory too. A relative -C resolves
+		// against the policy directory, the way env(1) resolves it
+		// against the directory in force.
+		if filepath.IsAbs(d.chdir) {
+			dir = d.chdir
+		} else {
+			dir = filepath.Join(dir, d.chdir)
+		}
+	}
 
 	notice := fmt.Sprintf("mcpx: running under %s (%s dispatch): no generated mcpx client is "+
 		"available to a non-JavaScript script, and script.permissions profiles are not enforced "+
 		"for this interpreter; MCPX_ENDPOINT, MCPX_SESSION and MCPX_SOCKET are in the environment",
 		d.name, d.source)
+	if !opts.Phases.Empty() {
+		notice += "; configured launcher phases do not apply to a non-JavaScript run and are skipped"
+	}
 
 	runCtx := ctx
 	var cancel context.CancelFunc
@@ -432,13 +518,9 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	// would have started from the inherited environment (or an empty one,
 	// with -i) minus the names it was told to unset, set its assignments,
 	// and then the MCPX_* variables win any collision, as the run's own
-	// contract should.
-	if d.clear {
-		cmd.Env = nil
-	} else {
-		cmd.Env = filterEnv(os.Environ(), d.unset)
-	}
-	cmd.Env = append(cmd.Env, d.env...)
+	// contract should. Names the run owns are never inherited: a stale
+	// outer value would shadow the contract (first duplicate wins).
+	cmd.Env = childBaseEnv(d.env, d.unset, d.clear)
 	cmd.Env = append(cmd.Env, "MCPX_RUNTIME="+d.name, "MCPX_ENTRY="+scriptPath, "MCPX_DISPATCH="+d.source)
 	for k, v := range opts.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)

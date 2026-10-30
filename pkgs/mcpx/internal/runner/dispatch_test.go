@@ -81,6 +81,126 @@ func TestParseShebangEnvOptions(t *testing.T) {
 	}
 }
 
+func TestParseShebangSplitStringQuoting(t *testing.T) {
+	// The Codex P2 on PR #2611: a -S payload is one string env(1)
+	// splits with quoting rules, not pre-split words.
+	for _, tc := range []struct {
+		line string
+		want string
+	}{
+		{`#!/usr/bin/env -S sh -c "printf hello"`, "sh -c printf hello"},
+		{`#!/usr/bin/env -S python3 -c 'print("hi")'`, `python3 -c print("hi")`},
+		{`#!/usr/bin/env -S sh -c a\ b`, "sh -c a b"},
+		{`#!/usr/bin/env --split-string=sh -c "x y"`, "sh -c x y"},
+		{`#!/usr/bin/env -Ssh -c "x y"`, "sh -c x y"},
+	} {
+		got, ok := ParseShebang(tc.line)
+		if !ok || strings.Join(got, " ") != tc.want {
+			t.Errorf("ParseShebang(%q) = %v, %v; want [%s], true", tc.line, got, ok, tc.want)
+		}
+	}
+	// An unterminated quote is a dispatch error, not a silent
+	// mis-split: GNU env errors on it too.
+	if _, _, err := decideDispatch(Options{Source: "#!/usr/bin/env -S sh -c \"oops\necho hi\n"}); err == nil {
+		t.Error("decideDispatch(unterminated -S quote): want an error")
+	}
+}
+
+func TestParseShebangChdir(t *testing.T) {
+	// The CodeRabbit finding on PR #2611: -C/--chdir was consumed and
+	// dropped, so the script ran somewhere its own first line did not
+	// name. The operand is carried on the dispatch now.
+	for _, tc := range []struct {
+		line string
+		want string
+	}{
+		{"#!/usr/bin/env -C /tmp sh", "/tmp"},
+		{"#!/usr/bin/env -Ctmp sh", "tmp"},
+		{"#!/usr/bin/env --chdir=/tmp sh", "/tmp"},
+		{"#!/usr/bin/env --chdir /tmp sh", "/tmp"},
+	} {
+		sp, ok := parseShebang(tc.line)
+		if !ok || strings.Join(sp.tokens, " ") != "sh" || sp.chdir != tc.want {
+			t.Errorf("parseShebang(%q) = %v chdir=%q; want [sh] chdir=%q", tc.line, sp.tokens, sp.chdir, tc.want)
+		}
+	}
+}
+
+func TestParseShebangEnvAssignmentWithSlash(t *testing.T) {
+	// The CodeRabbit finding on PR #2611: a value containing "/" is
+	// still an assignment (PATH=/x:/y), not the command.
+	tokens, env, ok := ParseShebangEnv("#!/usr/bin/env PATH=/x:/y sh")
+	if !ok || strings.Join(tokens, " ") != "sh" || strings.Join(env, " ") != "PATH=/x:/y" {
+		t.Errorf("ParseShebangEnv = %v, %v, %v; want [sh], [PATH=/x:/y], true", tokens, env, ok)
+	}
+}
+
+func TestRunDispatchedDropsOwnedEnvNames(t *testing.T) {
+	// The CodeRabbit finding on PR #2611: a dispatched run must not
+	// inherit the run's own contract variables from an outer run --
+	// with duplicate keys the first wins, so a stale MCPX_CLIENT path
+	// or MCPX_RUNTIME would silently beat the run's own.
+	t.Setenv("MCPX_CLIENT", "stale-from-parent")
+	t.Setenv("MCPX_RUNTIME", "stale-from-parent")
+	dir := t.TempDir()
+	f := writeScript(t, dir, "env.sh",
+		"#!/bin/sh\necho \"client=[${MCPX_CLIENT-unset}] runtime=$MCPX_RUNTIME\"\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{File: f, Stdout: &stdout, Stderr: &stderr})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "client=[unset] runtime=sh" {
+		t.Errorf("stdout = %q, want client=[unset] runtime=sh", got)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
+	}
+}
+
+func TestRunShebangChdir(t *testing.T) {
+	// End to end for the -C fix: the script runs where its shebang
+	// says, ahead of the script.cwd policy.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := writeScript(t, dir, "where.sh",
+		"#!/usr/bin/env -C "+target+" sh\ntouch ran-in-target-dir\n")
+	var stdout, stderr bytes.Buffer
+	if _, err := Run(context.Background(), Options{File: f, Stdout: &stdout, Stderr: &stderr}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// A relative write lands where the shebang says, not next to the
+	// script: /bin/pwd is not portable enough to assert on here.
+	if _, err := os.Stat(filepath.Join(target, "ran-in-target-dir")); err != nil {
+		t.Errorf("marker missing in the -C directory: %v (stderr %q)", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ran-in-target-dir")); !os.IsNotExist(err) {
+		t.Errorf("marker leaked into the script directory")
+	}
+}
+
+func TestRunDispatchedNoticeNamesSkippedPhases(t *testing.T) {
+	// The CodeRabbit finding on runner.go: configured launcher phases
+	// are skipped on a dispatched run; the notice must say so instead
+	// of staying silent about it.
+	dir := t.TempDir()
+	f := writeScript(t, dir, "ph.sh", "#!/bin/sh\necho ok\n")
+	var stdout, stderr bytes.Buffer
+	res, err := Run(context.Background(), Options{
+		File: f, Stdout: &stdout, Stderr: &stderr,
+		Phases: Phases{Before: []string{"// configured"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.Notice, "phases") {
+		t.Errorf("Notice = %q, want it to name the skipped launcher phases", res.Notice)
+	}
+}
+
 func TestFilterEnv(t *testing.T) {
 	got := filterEnv([]string{"A=1", "B=2", "A=3"}, []string{"A"})
 	if strings.Join(got, " ") != "B=2" {
@@ -137,20 +257,27 @@ func TestRunEnvShebangAssignmentsReachTheScript(t *testing.T) {
 func TestDecideDispatchJSRuntimeShebang(t *testing.T) {
 	// A plain JavaScript-runtime shebang must NOT divert to raw
 	// dispatch: the harness runs it, under the shebang's runtime.
-	d, jsRuntime, err := decideDispatch(Options{Source: "#!/usr/bin/env node\nexport default () => 1\n"})
-	if err != nil || d != nil || jsRuntime != "node" {
-		t.Errorf("decideDispatch(node shebang) = %v, %q, %v; want nil, \"node\", nil", d, jsRuntime, err)
+	d, js, err := decideDispatch(Options{Source: "#!/usr/bin/env node\nexport default () => 1\n"})
+	if err != nil || d != nil || js.runtime != "node" {
+		t.Errorf("decideDispatch(node shebang) = %v, %q, %v; want nil, \"node\", nil", d, js.runtime, err)
 	}
 	// A JavaScript shebang with extra arguments keeps raw dispatch:
 	// the arguments are part of the named command.
-	d, jsRuntime, err = decideDispatch(Options{Source: "#!/usr/bin/env -S node --inspect main.ts\n"})
-	if err != nil || d == nil || jsRuntime != "" {
-		t.Errorf("decideDispatch(node --inspect) = %v, %q, %v; want a dispatch, \"\", nil", d, jsRuntime, err)
+	d, js, err = decideDispatch(Options{Source: "#!/usr/bin/env -S node --inspect main.ts\n"})
+	if err != nil || d == nil || js.runtime != "" {
+		t.Errorf("decideDispatch(node --inspect) = %v, %q, %v; want a dispatch, \"\", nil", d, js.runtime, err)
 	}
 	// A non-JavaScript shebang dispatches as before.
-	d, jsRuntime, err = decideDispatch(Options{Source: "#!/bin/sh\necho hi\n"})
-	if err != nil || d == nil || jsRuntime != "" {
-		t.Errorf("decideDispatch(sh) = %v, %q, %v; want a dispatch, \"\", nil", d, jsRuntime, err)
+	d, js, err = decideDispatch(Options{Source: "#!/bin/sh\necho hi\n"})
+	if err != nil || d == nil || js.runtime != "" {
+		t.Errorf("decideDispatch(sh) = %v, %q, %v; want a dispatch, \"\", nil", d, js.runtime, err)
+	}
+	// A JavaScript shebang's env(1) environment rides with the runtime
+	// choice instead of being dropped on the harness path.
+	d, js, err = decideDispatch(Options{Source: "#!/usr/bin/env -S MODE=prod -u SECRET node\nexport default () => 1\n"})
+	if err != nil || d != nil || js.runtime != "node" ||
+		strings.Join(js.set, " ") != "MODE=prod" || strings.Join(js.unset, " ") != "SECRET" {
+		t.Errorf("decideDispatch(node env) = %v, %+v, %v; want nil, {node [MODE=prod] [SECRET]}, nil", d, js, err)
 	}
 }
 
