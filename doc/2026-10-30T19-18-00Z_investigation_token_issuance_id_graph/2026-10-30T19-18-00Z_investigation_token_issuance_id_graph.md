@@ -46,9 +46,9 @@ in two bindings.**
   100 tokens of itself and gave them to that ID" is an `Issuance` object
   on the issuer's chain; total issued is a fold over the issuer's issuance
   objects, so supply is publicly auditable (§2, §4).
-- **Two bindings, chosen once per currency.** *Graph-native* tokens live
+- **Two bindings, chosen once per currency.** _Graph-native_ tokens live
   entirely as graph objects (balances are folds; they work offline, and
-  offline double-spend is detectable but not preventable). *Ledger-anchored*
+  offline double-spend is detectable but not preventable). _Ledger-anchored_
   tokens use the graph objects as the authorization/audit layer and
   TigerBeetle as balance truth, cross-linked by `user_data_128` (§3).
 - **A snapshot is a signed, checkable compression of state at a
@@ -78,11 +78,11 @@ identifiers: a registry-minted `currency_id` and the TigerBeetle `ledger`
 u32. These are not three competing identities; they are three layers, and
 this document fixes which layer each consumer uses:
 
-| Layer | Identifier | Who mints it | Used by |
-| --- | --- | --- | --- |
-| Graph (semantic) | (issuer ID, definition-object ID) | The issuer, by signing the definition | Graph objects, wallets, this design |
-| Registry (operational) | `currency_id` | The registry at registration (#2062 §2.3) | Gateway requests, app APIs |
-| Ledger (mechanical) | `ledger` u32 | The registry allocator (#2062 §2.1) | TigerBeetle accounts/transfers only |
+| Layer                  | Identifier                        | Who mints it                              | Used by                             |
+| ---------------------- | --------------------------------- | ----------------------------------------- | ----------------------------------- |
+| Graph (semantic)       | (issuer ID, definition-object ID) | The issuer, by signing the definition     | Graph objects, wallets, this design |
+| Registry (operational) | `currency_id`                     | The registry at registration (#2062 §2.3) | Gateway requests, app APIs          |
+| Ledger (mechanical)    | `ledger` u32                      | The registry allocator (#2062 §2.1)       | TigerBeetle accounts/transfers only |
 
 Bindings between the layers are themselves recorded: the registry row
 holds `graph_object_id` pointing at the signed definition (#2062 §2.4 —
@@ -109,22 +109,22 @@ like everything else in `pkgs/id` (the signed-event envelope is
 [#2251](https://github.com/developing-today/code/issues/2251)'s job, not
 this document's).
 
-| # | Object | Signer | Content (semantic fields) | Counting rule |
-| --- | --- | --- | --- | --- |
-| 1 | Currency definition | Issuer | Name/symbol, scale, supply policy (`capped{max}` \| `open`), binding (`graph-native` \| `ledger-anchored`) | Canonical record of the currency; registry indexes it (#2062 §2.4) |
-| 2 | Issuance | Issuer | Currency, amount, recipient, memo | A signed Issuance is an authorized *intent*. Graph-native: counts iff the issuer's chain is unforked at that position and cumulative issuance ≤ cap. Anchored: counts toward issued supply only on confirmed ledger execution (§5) — an intent the gateway rejects mints nothing |
-| 3 | Transfer | Sender | Currency, amount, recipient, sender's chain position | Counts iff sender's chain is unforked and funded at that position (§3) |
-| 4 | Burn | Holder | A transfer to the issuer or a dedicated burn identity | Reduces counted supply |
-| 5 | Rate offer | Offerer (issuer or any liquidity holder) | From-currency, to-currency, exact rational rate, per-tx and total caps, expiry, eligible takers (`public` \| named set) | Live iff not superseded/revoked at the offerer's current chain frontier |
-| 6 | Conversion receipt | Executing service / both parties | Offer (specific version/frontier), both leg references, conversion ID | Emitted on execution (§6); the audit record of a conversion |
-| 7 | Issuer snapshot | Issuer — or, in a central-issuer deployment, the currency service ID | Currency, as-of frontier, total issued, total burned, balance root, ledger position when anchored | An auditable assertion, never a trust root (§5) |
+| #   | Object              | Signer                                                               | Content (semantic fields)                                                                                               | Counting rule                                                                                                                                                                                                                                                                    |
+| --- | ------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Currency definition | Issuer                                                               | Name/symbol, scale, supply policy (`capped{max}` \| `open`), binding (`graph-native` \| `ledger-anchored`)              | Canonical record of the currency; registry indexes it (#2062 §2.4)                                                                                                                                                                                                               |
+| 2   | Issuance            | Issuer                                                               | Currency, amount, recipient, memo                                                                                       | A signed Issuance is an authorized _intent_. Graph-native: counts iff the issuer's chain is unforked at that position and cumulative issuance ≤ cap. Anchored: counts toward issued supply only on confirmed ledger execution (§5) — an intent the gateway rejects mints nothing |
+| 3   | Transfer            | Sender                                                               | Currency, amount, recipient, sender's chain position                                                                    | Counts iff sender's chain is unforked and funded at that position (§3)                                                                                                                                                                                                           |
+| 4   | Burn                | Holder                                                               | A transfer to the issuer or a dedicated burn identity                                                                   | Reduces counted supply                                                                                                                                                                                                                                                           |
+| 5   | Rate offer          | Offerer (issuer or any liquidity holder)                             | From-currency, to-currency, exact rational rate, per-tx and total caps, expiry, eligible takers (`public` \| named set) | Live iff not superseded/revoked at the offerer's current chain frontier                                                                                                                                                                                                          |
+| 6   | Conversion receipt  | Executing service / both parties                                     | Offer (specific version/frontier), both leg references, conversion ID                                                   | Emitted on execution (§6); the audit record of a conversion                                                                                                                                                                                                                      |
+| 7   | Issuer snapshot     | Issuer — or, in a central-issuer deployment, the currency service ID | Currency, as-of frontier, total issued, total burned, balance root, ledger position when anchored                       | An auditable assertion, never a trust root (§5)                                                                                                                                                                                                                                  |
 
 Two rules cut across the table:
 
 - **Rates are exact rationals, never floats.** 0.8123 is 8123/10000.
   (Field-level representation, including scale handling, is #2290's.)
 - **Validity vs counting is the program-wide split** (#2030): a signed
-  object is an assertion by its signer; whether it *counts* depends on
+  object is an assertion by its signer; whether it _counts_ depends on
   chain unforkedness, funding, caps, and frontier freshness at the moment
   a view or a service evaluates it. Nothing in this document changes
   that split.
@@ -148,7 +148,7 @@ anything redeemable for real services). The graph objects are the
 authorization and audit layer; TigerBeetle is the balance truth,
 exactly as #2040 specified and #2062 built the control plane for: the
 gateway verifies the signed graph object, checks permission against the
-registry (signature is *who*, registry is *what* — #2062 §4.2), then
+registry (signature is _who_, registry is _what_ — #2062 §4.2), then
 submits the ledger transfer with the graph object ID stamped in
 `user_data_128`, so the two records are permanently cross-linked and
 reconciliation is a join, not an investigation (#2062 §7).
@@ -178,7 +178,7 @@ Per-ID issuance, end to end:
 3. For an anchored currency, the gateway additionally checks the signer
    is in the currency's minter set and that cumulative issuance stays
    within the registered supply policy, then submits the ledger
-   transfer out of the issuer account (minting *is* a transfer out of
+   transfer out of the issuer account (minting _is_ a transfer out of
    the designated issuer account — #2040; there is no separate mint
    verb, #2066 §3) with the Issuance object's ID in `user_data_128`.
 4. For a graph-native currency, steps 2 alone is the whole act; counting
@@ -225,11 +225,11 @@ light clients, and a lying snapshot is provable by recomputation.
 **Central issuer vs issuer snapshots vs a full blockchain** — the three
 ways to answer "what is the state of this currency?":
 
-| Model | Who asserts state | What a light client trusts | Cost / limit |
-| --- | --- | --- | --- |
-| Full blockchain | Global consensus | The consensus rules | The heavy machinery Drew's directive explicitly avoids for a deployment like developing-today's |
+| Model                                     | Who asserts state                          | What a light client trusts                                | Cost / limit                                                                                         |
+| ----------------------------------------- | ------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Full blockchain                           | Global consensus                           | The consensus rules                                       | The heavy machinery Drew's directive explicitly avoids for a deployment like developing-today's      |
 | Central issuer (service-signed snapshots) | The currency service ID, over ledger truth | One signed snapshot + spot checks against the ledger join | Centralised — but contained to the currency service (#2066); assertions are auditable after the fact |
-| Issuer snapshots (per-ID currencies) | Each issuer, over their own chain fold | The issuer's signed snapshot + recomputation spot checks | No central party; a snapshot is only as good as the issuer's chain availability |
+| Issuer snapshots (per-ID currencies)      | Each issuer, over their own chain fold     | The issuer's signed snapshot + recomputation spot checks  | No central party; a snapshot is only as good as the issuer's chain availability                      |
 
 What snapshots buy in both non-blockchain models: a light client
 (phone, web, a game server) can trust balances and total supply from one
@@ -245,11 +245,11 @@ decisions (§11) — #2251's acceptance criteria already reserve them.
 
 ## 6. How authorized conversion rates surface here
 
-Boundary first: the conversion *engine* — application-composed,
+Boundary first: the conversion _engine_ — application-composed,
 atomically linked same-ledger transfer pairs through a liquidity
-provider's two accounts — is #2063's design. The *RateAuthorisation
-object* — schema, signing chain to the liquidity accounts, revocation
-set, quote binding — is #2290's. What belongs to *this* investigation is
+provider's two accounts — is #2063's design. The _RateAuthorisation
+object_ — schema, signing chain to the liquidity accounts, revocation
+set, quote binding — is #2290's. What belongs to _this_ investigation is
 how rates appear in the graph model and the app surface:
 
 - A **rate offer** (object 5) is the graph-side statement of an
@@ -257,7 +257,7 @@ how rates appear in the graph model and the app surface:
   accept ABC at 8123/10000 says nothing about the reverse direction;
   ABC's issuer publishes their own reverse offer, or doesn't. This is
   Drew's example carried through unchanged.
-- An offerer is the issuer *or any liquidity holder*; offers are how a
+- An offerer is the issuer _or any liquidity holder_; offers are how a
   holder authorizes conversions against their liquidity without being
   an issuer.
 - **Execution cites a specific offer version.** The executor checks the
@@ -276,8 +276,8 @@ how rates appear in the graph model and the app surface:
   promising atomic offline swaps of independent chains is lying; this
   one doesn't.
 - Where #2290's RateAuthorisation and this offer differ in audience:
-  the RateAuthorisation is the control-plane record the *gateway*
-  enforces at submission; the rate offer is the *graph* statement a
+  the RateAuthorisation is the control-plane record the _gateway_
+  enforces at submission; the rate offer is the _graph_ statement a
   wallet or app discovers and cites. The synthesis (#2043) should treat
   them as two projections of one authorization, with #2290 owning the
   field schema — flagged in §11 so the two do not drift into rival
@@ -289,16 +289,16 @@ One API across both bindings; the binding changes the verification
 behind the call, never the call shape. (Signatures and error semantics
 are specced by #2251 point 4; this is the semantic contract.)
 
-| Function | Semantics | Anchored verification | Graph-native verification |
-| --- | --- | --- | --- |
-| `define_currency(name, scale, supply_policy, binding)` → currency ID | Signs the definition object (§2.1) | + gateway registration, ledger allocation, system accounts (#2062) | Definition object only |
-| `issue(currency, to, amount, memo)` | Issuer only; signs an Issuance object | Gateway checks minter set + cap, submits issuer-account transfer, stamps `user_data_128` | Counting views enforce the cap |
-| `award(currency, to, amount, memo{cause ref})` | Transfer from the operator's pool identity; the memo links the payout to its cause (e.g. a #2037 match ID) | Ledger transfer from the pool account | Fold transfer from the pool identity |
-| `pay(currency, to, amount, memo)` | Ordinary holder transfer | Signed intent → gateway → ledger | Signed Transfer object |
-| `balance(currency, of)` / `supply(currency)` | Read | Ledger read via gateway, or latest signed snapshot | Fold, or latest snapshot + spot check |
-| `accept_payment(currency, predicate)` → handler | The transaction-accepting function (below) | Gateway/service notifies on matching posted (or pending) transfer | App folds/watches for matching Transfer objects |
-| `convert(offer, amount)` → conversion receipt | §6 execution | Linked pair via gateway | Bilateral swap agreement |
-| `snapshot(currency)` → snapshot object | Latest signed snapshot (§5) | Service-signed, from ledger position | Issuer-signed, from chain frontier |
+| Function                                                             | Semantics                                                                                                  | Anchored verification                                                                    | Graph-native verification                       |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `define_currency(name, scale, supply_policy, binding)` → currency ID | Signs the definition object (§2.1)                                                                         | + gateway registration, ledger allocation, system accounts (#2062)                       | Definition object only                          |
+| `issue(currency, to, amount, memo)`                                  | Issuer only; signs an Issuance object                                                                      | Gateway checks minter set + cap, submits issuer-account transfer, stamps `user_data_128` | Counting views enforce the cap                  |
+| `award(currency, to, amount, memo{cause ref})`                       | Transfer from the operator's pool identity; the memo links the payout to its cause (e.g. a #2037 match ID) | Ledger transfer from the pool account                                                    | Fold transfer from the pool identity            |
+| `pay(currency, to, amount, memo)`                                    | Ordinary holder transfer                                                                                   | Signed intent → gateway → ledger                                                         | Signed Transfer object                          |
+| `balance(currency, of)` / `supply(currency)`                         | Read                                                                                                       | Ledger read via gateway, or latest signed snapshot                                       | Fold, or latest snapshot + spot check           |
+| `accept_payment(currency, predicate)` → handler                      | The transaction-accepting function (below)                                                                 | Gateway/service notifies on matching posted (or pending) transfer                        | App folds/watches for matching Transfer objects |
+| `convert(offer, amount)` → conversion receipt                        | §6 execution                                                                                               | Linked pair via gateway                                                                  | Bilateral swap agreement                        |
+| `snapshot(currency)` → snapshot object                               | Latest signed snapshot (§5)                                                                                | Service-signed, from ledger position                                                     | Issuer-signed, from chain frontier              |
 
 **The transaction-accepting function, precisely.** An app registers
 `{currency, min amount, memo pattern}`. On a matching transfer the
@@ -338,7 +338,7 @@ Traced graph-to-ledger for the anchored binding; the graph-native
 variant differs only where noted.
 
 1. **Definition.** `A` calls `define_currency("alice-credits", scale 2,
-   capped{10000}, ledger-anchored)` and signs the definition object
+capped{10000}, ledger-anchored)` and signs the definition object
    `D` on her chain. Currency identity: (issuer `A`, definition `D`).
 2. **Registration (anchored only).** The gateway verifies `A`'s
    signature, the registry allocates a `ledger` u32 and a `currency_id`,
@@ -346,13 +346,13 @@ variant differs only where noted.
    system accounts (issuer, liquidity, fee, burn) and `A`'s and `B`'s
    holder accounts deterministically (#2062 §3).
 3. **Issuance.** `A` calls `issue(currency, to = B, 100.00, memo:
-   "welcome")` and signs Issuance object `I` on her chain. (Amount is
+"welcome")` and signs Issuance object `I` on her chain. (Amount is
    10000 minor units at scale 2; the graph object carries the rational
    amount, the ledger carries minor units.)
 4. **Gateway checks (anchored only).** Signature verifies (`A` is who
    she claims); registry says `A` is in the minter set for this
    currency and cumulative issuance after this mint is 100.00 ≤ cap
-   10000 (signature is *who*, registry is *what*).
+   10000 (signature is _who_, registry is _what_).
 5. **Ledger write (anchored only).** The gateway submits a transfer of
    10000 minor units from the currency's issuer account to `B`'s
    account on the allocated ledger, stamping `user_data_128 = I`.
@@ -360,7 +360,7 @@ variant differs only where noted.
    (issuer `A`, definition `D`) — displayed as "alice-credits (Alice)",
    never merged with anyone else's "credits". `balance(currency, B)`
    returns 100.00 from the ledger; `supply(currency)` returns 100.00,
-   and anyone can cross-check: fold of `A`'s *executed* issuance objects
+   and anyone can cross-check: fold of `A`'s _executed_ issuance objects
    (100.00) = issuer-account debits on the ledger (the #2062 §7.3 supply audit
    join, via `I`'s stamp).
 7. **Snapshot.** The next service snapshot for the currency records
@@ -390,7 +390,7 @@ defined once, `capped`, anchored.
    its cause (the match) from one join.
 4. **Donor award.** A donor `Dn` who tipped the prize pool earlier is
    awarded a donor badge token by the same path: `award(badge-token,
-   to = Dn, 1, memo{donation: <donation ref>})` from the badge pool —
+to = Dn, 1, memo{donation: <donation ref>})` from the badge pool —
    "coins to winners and donors" is one function with provenance, not
    two features.
 5. **Winner spends at an accepting app.** `W` pays 100 season-coins to
@@ -409,7 +409,7 @@ The wave-1 cases, updated with the mechanisms the later designs added.
 "Provable ≠ prevented" is stated wherever it is the honest answer.
 
 1. **Issuer secretly inflates past an announced cap.** Impossible to
-   hide: issuance objects *are* the supply; over-cap issuance is
+   hide: issuance objects _are_ the supply; over-cap issuance is
    visible to every folder. Anchored: the gateway refuses mints past
    the registered cap, so inflation requires the service's collusion,
    which the `user_data_128` cross-links would expose. Graph-native:
