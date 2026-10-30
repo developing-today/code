@@ -11,6 +11,7 @@ import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, type HealthView } from "./health.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
@@ -803,6 +804,7 @@ async function handler(req: Request): Promise<Response> {
       const extras = {
         dashComments,
         formRef: id,
+        serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),
         sessions,
         actions: allActions.filter((a) => wanted.has(a.objectRef)),

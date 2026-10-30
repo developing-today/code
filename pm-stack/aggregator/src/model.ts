@@ -153,6 +153,8 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Grist UI link for this row's document (#1136), when known. */
+  gristUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
