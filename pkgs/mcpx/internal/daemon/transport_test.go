@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dezren39/mcpx/internal/config"
 )
 
 // The two listeners the daemon has always had now run through the
@@ -79,5 +81,34 @@ func TestTSNetDialerRequiresAuthKey(t *testing.T) {
 	_, err := d.DialContext(context.Background(), "tcp", "laptop.tailnet.ts.net:80")
 	if err == nil || !strings.Contains(err.Error(), TSNetAuthKeyEnv) {
 		t.Fatalf("Dial without auth key = %v; want an error naming %s", err, TSNetAuthKeyEnv)
+	}
+}
+
+// The tsnet node state directory is per-daemon, keyed by the
+// configuration file set: two daemons sharing one state directory
+// must not load each other's node keys (Codex finding on PR #2203),
+// and one daemon's directory must not move when its configuration is
+// reloaded or handed over -- the fingerprint is over the file set,
+// not the contents.
+func TestTSNetStateDirKeyedByConfig(t *testing.T) {
+	state := t.TempDir()
+	mk := func(sources ...string) *Server {
+		s := &Server{paths: Paths{State: state}}
+		if sources != nil {
+			s.cfg = &config.Config{Sources: sources}
+		}
+		return s
+	}
+	a := mk("/proj-a/.mcpx.json")
+	b := mk("/proj-b/.mcpx.json")
+	if a.tsnetStateDir() == b.tsnetStateDir() {
+		t.Fatalf("two configurations share a tsnet state dir: %s", a.tsnetStateDir())
+	}
+	if again := mk("/proj-a/.mcpx.json"); again.tsnetStateDir() != a.tsnetStateDir() {
+		t.Fatalf("same configuration, different tsnet state dir: %s vs %s", again.tsnetStateDir(), a.tsnetStateDir())
+	}
+	want := filepath.Join(state, "tsnet")
+	if got := mk().tsnetStateDir(); got != want {
+		t.Fatalf("no configuration: got %s, want the unkeyed %s", got, want)
 	}
 }

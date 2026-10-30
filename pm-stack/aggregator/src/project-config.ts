@@ -34,6 +34,20 @@ export interface ProjectStatusReport {
   url: string;
 }
 
+/** One working repo's card on a fleet-style project page (#1126).
+ * The role is editorial; the open-issue count is an explicitly dated
+ * GitHub-search snapshot (openIssuesAsOf) — never presented as live.
+ * Pool items and roadmap rows are NOT stored here: the detail builder
+ * splits the page's live pool/roadmap sections by repo at request
+ * time, so those halves cannot drift from the sections above them. */
+export interface ProjectRepoCard {
+  repo: string;
+  role: string;
+  openIssues: number;
+  openIssuesAsOf: string;
+  trackedRefs: RefKey[];
+}
+
 export interface ProjectEditorial {
   done: ProgramEntry[];
   next: ProgramEntry[];
@@ -59,16 +73,27 @@ export interface ProjectConfig {
   trackedRefs: RefKey[];
   /** Extra architecture entries (the pm-dashboard doc renders its from here). */
   architecture?: ProgramEntry[];
+  /** Per-repo cards (fleet pages, #1126); pool/roadmap halves are
+   * derived live by the detail builder, split by repo. */
+  repoCards?: ProjectRepoCard[];
+  /** Sweep-health entries (#1126): editorial entries whose claims
+   * rest only on already-published fleet data (the orchestration
+   * section this aggregator serves, the fleet's tracked issues) —
+   * no new data pipeline feeds this section. */
+  sweepHealth?: ProgramEntry[];
   editorial?: ProjectEditorial;
 }
 
 const CODE = "developing-today/code";
+const OPENCODE = "developing-today/opencode";
+const OPENCHAMBER = "developing-today/openchamber";
 const NIX = "dezren39/nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
 const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
 const home = (path: string): ProjectHomeDoc => ({ repo: CODE, path, url: blob(path) });
 const ref = (repo: string, n: number): RefKey => `${repo}#${n}`;
 const code = (n: number): RefKey => ref(CODE, n);
+const nix = (n: number): RefKey => ref(NIX, n);
 
 export const PROJECT_CONFIGS: ProjectConfig[] = [
   {
@@ -115,6 +140,17 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       code(1090),
       code(1092),
       code(1093),
+      // Pre-seed predecessor set in dezren39/nix (#501-#508, all since
+      // closed there): the parallel epics this project's code-side epics
+      // above were seeded from. See the gaps entry below for the overlap.
+      nix(501),
+      nix(502),
+      nix(503),
+      nix(504),
+      nix(505),
+      nix(506),
+      nix(507),
+      nix(508),
     ],
     editorial: {
       done: [
@@ -181,6 +217,18 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           title: "Nothing physically installed yet",
           detail:
             "Basement power and space block the full fleet; the target is 3–5 machines first. All current progress is design, inventory, and preparation.",
+        },
+        {
+          title: "Predecessor epics live in dezren39/nix (#501-#508)",
+          detail:
+            "This program was pre-seeded by a parallel epic set in dezren39/nix, all since closed there: #501 (hardware inventory and hardware-stats gathering) is the pre-seed of code #1080, #502 (BMC/BIOS configuration audit) of code #1081, #503 (TALM bootstrap for non-identical drives) overlaps code #1086, #504 (storage pools: RAID10 HDD and NVMe tiers) overlaps code #1085, #505 covers the egress strategy and #507 (OCI always-free maximization) the cloud extension behind code #1091, #506 is a boats.dev research spike with no code-side epic, and #508 is the nix-side program epic. They are tracked above alongside the code epics so the page shows the full lineage instead of only the code-side half.",
+          refs: [nix(501), nix(502), nix(503), nix(504), nix(505), nix(506), nix(507), nix(508)],
+        },
+        {
+          title: "Status sources disagree on hardware inventory & firmware audit",
+          detail:
+            "The Grist roadmap row 'Hardware inventory + firmware/BMC audit' reads In progress / Q4 2026, while the org Project pool and the home doc (planning/roadmaps/basement-cluster.md) say Todo / planned for the same work (code #1080 and #1081, pre-seeded by dezren39/nix#501 and #502). The orchestrator is the Project writer, so the Grist row is the outlier — but this page surfaces both readings rather than silently picking one; the disagreement is reconciled in Grist/Project by their owners, not here.",
+          refs: [code(1080), code(1081), nix(501), nix(502)],
         },
         {
           title: "OCI tenancy stuck in provisioning",
@@ -285,6 +333,12 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
             "The Nix check had no recorded success in 392 runs and the fast lane's exit (median PR feedback under 15 min) has never been measured. A red check must mean something before Phase 12 stacks on it.",
           refs: [code(229)],
         },
+        {
+          title: "Coverage: this page's pool is a subset of the id project",
+          detail:
+            "The live sections above draw on the Project #4 pool (Area=id-train) — a curated subset, not the whole project. GitHub search counted 327 open app/id issues on 2026-10-29, far more than the pool carries; read the pool as the prioritized slice, and the open app/id backlog as the project's full surface. Widening pool coverage is the orchestrator's label-gated auto-add plus an explicit backfill decision, tracked on the issue.",
+          refs: [code(1125)],
+        },
       ],
     },
   },
@@ -315,6 +369,57 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       code(1190),
       code(310),
       code(311),
+    ],
+    repoCards: [
+      {
+        repo: CODE,
+        role: "The fleet's home repo: the id train, mcpx, this PM stack / aggregator, and the repo queue/worker pilot itself.",
+        openIssues: 1033,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [code(911), code(1233), code(1130)],
+      },
+      {
+        repo: OPENCODE,
+        role: "The OpenCode fork: the agent runtime the fleet's sessions run on. Upstream of openchamber — its updates are carried into openchamber and then into code's opencode pieces.",
+        openIssues: 35,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(OPENCODE, 365), ref(OPENCODE, 371)],
+      },
+      {
+        repo: OPENCHAMBER,
+        role: "The OpenChamber fork: session UI and orchestration over opencode. Carries opencode updates downstream into code.",
+        openIssues: 36,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(OPENCHAMBER, 214)],
+      },
+      {
+        repo: NIX,
+        role: "Drew's Nix config: machines, packages, and the deployed builds of mcpx and the forks (mcpx fixes land here and in code as one set).",
+        openIssues: 15,
+        openIssuesAsOf: "2026-10-29",
+        trackedRefs: [ref(NIX, 512)],
+      },
+    ],
+    sweepHealth: [
+      {
+        title: "Work runs through the repo queue, not ad-hoc sweeps",
+        detail:
+          "Since the 2026-10-25 pilot, producers (issue creator, PR diff review, curators) enqueue structured repo-task packets and worker lanes claim them atomically in shifts; the lifecycle labels (queue/*, work/*, user/*) on each issue mirror its queue state, and the hourly fleet monitor repairs any divergence. This section's claims rest on that published queue/label state and the fleet's tracked issues — no separate sweep-health pipeline exists.",
+        refs: [code(1233), code(1130), code(1131)],
+      },
+      {
+        title: "The orchestrator's published section is the health signal",
+        detail:
+          "The hourly orchestration job reconciles the org Project from issue/PR/session signals and publishes the orchestration section this aggregator serves; its freshness is rendered live on the program index above. A stale or absent section says so on the page rather than being smoothed over.",
+        refs: [code(899)],
+        links: [{ label: "/api/orchestration.json", url: "/api/orchestration.json" }],
+      },
+      {
+        title: "What the fleet watches",
+        detail:
+          "Queue reliability (claims must end in a terminal verb — complete, park, or block — never evaporate), merge-queue stalls, and per-repo backlog growth measured by the dated GitHub-search counts on the cards above. The counts are snapshots with a date, refreshed by hand when this page is next edited; the pool and roadmap sections are the live halves.",
+        refs: [code(911)],
+      },
     ],
     editorial: {
       done: [
@@ -367,9 +472,9 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       ],
       gaps: [
         {
-          title: "The pool is a fleet-level slice, not the fleet backlog (2026-10-27)",
+          title: "The pool is a fleet-level slice, not the fleet backlog (2026-10-29)",
           detail:
-            "As of 2026-10-27, this page's fleet-ops pool carries 4 items, while GitHub issue search counts 665 open issues across the four repos (developing-today/code 372, developing-today/opencode 51, developing-today/openchamber 64, dezren39/nix 178). Most work stays in each repo's own backlog; this page tracks the fleet-level program only.",
+            "As of 2026-10-29, GitHub issue search counts 1,119 open issues across the four repos (developing-today/code 1,033, developing-today/opencode 35, developing-today/openchamber 36, dezren39/nix 15), while this page's fleet-ops pool — counted live above — is a small fleet-level slice of that total. Most work stays in each repo's own backlog; this page tracks the fleet-level program only and does not claim pool completeness.",
         },
         {
           title: "Home doc scope is CI/automation only",
@@ -384,10 +489,17 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     title: "mcpx",
     intro:
       "mcpx is the Go MCP gateway and Code Mode runner in pkgs/mcpx: it pools MCP servers behind one daemon, runs TypeScript scripts against them, and hands a running daemon to its successor during upgrades. This repo is the only source for mcpx — the vendored copy in dezren39/nix was deleted 2026-10-19 — and the OpenCode and OpenChamber forks consume the result.",
-    poolArea: null,
-    roadmapArea: null,
+    poolArea: "mcpx",
+    roadmapArea: "mcpx",
     homeDoc: home("planning/roadmaps/mcpx.md"),
-    dashboardLinks: [{ label: "Sessions", route: "/sessions" }],
+    dashboardLinks: [
+      { label: "Sessions", route: "/sessions" },
+      { label: "Projects pool (mcpx)", route: "/projects?area=mcpx" },
+      { label: "pkgs/mcpx/TODO.md", route: blob("pkgs/mcpx/TODO.md") },
+      { label: "pkgs/mcpx/ASSESSMENT.md", route: blob("pkgs/mcpx/ASSESSMENT.md") },
+      { label: "pkgs/mcpx/docs/compare/", route: tree("pkgs/mcpx/docs/compare") },
+      { label: "pkgs/mcpx/daemon/README.md", route: blob("pkgs/mcpx/daemon/README.md") },
+    ],
     trackedRefs: [code(308), code(309), code(237), code(290), code(864)],
     editorial: {
       done: [
@@ -430,10 +542,10 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       ],
       gaps: [
         {
-          title: "No Project Area or roadmap area yet",
+          title: "Pool covers this repo only — the nix-side backlog is not re-homed yet",
           detail:
-            "mcpx has no dedicated org Project Area and no Grist roadmap area, so this page's live pool/roadmap sections are honestly empty; its work is tracked in GitHub issues and planning/roadmaps/mcpx.md. The integration decision is tracked in #1127.",
-          links: [{ label: "#1127", url: refUrl(code(1127), "issue") }],
+            "mcpx's org Project Area and Grist roadmap area were wired to this page in #1127, so the live sections above render its pool items and roadmap rows. What they cannot show yet is the large mcpx backlog that still lives in dezren39/nix: it joins the pool only as it is re-homed into this repo, tracked in #309.",
+          links: [{ label: "#309", url: refUrl(code(309), "issue") }],
         },
       ],
     },
@@ -471,12 +583,32 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
             "Open checks, live collectors per service, daily + event-driven console reads, dashboard provenance, and the free-services completion pass.",
           refs: [code(1047)],
         },
+        {
+          title: "OCI signup resolution",
+          detail:
+            "The Oracle Cloud signup is still pending; the CPCOE-29381 follow-up is scheduled. The target is the Always-Free allocation (a hard allocation, not metered billing) — the account is not to be upgraded to pay-as-you-go.",
+        },
+        {
+          title: "Free-services pass — adoption decisions",
+          detail:
+            "The 2026-10-26 SaaS review list — boats.cloud, quic.cloud, Backblaze B2, OVHcloud, Railway, Render, DigitalOcean, Hetzner, Heroku, GCP, AWS — was evaluated on 2026-10-29 in the workspace tracker (ai-subscriptions/free-services-to-check.md), each service with an overage verdict under the no-surprise-bills guardrail. What remains is the per-service adopt/skip decision; boats.cloud stays unverified and untouched (no official site resolves).",
+        },
       ],
       longTerm: [
         {
           title: "Every plan paced against its reset",
           detail:
             "Usage percentages refreshed on a daily cadence, allotments aimed at ~100% use, and any claimed plan change diffed against the dated evidence baseline before the tracker moves.",
+        },
+        {
+          title: "Egress offload",
+          detail:
+            "Bulk egress rides zero-egress lanes (Cloudflare R2 charges no egress; Backblaze B2 egress is free via listed partners such as Cloudflare) so metered clouds carry compute and storage, not bandwidth bills.",
+        },
+        {
+          title: "Always-free maximization",
+          detail:
+            "Always-free allocations (OCI Always Free, the Cloudflare/Turso/Supabase free tiers, vendor free plans that wall rather than bill) are filled first, and paid allotments are paced to ~100% use before any new spend is added.",
         },
       ],
       gaps: [
@@ -555,6 +687,16 @@ export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
         errors.push(`${where}: dashboardLinks route "${l.route}" is neither a dashboard route nor an https URL`);
     }
     checkRefs(c.trackedRefs, errors, where);
+    for (const card of c.repoCards ?? []) {
+      if (!card.repo.includes("/")) errors.push(`${where}: repoCard repo "${card.repo}" is not owner/repo`);
+      if (!card.role.trim()) errors.push(`${where}: repoCard ${card.repo} role is empty`);
+      if (!Number.isInteger(card.openIssues) || card.openIssues < 0)
+        errors.push(`${where}: repoCard ${card.repo} openIssues is not a non-negative integer`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(card.openIssuesAsOf))
+        errors.push(`${where}: repoCard ${card.repo} openIssuesAsOf "${card.openIssuesAsOf}" is not a YYYY-MM-DD date`);
+      checkRefs(card.trackedRefs, errors, where);
+    }
+    checkEntries(c.sweepHealth, errors, where);
     checkEntries(c.architecture, errors, where);
     checkEntries(c.editorial?.done, errors, where);
     checkEntries(c.editorial?.next, errors, where);
@@ -634,6 +776,16 @@ export function unsetPoolCount(pool: ProjectPoolItem[]): number {
   return pool.filter((p) => p.area === null).length;
 }
 
+export interface RepoCardDetail {
+  card: ProjectRepoCard;
+  /** This project's live pool items whose issue lives in the card's repo. */
+  poolItems: ProjectPoolItem[];
+  /** This project's live roadmap rows tied to the card's repo (by
+   * title or by a linked ref in that repo). */
+  roadmapRows: RoadmapRow[];
+  tracked: TrackedIssue[];
+}
+
 export interface ProjectDetail {
   config: ProjectConfig;
   route: string;
@@ -641,6 +793,10 @@ export interface ProjectDetail {
   poolByStatus: Count[];
   roadmapRows: RoadmapRow[];
   tracked: TrackedIssue[];
+  /** Per-repo card halves, derived live from the same pool/roadmap
+   * data as the sections above them (#1126). Empty when the config
+   * carries no repoCards. */
+  repoCards: RepoCardDetail[];
   /** Whole-pool items with no Area (the gap note for null-area projects). */
   unsetPoolCount: number;
 }
@@ -657,13 +813,22 @@ export function buildProjectDetail(
       : pool
           .filter((p) => p.area === config.poolArea)
           .sort((a, b) => (a.status ?? "").localeCompare(b.status ?? "") || a.title.localeCompare(b.title));
+  const roadmapRows = config.roadmapArea === null ? [] : rows.filter((r) => r.area === config.roadmapArea);
   return {
     config,
     route: projectRoute(config.id),
     poolItems,
     poolByStatus: counts(poolItems.map((p) => p.status)),
-    roadmapRows: config.roadmapArea === null ? [] : rows.filter((r) => r.area === config.roadmapArea),
+    roadmapRows,
     tracked: config.trackedRefs.map((ref) => ({ ref, item: items.get(ref) ?? null })),
+    repoCards: (config.repoCards ?? []).map((card) => ({
+      card,
+      poolItems: poolItems.filter((p) => p.repo === card.repo),
+      roadmapRows: roadmapRows.filter(
+        (r) => r.title.includes(card.repo) || r.links.some((l) => l.ref.startsWith(`${card.repo}#`)),
+      ),
+      tracked: card.trackedRefs.map((ref) => ({ ref, item: items.get(ref) ?? null })),
+    })),
     unsetPoolCount: unsetPoolCount(pool),
   };
 }
@@ -682,8 +847,10 @@ export function allProjectRefs(configs: ProjectConfig[] = PROJECT_CONFIGS): RefK
   };
   for (const c of configs) {
     for (const r of c.trackedRefs) add(r);
+    for (const card of c.repoCards ?? []) for (const r of card.trackedRefs) add(r);
     const sections = [
       c.architecture ?? [],
+      c.sweepHealth ?? [],
       c.editorial?.done ?? [],
       c.editorial?.next ?? [],
       c.editorial?.longTerm ?? [],

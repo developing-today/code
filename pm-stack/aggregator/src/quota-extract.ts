@@ -345,10 +345,83 @@ const SHELL_POOLS: QuotaPool[] = [
   },
 ];
 
-/** Extract every pool's freshest dated read from the quota view text. */
-export function extractQuotaPools(quotaViewText: string, now = new Date()): QuotaPool[] {
+/**
+ * Pools whose consuming opencode provider ("door") is NOT the pool-id
+ * prefix. Source of truth: `poolFor` in scripts/collect-fleet-feed.ts,
+ * which attributes sessions to pools by door provider — the Claude Pro
+ * pool is burned exclusively through the `claude-code` provider (there
+ * is no `anthropic` provider in the deployed config), so disabling
+ * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
+ * door is its prefix.
+ */
+const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
+  "anthropic:claude-pro": "claude-code",
+};
+
+/**
+ * The opencode provider id whose disablement filters a pool: the pool's
+ * door provider ("openai" in "openai:codex"; "claude-code" for
+ * "anthropic:claude-pro").
+ */
+export function poolProviderId(poolId: string): string {
+  return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
+}
+
+/**
+ * Pools consumed through SEVERAL door providers, none of which is the
+ * pool-id prefix: there is no `antigravity` provider in the deployed
+ * config — the two Antigravity pools are burned through the
+ * `antigravity-ls`, `antigravity-agy` and `google` providers (the same
+ * three doors `poolFor` in scripts/collect-fleet-feed.ts attributes to
+ * them). Such a pool is filtered only when EVERY door is disabled; one
+ * usable door remaining keeps it, because sessions can still burn it.
+ */
+const POOL_DOOR_PROVIDER_IDS: Record<string, string[]> = {
+  "antigravity:gemini": ["antigravity-ls", "antigravity-agy", "google"],
+  "antigravity:claude-gpt": ["antigravity-ls", "antigravity-agy", "google"],
+};
+
+/** Every opencode provider id that can burn a pool (its doors). */
+export function poolProviderIds(poolId: string): string[] {
+  return POOL_DOOR_PROVIDER_IDS[poolId] ?? [poolProviderId(poolId)];
+}
+
+/**
+ * True when a pool must be filtered for the given disabled set: single-
+ * door pools when their door is disabled, multi-door pools only when
+ * every door is disabled.
+ */
+export function poolFilteredByDisabled(poolId: string, disabledProviderIds: ReadonlySet<string>): boolean {
+  return poolProviderIds(poolId).every((id) => disabledProviderIds.has(id));
+}
+
+/**
+ * Extract every pool's freshest dated read from the quota view text.
+ *
+ * #1114: a pool whose provider id is in the deployed opencode config's
+ * disabled_providers set is filtered out HERE, at pool assembly — never
+ * at render time — so quota.json and the guidance derived from these
+ * pools can never name a disabled provider. Matching is exact provider-id
+ * equality against the pool's DOOR provider(s) (poolProviderIds): "openai" is
+ * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
+ * not "opencode" — "anthropic:claude-pro" answers to "claude-code",
+ * its only door, and the antigravity pools answer to antigravity-ls /
+ * antigravity-agy / google jointly (filtered only when all three are
+ * disabled). A filtered pool is
+ * reported through onFiltered (visibly noted, never silently dropped).
+ */
+export function extractQuotaPools(
+  quotaViewText: string,
+  now = new Date(),
+  disabledProviderIds: ReadonlySet<string> = new Set(),
+  onFiltered?: (poolId: string, providerId: string) => void,
+): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
+    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
+      onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
+      continue;
+    }
     const section = sectionOf(quotaViewText, spec.heading);
     let raw: Raw | null = null;
     try {
@@ -383,5 +456,10 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
     }
     pools.push(pool);
   }
-  return [...pools, ...SHELL_POOLS.map((p) => ({ ...p }))];
+  const shells = SHELL_POOLS.filter((p) => {
+    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
+    onFiltered?.(p.id, poolProviderIds(p.id).join(","));
+    return false;
+  });
+  return [...pools, ...shells.map((p) => ({ ...p }))];
 }
