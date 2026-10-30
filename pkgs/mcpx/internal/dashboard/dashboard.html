@@ -176,6 +176,102 @@
     @media (max-width: 800px) {
       .grid-two { grid-template-columns: 1fr; }
     }
+    .view-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .view-tab {
+      padding: 0.45rem 0.9rem;
+      background-color: #21262d;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .view-tab.active {
+      background-color: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+    .view-note {
+      font-size: 0.85rem;
+      color: #8b949e;
+      margin-bottom: 0.75rem;
+    }
+    .view-controls {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+    .view-controls select {
+      padding: 0.5rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background-color: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .elicit-card {
+      background-color: var(--card-bg);
+      border: 1px solid var(--orange);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+      margin-bottom: 1rem;
+    }
+    .elicit-card .elicit-msg {
+      color: var(--heading);
+      font-weight: 600;
+      margin-bottom: 0.4rem;
+    }
+    .elicit-card .elicit-meta {
+      font-size: 0.8rem;
+      color: #8b949e;
+      margin-bottom: 0.8rem;
+    }
+    .elicit-card label {
+      display: block;
+      font-size: 0.85rem;
+      margin-bottom: 0.6rem;
+    }
+    .elicit-card input[type="text"],
+    .elicit-card input[type="number"],
+    .elicit-card select {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 0.25rem;
+      padding: 0.5rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background-color: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .elicit-actions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.8rem;
+    }
+    .elicit-actions .btn-decline {
+      background-color: #21262d;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .elicit-actions .btn-cancel {
+      background-color: transparent;
+      color: var(--red);
+      border: 1px solid var(--red);
+    }
+    .elicit-status {
+      font-size: 0.85rem;
+      margin-top: 0.6rem;
+      color: var(--green);
+    }
   </style>
 </head>
 <body>
@@ -343,6 +439,45 @@
         <tr><td colspan="8" style="text-align:center; color:#8b949e">Loading interactions...</td></tr>
       </tbody>
     </table>
+    <div class="section-title">
+      <span>Pending Elicitations <span class="badge" id="elicit-count" style="background:var(--orange)">0</span></span>
+      <button style="padding:0.3rem 0.7rem; font-size:0.8rem;" onclick="loadElicitations()">Refresh</button>
+    </div>
+    <div class="view-note">Questions a tool call is waiting on, from <code>GET /v1/elicit</code>. Answering posts to <code>POST /v1/elicit/{id}/{action}</code> — accept sends the form values as the answer content; decline and cancel send none. This is the one write the operator views allow.</div>
+    <div id="elicit-list">
+      <div class="view-note">No pending elicitations.</div>
+    </div>
+
+    <div class="section-title">
+      <span>Operator Views</span>
+    </div>
+    <div class="view-note">The TUI's six views, read-only, over the same <code>/v1</code> endpoints the TUI's data source uses — no UI-specific endpoints. Live updates arrive over <code>/v1/events</code>; views also refresh every 15 seconds while open.</div>
+    <div class="view-tabs" role="tablist">
+      <button class="view-tab active" data-view="browse" onclick="showView('browse')">Browse</button>
+      <button class="view-tab" data-view="log" onclick="showView('log')">Log</button>
+      <button class="view-tab" data-view="stats" onclick="showView('stats')">Stats</button>
+      <button class="view-tab" data-view="servers" onclick="showView('servers')">Servers</button>
+      <button class="view-tab" data-view="sessions" onclick="showView('sessions')">Sessions</button>
+      <button class="view-tab" data-view="storage" onclick="showView('storage')">Storage</button>
+    </div>
+    <div class="view-controls" id="stats-controls" style="display:none">
+      <label for="stats-dimension">Dimension</label>
+      <select id="stats-dimension" onchange="loadView('stats')">
+        <option value="calls">calls</option>
+        <option value="servers">servers</option>
+        <option value="errors">errors</option>
+        <option value="sessions">sessions</option>
+        <option value="slowest">slowest</option>
+        <option value="volume">volume</option>
+      </select>
+    </div>
+    <div class="view-controls" id="browse-controls">
+      <label for="browse-ns">Namespace</label>
+      <select id="browse-ns" onchange="loadView('browse')"></select>
+    </div>
+    <div id="view-body">
+      <div class="view-note">Loading…</div>
+    </div>
   </main>
 
   <script>
@@ -583,6 +718,216 @@
       loadToolMetrics();
       loadInteractions();
     }, 3000);
+    // ---- Operator views + elicitation (#1882) ----
+    // Everything below reads /v1 (+ /v1/events for live updates) only.
+    // The views mirror the TUI's six tabs (browse/log/stats/servers/
+    // sessions/storage) read-only; elicitation answering is the single
+    // write, through the endpoint that already exists for it.
+
+    let currentView = 'browse';
+
+    function cellText(v) {
+      if (v === null || v === undefined) return '-';
+      if (typeof v === 'object') return JSON.stringify(v);
+      return String(v);
+    }
+
+    // renderRows draws an array of flat-ish objects as a table, taking the
+    // union of keys as columns so a new /v1 field shows up without a page
+    // change. Nested values are JSON in one cell, like the TUI's compact
+    // rendering.
+    function renderRows(rows, emptyText) {
+      const body = document.getElementById('view-body');
+      if (!rows || rows.length === 0) {
+        body.innerHTML = '<div class="view-note">' + escapeHTML(emptyText) + '</div>';
+        return;
+      }
+      const cols = [];
+      rows.forEach(r => Object.keys(r || {}).forEach(k => { if (!cols.includes(k)) cols.push(k); }));
+      let html = '<table><thead><tr>' + cols.map(c => '<th>' + escapeHTML(c) + '</th>').join('') + '</tr></thead><tbody>';
+      rows.forEach(r => {
+        html += '<tr>' + cols.map(c => '<td>' + escapeHTML(cellText(r[c])) + '</td>').join('') + '</tr>';
+      });
+      body.innerHTML = html + '</tbody></table>';
+    }
+
+    async function fetchJSON(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(url + ' -> ' + res.status);
+      return res.json();
+    }
+
+    function showView(name) {
+      currentView = name;
+      document.querySelectorAll('.view-tab').forEach(b =>
+        b.classList.toggle('active', b.dataset.view === name));
+      document.getElementById('stats-controls').style.display = name === 'stats' ? 'flex' : 'none';
+      document.getElementById('browse-controls').style.display = name === 'browse' ? 'flex' : 'none';
+      loadView(name);
+    }
+
+    async function loadView(name) {
+      const body = document.getElementById('view-body');
+      try {
+        if (name === 'browse') {
+          const sel = document.getElementById('browse-ns');
+          if (!sel.options.length) {
+            const nsData = await fetchJSON('/v1/namespaces');
+            const list = Array.isArray(nsData) ? nsData : (nsData.namespaces || []);
+            const names = list.map(n => typeof n === 'string' ? n : (n.name || n.namespace)).filter(Boolean);
+            sel.innerHTML = names.map(n => '<option value="' + escapeHTML(n) + '">' + escapeHTML(n) + '</option>').join('');
+          }
+          const ns = sel.value;
+          const tools = await fetchJSON('/v1/tools' + (ns ? '?ns=' + encodeURIComponent(ns) : ''));
+          renderRows(Array.isArray(tools) ? tools : (tools.tools || []), 'No tools in this namespace.');
+        } else if (name === 'log') {
+          const data = await fetchJSON('/v1/log?limit=50&reverse=1');
+          const rows = (data.records || []).map(r => ({
+            time: r.time ? new Date(r.time).toLocaleTimeString() : '-',
+            level: r.level || '',
+            msg: r.msg || r.template || '',
+            attrs: r.attrs ? JSON.stringify(r.attrs) : ''
+          }));
+          renderRows(rows, 'No log records yet.');
+        } else if (name === 'stats') {
+          const dim = document.getElementById('stats-dimension').value;
+          const data = await fetchJSON('/v1/stats?dimension=' + encodeURIComponent(dim));
+          if (dim === 'volume' && data.rows && !Array.isArray(data.rows)) {
+            renderRows(data.rows.files || [], 'No files recorded yet.');
+          } else {
+            renderRows(data.rows || [], 'Nothing recorded for this dimension yet.');
+          }
+        } else if (name === 'servers') {
+          const data = await fetchJSON('/v1/servers');
+          renderRows(data.servers || [], 'No servers configured.');
+        } else if (name === 'sessions') {
+          const data = await fetchJSON('/v1/stats?dimension=sessions');
+          renderRows(data.rows || [], 'No sessions recorded yet.');
+        } else if (name === 'storage') {
+          const data = await fetchJSON('/v1/stats?dimension=volume');
+          const files = (data.rows && data.rows.files) || [];
+          const total = files.reduce((sum, f) => sum + (f.bytes || 0), 0);
+          renderRows(files, 'Nothing on disk yet.');
+          if (files.length) {
+            body.insertAdjacentHTML('beforeend',
+              '<div class="view-note">Total: ' + total.toLocaleString() + ' bytes across ' + files.length + ' log file(s) (the volume dimension of /v1/stats, as in the TUI storage view).</div>');
+          }
+        }
+      } catch (e) {
+        body.innerHTML = '<div class="view-note">Could not load ' + escapeHTML(name) + ': ' + escapeHTML(String(e)) + '</div>';
+      }
+    }
+
+    // ---- Elicitation ----
+
+    function elicitFields(req) {
+      // requestedSchema is an MCP elicitation form schema: a flat object
+      // schema whose properties are the fields to collect.
+      let schema = req.requestedSchema;
+      if (typeof schema === 'string') {
+        try { schema = JSON.parse(schema); } catch (e) { schema = null; }
+      }
+      if (!schema || !schema.properties) return [];
+      const required = schema.required || [];
+      return Object.keys(schema.properties).map(name => ({
+        name: name,
+        def: schema.properties[name] || {},
+        required: required.includes(name)
+      }));
+    }
+
+    function elicitFieldHTML(req, field) {
+      const id = 'elicit-' + req.id + '-' + field.name;
+      const label = escapeHTML(field.def.title || field.name) + (field.required ? ' *' : '');
+      const desc = field.def.description ? '<div class="elicit-meta">' + escapeHTML(field.def.description) + '</div>' : '';
+      if (Array.isArray(field.def.enum)) {
+        const opts = field.def.enum.map(v =>
+          '<option value="' + escapeHTML(String(v)) + '">' + escapeHTML(String(v)) + '</option>').join('');
+        return '<label>' + label + '<select id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="string">' + opts + '</select></label>' + desc;
+      }
+      if (field.def.type === 'boolean') {
+        return '<label>' + label + '<select id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="boolean"><option value="true">true</option><option value="false">false</option></select></label>' + desc;
+      }
+      const type = field.def.type === 'number' || field.def.type === 'integer' ? 'number' : 'text';
+      const dflt = field.def.default !== undefined ? ' value="' + escapeHTML(String(field.def.default)) + '"' : '';
+      return '<label>' + label + '<input type="' + type + '" id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="' + type + '"' + dflt + '></label>' + desc;
+    }
+
+    async function loadElicitations() {
+      const list = document.getElementById('elicit-list');
+      const count = document.getElementById('elicit-count');
+      try {
+        const pending = await fetchJSON('/v1/elicit');
+        const items = Array.isArray(pending) ? pending : [];
+        count.innerText = items.length;
+        if (items.length === 0) {
+          list.innerHTML = '<div class="view-note">No pending elicitations.</div>';
+          return;
+        }
+        list.innerHTML = items.map(req => {
+          const fields = elicitFields(req);
+          const meta = [req.mode, req.server, req.tool, req.session ? 'session ' + req.session : '',
+            req.expiresAt ? 'expires ' + new Date(req.expiresAt).toLocaleTimeString() : '']
+            .filter(Boolean).join(' · ');
+          const form = fields.length
+            ? fields.map(f => elicitFieldHTML(req, f)).join('')
+            : '<div class="view-note">No form fields — accept confirms, decline refuses.</div>';
+          const urlLink = req.url ? '<div class="elicit-meta">URL mode: <a href="' + escapeHTML(req.url) + '" target="_blank" rel="noopener">' + escapeHTML(req.url) + '</a></div>' : '';
+          return '<div class="elicit-card" id="elicit-card-' + escapeHTML(req.id) + '">'
+            + '<div class="elicit-msg">' + escapeHTML(req.message || '(no message)') + '</div>'
+            + '<div class="elicit-meta">' + escapeHTML(meta) + '</div>'
+            + urlLink + form
+            + '<div class="elicit-actions">'
+            + '<button onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'accept\')">Accept</button>'
+            + '<button class="btn-decline" onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'decline\')">Decline</button>'
+            + '<button class="btn-cancel" onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'cancel\')">Cancel</button>'
+            + '</div><div class="elicit-status" id="elicit-status-' + escapeHTML(req.id) + '"></div></div>';
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<div class="view-note">Could not load elicitations: ' + escapeHTML(String(e)) + '</div>';
+      }
+    }
+
+    async function answerElicit(id, action) {
+      const status = document.getElementById('elicit-status-' + id);
+      try {
+        let body = undefined;
+        if (action === 'accept') {
+          const card = document.getElementById('elicit-card-' + id);
+          const content = {};
+          card.querySelectorAll('[data-field]').forEach(el => {
+            const name = el.getAttribute('data-field');
+            if (el.getAttribute('data-type') === 'number') {
+              content[name] = el.value === '' ? null : Number(el.value);
+            } else if (el.getAttribute('data-type') === 'boolean') {
+              content[name] = el.value === 'true';
+            } else {
+              content[name] = el.value;
+            }
+          });
+          body = JSON.stringify(content);
+        }
+        const res = await fetch('/v1/elicit/' + encodeURIComponent(id) + '/' + action, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-Mcpx-Answerer': 'dashboard'},
+          body: body
+        });
+        if (!res.ok) throw new Error('answer -> ' + res.status + ' ' + (await res.text()));
+        if (status) status.innerText = 'Answered: ' + action;
+        setTimeout(loadElicitations, 600);
+      } catch (e) {
+        if (status) { status.style.color = 'var(--red)'; status.innerText = 'Failed: ' + String(e); }
+      }
+    }
+
+    loadElicitations();
+    loadView('browse');
+    setInterval(() => { loadElicitations(); loadView(currentView); }, 15000);
+    try {
+      const events = new EventSource('/v1/events');
+      events.onmessage = () => { loadElicitations(); };
+    } catch (e) {}
+
   </script>
 </body>
 </html>

@@ -155,6 +155,54 @@ func TestListReportsEveryNameNearestWinning(t *testing.T) {
 	}
 }
 
+func TestListDoesNotReportAShadowedOverlapAsAmbiguous(t *testing.T) {
+	// A nearer entry already decided the name, so a .ts/.js pair further
+	// down the path is never consulted -- Find resolves it cleanly and List
+	// must not contradict that by both naming and warning about it.
+	near, far := t.TempDir(), t.TempDir()
+	_ = os.WriteFile(filepath.Join(near, "shared.ts"), []byte("near"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "shared.ts"), []byte("far ts"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "shared.js"), []byte("far js"), 0o644)
+
+	got := searchpath.Resolve([]string{near, far}, null, searchpath.Options{Dir: near})
+	names, amb := got.List(searchpath.FindOptions{Extensions: []string{".ts", ".js"}})
+	if len(amb) != 0 {
+		t.Errorf("the shadowed pair should not be ambiguous: %v", amb)
+	}
+	if strings.Join(names, ",") != "shared" {
+		t.Errorf("shared should be listed once and nothing else: %v", names)
+	}
+}
+
+func TestListReportsAnOverlapOnlyWhereItIsNearest(t *testing.T) {
+	// The nearest occurrence of the name is the coin flip; a farther plain
+	// copy must not quietly stand in for it, which is what Find refuses too.
+	near, far := t.TempDir(), t.TempDir()
+	_ = os.WriteFile(filepath.Join(near, "both.ts"), []byte("ts"), 0o644)
+	_ = os.WriteFile(filepath.Join(near, "both.js"), []byte("js"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "both.ts"), []byte("far"), 0o644)
+	_ = os.WriteFile(filepath.Join(far, "only-far.ts"), []byte("x"), 0o644)
+
+	got := searchpath.Resolve([]string{near, far}, null, searchpath.Options{Dir: near})
+	names, amb := got.List(searchpath.FindOptions{Extensions: []string{".ts", ".js"}})
+	if len(amb) != 1 || amb[0].Name != "both" || len(amb[0].Paths) != 2 {
+		t.Fatalf("the nearest pair should be the one reported: %v", amb)
+	}
+	for _, p := range amb[0].Paths {
+		if !strings.HasPrefix(p, near) {
+			t.Errorf("only the nearest pair belongs in the ambiguity: %v", amb[0].Paths)
+		}
+	}
+	for _, n := range names {
+		if n == "both" {
+			t.Errorf("an ambiguous name should not also be listed: %v", names)
+		}
+	}
+	if strings.Join(names, ",") != "only-far" {
+		t.Errorf("the farther plain copy must not stand in for the ambiguous one: %v", names)
+	}
+}
+
 func TestDescribeMarksWhatIsMissingAndWhatIsAFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "f.ts")

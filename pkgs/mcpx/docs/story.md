@@ -868,7 +868,7 @@ description:  status, restart, refresh, stop, daemons, and the trace switch.
 
 | Command | Effect |
 | --- | --- |
-| `mcpx status [-v]` | daemon, pools, live instances, pids, call counts, sessions |
+| `mcpx status [-v]` | daemon, pools, live instances, pids, call counts, sessions — never starts a daemon; reports "not running" instead (#1866) |
 | `mcpx restart [<ns>]` | stop instances; the next call starts fresh ones |
 | `mcpx refresh` | re-read every server's schemas |
 | `mcpx daemons` | every daemon for this user |
@@ -2905,6 +2905,9 @@ else in this document is detail underneath those four verbs.
   has a shape, with answers recorded inline.
 - [`docs/dependencies.md`](./dependencies.md) — every library and external
   program, and why each is needed.
+- [`docs/remote.md`](./remote.md) — reaching a daemon on another machine:
+  `ssh://` endpoints, `ssh -L` socket forwarding, `ssh -R` for a daemon
+  behind NAT, and MCP over ssh.
 - [`docs/opencode-plugin.md`](./opencode-plugin.md) — what the plugin does and
   why, opencode v1 against v2, and which parts are opencode's rather than
   general enough to port to another harness.

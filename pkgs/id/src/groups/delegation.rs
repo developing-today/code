@@ -8,8 +8,8 @@
 //!
 //! Each link attenuates: a grantor passes on no more than it holds. A link carries authority at a
 //! position when its grantor was valid where it was made, the grant is not voided by a concurrent
-//! removal of its grantor, no veto in the position's past cuts it, and the group's mode lets it
-//! stand there (design §7.3).
+//! removal of its grantor (strong remove only; weak remove stands it, design §6.3), no veto in the
+//! position's past cuts it, and the group's mode lets it stand there (design §7.3).
 //!
 //! The mode decides a removed member's grants. Under `keep_prior` they stand. Under `cascade` they
 //! stand only while the grantor still holds the scope. Under `transfer` the removal's successor
@@ -377,10 +377,14 @@ impl Engine {
     }
 
     /// Whether a settled removal of the grantor is concurrent with the grant: neither is in the
-    /// other's causal past. Strong remove voids such a grant (design §6.2 and §7.3). The removals
-    /// are read from the events, not from the round's state: a concurrent removal may be judged
-    /// after the grant in canonical order.
+    /// other's causal past, and the group voids such a grant. Strong remove voids it (design §6.2
+    /// and §7.3). Weak remove stands it, and only the authority check decides later events
+    /// (design §6.3). The removals are read from the events, not from the round's state: a
+    /// concurrent removal may be judged after the grant in canonical order.
     fn void(&self, by_id: &BTreeMap<Hash, &Event>, grant: &Grant) -> bool {
+        if !self.strong_removal(grant.group) {
+            return false;
+        }
         let past_grant = causal_past(by_id, &[grant.id]);
         self.settled
             .iter()

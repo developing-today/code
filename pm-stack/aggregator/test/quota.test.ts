@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
-import { extractQuotaPools } from "../src/quota-extract.ts";
+import { disabledProvidersFromConfig } from "../src/aa.ts";
+import { extractQuotaPools, poolProviderId, poolProviderIds } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -163,5 +164,115 @@ describe("windowPercent + guidance", () => {
     // with headroom, so burn-before-reset is empty.
     expect(choices.burnBeforeReset).toEqual([]);
     for (const p of pools) expect(poolState(p)).toBe(p.state === "walled" ? "walled" : poolState(p));
+  });
+});
+
+describe("disabled_providers enforcement (#1114)", () => {
+  const KEEPERS = ["cloudflare-gateway", "cloudflare-workers-ai", "code-design", "design-code", "open-design"];
+
+  test("config parsing reuses the AA JSONC parse: comments tolerated, junk fails soft", () => {
+    const cfg = `{
+      // deployed config shape
+      "disabled_providers": ["openrouter", "github-copilot", 42, null],
+      "provider": {}
+    }`;
+    expect([...disabledProvidersFromConfig(cfg)].sort()).toEqual(["github-copilot", "openrouter"]);
+    expect(disabledProvidersFromConfig("not json").size).toBe(0);
+    expect(disabledProvidersFromConfig("{}").size).toBe(0);
+  });
+
+  test("a disabled provider's pool is filtered at assembly and visibly noted; guidance never names it", () => {
+    const filtered: Array<[string, string]> = [];
+    const disabled = new Set(["openrouter", "github-copilot", "openai", "meta"]);
+    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
+    const ids = pools.map((p) => p.id);
+    expect(ids).not.toContain("openai:codex");
+    expect(ids).not.toContain("meta:high-usage");
+    expect(filtered).toEqual([
+      ["meta:high-usage", "meta"],
+      ["openai:codex", "openai"],
+    ]);
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    expect(named).not.toContain("openai:codex");
+    expect(named).not.toContain("meta:high-usage");
+    for (const id of named) expect(disabled.has(poolProviderId(id))).toBe(false);
+  });
+
+  test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
+    expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
+    const filtered: Array<[string, string]> = [];
+    const disabled = disabledProvidersFromConfig(
+      JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }),
+    );
+    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
+    expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
+    expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    expect(named).not.toContain("anthropic:claude-pro");
+  });
+
+  test("the issue's fixture disabled set (openrouter/copilot) emits no pool for them", () => {
+    const disabled = disabledProvidersFromConfig(
+      JSON.stringify({ disabled_providers: ["openrouter", "github-copilot"], provider: {} }),
+    );
+    const pools = extractQuotaPools(VIEW, NOW, disabled);
+    for (const p of pools) {
+      expect(poolProviderId(p.id)).not.toBe("openrouter");
+      expect(poolProviderId(p.id)).not.toBe("github-copilot");
+    }
+  });
+
+  test("keeper set can never appear in pools or guidance choices", () => {
+    const pools = extractQuotaPools(VIEW, NOW, new Set(KEEPERS));
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    for (const keeper of KEEPERS) {
+      expect(pools.map((p) => poolProviderId(p.id))).not.toContain(keeper);
+      expect(named.map((id) => poolProviderId(id))).not.toContain(keeper);
+      expect(named).not.toContain(keeper);
+    }
+  });
+
+  test("antigravity pools answer to antigravity-ls/antigravity-agy/google jointly: filtered only when every door is disabled", () => {
+    // There is no "antigravity" provider: poolFor attributes the two
+    // antigravity pools to these three doors (Codex P2 on PR #2377).
+    for (const id of ["antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(poolProviderIds(id)).toEqual(["antigravity-ls", "antigravity-agy", "google"]);
+    }
+    // One usable door remaining (the deployed set disables google alone)
+    // keeps both pools.
+    const partial = extractQuotaPools(VIEW, NOW, new Set(["antigravity-ls", "antigravity-agy"])).map((p) => p.id);
+    expect(partial).toContain("antigravity:gemini");
+    expect(partial).toContain("antigravity:claude-gpt");
+    const deployedLike = extractQuotaPools(VIEW, NOW, new Set(["google"])).map((p) => p.id);
+    expect(deployedLike).toContain("antigravity:gemini");
+    expect(deployedLike).toContain("antigravity:claude-gpt");
+    // Every door disabled: both pools filtered at assembly, visibly
+    // noted, and guidance never names them.
+    const filtered: Array<[string, string]> = [];
+    const disabled = new Set(["antigravity-ls", "antigravity-agy", "google"]);
+    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
+    const ids = pools.map((p) => p.id);
+    expect(ids).not.toContain("antigravity:gemini");
+    expect(ids).not.toContain("antigravity:claude-gpt");
+    expect(filtered).toContainEqual(["antigravity:gemini", "antigravity-ls,antigravity-agy,google"]);
+    expect(filtered).toContainEqual(["antigravity:claude-gpt", "antigravity-ls,antigravity-agy,google"]);
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    expect(named).not.toContain("antigravity:gemini");
+    expect(named).not.toContain("antigravity:claude-gpt");
+  });
+
+  test("exact-match only: near-miss disabled ids do not filter lookalike pools", () => {
+    // The deployed disabled set contains openai-codex/chatgpt (not openai),
+    // open-design (not opendesign) and opencode (not opencode-go).
+    const disabled = new Set(["openai-codex", "chatgpt", "open-design", "opencode"]);
+    const ids = extractQuotaPools(VIEW, NOW, disabled).map((p) => p.id);
+    expect(ids).toContain("openai:codex");
+    expect(ids).toContain("opendesign:go");
+    expect(ids).toContain("opencode-go:personal");
+    expect(ids).toContain("opencode-go:lab");
   });
 });
