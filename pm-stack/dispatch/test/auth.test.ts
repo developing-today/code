@@ -115,6 +115,8 @@ describe("cross-repo grants (assertCallerRepo)", () => {
     "developing-today/opencode",
     "developing-today/openchamber",
     "dezren39/nix",
+    "developing-today/zettel",
+    "dezren39/dezren39",
   ];
   const openchamberCaller = {
     type: "oidc" as const,
@@ -124,6 +126,12 @@ describe("cross-repo grants (assertCallerRepo)", () => {
 
   test("cross-repo allowed: an openchamber token may target opencode", () => {
     expect(() => assertCallerRepo(openchamberCaller, "developing-today/opencode", allowlist)).not.toThrow();
+  });
+
+  test("cross-repo allowed: a zettel token may target dezren39/dezren39 and dezren39/nix", () => {
+    const zettelCaller = { type: "oidc" as const, repository: "developing-today/zettel", actor: "dezren39" };
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/dezren39", allowlist)).not.toThrow();
+    expect(() => assertCallerRepo(zettelCaller, "dezren39/nix", allowlist)).not.toThrow();
   });
 
   test("same-repo still allowed", () => {
