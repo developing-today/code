@@ -1,6 +1,8 @@
 name: mcpx release
 
-# Cuts an mcpx release from the monorepo (decision 0005 §2.1, §3, §5; #1881).
+# Cuts an mcpx release from the monorepo (decision 0005 §2.1-§2.2, §3, §5;
+# #1881). It produces channel 1 (release binaries + checksums) and exercises
+# channel 2 (the curl|sh installer) against them.
 #
 # mcpx lives in pkgs/mcpx of a monorepo, so its releases need a scheme that
 # cannot collide with another package's: tags are `mcpx/vX.Y.Z`, and this
@@ -110,11 +112,67 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  installer:
+    name: "release: installer exercise"
+    # The curl|sh installer (decision 0005 §2.2, §6.5) consumes the artifacts
+    # built above, so it is exercised here against a snapshot: install into a
+    # temp prefix and read the version back. A tag release also runs it, and
+    # `publish` waits for it, so a release cannot ship an installer that no
+    # longer works against the tarballs it just built.
+    needs: artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: mcpx-${{ needs.artifacts.outputs.version }}
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Install the snapshot into a temp prefix
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_BASE_URL: ${{ runner.temp }}/artifacts
+          MCPX_PREFIX: ${{ runner.temp }}/prefix
+        run: |
+          set -euo pipefail
+          sh pkgs/mcpx/scripts/install.sh
+          got=$("$MCPX_PREFIX/mcpx" --version)
+          echo "installed binary reports: $got"
+          case "$got" in
+          *"$MCPX_VERSION"*) ;;
+          *) echo "::error::installed binary reports '$got', expected $MCPX_VERSION"; exit 1 ;;
+          esac
+
+      - name: Refuse a tampered artifact
+        # The installer verifies the checksum; prove it by breaking one. An
+        # installer that only *says* it verifies teaches the wrong habit.
+        env:
+          MCPX_VERSION: ${{ needs.artifacts.outputs.version }}
+          MCPX_PREFIX: ${{ runner.temp }}/tampered-prefix
+        run: |
+          set -euo pipefail
+          cp -r "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/tampered"
+          asset="$RUNNER_TEMP/tampered/mcpx-$MCPX_VERSION-x86_64-linux.tar.gz"
+          printf 'x' >>"$asset"
+          if MCPX_BASE_URL="$RUNNER_TEMP/tampered" sh pkgs/mcpx/scripts/install.sh 2>"$RUNNER_TEMP/err"; then
+            echo "::error::the installer accepted an artifact whose checksum does not match"
+            exit 1
+          fi
+          grep -q "checksum mismatch" "$RUNNER_TEMP/err" || {
+            echo "::error::installer failed for the wrong reason:"
+            cat "$RUNNER_TEMP/err"
+            exit 1
+          }
+          echo "tampered artifact refused, as it must be"
+
   publish:
     name: "release: publish"
-    # Only a tag publishes. A snapshot run stops at the artifacts above.
+    # Only a tag publishes. A snapshot run stops at the artifacts and the
+    # installer exercise above.
     if: github.event_name == 'push'
-    needs: artifacts
+    needs: [artifacts, installer]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
