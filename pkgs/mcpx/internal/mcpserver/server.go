@@ -1308,7 +1308,7 @@ const Latest = "2025-11-25"
 
 // Modern reports whether a version uses per-request metadata rather than a
 // handshake.
-func Modern(version string) bool { return version >= "2026-07-28" }
+func Modern(version string) bool { return spec.AtOrAfter("2026-07-28")(version) }
 
 // withoutTask removes the task field, so the background run of a request does
 // not ask to become a task again and recurse.
