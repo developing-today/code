@@ -785,6 +785,15 @@ in
   # the script owns its environment (including keeping META_API_KEY out).
   # Enrolled here so retiring the supervisor does not strand :18747 --
   # the redesign leaves exactly one owner for every proxy port.
+  #
+  # Direct mode (#2753, 2026-10-30): bin/muse-proxy.mjs defaults to
+  # exchanging the Muse CLI account token for the plan's minted key
+  # and serving the OpenCode muse-direct provider (declared in
+  # .opencode/opencode.jsonc, the sole enabled Meta door) over the
+  # Responses API; the CLI harness remains only as a fallback. The
+  # credential is read at runtime from ~/.config/muse/auth.json --
+  # it is never part of this config. Direct mode changes nothing
+  # about this unit: same port, same start script, same env contract.
   systemd.user.services.muse-proxy = {
     Unit = {
       Description = "Muse (Meta) Local Proxy Bridge for OpenCode";
