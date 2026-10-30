@@ -559,7 +559,8 @@ function createCursorDecorations(
     const anchor = isOwnCursor ? state.selection.anchor : Math.max(0, Math.min(cursor.anchor, docSize));
 
     // Check if this cursor is on the same line as the local cursor (for CSS styling)
-    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view);
+    // Pass getCachedCoords to utilize the per-pass coordsCache and prevent layout thrashing
+    const onSameLine = view !== null && isOnSameLineAsLocal(head, localHead, view, getCachedCoords);
     // Remote cursor opacity is based solely on age, not affected by local cursor position
     const opacity = baseOpacity;
 

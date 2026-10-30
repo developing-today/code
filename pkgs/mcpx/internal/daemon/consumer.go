@@ -246,7 +246,7 @@ func (r *Registry) ObserveCatalog() {
 	for _, ch := range changes {
 		r.logf("catalog: %s %s", ch.Tool, ch.What)
 		r.publish(events.Event{
-			Kind: events.Kind("catalog.changed"), Data: mustJSON(ch),
+			Kind: events.CatalogChanged, Data: mustJSON(ch),
 		})
 	}
 }

@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   tidy:
-    name: Go module tidy
+    name: "basic: Go module tidy"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

@@ -41,6 +41,13 @@ jobs:
       # Same store cache as the PR gate, so the nightly run starts warm
       # and unchanged derivations are not rebuilt from cold (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM

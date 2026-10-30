@@ -13,6 +13,29 @@ import (
 // docs/spec/identity.md.
 const MetaSession = "dev.mcpx/session"
 
+// MetaSessionOpenCode is the key opencode v2 puts on every tools/call,
+// including calls made from inside its code mode. It is a host's own
+// convention rather than mcpx's, which is why the list of keys read is a
+// setting (transport.sessionMetaKeys) instead of this constant alone.
+const MetaSessionOpenCode = "ai.opencode/sessionID"
+
+// DefaultSessionMetaKeys is what is read when the setting names nothing:
+// mcpx's explicit name first, then opencode v2's per-call session id. First
+// present key wins, so a client that sends both is judged by the name it
+// chose for mcpx rather than the one its host attaches automatically.
+var DefaultSessionMetaKeys = []string{MetaSession, MetaSessionOpenCode}
+
+// sessionMetaKeys is the precedence list for this server: the configured
+// setting when it names anything, the default otherwise.
+func (c *Conn) sessionMetaKeys() []string {
+	if c.s != nil && c.s.SessionMetaKeys != nil {
+		if keys := c.s.SessionMetaKeys(); len(keys) > 0 {
+			return keys
+		}
+	}
+	return DefaultSessionMetaKeys
+}
+
 // IdentitySource says where a request's identity came from, which decides
 // what the backend may build from it.
 type IdentitySource string
@@ -70,9 +93,11 @@ func (c *Conn) identityFor(params json.RawMessage) Identity {
 		Meta map[string]json.RawMessage `json:"_meta"`
 	}
 	if json.Unmarshal(params, &p) == nil {
-		var named string
-		if json.Unmarshal(p.Meta[MetaSession], &named) == nil && named != "" {
-			return Identity{Source: IdentityClient, Key: named}
+		for _, key := range c.sessionMetaKeys() {
+			var named string
+			if json.Unmarshal(p.Meta[key], &named) == nil && named != "" {
+				return Identity{Source: IdentityClient, Key: named}
+			}
 		}
 	}
 	switch {

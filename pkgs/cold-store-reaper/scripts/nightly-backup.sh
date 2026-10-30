@@ -93,10 +93,20 @@ run_step prune-backups "${COLD_STORE}" prune-backups --apply
 run_step sync-manifest "${COLD_STORE}" sync-manifest
 
 echo "nightly-backup: step status: running"
-if "${COLD_STORE}" status | head -n 20; then
+# Never pipe status directly into head: head exits after 20 lines, closing
+# the pipe while cold-store is still writing. Under `set -o pipefail` that
+# SIGPIPE/BrokenPipeError turns a healthy run into FAILED. Capture the full
+# output first so the verdict reflects only cold-store's own exit code, then
+# truncate purely for display.
+status_out="$(mktemp)"
+status_rc=0
+"${COLD_STORE}" status >"${status_out}" || status_rc=$?
+head -n 20 "${status_out}"
+rm -f "${status_out}"
+if ((status_rc == 0)); then
   echo "nightly-backup: step status: ok"
 else
-  echo "nightly-backup: step status: FAILED" >&2
+  echo "nightly-backup: step status: FAILED (exit ${status_rc})" >&2
   FAILED_STEPS+=("status")
 fi
 

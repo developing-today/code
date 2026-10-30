@@ -27,6 +27,7 @@ let
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   designCodeProxyPort = 18746;
   agyProxyPort = 18743;
   codexProxyPort = 18744;
@@ -57,10 +58,17 @@ in
     };
   };
 
-  # Start after the provider proxies + mcpx it depends on.
+  # Start after the provider proxies + mcpx it depends on. The proxies
+  # are owned by the proxy-supervisor (transient fps-* units on the
+  # canonical ports), so the gateway must not Want the manual per-proxy
+  # units: a gateway restart would re-pull them, and the manual
+  # commandcode-proxy unit crash-loops on its already-taken port (#883).
+  # The gateway reaches the proxies by port, not by unit; only mcpx and
+  # the opencode-route proxy are real unit dependencies.
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
         "agy-proxy.service"
@@ -68,9 +76,7 @@ in
         "mcpx.service"
       ];
       Wants = [
-        "commandcode-proxy.service"
-        "design-code-proxy.service"
-        "agy-proxy.service"
+        "opencode-route-proxy.service"
         "mcpx.service"
       ];
     };
@@ -85,6 +91,8 @@ in
     # the token itself never enters the store.
     environment = {
       OPENCLAW_GATEWAY_TOKEN = "${homeDir}/.secrets/openclaw/gateway-token";
+      OPENCLAW_SLACK_BOT_TOKEN = "/home/user/.secrets/openclaw/slack-bot-token";
+      OPENCLAW_SLACK_APP_TOKEN = "/home/user/.secrets/openclaw/slack-app-token";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):
@@ -112,11 +120,7 @@ in
 
     # nix-openclaw tool plugins (CLI tools + skills, packaged in Nix).
     bundledPlugins = {
-      # summarize.enable = true; # summarize URLs / PDFs / videos —
-      # disabled 2026-10-26: its ~780-package pnpm deps fetch kept dying
-      # on the laptop's flaky route to registry.npmjs.org (timeouts /
-      # HTTP2 framing errors). Re-enable and rebuild when the route is
-      # healthy; nothing else depends on it.
+      summarize.enable = true; # summarize URLs / PDFs / videos
       gogcli.enable = true; # Google Workspace CLI (gog)
       goplaces.enable = true; # Google Places CLI
       # peekaboo / poltergeist are macOS-only in the nix-openclaw
@@ -148,6 +152,9 @@ in
       "firecrawl"
       "perplexity"
       "duckduckgo"
+      "searxng" # keyless web search (added 2026-10-26, Drew: more plugins)
+      "lobster" # typed workflow runtime for resumable automations
+      "diffs" # diff rendering for code review in chat
       "tokenjuice" # context compression
     ];
 
@@ -205,7 +212,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -228,6 +235,30 @@ in
             provider = "default";
             id = "OPENCLAW_GATEWAY_TOKEN";
           };
+        };
+      };
+
+      # Chat channels. Slack wired 2026-10-26: app A0CD7L3S81W, bot
+      # @openclaw (U0CC72H7KA7); tokens via env SecretRefs fed from
+      # laptop files (interim home for sops-managed secrets). DMs from
+      # Drew only; channel access gets allowlisted per channel later.
+      channels = {
+        slack = {
+          enabled = true;
+          mode = "socket";
+          botToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_BOT_TOKEN";
+          };
+          appToken = {
+            source = "env";
+            provider = "default";
+            id = "OPENCLAW_SLACK_APP_TOKEN";
+          };
+          dmPolicy = "allowlist";
+          allowFrom = [ "U0CBX163G8Z" ]; # Drew
+          groupPolicy = "allowlist";
         };
       };
 
@@ -259,7 +290,23 @@ in
             (model "gpt-6-luna" "GPT-6 Luna (ChatGPT plan — final reserve)")
             (model "gpt-5.6-sol" "GPT-5.6 Sol (ChatGPT plan — final reserve)")
           ];
+          # The OpenCode server fronted by the route proxy (code#2229):
+          # each model id is an opencode-route pool, carried by the
+          # OpenCode build agent server-side.
+          opencode-route = localProvider opencodeRouteProxyPort [
+            (model "workhorse" "Workhorse (OpenCode route pool)")
+            (model "speed" "Speed (OpenCode route pool)")
+            (model "specialist" "Specialist (OpenCode route pool)")
+            (model "summit" "Summit (OpenCode route pool)")
+            (model "scout" "Scout (OpenCode route pool)")
+          ];
         };
+      };
+
+      # One DM session per channel+peer, so a future second channel
+      # never shares a transcript with Slack DMs.
+      session = {
+        dmScope = "per-channel-peer";
       };
 
       agents = {
@@ -272,13 +319,30 @@ in
               "commandcode/moonshotai/kimi-k2.6"
             ];
           };
-          heartbeat.every = "1h";
+          heartbeat = {
+            every = "30m";
+            lightContext = true;
+            isolatedSession = true;
+            activeHours = {
+              start = "07:00";
+              end = "23:00";
+            };
+          };
         };
         ownership = "explicit";
         entries = {
           main = {
             name = "OpenClaw (laptop node)";
           };
+          # The ACP-runtime agent entry (opencode-acp, #2229 mechanism 1)
+          # is removed for now: the nix-openclaw generated schema types an
+          # entry's runtime as a oneOf of two submodules, and under the
+          # pinned nixpkgs the acp branch is unreachable, so any entry
+          # using it fails the whole configuration evaluation. Full
+          # analysis and the minimal reproduction: code#2509. Restore the
+          # entry (tracked by #2256) once the schema can express it. The
+          # ACP capability itself (acp block below: enabled, allowedAgents,
+          # acpx plugin) is unaffected.
         };
       };
 

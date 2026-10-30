@@ -742,6 +742,111 @@ export function applyCloudflareExport(
   return services;
 }
 
+// --- Supabase live export overlay (#1050) -----------------------------------
+
+/** One metric row of a supabase-quota-export document. */
+export interface SupabaseExportMetric {
+  id: string;
+  label?: string;
+  /** null = the probe could not measure it this tick (a documented gap). */
+  used: number | null;
+  limit?: number | null;
+  unit?: string;
+  source?: string;
+  detail?: string;
+  /** "approaching-paid-trigger" when used >= 80% of the Free limit. */
+  flag?: string;
+}
+
+/** The file-export document written by pm-stack/supabase-export. */
+export interface SupabaseExportDoc {
+  service?: string;
+  source?: string;
+  /** ok | partial (some scope gaps recorded) — measurements are present. */
+  status?: string;
+  measuredAt?: string | null;
+  project?: string;
+  ref?: string;
+  metrics?: SupabaseExportMetric[];
+  billing?: { plan?: string; billedUsd?: number; measured?: boolean; source?: string };
+  scope?: { endpoint?: string; path?: string; status?: number; note?: string }[];
+}
+
+/** Freshness bound mirroring the #1151 tick: > 30 min means the producer is
+ * unreachable/stale and the card falls back to its recorded prose. */
+export const SUPABASE_EXPORT_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Prefer a fresh supabase-export document on the Supabase card (#1050).
+ * Matching metric ids take `used`, `limit`, `unit` and a measured-at/source
+ * note from the export; a metric the probe could not measure keeps today's
+ * null-but-recorded behaviour with the export's gap detail. `billedUsd`
+ * becomes the export's measured addon read instead of the hardcoded 0 —
+ * or unknown (null) when the accepted export carries no valid billing
+ * measurement, so a failed billing probe never renders as $0.00 billed.
+ * Missing, failed, unparseable or stale documents change nothing.
+ */
+export function applySupabaseExport(
+  services: SaasService[],
+  doc: SupabaseExportDoc | null,
+  nowMs: number = Date.now(),
+): SaasService[] {
+  if (!doc || (doc.status !== "ok" && doc.status !== "partial")) return services;
+  if (!doc.measuredAt || !Array.isArray(doc.metrics)) return services;
+  const measuredMs = Date.parse(doc.measuredAt);
+  if (!Number.isFinite(measuredMs)) return services;
+  if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
+  const supabase = services.find((s) => s.id === "supabase");
+  if (!supabase) return services;
+  const byId = new Map(
+    doc.metrics.filter((m) => m && typeof m.id === "string").map((m) => [m.id, m]),
+  );
+  if (!byId.size) return services;
+  supabase.metrics = supabase.metrics.map((m) => {
+    const live = byId.get(m.id);
+    if (!live) return m;
+    const unit = live.unit === "gb" || live.unit === "pct" || live.unit === "count" ? live.unit : m.unit;
+    const used = typeof live.used === "number" && Number.isFinite(live.used) ? live.used : null;
+    const limit = typeof live.limit === "number" && Number.isFinite(live.limit) ? live.limit : m.limit;
+    const parts: string[] = [];
+    if (used == null) {
+      parts.push(`Not measured this tick${live.detail ? ` — ${live.detail}` : ""}`);
+    } else {
+      parts.push(`Live via ${live.source ?? doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}.`);
+      if (live.detail) parts.push(live.detail);
+      if (live.flag === "approaching-paid-trigger") {
+        parts.push("Approaching-paid trigger: at or above 80% of the Free-plan limit (Drew's $30/mo ceiling is the decision context).");
+      }
+    }
+    return {
+      ...m,
+      used,
+      limit,
+      unit,
+      percent: used != null && limit != null && limit > 0 ? Math.round((used / limit) * 1000) / 10 : undefined,
+      note: parts.join(" ").slice(0, 600),
+    };
+  });
+  if (doc.billing && doc.billing.measured !== false && typeof doc.billing.billedUsd === "number" && Number.isFinite(doc.billing.billedUsd)) {
+    supabase.billedUsd = doc.billing.billedUsd;
+  } else {
+    // Codex P2 (PR #2369 re-review, 2026-10-29): an accepted export with no
+    // valid billing measurement must not keep the hardcoded 0 from
+    // extractSaasServices — the card is stamped fresh/api below, so $0.00
+    // would read as a measured billed amount. Unknown (null) renders as
+    // no billed line at all.
+    supabase.billedUsd = null;
+  }
+  supabase.plan = doc.billing?.plan ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}` : supabase.plan;
+  supabase.measuredAt = doc.measuredAt.slice(0, 10);
+  supabase.sourceClass = "api";
+  const gapCount = (doc.scope ?? []).filter((s) => typeof s.status === "number" && s.status >= 400).length;
+  supabase.sourceNote = `Supabase usage collector (#1050): ${doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}; ${
+    gapCount ? `${gapCount} documented scope gap(s) — see the export's scope array` : "every probed endpoint answered"
+  }; limits from the Free-plan record.`;
+  return services;
+}
+
 // --- PAYG lines (§1.2) -------------------------------------------------------
 
 /**
