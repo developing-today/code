@@ -15,8 +15,8 @@
 
 The hosted offer is #2045's Shape B: one SQLite-backed Durable Object (DO) per
 user, lazy-provisioned, hibernating, costing nothing while idle; blobs in R2,
-content-addressed. Google SSO authenticates the *account*; the Iroh root key
-*is* the identity. The two are connected only by the binding ceremony in §3 —
+content-addressed. Google SSO authenticates the _account_; the Iroh root key
+_is_ the identity. The two are connected only by the binding ceremony in §3 —
 sign-in alone never binds, claims, or rebinds anything.
 
 ## 1. Records
@@ -26,17 +26,17 @@ sign-in alone never binds, claims, or rebinds anything.
 One row per Google identity. The registry is service-operated storage, separate
 from every user's DO; it holds no user content.
 
-| Field | Rule |
-|---|---|
-| `sub` | Google's stable subject identifier. **Primary key.** Never the email address (emails change, are recycled, and are shared in ways `sub` is not). |
-| `account_id` | Service-minted opaque ID, assigned at first sign-in, immutable. |
+| Field           | Rule                                                                                                                                               |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sub`           | Google's stable subject identifier. **Primary key.** Never the email address (emails change, are recycled, and are shared in ways `sub` is not).   |
+| `account_id`    | Service-minted opaque ID, assigned at first sign-in, immutable.                                                                                    |
 | `email_contact` | Optional contact metadata from the Google profile, used only for notifications (notably rebind notices, §4). Never a key, never an identity claim. |
-| `created_at` | First sign-in time. |
-| `binding_id` | Null until first binding (§3); then the stable binding record ID (§1.2). |
-| `tier` | Tier identifier; the numbers behind each tier are a #2046 parameter (§8). |
-| `meter_rollup` | Latest daily metering rollup from the user's DO (§5.3). |
+| `created_at`    | First sign-in time.                                                                                                                                |
+| `binding_id`    | Null until first binding (§3); then the stable binding record ID (§1.2).                                                                           |
+| `tier`          | Tier identifier; the numbers behind each tier are a #2046 parameter (§8).                                                                          |
+| `meter_rollup`  | Latest daily metering rollup from the user's DO (§5.3).                                                                                            |
 
-An account with no binding is an *empty hosted account*: it can sign in and
+An account with no binding is an _empty hosted account_: it can sign in and
 start a ceremony, and can claim, read, and write nothing.
 
 ### 1.2 Binding record
@@ -66,11 +66,7 @@ from `binding_id` (§5.1) — never moves when the key changes.
   "key_signature": "<Iroh root key signature over the canonical ceremony transcript (§3.2)>",
   "service_attestation": "<service key signature over SHA-256 of the canonical record without this field>",
   "status": "active | rebind_pending | superseded",
-  "history": [
-    { "iroh_id": "<previous key>", "superseded_at": "<RFC 3339>",
-      "via": "old-key-signature | delayed-rebind",
-      "rebind_record_id": "<§4.4 record, when via delayed-rebind>" }
-  ]
+  "history": [{ "iroh_id": "<previous key>", "superseded_at": "<RFC 3339>", "via": "old-key-signature | delayed-rebind", "rebind_record_id": "<§4.4 record, when via delayed-rebind>" }]
 }
 ```
 
@@ -135,7 +131,7 @@ device is a groups-layer operation and never touches the binding record.
 1. **Request challenge.** Client sends `{iroh_id}` over the authenticated
    session. Service mints a challenge:
    `{challenge_id, sub, iroh_id, service_id, nonce (32 random bytes),
-   issued_at, expires_at}` with a 5-minute lifetime, single-use.
+issued_at, expires_at}` with a 5-minute lifetime, single-use.
 2. **Sign.** The Iroh root key signs the canonical transcript:
    `id-binding/v1 || challenge_id || sub || iroh_id || nonce || expires_at`
    (length-prefixed fields, UTF-8). This binds the proof to this account,
@@ -174,15 +170,15 @@ single-use, expire with the challenge, and are rate-limited per account
 
 ### 3.4 Failure and retry semantics
 
-| Failure | State change | Retry |
-|---|---|---|
-| Challenge expired | None; challenge dead | Request a fresh challenge |
-| Bad signature | None; challenge consumed | Fresh challenge; repeated failures rate-limit challenge issuance per account |
-| Challenge replay (already consumed) | None; rejected and logged | Fresh challenge |
-| `iroh_id` already bound to another `sub` | None; conflict error naming the rebind path (§4) | Not retryable as a fresh binding |
-| `sub` already has an active binding (different key) | None; conflict error naming §4 | Rebind protocol, not the ceremony |
-| `sub` has a binding in `rebind_pending` | None; conflict error naming §4 | §4 only: old-key cancel/approve, or wait out the delay — a fresh ceremony never bypasses it |
-| Two ceremonies race for one `sub` | First completed wins | Loser receives the conflict error |
+| Failure                                             | State change                                     | Retry                                                                                       |
+| --------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Challenge expired                                   | None; challenge dead                             | Request a fresh challenge                                                                   |
+| Bad signature                                       | None; challenge consumed                         | Fresh challenge; repeated failures rate-limit challenge issuance per account                |
+| Challenge replay (already consumed)                 | None; rejected and logged                        | Fresh challenge                                                                             |
+| `iroh_id` already bound to another `sub`            | None; conflict error naming the rebind path (§4) | Not retryable as a fresh binding                                                            |
+| `sub` already has an active binding (different key) | None; conflict error naming §4                   | Rebind protocol, not the ceremony                                                           |
+| `sub` has a binding in `rebind_pending`             | None; conflict error naming §4                   | §4 only: old-key cancel/approve, or wait out the delay — a fresh ceremony never bypasses it |
+| Two ceremonies race for one `sub`                   | First completed wins                             | Loser receives the conflict error                                                           |
 
 No failure path creates a partial binding, a DO, or any claim on the key.
 
@@ -209,7 +205,7 @@ account takeover into an ID takeover — #2045).
    challenge proving possession of the **new** key.
 2. Service creates a rebind request:
    `{rebind_id, binding_id, sub, old_iroh_id, new_iroh_id, requested_at,
-   effective_at = requested_at + waiting_period, status: pending}` and sets
+effective_at = requested_at + waiting_period, status: pending}` and sets
    the binding's `status` to `rebind_pending` (regenerating
    `service_attestation` over the mutated record, §1.2).
 3. During the wait: the **old key keeps full control**; the new key has
@@ -219,7 +215,7 @@ account takeover into an ID takeover — #2045).
    the delay cannot be bypassed by re-running §3 with another key.
 
 The waiting period's length is a #2046 parameter (§8). #2045 bounds it only
-as *days, not minutes*; this spec deliberately states no number.
+as _days, not minutes_; this spec deliberately states no number.
 
 ### 4.3 Notification and cancellation
 
@@ -247,7 +243,7 @@ At effect (either path), the service:
 1. Appends the old key to the binding's `history` (§1.2) with `via` set.
 2. Sets `iroh_id` to the new key, `status` back to `active`.
 3. Publishes a **rebind record** — `{rebind_id, binding_id, old_iroh_id,
-   new_iroh_id, effective_at, via}` signed by the service and countersigned
+new_iroh_id, effective_at, via}` signed by the service and countersigned
    by the new key — to the same surfaces the platform uses for signed graph
    objects, so peers and importers learn the new key from a verifiable
    artefact, not from the service's say-so.
@@ -287,7 +283,7 @@ hibernation and needs no external pipeline per request:
 
 - Two kinds of metric, kept distinct:
   - **Current-usage gauges** — SQLite bytes and R2 referenced bytes.
-    These measure what is stored *now* and **decrease** when the user
+    These measure what is stored _now_ and **decrease** when the user
     deletes data (a blob's referenced bytes drop when its last reference
     from this DO is removed). Storage ceilings (§5.4) read only these.
   - **Monotonic consumption counters** — request count, WebSocket
@@ -318,10 +314,10 @@ Behaviour at a ceiling is specified here and is not tier-dependent:
   accounting updates (§5.3). A delete only ever lowers the current-usage
   gauges, and it is the recovery path below — refusing it would trap a
   capped user permanently (export alone lowers neither gauge). Deletes
-  are never *required* to recover: raising the tier also works.
+  are never _required_ to recover: raising the tier also works.
 - **Request ceiling reached:** requests are refused (`429`, `Retry-After`)
   with the same export prompt on the client surfaces. Reads needed to
-  *perform an export* are exempt from the ceiling — leaving must always be
+  _perform an export_ are exempt from the ceiling — leaving must always be
   possible.
 - **Recovery:** raising the tier (or freeing space by export + explicit
   user-confirmed delete — permitted at the cap per the exception above,
@@ -351,7 +347,7 @@ An export is a set of signed objects plus a manifest, producible on demand
    and the account metadata needed to re-establish the binding claim
    (`sub` assertion as attested by the service).
 4. **Manifest:** `{export_id, binding_id, iroh_id, created_at,
-   object_count, blob_count, sha256 of the concatenated object hashes}`,
+object_count, blob_count, sha256 of the concatenated object hashes}`,
    signed by the user's Iroh root key when available.
 
 If the user's key is unavailable (e.g. export during a lost-key rebind
@@ -412,14 +408,14 @@ hosted storage is operator-readable at rest unless this option is on.
 
 ## 8. Open parameters — routed to #2046, not defaulted here
 
-| Parameter | Notes from #2045 |
-|---|---|
-| Free-tier storage / request ceilings | Numbers only; behaviour at cap is §5.4 |
-| Paid-tier numbers and prices | #2032 budget pattern applies |
-| Rebind waiting period | Days, not minutes — exact length is the call |
-| Client-side-encryption default (on/off at binding) | Genuine values call for Drew; recommendation in §7 |
-| Shape-C cost attribution when a world/app owner lapses | Needed before Shape C ships |
-| Pairing-code / challenge rate limits (§3.4) | Mechanism specified; thresholds are operational tuning |
+| Parameter                                              | Notes from #2045                                       |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| Free-tier storage / request ceilings                   | Numbers only; behaviour at cap is §5.4                 |
+| Paid-tier numbers and prices                           | #2032 budget pattern applies                           |
+| Rebind waiting period                                  | Days, not minutes — exact length is the call           |
+| Client-side-encryption default (on/off at binding)     | Genuine values call for Drew; recommendation in §7     |
+| Shape-C cost attribution when a world/app owner lapses | Needed before Shape C ships                            |
+| Pairing-code / challenge rate limits (§3.4)            | Mechanism specified; thresholds are operational tuning |
 
 ## 9. Implementation routing
 
