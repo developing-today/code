@@ -26,17 +26,28 @@ serves it, including one path per tool in the live catalogue.
 
 Because the document is generated from declarations compiled into
 the binary, it can be produced with **no daemon running**:
-`mcpx openapi` prints it. What `mcpx openapi` prints is a superset
-of the daemon document — the same `/v1` paths, byte for byte, plus
-the MCP endpoint, a REST path per mcpx tool (`POST /v1/tools/{tool}`
-is itself an operation in the table) and the settings index. The
-two documents that used to share this name — one of them describing
-a server that had been removed — are recorded in the header of
+`mcpx openapi` prints it. The two documents overlap but neither is
+a superset of the other. Every path they share is identical, byte
+for byte, and `mcpx openapi` adds the MCP endpoint, a REST path
+per mcpx tool (`POST /v1/tools/{tool}` is itself an operation in
+the table) and the settings index. The daemon's document instead
+adds one concrete path per tool in the **live catalogue**
+(`POST /v1/call/<namespace>/<tool>`, with that tool's input
+schema, generated per request by `handleOpenAPI` in
+`internal/daemon/ops.go`), so a server that appears after startup
+is described without a restart; the offline document reads no
+configured servers and covers upstream tools only through the
+declared `/v1/call/{server}/{tool}` template. The two documents
+that used to share this name — one of them describing a server
+that had been removed — are recorded in the header of
 `internal/cli/openapi.go`, so the confusion cannot quietly return.
 
 > **Which OpenAPI document do you want?** `GET /v1/openapi.json`
-> (equivalently, the `/v1` half of `mcpx openapi`) describes **the
-> daemon**: its operations, its routes, its settings. `mcpx schema
+> describes **the daemon as it is running on this machine**: its
+> operations, its routes, its settings, and the live catalogue's
+> per-tool paths. The `/v1` half of `mcpx openapi` describes the
+> same daemon surface as compiled into the binary, without the
+> live catalogue. `mcpx schema
 > --format openapi` describes **the tools** of your configured MCP
 > servers, as operations for a client generator. Feed the wrong one
 > to a generator and you get a working client for the wrong thing.
@@ -119,7 +130,11 @@ Reconnects resume. `?since=N` replays everything after sequence N,
 and the `Last-Event-ID` header a browser's `EventSource` sends on
 reconnect is honoured the same way; if the retained history no
 longer reaches back that far, the stream says so in-band with a
-`gap` event naming the oldest sequence it has, so a subscriber can
+`gap` event whose payload is `{"since": N, "latest": M}` — `since`
+is the cursor the subscriber asked to resume from and `latest` is
+the newest sequence the bus has published, **not** the oldest
+sequence still retained — so a subscriber knows it missed
+everything between its cursor and the retained history and can
 resynchronise instead of trusting a stream with a hole in it. Over
 MCP, the same stream is what `subscriptions/listen` carries — see
 [mcp.md](./mcp.md#mcp).
@@ -174,7 +189,11 @@ The flow is the same everywhere:
 
 1. Take the spec from the daemon you will talk to:
    `curl --unix-socket <sock> http://mcpx/v1/openapi.json -o openapi.json`
-   (or from `mcpx openapi`, whose `/v1` paths are the same bytes).
+   (`mcpx openapi` works offline and every path it shares with the
+   daemon document is the same bytes, but it has no live catalogue:
+   a generated client that needs the concrete
+   `/v1/call/<namespace>/<tool>` paths must be generated from the
+   daemon's own document, not the offline one).
 2. Run your generator over `openapi.json`.
 3. Point the generated client at the daemon — which is the one
    mcpx-specific step, next.
