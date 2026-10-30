@@ -18,7 +18,7 @@ A row here records intent. It does not settle a product question and it is not a
 
 1. Make CI trustworthy for `id`: the LogSync bulk test (#241).
 2. Settle how other flakes consume `mcpx` from this repo, its single source (#308), and move the backlog here (#309).
-3. Quiet the automation: stale PRs (#310, #311).
+3. Quiet the automation: stale PRs (#311).
 
 ## Next
 

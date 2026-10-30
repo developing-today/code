@@ -39,7 +39,7 @@ Make the platform something other people can build on without changing its core:
 | Authoring tools                          | planned     | `id world dev`: watch, rebuild, hot-swap, fixture replay, fuzz harness. (`id world doctor`, F12.16, is done.)                                                                                                   | F12.15 #558                                                |
 | Trust and provenance                     | planned     | Module signatures verified against an admin trust list; the trust decision is journaled.                                                                                                                        | F12.17 #1069                                               |
 | Denial-of-service test suite             | planned     | Fuel, memory, journal, frame, session, schedule and provider bounds all refused with documented codes, in CI.                                                                                                   | F12.18 #560                                                |
-| Sync protocol + tags/documents hardening | proposed    | Bounds on frame buffering and batch bytes, held-message limits, joiner stall fixes; tag index and claim rules. Older phase leftovers, kept tracked.                                                             | #178, #179, #180, #186, #187, #189, #183, #185, #195, #194 |
+| Sync protocol + tags/documents hardening | proposed    | Bounds on frame buffering and batch bytes, held-message limits, joiner stall fixes; tag index and claim rules. Older phase leftovers, kept tracked.                                                             | #179, #180, #186, #187, #189, #183, #195, #194 |
 
 ## Later — Phase 13 and long-term ideas (priority/low)
 
@@ -55,7 +55,5 @@ Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client
 | Multi-server, multi-client topology | planned | One client in several worlds at once; client-only mode always supported.                                                       | F13.8 #790 |
 | World directory (worlds as places)  | planned | A directory of the worlds a node serves, with presence and open/closed state; the Phase 10 feed remainder.                     | #812       |
 | Worlds on Cloudflare Workers        | idea    | A pkarr option for running on Workers. Design is merged; implementation and deployment deferred.                               | #793       |
-| Group encryption and authorization  | idea    | Group key agreement (BeeKEM / p2panda-encryption) so a world's documents and envelopes are encrypted for current members only. | #1070      |
 | Native TUI client                   | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.                                            | #1071      |
 | Native GUI client                   | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.                                            | #1072      |
-| Datastar for the web UI             | idea    | A plan to move from HTMX to Datastar exists; re-validate it against the current web codebase before adopting.                  | #1073      |
