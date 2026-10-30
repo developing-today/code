@@ -407,6 +407,47 @@ func Resolve(prefer, permSpec string, s Setup) (*Runtime, error) {
 		strings.Join(names, ", "), strings.Join(tried, "\n  "))
 }
 
+// ResolveDeferred is Resolve for a runtime the caller will look up
+// itself against a PATH it establishes. Same resolution and the same
+// refusals, except that a binary absent from mcpx's own PATH comes back
+// as its bare name instead of an error: a JavaScript shebang may name a
+// runtime that exists only on the PATH the shebang sets, and that PATH
+// cannot be applied until the run's effective directory is known
+// (#2611 review). Resolve would reject it first and the run would fail
+// with "not found" for a runtime the shebang's own environment has.
+//
+// A declared runtime keeps Resolve's behaviour: its binary is part of
+// its declaration, not a question about PATH.
+func ResolveDeferred(prefer, permSpec string, s Setup) (*Runtime, error) {
+	rt, err := Resolve(prefer, permSpec, s)
+	if err == nil {
+		return rt, nil
+	}
+	if prefer == "" || prefer == "auto" || strings.Contains(prefer, "/") {
+		return nil, err
+	}
+	if _, declared := s.Runtimes[prefer]; declared {
+		return nil, err
+	}
+	if !knownKind(prefer) {
+		// Only a kind name says how to build an argv without running
+		// the binary to find out what it is.
+		return nil, err
+	}
+	steps, perr := parseSpec(permSpec)
+	if perr != nil {
+		return nil, perr
+	}
+	perms, ref, rerr := s.renderPerms(steps, prefer)
+	if rerr != nil {
+		return nil, rerr
+	}
+	if ref != nil {
+		return nil, fmt.Errorf("%s", ref.msg(prefer))
+	}
+	return build(candidate{name: prefer, kind: prefer, bin: prefer}, perms), nil
+}
+
 func build(c candidate, perms []string) *Runtime {
 	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms,
 		ConfigArgs: append([]string(nil), c.args...)}

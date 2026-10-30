@@ -214,7 +214,20 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	rt, err := Resolve(opts.Runtime, opts.Permissions, opts.Setup)
 	if err != nil {
-		return nil, err
+		// A JavaScript shebang's runtime is looked up against the PATH
+		// the shebang establishes, below, once the run's directory is
+		// known. Rejecting here searched mcpx's inherited PATH instead,
+		// so `#!/usr/bin/env -S PATH=/project/node/bin node` failed
+		// before the shebang's own PATH was ever consulted (#2611
+		// review). The later block fills in Bin, and reports a runtime
+		// that is missing from both.
+		if jsEnv.runtime == "" {
+			return nil, err
+		}
+		rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	workDir := opts.WorkDir

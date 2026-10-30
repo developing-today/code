@@ -45,7 +45,11 @@ The table below is generated from `settings.ScriptEnv()` in
 ## This table is what mcpx adds, not all a child gets
 
 Every one of these is *added to* the environment mcpx itself was started with.
-A child gets the parent's environment entire, and then these on top:
+A child gets the parent's environment entire, and then these on top — unless its
+shebang replaces part of it: `env -i` starts the child from an empty
+environment, and `env -u NAME` removes just that name (both then get these on
+top). Both the dispatched path and the JavaScript path apply what the shebang
+asked for.
 
 - `internal/runner/runner.go:359` — `cmd.Env = append(os.Environ(), …)`, every
   script the runner starts

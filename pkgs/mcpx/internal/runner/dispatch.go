@@ -139,6 +139,10 @@ type shebangEnv struct {
 	// unterminated quote). It is reported by decideDispatch; the
 	// exported ParseShebang wrappers keep best-effort tokens.
 	splitErr error
+	// optErr is an env(1) option the shebang used that this dispatcher
+	// does not implement. Reported by decideDispatch, which refuses the
+	// run rather than dropping the option (#2611 review).
+	optErr error
 }
 
 // parseShebang reads a #! line. Options of an env(1) shebang are
@@ -291,7 +295,15 @@ func parseShebang(line string) (shebangEnv, bool) {
 		case strings.HasPrefix(f, "--chdir="):
 			sp.chdir = strings.TrimPrefix(f, "--chdir=")
 		case strings.HasPrefix(f, "-"):
-			// The other operand-free options.
+			// Anything left is an env(1) option this dispatcher cannot
+			// honour. Silently dropping it would run a different command
+			// than the shebang names -- `#!/usr/bin/env -S --bogus sh`
+			// would run sh with the option ignored -- and the options
+			// that would be dropped are not all inert: -0 makes env
+			// reject a command outright, -v/--debug write their own
+			// output to stderr (#2611 review).
+			sp.optErr = fmt.Errorf("%s is not a supported env option in a shebang", f)
+			return sp, true
 		case strings.Contains(f, "="):
 			sp.set = append(sp.set, f)
 		default:
@@ -577,6 +589,9 @@ func decideDispatch(opts Options) (*dispatch, jsChoice, error) {
 		if sp.splitErr != nil {
 			return nil, jsChoice{}, fmt.Errorf("runner: shebang -S payload: %w", sp.splitErr)
 		}
+		if sp.optErr != nil {
+			return nil, jsChoice{}, fmt.Errorf("runner: shebang: %w", sp.optErr)
+		}
 		if len(sp.tokens) == 0 {
 			return nil, jsChoice{}, errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
@@ -737,6 +752,17 @@ func dispatchFromTokens(source string, tokens []string, sp *shebangEnv) (*dispat
 		// relative PATH entries mean the directory the run moves
 		// to, not mcpx's own.
 		d.lookupBin, d.lookupPath = bin, shebangPath(sp)
+		return d, nil
+	}
+	// Always deferred, found or not: a relative PATH entry means the
+	// directory the run moves to, not mcpx's own, so a lookup here can
+	// both miss the right binary and find a different one. runDispatched
+	// resolves against the run's effective directory and reports the
+	// not-found error with the PATH it tried (#2611 review). A PATH that
+	// is absent from the environment keeps exec.LookPath's answer, since
+	// there is nothing to defer to.
+	if path, ok := os.LookupEnv("PATH"); ok {
+		d.lookupBin, d.lookupPath = bin, path
 		return d, nil
 	}
 	p, err := exec.LookPath(bin)

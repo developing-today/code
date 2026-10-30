@@ -59,6 +59,11 @@ func (s *Server) execSettings() *settings.Set {
 		}
 		set := settings.NewSet(sch)
 		if s.cfg != nil && s.cfg.Path != "" {
+			// The path the settings were read from, kept with them:
+			// script.cwd=config has to resolve against the directory
+			// of the file this policy came from, not of whichever file
+			// a later reload moved s.cfg to (#2611 review).
+			s.execSetPath = s.cfg.Path
 			if b, rerr := os.ReadFile(s.cfg.Path); rerr == nil {
 				var doc map[string]any
 				if json.Unmarshal(config.StripJSONC(b), &doc) == nil {
@@ -189,11 +194,15 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
 	// script.cwd=config resolves against the directory holding the
-	// configuration this daemon loaded -- the same cfg.Path the info
-	// file and the resolve route report. Without it every /v1/exec run
-	// under that policy fails in ResolveCwd before the script starts.
+	// configuration the exec policy was built from -- the file
+	// execSettings read, not whichever file a reload has since moved
+	// s.cfg to. Without it every /v1/exec run under that policy fails in
+	// ResolveCwd before the script starts; with s.cfg it could point at
+	// the wrong directory after a reload (#2611 review).
 	configDir := ""
-	if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
+	if s.execSetPath != "" {
+		configDir = filepath.Dir(s.execSetPath)
+	} else if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
 		configDir = filepath.Dir(cfg.Path)
 	}
 
@@ -503,6 +512,11 @@ type artifactState struct {
 	artifactsErr  error
 	execSetOnce   sync.Once
 	execSet       *settings.Set
+	// execSetPath is the configuration file execSettings built execSet
+	// from. script.cwd=config resolves against its directory, so a
+	// reload that moves s.cfg cannot redirect a policy already in force
+	// (#2611 review).
+	execSetPath string
 }
 
 // InlineArtifact renders one artifact as an MCP resource body.
