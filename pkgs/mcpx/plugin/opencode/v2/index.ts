@@ -53,7 +53,11 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   void readRememberedDaemon(ctx.storage, directory).catch(() => undefined);
 
   ctx.session.hook("context", (input) => {
-    appendContextOnce(input);
+    // The paragraph is gated on plugin.instructions, off by default,
+    // exactly as v1's system transform was: prompt content is paid on
+    // every request, so it is opt-in help. The environment send below
+    // is NOT gated — session identity is plumbing, not help.
+    if (options.instructions) appendContextOnce(input);
     // First sighting of a session is when its environment is sent — once,
     // with the full environment (session-env.ts explains why full).
     void sessionEnv

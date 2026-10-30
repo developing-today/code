@@ -66,14 +66,15 @@ const truthy = (v: unknown): boolean | undefined => {
  * v1 applied to its discovery ladder), carried beside the options
  * because tools.ts's ladder is its only consumer in this tree.
  *
- * Still unresolved here, deliberately: instructions / env / headless.
- * The v2 core has no consumer for them yet — instructions rode v1's
- * system transform (the context hook's paragraph is unconditional in
- * this tree), env sized v1's shell.env payload (the v2 environment
- * route sends the full env by design, §3), and headless gated v1's
- * toasts (the v2 context slice has no TUI channel). Resolving a
- * setting nothing reads would be the declared-but-unread bug in a
- * new costume.
+ * Still unresolved here, deliberately: env / headless. The v2 core
+ * has no consumer for them yet — env sized v1's shell.env payload
+ * (the v2 environment route sends the full env by design, §3), and
+ * headless gated v1's toasts (the v2 context slice has no TUI
+ * channel). Resolving a setting nothing reads would be the
+ * declared-but-unread bug in a new costume. (instructions was on
+ * this list until the tools slice: the context hook now gates its
+ * paragraph on it, exactly as v1's system transform did, so it is
+ * resolved above.)
  */
 export type ResolvedOptions = Options & { discoveryRetryMs?: number };
 
@@ -99,6 +100,7 @@ export function resolveOptions(
       "session") as Options["remember"],
     env: (str(o.env) ?? str(env.MCPX_PLUGIN_ENV)) as Options["env"],
     tools: o.tools ?? truthy(env.MCPX_PLUGIN_TOOLS) ?? false,
+    instructions: o.instructions ?? truthy(env.MCPX_PLUGIN_INSTRUCTIONS) ?? false,
     daemonTools: o.daemonTools ?? truthy(env.MCPX_PLUGIN_DAEMON_TOOLS),
     annotate: o.annotate ?? truthy(env.MCPX_PLUGIN_ANNOTATE) ?? true,
     toolTiming: o.toolTiming ?? truthy(env.MCPX_PLUGIN_TOOL_TIMING) ?? false,

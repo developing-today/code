@@ -11,6 +11,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { Candidate, Discovery, Target } from "../mcpx/daemon.ts";
+import { setupMcpxV2, type McpxV2Context } from "./index.ts";
 import type { StorageLike } from "./remember.ts";
 import {
   createToolRuntime,
@@ -58,7 +59,7 @@ const socketTarget: Target = { kind: "socket", path: "/tmp/m.sock" };
 
 const candidate = (target: Target): Candidate => ({
   target,
-  source: "info",
+  source: "info-file",
   configPath: "/cfg/mcpx.json",
 });
 
@@ -67,7 +68,7 @@ const discoveryWith = (candidates: Candidate[]): Discovery => ({
   chosen: candidates[0],
   candidates,
   rung: 2,
-  reason: "only",
+  reason: "info-file",
   ambiguous: candidates.length > 1,
 });
 
@@ -136,6 +137,48 @@ describe("registration (tool.transform)", () => {
     });
     expect(names).toContain("mcpx_daemon_status");
     expect(names).not.toContain("mcpx_exec");
+  });
+});
+
+describe("setup: instructions gate (plugin.instructions)", () => {
+  const stubCtx = (): {
+    ctx: McpxV2Context;
+    fireContext: (sessionID: string) => { system: unknown[] };
+  } => {
+    let contextFn: ((input: never) => void) | undefined;
+    const ctx: McpxV2Context = {
+      storage: stubStorage(),
+      directory: "/work",
+      session: {
+        hook: (_name, fn) => {
+          contextFn = fn as (input: never) => void;
+        },
+      },
+      tool: {
+        hook: () => {},
+        transform: async () => ({}),
+      },
+    };
+    return {
+      ctx,
+      fireContext: (sessionID) => {
+        const input = { sessionID, system: [] as unknown[] };
+        contextFn!(input as never);
+        return input;
+      },
+    };
+  };
+
+  test("paragraph stays out when instructions is off (the default)", async () => {
+    const { ctx, fireContext } = stubCtx();
+    await setupMcpxV2(ctx, { tools: false, daemonTools: false });
+    expect(fireContext("s1").system.length).toBe(0);
+  });
+
+  test("paragraph is appended when instructions is on", async () => {
+    const { ctx, fireContext } = stubCtx();
+    await setupMcpxV2(ctx, { tools: false, daemonTools: false, instructions: true });
+    expect(fireContext("s1").system.length).toBe(1);
   });
 });
 
