@@ -649,6 +649,13 @@
       "note": "lessons learned while building mcpx: verification and diagnostics traps"
     },
     {
+      "path": "docs/SUMMARY.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 105,
+      "note": "mdBook navigation index for the .#mcpx-docs book (#1939 Approach C); the generator reads it, it is not a chapter"
+    },
+    {
       "path": "internal/mcpspec/schema/README.md",
       "chapter": null,
       "role": "not-compendium",
