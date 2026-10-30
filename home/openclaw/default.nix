@@ -331,27 +331,15 @@ in
           main = {
             name = "OpenClaw (laptop node)";
           };
-          # ACP-runtime agent (#2229 mechanism 1): this agent's turns run
-          # in the OpenCode harness over acpx, so OpenClaw can dispatch
-          # work to OpenCode as a standing capability, not only from
-          # chat-channel sessions. OpenCode's own default model is the
-          # workhorse route (opencode-route/workhorse); a run can set the
-          # route explicitly. Mode "oneshot" = one fresh ACP session per
-          # task. Heartbeat cadence off: dispatch is explicit, this agent
-          # must never wake itself into OpenCode hourly.
-          opencode-acp = {
-            name = "OpenCode (ACP harness)";
-            heartbeat.every = "0m";
-            runtime = {
-              type = "acp";
-              acp = {
-                agent = "opencode";
-                backend = "acpx";
-                mode = "oneshot";
-                cwd = homeDir;
-              };
-            };
-          };
+          # The ACP-runtime agent entry (opencode-acp, #2229 mechanism 1)
+          # is removed for now: the nix-openclaw generated schema types an
+          # entry's runtime as a oneOf of two submodules, and under the
+          # pinned nixpkgs the acp branch is unreachable, so any entry
+          # using it fails the whole configuration evaluation. Full
+          # analysis and the minimal reproduction: code#2509. Restore the
+          # entry (tracked by #2256) once the schema can express it. The
+          # ACP capability itself (acp block below: enabled, allowedAgents,
+          # acpx plugin) is unaffected.
         };
       };
 
