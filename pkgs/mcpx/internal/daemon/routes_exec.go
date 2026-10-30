@@ -203,6 +203,7 @@ func (s *Server) ExecService() *execsvc.Service {
 		Endpoint:  s.endpoint,
 		Socket:    s.paths.Socket,
 		ConfigDir: configDir,
+		Calls:     s.callRegistry(),
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
