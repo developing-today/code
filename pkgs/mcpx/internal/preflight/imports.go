@@ -515,6 +515,29 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 			}
 			i++
 		case c == '\'' || c == '"' || c == '`':
+			if c == '`' {
+				// A template's literal text is not code, but its
+				// ${...} interpolations are executable expressions:
+				// scan each one (recursively, with positions remapped
+				// into this file) or a computed import inside one is
+				// silently missed (Codex review, PR #2575).
+				end, spans := scanTemplateIn(src, i)
+				for _, sp := range spans {
+					_, inner := scanSource(src[sp[0]:sp[1]])
+					baseLine, baseChar := pos(sp[0])
+					for _, d := range inner {
+						d.Line += baseLine - 1
+						if d.Line == baseLine {
+							d.Character += baseChar - 1
+						}
+						dynamics = append(dynamics, d)
+					}
+				}
+				prevWord = ""
+				prevValue = true
+				i = end
+				continue
+			}
 			end, content := readStringIn(src, i)
 			if prevWord == "from" || prevWord == "import" {
 				addBare(content)
@@ -525,7 +548,7 @@ func scanSource(src string) (bare []string, dynamics []DynamicImport) {
 		case isIdentStartIn(c):
 			word, next := readIdentIn(src, i)
 			if (word == "import" || word == "require") && !precededByDot(src, i) {
-				j := skipSpaceIn(src, next)
+				j := skipSpaceAndCommentsIn(src, next)
 				if j < len(src) && src[j] == '(' {
 					line, char := pos(i)
 					dyn, lit, after := scanCallArg(src, j, word, line, char)
@@ -616,8 +639,75 @@ func scanRegexIn(src string, off int) (int, bool) {
 // scanCallArg inspects the argument of import(/require( starting at the
 // opening parenthesis. A plain string literal is a static edge (returned as
 // lit); anything else is a computed edge (returned as dyn).
+// skipSpaceAndCommentsIn skips whitespace and comments: both can appear
+// between a callee and its argument, and inside the argument list, where
+// whitespace-only skipping misclassifies the call (Codex review, PR
+// #2575: import(/* webpackIgnore: true */ "./x") is a literal import;
+// import("./" /* c */ + name) is a computed one).
+func skipSpaceAndCommentsIn(src string, i int) int {
+	for i < len(src) {
+		if isSpaceIn(src[i]) {
+			i++
+			continue
+		}
+		if src[i] == '/' && i+1 < len(src) && (src[i+1] == '/' || src[i+1] == '*') {
+			i = skipCommentIn(src, i)
+			continue
+		}
+		return i
+	}
+	return i
+}
+
+// scanTemplateIn returns the index just past the template literal
+// starting at i (src[i] == '`') and the [start, end) spans of its ${...}
+// interpolation expressions, whose contents are code even though the
+// surrounding literal text is not.
+func scanTemplateIn(src string, i int) (int, [][2]int) {
+	var spans [][2]int
+	for j := i + 1; j < len(src); {
+		switch src[j] {
+		case '\\':
+			j += 2
+		case '`':
+			return j + 1, spans
+		case '$':
+			if j+1 >= len(src) || src[j+1] != '{' {
+				j++
+				continue
+			}
+			start := j + 2
+			depth := 1
+			k := start
+			for k < len(src) && depth > 0 {
+				switch {
+				case src[k] == '\'' || src[k] == '"':
+					k, _ = readStringIn(src, k)
+				case src[k] == '`':
+					k, _ = scanTemplateIn(src, k)
+				case src[k] == '/' && k+1 < len(src) && (src[k+1] == '/' || src[k+1] == '*'):
+					k = skipCommentIn(src, k)
+				case src[k] == '{':
+					depth++
+					k++
+				case src[k] == '}':
+					depth--
+					k++
+				default:
+					k++
+				}
+			}
+			spans = append(spans, [2]int{start, k - 1})
+			j = k
+		default:
+			j++
+		}
+	}
+	return len(src), spans
+}
+
 func scanCallArg(src string, open int, kind string, line, char int) (dyn *DynamicImport, lit string, after int) {
-	j := skipSpaceIn(src, open+1)
+	j := skipSpaceAndCommentsIn(src, open+1)
 	if j >= len(src) {
 		return nil, "", len(src)
 	}
@@ -627,7 +717,7 @@ func scanCallArg(src string, open int, kind string, line, char int) (dyn *Dynami
 		// A literal followed by + is a concatenation -- computed, not a
 		// static edge -- and a template with interpolation is computed
 		// wherever it stands.
-		k := skipSpaceIn(src, end)
+		k := skipSpaceAndCommentsIn(src, end)
 		computed := src[j] == '`' && strings.Contains(content, "${")
 		if k < len(src) && src[k] == '+' {
 			computed = true

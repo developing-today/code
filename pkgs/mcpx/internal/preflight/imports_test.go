@@ -227,6 +227,41 @@ func TestScanDynamicImportsFindsImportBetweenDivisions(t *testing.T) {
 	}
 }
 
+// Codex round 3 on PR #2575: comments inside an import() argument list
+// are not part of the argument -- a commented literal stays literal, and
+// a comment before a + does not hide the concatenation.
+func TestScanDynamicImportsClassifiesCommentedArguments(t *testing.T) {
+	src := "import(/* webpackIgnore: true */ \"./literal.ts\");\n"
+	if dyn := preflight.ScanDynamicImports("a.ts", src); len(dyn) != 0 {
+		t.Fatalf("a literal import with a leading comment is static, got %+v", dyn)
+	}
+	src2 := "import(\"./\" /* comment */ + name);\n"
+	if dyn := preflight.ScanDynamicImports("b.ts", src2); len(dyn) != 1 {
+		t.Fatalf("the concatenation behind the comment is computed, got %+v", dyn)
+	}
+}
+
+// Codex round 3 on PR #2575: a template literal's text is not code, but
+// its ${...} interpolations are -- a computed import inside one must be
+// found, at its real position in the file.
+func TestScanDynamicImportsFindsImportsInTemplateInterpolations(t *testing.T) {
+	src := "const text = `${await import(name)}`;\n"
+	dyn := preflight.ScanDynamicImports("a.ts", src)
+	if len(dyn) != 1 || dyn[0].Kind != "import" || dyn[0].Line != 1 {
+		t.Fatalf("the interpolated import should be found on line 1, got %+v", dyn)
+	}
+	src2 := "const text = `line one\n${import(name)}`;\n"
+	dyn2 := preflight.ScanDynamicImports("b.ts", src2)
+	if len(dyn2) != 1 || dyn2[0].Line != 2 {
+		t.Fatalf("the interpolated import should be found on line 2, got %+v", dyn2)
+	}
+	// A template with no interpolation hides nothing and reports nothing.
+	src3 := "const text = `import(name)`;\n"
+	if dyn := preflight.ScanDynamicImports("c.ts", src3); len(dyn) != 0 {
+		t.Fatalf("template literal text is not code, got %+v", dyn)
+	}
+}
+
 // Codex on PR #2575: the graph check must run with the executing
 // runtime's resolution configuration. Only resolution flags are
 // forwarded, in both forms; run-only flags are left behind.
