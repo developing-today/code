@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { DaemonClient } from "./daemon.ts"
+import { DaemonClient, renderExec } from "./daemon.ts"
 import { buildRequest, OpError, OPS } from "./ops.gen.ts"
 
 type Seen = { method: string; path: string; type: string | null; body: Uint8Array }
@@ -130,6 +130,116 @@ describe("DaemonOps against a fake daemon", () => {
   })
 })
 
+describe("DaemonClient.exec", () => {
+  // The daemon's own answer: a bare execsvc.Result, no { result } envelope and
+  // no `output` field. A plugin that reads `output` renders nothing useful and
+  // dumps this whole document into the model's context instead.
+  const result = {
+    runId: "r-1",
+    result: { printed: 2 },
+    emits: [{ kind: "progress" }],
+    logs: [],
+    stdout: "two\n",
+    artifacts: [],
+    exitCode: 0,
+    durationMs: 12,
+  }
+
+  test("sends the session under options.session, where the route reads it", async () => {
+    const { client, seen } = fake(() => Response.json(result))
+    await client.exec("console.log(2)", "ses_abc")
+    expect(seen[0].method).toBe("POST")
+    expect(seen[0].path).toBe("/v1/exec")
+    expect(JSON.parse(text(seen[0].body))).toEqual({
+      source: "console.log(2)",
+      options: { output: "structured", session: "ses_abc" },
+    })
+  })
+
+  test("names no session when the caller has none", async () => {
+    const { client, seen } = fake(() => Response.json(result))
+    await client.exec("console.log(2)")
+    expect(JSON.parse(text(seen[0].body))).toEqual({
+      source: "console.log(2)",
+      options: { output: "structured" },
+    })
+  })
+
+  test("answers with the Result itself, not an envelope", async () => {
+    const { client } = fake(() => Response.json(result))
+    const res = await client.exec("console.log(2)", "s-1")
+    expect(res?.runId).toBe("r-1")
+    expect(res?.stdout).toBe("two\n")
+    expect(res?.exitCode).toBe(0)
+  })
+
+  test("two execs in one session carry the same session, and another session differs", async () => {
+    // The session is what the daemon leases a pooled instance by, so a
+    // plugin that drops it routes every script to whichever instance is free.
+    const seenSessions: Array<string | undefined> = []
+    const { client } = fake((s) => {
+      const body = JSON.parse(text(s.body)) as { options?: { session?: string } }
+      seenSessions.push(body.options?.session)
+      return Response.json({ ...result, runId: `run-${seenSessions.length}` })
+    })
+    const one = await client.exec("first", "ses_one")
+    const two = await client.exec("second", "ses_one")
+    const other = await client.exec("third", "ses_two")
+    expect(seenSessions).toEqual(["ses_one", "ses_one", "ses_two"])
+    expect([one?.runId, two?.runId, other?.runId]).toEqual(["run-1", "run-2", "run-3"])
+  })
+
+  test("a daemon with no /v1/exec is a version difference, not a failure", async () => {
+    const { client } = fake(() => new Response("not found", { status: 404 }))
+    expect(await client.exec("console.log(1)", "s-1")).toBeUndefined()
+  })
+
+  test("a real refusal still throws", async () => {
+    const { client } = fake(() => Response.json({ error: "a server is waiting on a secret" }, { status: 409 }))
+    const err = await client.exec("console.log(1)", "s-1").catch((e) => e)
+    expect(err).toBeInstanceOf(OpError)
+    expect((err as OpError).status).toBe(409)
+    expect(String(err)).toContain("waiting on a secret")
+  })
+})
+
+describe("renderExec", () => {
+  test("prints the script's value, its emits, and its stdout", () => {
+    const out = renderExec({
+      result: { ok: true },
+      emits: [{ progress: 1 }],
+      stdout: "hello",
+      exitCode: 0,
+    })
+    expect(out).toContain('"ok": true')
+    expect(out).toContain('"progress":1')
+    expect(out).toContain("hello")
+    expect(out.indexOf("hello")).toBeGreaterThan(out.indexOf('"ok"'))
+  })
+
+  test("a string result is the text, not a quoted JSON string", () => {
+    expect(renderExec({ result: "done", exitCode: 0 })).toBe("done")
+  })
+
+  test("the invented output field is never rendered", () => {
+    // No execsvc.Result has ever had `output`; reading it was the defect.
+    const out = renderExec({ result: "kept", output: "dropped" } as never)
+    expect(out).toBe("kept")
+    expect(out).not.toContain("dropped")
+  })
+
+  test("says so rather than printing nothing", () => {
+    expect(renderExec({ exitCode: 0 })).toBe("(no output)")
+  })
+
+  test("a failure is visible even when the script also printed", () => {
+    const out = renderExec({ error: "boom", stdout: "half way", exitCode: 1 })
+    expect(out).toContain("boom")
+    expect(out).toContain("half way")
+    expect(out).toContain("exit 1")
+  })
+})
+
 // The live half. The Go test TestThePluginSuiteRunsAgainstARealDaemon starts
 // a daemon with one fake server and passes its socket.
 const live = process.env.OPS_LIVE_SOCKET
@@ -150,6 +260,28 @@ describe.skipIf(!live)("DaemonOps against a real daemon", () => {
     const res = await client().call("demo", "echo", { message: "through the plugin" })
     expect(JSON.stringify(res)).toContain("through the plugin")
   })
+
+  test("exec carries a session, and what one exec did is there for the next", async () => {
+    // #1910 defects 2+3: the plugin sent no session, so every script ran on
+    // whichever pooled instance was free, and it read an `output` field the
+    // daemon does not send, so the answer was the whole Result document.
+    const c = client()
+    const session = "s-exec-round-trip"
+    const marker = `mark-${process.pid}-${Date.now()}`
+
+    const first = await c.exec(
+      `const r = await demo.open({ value: ${JSON.stringify(marker)} }); console.log(JSON.stringify(r))`,
+      session,
+    )
+    expect(first).toBeDefined()
+    expect(first?.runId).toBeTruthy()
+    expect(renderExec(first as NonNullable<typeof first>)).toContain("opened")
+
+    const second = await c.exec("console.log(JSON.stringify(await demo.state({})))", session)
+    expect(renderExec(second as NonNullable<typeof second>)).toContain(marker)
+    // Two script runs, each paying a runtime start; bun's 5s default covers
+    // one on a warm machine and nothing more.
+  }, 30_000)
 
   test("an artifact round-trips byte for byte", async () => {
     const c = client()
