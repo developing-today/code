@@ -2451,8 +2451,8 @@ func seedElicitation(t *testing.T, e *env, id, server, mode, schema string) {
 	}
 	defer db.Close()
 	now := time.Now().UnixMilli()
-	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, "pending", 1); err != nil {
+	if _, err := db.Exec(`INSERT OR REPLACE INTO elicitations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, "cal-x", "", "s1", server, "tool", mode, "which one?", schema, "", "", "", now, now+120000, now, "pending", 1); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 }
