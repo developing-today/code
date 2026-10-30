@@ -101,6 +101,8 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Guarded by .github/scripts/check-openclaw-unit-wants.sh (#2581): a
+  # proxy unit in Wants that the guard's allowlist does not name fails
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
