@@ -127,8 +127,16 @@ func looksRunnable(arg string) string {
 func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 	app := &App{Version: Version, Paths: daemon.ResolvePaths(), environ: env}
 	// Script resolution is reached from places that do not carry an App, so
-	// it is told once where to read settings from.
+	// it is told once where to read settings from. The plumbing source is a
+	// package global (clientSettings consults it too), so scope it to this
+	// invocation like the paths-config seed below: an in-process caller
+	// would otherwise leak its settings -- its env layer included -- into
+	// every later client built in the same process. That leak is what the
+	// stress suite caught: a Run test setting MCPX_DAEMON_AUTOSTART=false
+	// left later EnsureDaemon tests reading autostart as off.
+	prevPlumbing := plumbingApp
 	SetPlumbingSource(app)
+	defer SetPlumbingSource(prevPlumbing)
 
 	// The --paths-config seed is a package global in config (it has to
 	// be captured before any settings exist), so an in-process caller

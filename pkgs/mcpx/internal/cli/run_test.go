@@ -309,3 +309,21 @@ func TestRunPathsConfigSeedDoesNotLeak(t *testing.T) {
 	}
 	t.Cleanup(func() { config.SetPathsConfigSeed(nil) })
 }
+
+// Regression (stress suite, PR #2714): Run installed its App as the
+// package plumbing source and never restored it, so every later
+// in-process client inherited the Run invocation's settings -- a Run
+// test whose env set MCPX_DAEMON_AUTOSTART=false left subsequent
+// EnsureDaemon tests reading daemon.autostart as off. The plumbing
+// source is scoped to the invocation, like the paths-config seed.
+func TestRunRestoresPlumbingSource(t *testing.T) {
+	before := plumbingApp
+	var out, errOut bytes.Buffer
+	code := Run(context.Background(), []string{"--version"}, Env{}, Stdio{Out: &out, Err: &errOut})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr: %s)", code, errOut.String())
+	}
+	if plumbingApp != before {
+		t.Fatal("Run left its App installed as the plumbing source; later in-process clients would inherit its settings")
+	}
+}
