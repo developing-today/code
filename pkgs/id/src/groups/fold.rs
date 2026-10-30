@@ -35,7 +35,7 @@ use crate::rejection::Reason;
 
 use super::delegation::{Grant, Removal, removed_member};
 use super::friendship::{Pair, friendship_id};
-use super::policy::{OnMemberRemoved, Policy, Template};
+use super::policy::{OnMemberRemoved, Policy, Removal as RemovalMode, Template};
 use super::{Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Role};
 
 /// Why an event had no effect. A refused event changes no state. It is still decided, so the
@@ -278,9 +278,9 @@ impl Projection {
     }
 
     /// Whether the grant with this event ID is in force at the head of the events (design §7.3).
-    /// A concurrent removal of its grantor voids it, a veto cuts it, and the group's mode decides
-    /// the rest. The chain above the grant is not checked here. Use the outcomes of the actions
-    /// it was meant to allow for that.
+    /// A concurrent removal of its grantor voids it under strong remove; weak remove stands it. A
+    /// veto cuts it, and the group's mode decides the rest. The chain above the grant is not
+    /// checked here. Use the outcomes of the actions it was meant to allow for that.
     pub fn grant_in_force(&self, id: &Hash) -> bool {
         self.in_force.contains(id)
     }
@@ -995,6 +995,129 @@ impl Engine {
         self.listed(group, key) && (record.friendship.is_none() || record.present.contains(key))
     }
 
+    /// Whether `key` is an active member of `group` at the causal position `after`: listed there,
+    /// and present there for a friendship. Weak remove judges an event's authority at its own
+    /// position, so an event concurrent with a removal keeps the standing its author had there
+    /// (design §6.3). This is the slow path: it does not use the membership layer's frontier memo.
+    fn is_active_at(&self, group: &Hash, record: &Record, key: &Key, after: &[Hash]) -> bool {
+        let listed = self
+            .membership
+            .access_at_position_shared(after, *group, *key)
+            .ok()
+            .flatten()
+            .is_some();
+        listed && (record.friendship.is_none() || record.present.contains(key))
+    }
+
+    /// Whether `key` is active in `group` for an event at the causal position `after`. Strong remove
+    /// reads the current state, which is what it has always done; weak remove reads the position
+    /// (design §6.3).
+    fn is_active_for(&self, group: &Hash, record: &Record, key: &Key, after: &[Hash]) -> bool {
+        if self.strong_removal(*group) {
+            self.is_active(group, record, key)
+        } else {
+            self.is_active_at(group, record, key, after)
+        }
+    }
+
+    /// The member's role in `group` at the causal position `after`, or `None` when it holds none
+    /// there. Strong remove reads the current state; weak remove reads the position, so an event
+    /// concurrent with a removal keeps its author's role there (design §6.3).
+    fn access_for(&self, group: &Hash, key: &Key, after: &[Hash]) -> Option<Role> {
+        if self.strong_removal(*group) {
+            return self.access(group, key);
+        }
+        self.membership
+            .access_at_position_shared(after, *group, *key)
+            .ok()
+            .flatten()
+            .map(|access| access_role(&access))
+            .or_else(|| self.access(group, key))
+    }
+
+    /// Whether `key` is listed in `group` for an event at the causal position `after`. Strong
+    /// remove reads the current membership; weak remove reads the position, so a device grant
+    /// whose account is removed concurrently still resolves (design §6.3).
+    fn listed_for(&self, group: &Hash, key: &Key, after: &[Hash]) -> bool {
+        if self.strong_removal(*group) {
+            return self.listed(group, key);
+        }
+        self.membership
+            .access_at_position_shared(after, *group, *key)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Whether `key` is an Admin of `group` for an event at the causal position `after`. Strong
+    /// remove reads the current record; weak remove also honours the Admin status the key held
+    /// at the position, replayed from the settled events in the event's causal past in canonical
+    /// order — a removal concurrent with the event has already struck the key from the current
+    /// record's admins, and the membership layer cannot recover the status because it records
+    /// Admin as Manage (design §6.3).
+    fn admin_for(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: &Hash,
+        key: &Key,
+        after: &[Hash],
+    ) -> bool {
+        let record = self.groups.get(group);
+        if self.strong_removal(*group) {
+            return record.is_some_and(|record| record.admins.contains(key));
+        }
+        if record.is_some_and(|record| record.admins.contains(key)) {
+            return true;
+        }
+        let past = causal_past(by_id, after);
+        let Ok(order) = canonical_order(by_id) else {
+            return false;
+        };
+        let mut admin: Option<bool> = None;
+        for event in order {
+            if !past.contains(&event.id) {
+                continue;
+            }
+            // The group's creation is never in the settled set (it is not a candidate
+            // event), but it seeds the replay: an Admin assigned at creation has no
+            // MemberOp::Add to recover the status from.
+            let is_creation = event.id == *group && matches!(event.body, Body::Create(_));
+            if !is_creation && !self.settled.contains(&event.id) {
+                continue;
+            }
+            match &event.body {
+                Body::Create(create) if event.id == *group => {
+                    admin = Some(if create.admins_on_create {
+                        event.author == *key
+                            || create
+                                .members
+                                .first()
+                                .is_some_and(|(member, _)| member == key)
+                    } else {
+                        event.author == *key
+                            || create
+                                .members
+                                .iter()
+                                .any(|(member, role)| member == key && *role == Role::Admin)
+                    });
+                }
+                Body::Member(MemberOp::Add { member, role })
+                | Body::Member(MemberOp::SetRole { member, role })
+                    if member == key && event.group == Some(*group) =>
+                {
+                    admin = Some(*role == Role::Admin);
+                }
+                Body::Member(MemberOp::Remove { member, .. })
+                    if member == key && event.group == Some(*group) =>
+                {
+                    admin = Some(false);
+                }
+                _ => {}
+            }
+        }
+        admin.unwrap_or(false)
+    }
+
     /// Resolves whether `actor` is an active authorized device for an account in `group` at `after`.
     /// Returns `Some((account, authorized_scope))` if so.
     pub(super) fn authorized_device_account(
@@ -1035,7 +1158,7 @@ impl Engine {
             if account_removed {
                 continue;
             }
-            if !self.listed(&group, &grant.account) {
+            if !self.listed_for(&group, &grant.account, after) {
                 continue;
             }
             if self.void_device(by_id, grant) {
@@ -1054,23 +1177,25 @@ impl Engine {
         event: &Event,
     ) -> Option<(Key, Role)> {
         let record = self.groups.get(&group)?;
-        if self.is_active(&group, record, &event.author) {
-            let role = if record.admins.contains(&event.author) {
+        if self.is_active_for(&group, record, &event.author, &event.after) {
+            let role = if self.admin_for(by_id, &group, &event.author, &event.after) {
                 Role::Admin
             } else {
-                self.access(&group, &event.author).unwrap_or(Role::Pull)
+                self.access_for(&group, &event.author, &event.after)
+                    .unwrap_or(Role::Pull)
             };
             Some((event.author, role))
         } else if let Some((account, device_scope)) =
             self.authorized_device_account(by_id, group, event.author, &event.after)
         {
-            if !self.is_active(&group, record, &account) {
+            if !self.is_active_for(&group, record, &account, &event.after) {
                 return None;
             }
-            let account_role = if record.admins.contains(&account) {
+            let account_role = if self.admin_for(by_id, &group, &account, &event.after) {
                 Role::Admin
             } else {
-                self.access(&group, &account).unwrap_or(Role::Pull)
+                self.access_for(&group, &account, &event.after)
+                    .unwrap_or(Role::Pull)
             };
             Some((account, account_role.min(device_scope)))
         } else {
@@ -1078,8 +1203,23 @@ impl Engine {
         }
     }
 
-    /// Whether a settled removal of the authorizing account is concurrent with the device grant.
+    /// Whether the group voids the events that are concurrent with a removal of their author: strong
+    /// remove does (design §6.2). Weak remove stands them, and only the authority check applies
+    /// (design §6.3). A group with no record yet, or with `removal = strong` (the default), voids
+    /// them. The record read is the group's current one, as with its delegation mode.
+    pub(super) fn strong_removal(&self, group: Hash) -> bool {
+        self.groups
+            .get(&group)
+            .is_none_or(|record| record.policy.removal == RemovalMode::Strong)
+    }
+
+    /// Whether a settled removal of the authorizing account is concurrent with the device grant, and
+    /// the group voids such a grant. Strong remove voids it (design §6.2). Under weak remove only
+    /// the authority check applies, so a concurrent device grant stands (design §6.3).
     fn void_device(&self, by_id: &BTreeMap<Hash, &Event>, grant: &DeviceGrant) -> bool {
+        if !self.strong_removal(grant.group) {
+            return false;
+        }
         let past_grant = causal_past(by_id, &[grant.id]);
         self.settled
             .iter()
@@ -1108,10 +1248,10 @@ impl Engine {
             Ok(record) => record,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if !self.is_active(&group, record, &event.author) {
+        if !self.is_active_for(&group, record, &event.author, &event.after) {
             return Ok(Err(Refusal::NotActive));
         }
-        let is_admin = record.admins.contains(&event.author);
+        let is_admin = self.admin_for(by_id, &group, &event.author, &event.after);
         match op {
             DeviceOp::Add { device, scope } => {
                 if device == event.author {

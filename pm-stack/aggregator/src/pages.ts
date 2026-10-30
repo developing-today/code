@@ -42,6 +42,13 @@ export interface PageDef {
 
 export const PAGES: PageDef[] = [
   {
+    id: "overview",
+    title: "Overview",
+    route: "/",
+    api: "/api/overview.json",
+    blurb: "The stack front door (#1134): needs-you, projects, quotas, and health at a glance.",
+  },
+  {
     id: "today",
     title: "Today",
     route: "/today",

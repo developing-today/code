@@ -321,6 +321,17 @@ func (b *Broker) Respond(a Answer) error {
 		(len(a.Content) == 0 || string(bytes.TrimSpace(a.Content)) == "null") {
 		return errors.New("an accepted form elicitation needs content")
 	}
+	// A sampling answer that is not a CreateMessageResult is refused here for
+	// the same reason: the question stays open for a real one instead of the
+	// upstream hearing -32602 for an answer nobody would have given. The
+	// era's content rule is not known at this point, so the permissive union
+	// is used; sampleViaBroker re-checks against the negotiated era once the
+	// answer is taken, and refuses upstream then.
+	if a.Action == Accept && r.Mode == Sample {
+		if err := ValidateSampleResult(a.Content, true, true); err != nil {
+			return err
+		}
+	}
 
 	tx, err := b.db.Begin()
 	if err != nil {

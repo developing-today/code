@@ -14,15 +14,16 @@ import { keymap } from "prosemirror-keymap";
 import {
   findNext,
   findPrev,
-  getSearchState,
   getMatchHighlights,
+  getSearchState,
   replaceAll,
   replaceNext,
   SearchQuery,
   search,
   setSearchState,
 } from "prosemirror-search";
-import type { Command, Plugin } from "prosemirror-state";
+import type { Command, EditorState } from "prosemirror-state";
+import { Plugin } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 
 /** Options for creating the search panel plugins. */
@@ -72,6 +73,20 @@ function updateMatchCount(view: EditorView): void {
   panelState.matchCountEl.textContent = total === 0 ? "No results" : `${total} match${total === 1 ? "" : "es"}`;
 }
 
+/**
+ * True when the search query or the searched range differs between states.
+ * Selection-only transactions recreate the search state object, so identity
+ * alone is not a reliable signal.
+ */
+function searchStateChanged(prevState: EditorState, state: EditorState): boolean {
+  const prev = getSearchState(prevState);
+  const next = getSearchState(state);
+  if (!prev || !next) return prev !== next;
+  if (!prev.query.eq(next.query)) return true;
+  if (!prev.range || !next.range) return prev.range !== next.range;
+  return prev.range.from !== next.range.from || prev.range.to !== next.range.to;
+}
+
 /** Push current input values into prosemirror-search state. */
 function syncQuery(view: EditorView): void {
   const searchText = panelState.searchInput?.value ?? "";
@@ -96,6 +111,7 @@ function createPanel(container: HTMLElement): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "search-panel";
   panel.setAttribute("role", "search");
+  panel.setAttribute("aria-label", "Find and replace");
 
   panel.innerHTML = `
     <div class="search-panel-row">
@@ -114,7 +130,7 @@ function createPanel(container: HTMLElement): HTMLElement {
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
       <button class="search-btn" id="replace-one" title="Replace">Replace</button>
-      <button class="search-btn" id="replace-all" title="Replace all">All</button>
+      <button class="search-btn" id="replace-all" title="Replace all" aria-label="Replace all">All</button>
     </div>
   `;
 
@@ -263,10 +279,42 @@ const openFindReplace: Command = (_state, _dispatch, view) => {
 };
 
 /**
+ * Plugin that keeps the panel's match count in sync with the document.
+ *
+ * The count is derived from prosemirror-search's decorations, which the
+ * search plugin rebuilds on document and selection changes. Without this
+ * hook the label was only refreshed by query/replace actions and went stale
+ * while the panel stayed open (#1402).
+ */
+function createMatchCountPlugin(): Plugin {
+  return new Plugin({
+    view() {
+      return {
+        update(updatedView, prevState) {
+          // The panel is a singleton bound to one view; ignore other editors
+          // and editors whose panel is closed.
+          if (!panelState.panelEl || panelState.panelEl.style.display === "none") return;
+          if (panelState.view !== updatedView) return;
+
+          // Selection-only transactions rebuild the decorations (to restyle
+          // the active match) but cannot change the count, so only recount
+          // when the document or the search itself changed.
+          if (prevState.doc.eq(updatedView.state.doc) && !searchStateChanged(prevState, updatedView.state)) {
+            return;
+          }
+          updateMatchCount(updatedView);
+        },
+      };
+    },
+  });
+}
+
+/**
  * Create the search/replace plugins.
  *
- * Returns the prosemirror-search plugin plus a keymap plugin for
- * opening/closing the search panel.
+ * Returns the prosemirror-search plugin, a keymap plugin for
+ * opening/closing the search panel, and a plugin that refreshes the
+ * panel's match count when the document or query changes.
  */
 export function createSearchPlugins(): Plugin[] {
   return [
@@ -277,6 +325,7 @@ export function createSearchPlugins(): Plugin[] {
       F3: findNext,
       "Shift-F3": findPrev,
     }),
+    createMatchCountPlugin(),
   ];
 }
 

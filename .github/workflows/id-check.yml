@@ -143,6 +143,13 @@ jobs:
       # Cache the nix store on GitHub's cache so PRs do not rebuild
       # unchanged derivations from a cold store every run (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
@@ -192,6 +199,13 @@ jobs:
           extra-conf: |
             accept-flake-config = true
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
