@@ -61,6 +61,34 @@ describe("shell contract validator", () => {
     if (!check.ok) expect(check.error).toContain(error);
   });
 
+  it("accepts u64 values at and above 2^53, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    expect(seed(2 ** 53).ok).toBe(true);
+    // u64::MAX as it arrives from wire JSON: already rounded by the parser.
+    expect(seed(JSON.parse("18446744073709551615") as number).ok).toBe(true);
+    expect(checkServerFrame(contract, { type: "view", sequence: 2 ** 53, data: "x", surface: null }).ok).toBe(true);
+    expect(checkServerFrame(contract, { type: "records", sequence: 2 ** 53, records: {} }).ok).toBe(true);
+  });
+
+  it("still enforces the u64 bounds JS can check exactly (#1441)", () => {
+    const begin = (patch: Record<string, unknown>) =>
+      checkClientFrame(
+        contract,
+        { type: "install_begin", admin_token: "a", total_bytes: 1, seed: 1, ...patch },
+        "opening",
+      );
+    expect(begin({ seed: -1 }).ok).toBe(false);
+    expect(begin({ seed: 1.5 }).ok).toBe(false);
+    expect(begin({ total_bytes: 0 }).ok).toBe(false);
+    const over = begin({ total_bytes: 16777217 });
+    expect(over.ok).toBe(false);
+    if (!over.ok) {
+      expect(over.error).toContain("16777216");
+      expect(over.error).not.toContain("9007199254740991");
+    }
+  });
+
   it("rejects a seed leaked at any depth of a server frame", () => {
     const leak = checkServerFrame(contract, { type: "event", event: { kind: { program: { seed: 7 } } } });
     expect(leak).toEqual({ ok: false, error: expect.stringContaining("leaks `seed` (7)") });
