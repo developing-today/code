@@ -66,6 +66,13 @@ type Client struct {
 	resolveSocket bool
 	// set is this process's resolved configuration.
 	set *settings.Set
+	// authToken, when authResolved is true, is the bearer token of THIS
+	// client's target daemon, resolved from the target's own
+	// configuration (targetBearerToken). Record-targeted clients
+	// (stop --all, daemons) talk to daemons other projects configured;
+	// their token is that daemon's, not the invoking project's.
+	authToken    string
+	authResolved bool
 	// callSettings is the JSON header carrying whatever call-scoped settings
 	// this invocation actually chose. Computed once: it cannot change within
 	// a run, and recomputing it per request would put a schema walk on the
@@ -125,9 +132,59 @@ func callHeader(set *settings.Set) string {
 // a caller and its daemon agree by construction. Unset, no header --
 // the request is byte-for-byte what it was before the setting existed.
 func (c *Client) authorize(req *http.Request) {
-	if tok := daemon.BearerToken(c.set); tok != "" {
+	tok := daemon.BearerToken(c.set)
+	if c.authResolved {
+		tok = c.authToken
+	}
+	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
+}
+
+// targetBearerToken resolves the bearer token of the daemon a client
+// targets through configPath (#1975, Codex on PR #2711). Clients built
+// for a recorded daemon -- stop --all, daemons -- construct through
+// NewClientAt with that daemon's config path, but a token resolved
+// from the invoking project's settings is the wrong credential for
+// another project's daemon: the probe 401s, stop silently skips a
+// live daemon, and daemons reports it stopped.
+//
+// Resolution mirrors the daemon's own: the target's configuration
+// files, then the environment. An invocation-scoped token in the
+// client's own settings (environment, preset, flag or runtime layer
+// -- anything but a file) still wins: it is the token this process
+// was told to use. A token only the invoking project's file carries
+// is NOT sent: the target daemon never saw it.
+//
+// Best effort by design: an unreadable target file resolves to no
+// token rather than failing a fleet-wide listing or stop.
+func targetBearerToken(configPath string, own *settings.Set) (string, bool) {
+	if v, ok := own.Value(daemon.BearerTokenSetting); ok &&
+		v.Origin.Layer != settings.LayerFile && v.Origin.Layer != settings.LayerDefault {
+		return v.Raw, true
+	}
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		return "", false
+	}
+	set := settings.NewSet(sch)
+	files, ferr := configFilesFarthestFirst(configPath)
+	if ferr != nil {
+		return "", false
+	}
+	for i, path := range files {
+		doc, rerr := readJSONFile(path)
+		if rerr != nil {
+			continue
+		}
+		if aerr := sch.ApplyFile(set, doc, path, i); aerr != nil {
+			return "", false
+		}
+	}
+	if eerr := sch.ApplyEnv(set, settings.Environ()); eerr != nil {
+		return "", false
+	}
+	return daemon.BearerToken(set), true
 }
 
 // NewClient builds a socket-backed API client.
@@ -150,6 +207,9 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
+	if configPath != "" {
+		c.authToken, c.authResolved = targetBearerToken(configPath, set)
+	}
 	timeout := set.Duration("http.requestTimeout")
 	idle := set.Duration("http.idleConnTimeout")
 
