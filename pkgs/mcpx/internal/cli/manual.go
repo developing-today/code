@@ -617,13 +617,15 @@ func handCommands() []Command {
 		},
 		{
 			Name: "adapter", Group: "configuration",
-			Usage:   "[list|check|call|tools|serve|add|remove] [<name>.<tool> '<json>' | <name> [file...]]",
+			Usage:   "[list|check|call|tools|serve|import|add|remove] [<name>.<tool> '<json>' | <name> [file...] | --bare <binary>]",
 			Summary: "command-line programs declared as MCP tools",
 			Detail: "An adapter file, named by paths.adapters, declares a program and " +
 				"the tools it offers. list shows them, check says whether each " +
 				"program is installed, call runs one tool, and tools prints the " +
-				"tool definitions an MCP host would see. Every adapter is also a " +
-				"namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
+				"tool definitions an MCP host would see. import --bare writes a " +
+				"passthrough declaration for a program with no declared subcommands, " +
+				"with a loud warning about what passthrough costs. Every adapter is " +
+				"also a namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
 				"so it is in mcpx ls, types, search, catalog and the generated " +
 				"client, and a script calls it as <name>.<tool>({...}). add and " +
 				"remove go through the daemon (/v1/adapters): the declaration " +
@@ -632,6 +634,7 @@ func handCommands() []Command {
 			Examples: []string{
 				"mcpx adapter check",
 				`mcpx adapter call jq.run '{"filter":"."}'`,
+				`mcpx adapter import --bare git --description "version control"`,
 				"mcpx adapter add demo --tool status -- git",
 			},
 		},
