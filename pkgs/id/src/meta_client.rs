@@ -53,9 +53,9 @@ pub fn expect_ok(resp: MetaResponse) -> Result<MetaResponse> {
 /// limit instead. Any other read failure passes through unchanged.
 pub fn capped_response_error(err: ReadToEndError) -> anyhow::Error {
     match err {
-        ReadToEndError::TooLong => {
-            anyhow::anyhow!("response too large: exceeds the {MAX_RESPONSE_BYTES}-byte limit")
-        }
+        ReadToEndError::TooLong => anyhow::anyhow!(
+            "response too large: exceeds the {MAX_RESPONSE_BYTES}-byte limit"
+        ),
         other => other.into(),
     }
 }

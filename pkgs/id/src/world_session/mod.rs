@@ -1325,8 +1325,8 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 // Authorized exactly like `info`: holding a capability
                 // that snapshots the world is enough to read its metrics.
                 let token = JoinCapability::from_wire(capability);
-                if service.world().snapshot(token).await.is_ok() {
-                    match service.world().metrics().await {
+                match service.world().snapshot(token).await {
+                    Ok(_) => match service.world().metrics().await {
                         Ok(metrics) => {
                             if !send_json(
                                 service.frame_meter(),
@@ -1343,10 +1343,11 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                                 send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                             return;
                         }
+                    },
+                    Err(_) => {
+                        let _ = send_error(service.frame_meter(), io, "join denied").await;
+                        return;
                     }
-                } else {
-                    let _ = send_error(service.frame_meter(), io, "join denied").await;
-                    return;
                 }
             }
             ClientFrame::Records {
