@@ -81,3 +81,4 @@ func TestTSNetDialerRequiresAuthKey(t *testing.T) {
 		t.Fatalf("Dial without auth key = %v; want an error naming %s", err, TSNetAuthKeyEnv)
 	}
 }
+// dummy comment to trigger CI
