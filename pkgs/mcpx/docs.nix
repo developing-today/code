@@ -3,10 +3,18 @@
 # nixpkgs and no network access. Exposed as the .#mcpx-docs flake
 # output, so CI builds it through the ordinary flake-check path like
 # every other output.
+#
+# The base URL is a derivation argument (#1941): `siteUrl` is baked
+# into the rendered book as mdBook's output.html.site-url, so a local
+# build, the CI build, and a future custom-domain build differ only in
+# that one value. The flake output uses the default "/" (the GitHub
+# Pages Actions deploy root); other deployments override the argument,
+# e.g. `mcpxDocs.override { siteUrl = "/code/"; }`.
 {
   lib,
   runCommand,
   mdbook,
+  siteUrl ? "/",
 }:
 let
   # Only the book inputs enter the store: book.toml plus the docs tree.
@@ -47,5 +55,7 @@ runCommand "mcpx-docs"
       "s|](\.\./|](''${repoURL}|g" {} +
     find docs -mindepth 2 -maxdepth 2 -name '*.md' -exec sed -i \
       "s|](\.\./\.\./|](''${repoURL}|g" {} +
+    # Bake the base URL into the book (see the siteUrl argument above).
+    export MDBOOK_OUTPUT__HTML__SITE_URL="${siteUrl}"
     mdbook build --dest-dir $out
   ''

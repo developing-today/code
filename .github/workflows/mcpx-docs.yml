@@ -12,10 +12,11 @@ name: mcpx docs
 # HTML is ever committed, and no extra repository or secret is needed.
 #
 # The build is the flake output .#mcpx-docs (pkgs/mcpx/docs.nix, from
-# #1939 / PR #2629): the same `nix build` locally and in CI. The output
-# does not yet accept a base-URL / site-url argument, so local and CI
-# builds are identical rather than differing only in that value; the
-# plumbing note is filed back on #1939.
+# #1939 / PR #2629): the same `nix build` locally and in CI. The
+# derivation takes the base URL as its `siteUrl` argument (default "/",
+# the Pages Actions deploy root), baked in as mdBook's site-url — so
+# local, CI, and any future custom-domain build differ only in that
+# one value (#1941).
 
 on:
   pull_request:
