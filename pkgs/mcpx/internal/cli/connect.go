@@ -92,7 +92,7 @@ func (a *App) Connect(ctx context.Context, opt ConnectOptions) (*Client, *Ladder
 	if opt.Endpoint != "" {
 		start := time.Now()
 		c := NewClientAt(paths, a.ConfigPath, opt.Endpoint)
-		if c.Ping(ctx) {
+		if c.reachable(ctx) {
 			record("url", opt.Endpoint, start, nil)
 			l.Chosen = "url"
 			return c, l, nil

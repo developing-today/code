@@ -56,7 +56,20 @@ func (a *App) CmdStdioProxy(ctx context.Context, args []string) error {
 	}
 	defer conn.Close()
 
-	return pipeConn(conn, os.Stdin, os.Stdout)
+	return proxyPipe(ctx, conn, os.Stdin, os.Stdout)
+}
+
+// proxyPipe pipes between the daemon socket and the session's stdio,
+// ending when the caller's ctx does. pipeConn alone blocks in io.Copy
+// once dialling is done, so a SIGINT/SIGTERM delivered through main's
+// signal.NotifyContext would leave the proxy alive indefinitely on a
+// streaming response (the daemon streams /v1/events until the
+// connection closes). Closing the socket on cancellation is what makes
+// the copy return.
+func proxyPipe(ctx context.Context, conn net.Conn, in io.Reader, out io.Writer) error {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	return pipeConn(conn, in, out)
 }
 
 // pipeConn copies in to conn and conn to out until the far end closes.

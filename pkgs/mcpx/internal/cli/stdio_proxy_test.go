@@ -72,3 +72,25 @@ func TestStdioProxyNamesTheSocket(t *testing.T) {
 		}
 	}
 }
+
+// Cancellation ends the proxy even when the daemon never sends another
+// byte and never closes: the ctx-triggered socket close is the only
+// thing that can interrupt the copy.
+func TestProxyPipeStopsOnContextCancel(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- proxyPipe(ctx, client, strings.NewReader(""), io.Discard)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("proxyPipe kept piping after its context was cancelled")
+	}
+}

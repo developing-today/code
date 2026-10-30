@@ -407,6 +407,22 @@ func (c *Client) Ping(ctx context.Context) bool {
 	return err == nil
 }
 
+// reachable is Ping with the ssh:// fallback EnsureDaemon has always had:
+// an ssh handshake can legitimately take longer than
+// autostart.pingTimeout, so a timed-out Ping is retried once as a plain
+// health request bounded only by the caller's ctx before the daemon is
+// declared unreachable. Non-ssh endpoints get Ping exactly.
+func (c *Client) reachable(ctx context.Context) bool {
+	if c.Ping(ctx) {
+		return true
+	}
+	if c.ssh == nil {
+		return false
+	}
+	_, err := c.do(ctx, http.MethodGet, "/v1/health", nil)
+	return err == nil
+}
+
 // EnsureDaemon starts a background daemon if one is not already running and
 // waits for it to become reachable. This is what makes every command work with
 // no setup step.
@@ -422,7 +438,7 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		// Starting a local daemon because a remote one is unreachable would
 		// silently answer from the wrong machine, which is worse than
 		// failing.
-		if c.Ping(ctx) {
+		if c.reachable(ctx) {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {

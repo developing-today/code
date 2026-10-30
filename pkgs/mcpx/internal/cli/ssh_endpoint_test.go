@@ -208,3 +208,30 @@ func socketPathFor(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "should-not-be-used.sock")
 }
+
+// The CLI connection ladder gets the same slow-handshake fallback as
+// EnsureDaemon: Connect's named-endpoint rung used to Ping once, so a
+// first ssh handshake slower than autostart.pingTimeout (2s) made every
+// ordinary command report a reachable daemon as dead. The fake ssh
+// sleeps 3s on its first invocation only; the fallback health request
+// dials again and answers at once.
+func TestSSHConnectFallsBackPastSlowHandshake(t *testing.T) {
+	sock := testSocketServer(t)
+	t.Setenv("MCPX_TEST_SSH_SOCK", sock)
+	marker := filepath.Join(t.TempDir(), "ssh.slowed")
+	t.Setenv("MCPX_TEST_SSH_SLOW", marker)
+	fakeSSH(t, "#!/bin/sh\n"+
+		"if [ ! -f \"$MCPX_TEST_SSH_SLOW\" ]; then : > \"$MCPX_TEST_SSH_SLOW\"; sleep 3; fi\n"+
+		"exec \""+os.Args[0]+"\" -test.run '^TestSSHShimProcess$' -- shim\n")
+
+	a := &App{Paths: daemon.Paths{State: t.TempDir(), Socket: socketPathFor(t)}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c, ladder, err := a.Connect(ctx, ConnectOptions{Endpoint: "ssh://buildbox"})
+	if err != nil {
+		t.Fatalf("Connect over a slow ssh handshake: %v\n%s", err, ladder.Describe())
+	}
+	if c == nil || ladder.Chosen != "url" {
+		t.Fatalf("Connect chose %q; want the named ssh endpoint", ladder.Chosen)
+	}
+}
