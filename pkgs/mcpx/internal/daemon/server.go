@@ -768,6 +768,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/restart", s.handleRestart)
 	mux.HandleFunc("GET /dashboard", s.handleDashboard)
 	mux.HandleFunc("GET /v1/dashboard", s.handleDashboard)
+	mux.HandleFunc("GET /dashboard/", s.handleDashboardAsset)
+	mux.HandleFunc("GET /v1/dashboard/", s.handleDashboardAsset)
 	mux.HandleFunc("GET /v1/metrics/tokens", s.handleMetricsTokens)
 	mux.HandleFunc("GET /v1/metrics/tools", s.handleMetricsTools)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)

@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/dezren39/mcpx/internal/settings"
 )
 
 func TestHandleDashboard(t *testing.T) {
@@ -26,6 +28,97 @@ func TestHandleDashboard(t *testing.T) {
 	}
 	if !strings.Contains(body, "1.2.3") {
 		t.Errorf("expected version 1.2.3 in dashboard badge")
+	}
+}
+
+func TestHandleDashboardGating(t *testing.T) {
+	set := func(overrides map[string]string) *settings.Set {
+		t.Helper()
+		sch, err := settings.New(settings.Registry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return settings.NewSet(sch).WithOverrides(overrides, "test")
+	}
+	cases := []struct {
+		name      string
+		overrides map[string]string
+		want      int
+	}{
+		{"default bind keeps the page", nil, http.StatusOK},
+		{"off answers 404", map[string]string{"daemon.ui": "false"}, http.StatusNotFound},
+		{"widened bind hides the inherited default", map[string]string{"daemon.address": "0.0.0.0"}, http.StatusNotFound},
+		{"widened bind serves when asked", map[string]string{"daemon.address": "0.0.0.0", "daemon.ui": "true"}, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{version: "1.2.3", set: set(tc.overrides)}
+			w := httptest.NewRecorder()
+			s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+			if w.Code != tc.want {
+				t.Fatalf("expected %d, got %d", tc.want, w.Code)
+			}
+		})
+	}
+}
+
+func TestHandleDashboardDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<p>external ui</p>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.css"), []byte("body{color:red}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{version: "1.2.3", set: settings.NewSet(sch).WithOverrides(map[string]string{
+		"daemon.uiDir": dir,
+	}, "test")}
+
+	// The page itself replaces the embedded one.
+	w := httptest.NewRecorder()
+	s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "external ui") {
+		t.Fatalf("expected the override index.html, got %d: %q", w.Code, w.Body.String())
+	}
+
+	// Files beside it are served for relative links.
+	w = httptest.NewRecorder()
+	s.handleDashboardAsset(w, httptest.NewRequest(http.MethodGet, "/dashboard/app.css", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "color:red") {
+		t.Fatalf("expected app.css, got %d: %q", w.Code, w.Body.String())
+	}
+
+	// The directory route is page-shaped without the prefix too.
+	w = httptest.NewRecorder()
+	s.handleDashboardAsset(w, httptest.NewRequest(http.MethodGet, "/v1/dashboard/", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "external ui") {
+		t.Fatalf("expected index.html for the bare directory, got %d", w.Code)
+	}
+
+	// A traversal stays inside the directory.
+	w = httptest.NewRecorder()
+	s.handleDashboardAsset(w, httptest.NewRequest(http.MethodGet, "/dashboard/../../../etc/passwd", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for traversal, got %d", w.Code)
+	}
+}
+
+func TestHandleDashboardDirMissing(t *testing.T) {
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{set: settings.NewSet(sch).WithOverrides(map[string]string{
+		"daemon.uiDir": filepath.Join(t.TempDir(), "gone"),
+	}, "test")}
+	w := httptest.NewRecorder()
+	s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a missing uiDir, got %d", w.Code)
 	}
 }
 

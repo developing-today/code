@@ -482,6 +482,32 @@ func daemonSettings() []Setting {
 			Commands: []string{"daemon"},
 		},
 		{
+			Path: "daemon.ui", Kind: KindBool, Default: "true",
+			Scope: ScopeDaemon, FlagAliases: []string{"ui"},
+			Name:  "Web dashboard",
+			Short: "serve the dashboard page at /dashboard",
+			Long: "The embedded page is served on the loopback bind the daemon " +
+				"uses unless somebody widened it. Set daemon.address beyond " +
+				"loopback and the page is served only when this was asked for " +
+				"explicitly, because the API is unauthenticated: widening the " +
+				"bind should not also expose a UI nobody chose to publish. " +
+				"`mcpx dashboard` keeps working on the default bind. Setting " +
+				"it to false removes the route entirely and /dashboard answers " +
+				"404.",
+		},
+		{
+			Path: "daemon.uiDir", Kind: KindString, Default: "",
+			Scope: ScopeDaemon, FlagAliases: []string{"ui-dir"},
+			Name:  "Dashboard directory",
+			Short: "serve your own pages instead of the embedded dashboard",
+			Long: "When set, /dashboard serves index.html and everything beside it " +
+				"from this directory, so a frontend can be edited without " +
+				"rebuilding the binary. A ~ prefix is expanded to the home " +
+				"directory. Empty keeps the embedded single-file page, which " +
+				"is what a stock install should get: one nix derivation and no " +
+				"second build system.",
+		},
+		{
 			Path: "daemon.inline", Kind: KindBool, Default: "false",
 			Scope: ScopeClient,
 			Name:  "Run without a daemon",
