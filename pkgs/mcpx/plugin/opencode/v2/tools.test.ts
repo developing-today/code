@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { rank, targetKey, type Candidate, type Discovery, type DiscoverOptions, type Target } from "../mcpx/daemon.ts";
 import { resolveOptions } from "./options.ts";
 import { setupMcpxV2, type McpxV2Context } from "./index.ts";
-import type { StorageLike } from "./remember.ts";
+import { rememberDaemon, type StorageLike } from "./remember.ts";
 import {
   createToolRuntime,
   registerTools,
@@ -81,6 +81,7 @@ const fakeClient = (over: Partial<DaemonClientLike> = {}): DaemonClientLike => (
   stats: async () => ({ rows: [] }),
   putSetting: async () => "ok",
   shutdown: async () => true,
+  record: async () => ({}),
   ...over,
 });
 
@@ -229,6 +230,55 @@ describe("discovery ladder wiring", () => {
     );
     await select.execute({ candidate: idx } as never, { sessionID: "s1" });
     expect(targets).toEqual([socketTarget, other]);
+  });
+});
+
+describe("rediscovery precedence", () => {
+  test("a session choice survives a transient failure — stored daemon does not reclaim it", async () => {
+    const storage = stubStorage();
+    const stored: Target = { kind: "socket", path: "/tmp/stored.sock" };
+    const picked: Target = { kind: "socket", path: "/tmp/picked.sock" };
+    await rememberDaemon(storage, "/work", stored);
+    const rememberedSeen: (string | undefined)[] = [];
+    let failExec = false;
+    const rt = runtime({
+      storage,
+      options: {
+        backend: "auto",
+        remember: "session",
+        annotate: true,
+        discoveryRetryMs: 0,
+      },
+      discoverFn: async (opts: DiscoverOptions) => {
+        rememberedSeen.push(opts.remembered ? targetKey(opts.remembered) : undefined);
+        return discoveryWith([candidate(stored), candidate(picked)]);
+      },
+      clientFor: () =>
+        fakeClient({
+          exec: async () => {
+            if (failExec) throw new Error("daemon went away");
+            return { output: "ok" };
+          },
+        }),
+    });
+    // Boot: the stored daemon is what discovery settles on.
+    await rt.look();
+    // The user picks the other daemon for this session.
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    const idx = rank([candidate(stored), candidate(picked)], "/work").findIndex(
+      (c) => targetKey(c.target) === targetKey(picked),
+    );
+    await select.execute({ candidate: idx } as never, { sessionID: "s1" });
+    // A transient failure clears the cached discovery (viaDaemon forgets).
+    failExec = true;
+    const exec = rt.tools().find((t) => t.name === "exec")!;
+    await expect(
+      exec.execute({ source: "1" } as never, { sessionID: "s1" }),
+    ).rejects.toThrow();
+    // Rediscovery must ask the ladder for the SESSION choice, not storage.
+    rememberedSeen.length = 0;
+    await rt.look();
+    expect(rememberedSeen).toEqual([targetKey(picked)]);
   });
 });
 

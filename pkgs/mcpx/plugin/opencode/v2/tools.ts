@@ -90,6 +90,8 @@ export type DaemonClientLike = {
   stats(opts: { by: string; since?: string }): Promise<unknown>;
   putSetting(key: string, value: unknown): Promise<"ok" | "absent" | "failed">;
   shutdown(): Promise<boolean>;
+  /** Append a record to the daemon's durable log (DaemonClient.record). */
+  record(record: Record<string, unknown>): Promise<unknown>;
 };
 
 export const NAMESPACE = "mcpx";
@@ -198,7 +200,12 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
       const record = await readRememberedDaemon(deps.storage, deps.directory).catch(
         () => undefined,
       );
-      found = discoverFn(ladderOptions(record?.target));
+      // A choice made this session outranks the stored one: after a
+      // transient failure clears `found`, rediscovery must not silently
+      // switch back to the stored daemon a daemon_select moved away
+      // from. (ladderOptions would take the passed target over chosen,
+      // so the precedence is decided here, chosen first — as v1 had it.)
+      found = discoverFn(ladderOptions(chosen ?? record?.target));
     }
     const d = await found;
     if (!d.target) {

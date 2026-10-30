@@ -13,11 +13,16 @@ import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
-import { createTimingLog, type ExecuteAfterInput } from "./timing.ts";
+import {
+  createTimingLog,
+  type ExecuteAfterInput,
+  type ToolTimingRecord,
+} from "./timing.ts";
 import {
   createToolRuntime,
   registerTools,
   type ToolDomainLike,
+  type ToolRuntime,
 } from "./tools.ts";
 
 /** The slice of the v2 setup Context this core uses (promise/plugin.ts). */
@@ -67,7 +72,31 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
       void sessionEnv.update(sessionID, sessionVars(sessionID)).catch(() => false);
     }
   };
-  const timing = createTimingLog();
+  // The runtime is created before the timing log: the log's sink
+  // delivers through it (below), and the closure only runs once a tool
+  // has executed — long after both exist.
+  let runtime: ToolRuntime | undefined;
+  // toolTiming's sink is v1's path: the record goes to the daemon's
+  // durable log (`daemon.record`, event "harness.tool"), so one
+  // `mcpx stats` / mcpx_observe covers harness tool calls too. Best
+  // effort exactly as v1: with no daemon the record is dropped rather
+  // than spawning a process per tool call, and a failed send never
+  // fails the tool call it describes.
+  const deliverTiming = (record: ToolTimingRecord): void => {
+    void (async () => {
+      const client = await runtime?.daemon().catch(() => undefined);
+      if (!client) return;
+      await client
+        .record({
+          event: "harness.tool",
+          tool: record.tool,
+          session: record.sessionID,
+          status: record.status,
+        })
+        .catch(() => undefined);
+    })();
+  };
+  const timing = createTimingLog(deliverTiming);
   // toolTiming comes from the resolved options (host option, then the
   // environment, then the v1 default false) — never a bare ?? true: a
   // user who turned timing off gets no hook, and no records array
@@ -101,7 +130,7 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // during load loses the session bridge and the environment send too,
   // which are worth more than the tool surface. Registration does its
   // own boot discovery for the daemon-tools default (tools.ts).
-  const runtime = createToolRuntime({
+  runtime = createToolRuntime({
     directory,
     env: process.env,
     options,

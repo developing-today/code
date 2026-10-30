@@ -16,6 +16,7 @@ import {
   type StorageLike,
 } from "./remember.ts";
 import { createSessionEnv, type FetchLike } from "./session-env.ts";
+import { createTimingLog, type ToolTimingRecord } from "./timing.ts";
 
 const stubStorage = (): StorageLike & { map: Map<string, unknown> } => {
   const map = new Map<string, unknown>();
@@ -113,6 +114,17 @@ describe("session environment", () => {
     const adapter = createSessionEnv({ serverUrl: undefined, baseEnv: {} });
     expect(await adapter.ensure("s1", {})).toBe(false);
     expect(adapter.seen("s1")).toBe(true);
+  });
+});
+
+describe("tool timing", () => {
+  test("records successes and failures, and hands both to the sink", () => {
+    const delivered: ToolTimingRecord[] = [];
+    const timing = createTimingLog((r) => void delivered.push(r));
+    timing.hook({ tool: "read", sessionID: "s1", status: "completed" });
+    timing.hook({ tool: "bash", sessionID: "s1", status: "error" });
+    expect(timing.records.map((r) => r.status)).toEqual(["completed", "error"]);
+    expect(delivered.map((r) => r.tool)).toEqual(["read", "bash"]);
   });
 });
 
