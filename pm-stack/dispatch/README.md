@@ -168,6 +168,36 @@ under the grants mesh any allowlisted repo may target any
 allowlisted repo. See `examples/dispatch-workflow.yml` for a
 complete workflow.
 
+Both actions take the prompt from one of three inputs. `prompt` is
+not required at the YAML level (a composite action cannot express
+one-of); the action's step enforces that one source yields text.
+The sources are resolved in this order:
+
+1. `prompt-file` — a path to a file containing the prompt, relative
+   to the caller's workspace. The action reads it at runtime, so the
+   calling job must check out its repo first (e.g.
+   `actions/checkout`). A missing or empty file fails the step. This
+   is the form scheduled workflows use to keep prompts in repo files
+   instead of inline YAML strings.
+2. `prompt-url` — an https URL the prompt is fetched from at
+   runtime (`curl -fsS`). A fetch error or an empty body fails the
+   step.
+3. `prompt` — the inline prompt text.
+
+A selected source that is missing, empty or unfetchable fails
+loudly rather than falling through to a lower-priority source, and
+if none of the three yields non-empty text the step fails with a
+clear error. For example, with a prompt kept in the calling repo:
+
+```yaml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        with:
+          title: "nightly triage"
+          prompt-file: "prompts/nightly-triage.md"
+```
+
 ## Configuration (env)
 | Name | Default | Notes |
 | --- | --- | --- |
@@ -176,7 +206,7 @@ complete workflow.
 | `DISPATCH_BUILD_VERSION` | `dev` | set by install.sh to the deployed commit |
 | `DISPATCH_API_TOKEN` | — | from `~/secrets/dispatch.env` |
 | `DISPATCH_OIDC_AUDIENCE` | `pm-dispatch` | |
-| `DISPATCH_REPO_ALLOWLIST` | the four fleet repos | |
+| `DISPATCH_REPO_ALLOWLIST` | the six fleet repos | |
 | `SUPABASE_URL` | `https://nltgxorqwxhgfzseiirt.supabase.co` | |
 | `SUPABASE_SERVICE_ROLE_KEY` | — | from `~/secrets/dispatch.env` (Bitwarden `supabase.service-role-key`) |
 | `OPENCODE_URL` | `http://127.0.0.1:13420` | laptop standing server |
@@ -184,8 +214,9 @@ complete workflow.
 | `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | — | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on code,
-opencode, openchamber — **not** dezren39/nix, where issue creation is
-skipped with a warning). If the app route is unusable, the laptop's
+opencode, openchamber and dezren39/nix — **not** developing-today/zettel
+or dezren39/dezren39, where issue creation is skipped with a warning).
+If the app route is unusable, the laptop's
 authenticated `gh` CLI is the fallback; if both fail, the request
 proceeds without an issue and says so in `warnings` (for `/v1/tasks`
 with `issue: true`, same behavior).

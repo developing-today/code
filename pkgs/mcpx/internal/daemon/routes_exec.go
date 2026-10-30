@@ -179,6 +179,8 @@ func (s *Server) ExecService() *execsvc.Service {
 		set.List("script.runtimeOrder"), set.String("script.profiles"))
 	lim.CaptureConsole = set.Bool("script.captureConsole")
 	lim.Typecheck = set.String("script.typecheck")
+	lim.Imports = set.String("script.imports")
+	lim.ImportsOnDynamic = set.String("script.importsOnDynamic")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
