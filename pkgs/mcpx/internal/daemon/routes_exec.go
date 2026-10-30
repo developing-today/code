@@ -184,7 +184,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 
-	return &execsvc.Service{
+	svc := &execsvc.Service{
 		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
 		Store:    store,
 		Endpoint: s.endpoint,
@@ -203,6 +203,14 @@ func (s *Server) ExecService() *execsvc.Service {
 			return nil
 		},
 	}
+	// Config-declared hooks apply to every run this daemon performs; a
+	// caller's own hooks append to them.
+	if s.cfg != nil {
+		for _, h := range s.cfg.ScriptHooks() {
+			svc.Hooks = append(svc.Hooks, execsvc.Hook{Phase: h.Phase, Script: h.Script, Name: h.Name})
+		}
+	}
+	return svc
 }
 
 // ---- POST /v1/exec ----

@@ -141,6 +141,11 @@ type Options struct {
 	CaptureConsole *bool `json:"captureConsole,omitempty"`
 	// Phases are lines run around the script, as runner.Phases.
 	Phases *Phases `json:"phases,omitempty"`
+
+	// Hooks are scripts run at the edges of this run, in declaration order
+	// within a phase. They append to the daemon's config-declared hooks
+	// rather than replacing them, the way ScriptConfig.Prefix layers.
+	Hooks []Hook `json:"hooks,omitempty"`
 }
 
 // Phases is runner.Phases on the wire.
@@ -183,6 +188,9 @@ type Frame struct {
 
 	Artifact *Artifact `json:"artifact,omitempty"`
 
+	// Hook carries what one hook did, under type "hook".
+	Hook *HookFrame `json:"hook,omitempty"`
+
 	// ID, Seq and Data carry a body chunk under delivery "stream".
 	ID   string `json:"id,omitempty"`
 	Seq  int    `json:"seq,omitempty"`
@@ -204,6 +212,7 @@ const (
 	FrameResult       = "result"
 	FrameError        = "error"
 	FrameEnd          = "end"
+	FrameHook         = "hook"
 	FrameArtifactData = "artifact.chunk"
 	FrameArtifactEnd  = "artifact.end"
 )
@@ -312,6 +321,9 @@ type Service struct {
 	WorkRoot string
 	// Release frees the pooled instances a finished run created.
 	Release func(ctx context.Context, session string) error
+	// Hooks run at the edges of every run this service performs. They are the
+	// config-declared list; a caller's Options.Hooks append to them.
+	Hooks []Hook
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -481,6 +493,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 		return len(p), nil
 	})
+
+	// Hooks are resolved, and refused, before anything runs: a caller that
+	// named a phase mcpx does not have should hear it now rather than after
+	// paying for the script.
+	hooks := s.hooksFor(opts.Hooks)
+	if err := validateHooks(hooks, "hooks"); err != nil {
+		return nil, err
+	}
+	hookCtx := hookContext{RunID: runID, Point: HookPointScript, Artifacts: []Artifact{}}
 	var stderr *tailBuffer
 	if ropts.Log == nil {
 		// Records arrive on the script's stderr behind a sentinel; without a
@@ -523,6 +544,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		if priorResult != nil {
 			priorResult(v)
 		}
+	}
+	// `before` hooks run once the run's own writers are in place, so a hook
+	// that logs or emits reaches the same stream the script would.
+	if before := phaseHooks(hooks, HookBefore); len(before) > 0 {
+		hookCtx.Phase = HookBefore
+		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
 	}
 	priorArtifact := ropts.OnArtifact
 	ropts.OnArtifact = func(a logging.Artifacted) {
@@ -580,8 +607,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// explained it, the script's own message is the explanation.
 	if res.Error == "" && res.ExitCode != 0 && stderr != nil {
 		if msg := strings.TrimSpace(stripANSI(stderr.String())); msg != "" {
+			// Recorded, not emitted: an onError hook below may replace
+			// this error with a result, and a consumer must never see
+			// an error frame for an outcome that was replaced. The one
+			// error frame is emitted after the hooks, with the final
+			// error text.
 			res.Error = msg
-			emitFrame(Frame{Type: FrameError, Error: msg})
 		}
 	}
 
@@ -609,6 +640,26 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		res.Error = strings.TrimSpace(res.Error + "\n" + err.Error())
 	}
 
+	// `onSuccess` and `onError` finish before the result or error frame, so
+	// the answer a consumer reads is the final one (0001 rule 1). Advice a
+	// hook gives on the failing path is attached to the error it saw.
+	hookCtx.Result, hookCtx.Error = res.Result, res.Error
+	hookCtx.Diagnostic = hookDiagnostic(res.Error)
+	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
+	hookCtx.Artifacts = res.Artifacts
+	phase := HookOnSuccess
+	if res.Error != "" {
+		phase = HookOnError
+	}
+	if hs := phaseHooks(hooks, phase); len(hs) > 0 {
+		hookCtx.Phase = phase
+		for _, run := range s.runHooks(runCtx, phase, hs, hookCtx, ropts, res, emitFrame) {
+			if phase == HookOnError && !run.Failed && run.Out.Advise != "" && res.Error != "" {
+				res.Error = strings.TrimSpace(res.Error + "\n" + run.Out.Advise)
+			}
+		}
+	}
+
 	if res.Error != "" {
 		emitFrame(Frame{Type: FrameError, Error: res.Error})
 	} else if res.Result != nil {
@@ -617,6 +668,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			emitFrame(Frame{Type: FrameResult, Value: b})
 		}
 	}
+
+	// `suffix` runs either way, after the outcome and before the end frame.
+	// It cannot change the outcome; an `apply` from one is reported as
+	// dropped rather than honoured.
+	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
+		hookCtx.Phase = HookSuffix
+		hookCtx.Result, hookCtx.Error = res.Result, res.Error
+		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
+	}
+
 	code := res.ExitCode
 	emitFrame(Frame{Type: FrameEnd, ExitCode: &code, DurationMs: res.DurationMs})
 
