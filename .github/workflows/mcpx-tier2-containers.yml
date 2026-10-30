@@ -1,0 +1,73 @@
+name: mcpx tier-2 containers
+
+# The tier-2 container legs for #1987: the static mcpx binary running in
+# the minimal images (alpine, scratch, distroless) with the surfaces each
+# image supports. Tier 2 means nightly + on-main verification, never a PR
+# gate; this repo's workflows are main-only (see .github/ci-policy.md).
+# The legs themselves live in pkgs/mcpx/scripts/tier2-containers.sh so
+# they can be run locally with the same assertions CI makes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/mcpx/**"
+      - ".github/workflows/mcpx-tier2-containers.yml"
+  schedule:
+    # Nightly, off the hour the other mcpx jobs favour.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+# Same rule as mcpx.yml: a push run is never cancelled by a later merge —
+# every merged tree gets its own completed verification.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    name: "tier2: shipped image ships a static mcpx"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the shipped Containerfile (static by default, #1987)
+        working-directory: pkgs/mcpx
+        run: docker build -f Containerfile -t mcpx-tier2-image .
+      - name: The shipped mcpx is not a dynamic executable
+        run: |
+          # ldd exits 1 and writes to stderr for a static binary -- that
+          # is the success case here, so capture both and assert on the
+          # text instead of piping (pipefail would fail the step).
+          out=$(docker run --rm --entrypoint sh mcpx-tier2-image \
+            -c 'ldd /usr/local/bin/mcpx 2>&1' || true)
+          echo "$out"
+          grep -q 'not a dynamic executable' <<<"$out"
+          docker run --rm mcpx-tier2-image --version
+
+  legs:
+    name: "tier2: ${{ matrix.leg }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        leg:
+          - alpine-nonexec
+          - alpine-bunmusl-exec
+          - scratch-nonexec
+          - distroless-static-nonexec
+          - distroless-cc-deno-exec
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+      - name: Run the leg
+        working-directory: pkgs/mcpx
+        run: scripts/tier2-containers.sh "${{ matrix.leg }}"

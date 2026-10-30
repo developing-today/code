@@ -90,6 +90,23 @@ export interface ProjectPoolItem {
   horizon: string | null;
   /** The Project's "Kind" field (Task | Epic) — not the GhItem kind. */
   kind: string | null;
+  /** Issue graph edges (#2399, part 1 of #1122): the data contract the
+   *  weighted render (part 2, #2400) consumes. All edges are issue-only
+   *  (PRs and drafts never carry them) and all are absence-friendly: a
+   *  missing edge means "GitHub has none", never an error. Refs use the
+   *  same "owner/repo#123" canonical key as ref. */
+  /** Sub-issue parent of the linked issue. Absent when it has none. */
+  parentRef?: RefKey;
+  /** Refs this item is blocked by (GitHub "blocked by"). Absent when none. */
+  blockedBy?: RefKey[];
+  /** Refs this item blocks (GitHub "blocks"). Absent when none. */
+  blocks?: RefKey[];
+  /** Epic membership: the nearest sub-issue ancestor (following
+   *  parentRef chains within the fetched pool) whose pool item has
+   *  Project Kind "Epic". Absent for epics themselves, for items with
+   *  no epic ancestor, and when the parent chain leaves the pool (the
+   *  collector only knows Kind for items on the board). */
+  epicRef?: RefKey;
 }
 
 export type CommentKind = "issue_comment" | "review" | "review_comment";
