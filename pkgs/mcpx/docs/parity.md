@@ -118,7 +118,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (66)
+## CLI commands (67)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -151,6 +151,7 @@ that reaches none says why: those are decisions, not gaps.
 | `health` | `health` | Generated from the operation table. |
 | `help` | – | Text about the binary, produced by the binary. |
 | `history` | `catalog_history` | Generated from the operation table. |
+| `hook` | – | Reads the resolved `hooks` setting from the configuration chain on this machine. |
 | `init` | – | Writes a file into the current directory. |
 | `interactions` | `interactions_list`, `interactions_get` |  |
 | `log` / `logs` | `log_query`, `log_record` |  |

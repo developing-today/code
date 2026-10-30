@@ -430,6 +430,19 @@ func handCommands() []Command {
 				"leaves the reader where they started.",
 		},
 		{
+			Name: "hook", Group: "inspection",
+			Local: "Reads the resolved `hooks` setting from the configuration chain on this machine.",
+			Usage: "ls", Summary: "list the config-declared hooks in force",
+			Detail: "Hooks are declared in the `hooks` setting (docs/decisions/0001): " +
+				"a JSON array of {name, on, run | module, when, timeoutMs, failure}. " +
+				"Every hook is an observer over the daemon's event bus -- it runs " +
+				"after the fact, under a hard timeout, and cannot change what it " +
+				"watched. `ls` shows each hook, its filter, its executor and " +
+				"whether that executor can actually run on this machine. The table " +
+				"is configuration, not runtime state: there is no subcommand that " +
+				"changes it on a running daemon.",
+		},
+		{
 			Name: "prompts", Group: "discovery",
 			Usage: "[<ns>.<name> key=value...]", Summary: "list or render a server's prompts",
 			Detail: "Prompts are the half of MCP that is not tools: a server saying " +

@@ -61,6 +61,7 @@ func (a *App) handWritten() map[string]Handler {
 		"prompts":      a.CmdPrompts,
 		"resources":    a.CmdResources,
 		"doctor":       a.CmdDoctor,
+		"hook":         a.CmdHook,
 		"schema":       a.CmdSchema,
 		"elicit":       a.CmdElicit,
 		"diagnose":     a.CmdDiagnose,

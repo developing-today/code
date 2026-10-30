@@ -20,6 +20,7 @@ func Registry() []Setting {
 	s = append(s, execSettings()...)
 	s = append(s, pathSettings()...)
 	s = append(s, daemonSettings()...)
+	s = append(s, hookSettings()...)
 	s = append(s, outputSettings()...)
 	s = append(s, protoSettings()...)
 	s = append(s, transportSettings()...)
@@ -334,6 +335,48 @@ func scriptSettings() []Setting {
 			Scope:       ScopeClient,
 			FlagAliases: []string{"env"},
 			Name:        "Extra environment", Short: "KEY=VALUE pairs added to the script's environment",
+		},
+	}
+}
+
+// hookSettings are the config-declared hooks of docs/decisions/0001:
+// one structured `hooks` setting, in the same JSON-in-a-string shape as
+// script.runtimes and presets, because the registry has no structured
+// kind and those two are the precedent for one that needs it.
+func hookSettings() []Setting {
+	return []Setting{
+		{
+			Path: "hooks", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Declared hooks",
+			Short:    "config-declared hooks over the event bus: a JSON array of hook objects",
+			Long: "A JSON array. Each entry is one hook: {name, on, run | module, " +
+				"when, timeoutMs, failure}. `on` is an events.Filter kind prefix " +
+				"verbatim -- \"elicit\" matches every elicitation event, \"*\" " +
+				"matches everything hookable; resource.watching is never on the " +
+				"bus and hook.* is the runner's own, and both are refused. `run` " +
+				"is an argv array, never a shell string -- write [\"sh\", \"-c\", " +
+				"...\"] to ask for a shell. `module` is a file run for its kind: " +
+				".py by python3 (or uv run), .ts/.js/.mjs by deno, bun or node. " +
+				"Every hook is phase observe: it runs after the fact, off the " +
+				"bus, under a hard timeout, and can never slow, veto or rewrite " +
+				"what it watched. The event arrives as JSON on stdin, with " +
+				"MCPX_HOOK_* variables for the flat fields. A non-zero exit is a " +
+				"result, not an error: it is counted, `mcpx hook ls` and doctor " +
+				"report it, and a hook.failed event is published. \"failure\": " +
+				"\"closed\" marks a hook whose failures are guard-shaped; the " +
+				"default is \"open\".",
+		},
+		{
+			Path: "hooks.timeout", Kind: KindDuration, Default: "2s",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status", "restart", "hook", "doctor"},
+			Name:     "Hook timeout",
+			Short:    "the hard timeout for a declared hook that does not set its own",
+			Long: "Low on purpose: a hook is an observer, and an observer that " +
+				"needs longer than this is a job, not a hook. A hook may set its " +
+				"own timeoutMs; this is the cut for the ones that do not.",
 		},
 	}
 }
