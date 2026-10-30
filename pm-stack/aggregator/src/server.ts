@@ -17,7 +17,7 @@ import { buildHealth, recordRender, type HealthView } from "./health.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
-import type { DashComment, RefKey } from "./model.ts";
+import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -36,11 +36,14 @@ import {
   renderAttentionShell,
   renderBoard,
   renderBoardBody,
-  renderBoardShell,
   renderDiscuss,
   renderDns,
   renderHealth,
   renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -347,6 +350,21 @@ async function todayContext() {
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
 }
 
+/** The render inputs the overview (front door, #1134) assembles:
+ *  the attention view, the Project pool, quota, the health view, and
+ *  the board — the same contexts the dedicated pages render from. */
+async function overviewContext() {
+  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+    attentionContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.quota(),
+    healthContext(),
+    boardContext(),
+    actionsStore.byObject().catch(() => new Map()),
+  ]);
+  return { attention: view, pool, quota, health, board, actionsByObject };
+}
+
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
 async function handler(req: Request): Promise<Response> {
@@ -481,12 +499,21 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  if (path === "/" || path === "/board") {
-    // #1444: the board is the heaviest page — shell first, board as a
-    // fragment. ?full=1 (and the /board alias) keep the full render.
-    if (path === "/" && url.searchParams.get("full") !== "1") {
-      return html(renderBoardShell(prov(), provDetail()));
+  if (path === "/") {
+    // #1134: the front door is the overview — shell first, the
+    // summary streams in as a fragment (#1444 pattern). ?full=1
+    // keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderOverviewShell(prov(), provDetail()));
     }
+    return html(renderOverview(await overviewContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/overview") {
+    const data = await overviewContext();
+    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    return sseResponse(ssePatch("#overview-main", wrapped));
+  }
+  if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
     return html(renderBoard(board, items, prov(), counts, provDetail(), act));
   }
@@ -674,6 +701,9 @@ async function handler(req: Request): Promise<Response> {
     return html(renderDiscuss(objectRef, title, thread, await commentFormOpts(githubRefs), prov()));
   }
 
+  if (path === "/api/overview.json") {
+    return json(deriveOverview(await overviewContext()));
+  }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
     return json({ board, items: [...items.values()] });
