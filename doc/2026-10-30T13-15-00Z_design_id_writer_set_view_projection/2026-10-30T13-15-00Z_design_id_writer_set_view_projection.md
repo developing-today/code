@@ -77,7 +77,7 @@ pub struct ChainExt {
 
 Two hard limits constrain any writer-set format built on this envelope
 ([`chain.rs:30-50`](../../pkgs/id/src/chain.rs)): `MAX_KIND_BYTES = 64`, `MAX_AFTER = 32`, and the
-CBOR decoder's declared limits — text ≤ 512 bytes, arrays ≤ 512 elements (`chain.rs:44-48`). **A
+CBOR decoder's declared limits — text ≤ 512 bytes, arrays ≤ 512 elements (`chain.rs:41-42`). **A
 writer set of any real size cannot live in the signed header.** That single fact drives Decision
 D1 in §2.
 
@@ -130,7 +130,7 @@ and `search::Term::Author(AuthorKey)` already queries it
 [`search.rs:124-131`](../../pkgs/id/src/search.rs)). This is decision-grade evidence: **the
 author→objects index is not a new structure to invent; it is a shape the codebase already
 builds and throws away on each call.** Today the index is rebuilt per query and not persisted
-(`tag_index.rs:14-16`); §3 turns that into a stated cost model rather than a new design.
+(`tag_index.rs:11-12,16`); §3 turns that into a stated cost model rather than a new design.
 
 ### 1.4 Two prior-art predecessors this spec must not be confused with
 
@@ -218,7 +218,7 @@ conflated (Decision D5).
 | **Discovery query** returning counted + uncounted with why-not-counted | **absent** — `search` returns live claims only, undifferentiated | [`search.rs:1-20`](../../pkgs/id/src/search.rs) |
 | **Retention tiering** (hot counted / cold uncounted, expiry, pin) | **absent** for events; only blob access control exists | grep `retention\|expiry\|quota` in `src`: waiting-pool age caps and auth-expiry only; [`blob_gate.rs:1-15`](../../pkgs/id/src/blob_gate.rs) is access control, not retention |
 | A **generic signer** for a new object type | **absent** — only `chain::sign` is body-opaque; artifacts and invites are fixed layouts | [`chain.rs:282`](../../pkgs/id/src/chain.rs), [`artifact.rs:226`](../../pkgs/id/src/artifact.rs), [`invites/event.rs:17`](../../pkgs/id/src/invites/event.rs) |
-| **Persisted** author index | **absent** — rebuilt per call | [`tag_index.rs:14-16`](../../pkgs/id/src/tag_index.rs) |
+| **Persisted** author index | **absent** — rebuilt per call | [`tag_index.rs:11-12,16`](../../pkgs/id/src/tag_index.rs) |
 
 ---
 
@@ -231,7 +231,7 @@ in the **event body** (CBOR, BLAKE3-committed by the header), never in `ChainExt
 
 Reasons:
 
-- The header cannot hold it: text ≤ 512 bytes and arrays ≤ 512 elements (`chain.rs:44-48`), and
+- The header cannot hold it: text ≤ 512 bytes and arrays ≤ 512 elements (`chain.rs:41-42`), and
   `MAX_AFTER = 32`. A writer set for a dog-care household is fine; one for a public figure is
   not. Putting it in the body keeps the signed-header format — and therefore every existing
   verifier — unchanged, which is the same reasoning the tracker design used for its kinds
@@ -415,7 +415,7 @@ the expanded writer set, rather than scanning `Vec<Claim>` from `tag_claims()`.
 Reasons: `tag_claims()` opens `EVENTS` and walks **every row**, then decodes each one
 ([`event_store/claims.rs:44-60`](../../pkgs/id/src/event_store/claims.rs)) — cost is O(store). The
 author key `(author, name, value, subject, claim)` is already built
-([`tag_index.rs:14-21`](../../pkgs/id/src/tag_index.rs),
+([`tag_index.rs:9-12,16`](../../pkgs/id/src/tag_index.rs),
 `by_author: BTreeMap<Vec<u8>, Entry>` at `tag_index.rs:46`) and `search::Term::Author` already
 queries it ([`search.rs:124-131`](../../pkgs/id/src/search.rs),
 `TagIndex::author(author)` at `tag_index.rs:161`). A view with *n* writers therefore costs
@@ -433,7 +433,7 @@ purpose in `applied_events(author, after, until, limit)`
 maintained* version of a range scan the store already performs — not a new data structure.
 
 **The gap this creates:** the index is rebuilt per call
-([`tag_index.rs:14-16`](../../pkgs/id/src/tag_index.rs)). Per-view projection makes that cost
+([`tag_index.rs:11-12,16`](../../pkgs/id/src/tag_index.rs)). Per-view projection makes that cost
 visible on every render, so §7's first implementation slice is a persisted, incrementally
 maintained author index — a *cost* change, not a semantics change.
 
