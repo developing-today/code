@@ -25,6 +25,7 @@ import (
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
+	"github.com/dezren39/mcpx/internal/execsvc"
 	"github.com/dezren39/mcpx/internal/hooks"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/logstore"
@@ -155,6 +156,12 @@ type Server struct {
 	// first use, because a daemon that never runs one should carry nothing.
 	taskOnce sync.Once
 	tasks    *tasks.Store
+
+	// calls is the exec call-frame registry shared between the exec
+	// services this daemon builds and its /v1/call handlers (#1927).
+	// Created on first use, like tasks.
+	callOnce sync.Once
+	calls    *execsvc.CallRegistry
 
 	tokenStore *logstore.TokenStore
 
@@ -1054,6 +1061,14 @@ func callContext(r *http.Request, body config.CallContext, session string) confi
 			cc.PID = n
 		}
 	}
+	// A caller reporting this daemon's own PID is reporting a process
+	// every caller of the daemon shares -- /v1/exec runs, whose script
+	// env carries the daemon's os.Getpid(). That PID keys shared
+	// instances; it must never read as caller-private when an ephemeral
+	// run ends (#1942 follow-up).
+	if cc.PID > 0 && cc.PID == os.Getpid() {
+		cc.PIDShared = true
+	}
 	if !cc.Ephemeral {
 		cc.Ephemeral = r.Header.Get("X-Mcpx-Ephemeral") == "1"
 	}
@@ -1104,6 +1119,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	res, err := s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	dur := time.Since(start).Truncate(time.Millisecond)
+	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, res, err)
 
 	toolKey := req.Server + ":" + req.Tool
 	var inBytes, outBytes []byte
@@ -1218,6 +1234,10 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		dur := time.Since(start).Truncate(time.Millisecond)
+		// Batch items bypass the single-call handlers, so report each
+		// completed one here: a script's batch(...) calls belong in
+		// its exec stream like any other call.
+		s.reportCallFrame(ctx, server, tool, args, start, res, err)
 
 		if err != nil {
 			return map[string]any{
@@ -1484,22 +1504,49 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(s.set.Duration("http.ssePing"))
 	defer ping.Stop()
 
+	// lastSeq is the sequence of the last event this client actually
+	// received. A live drop leaves a hole after it, and the gap notice names
+	// that hole rather than the client discovering it by finding a sequence
+	// number missing -- which is exactly the silent loss the bus promises
+	// not to have.
+	lastSeq := since
+	// toldDrops is the subscription's drop count at the last notice, so one
+	// stall produces one gap event and not a notice per delivered event.
+	var toldDrops uint64
+	tellGap := func() {
+		dropped := sub.Dropped.Load()
+		if dropped == 0 || dropped == toldDrops {
+			return
+		}
+		toldDrops = dropped
+		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
+			lastSeq, s.Events.Latest(), dropped)
+		flusher.Flush()
+	}
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
+			// Checked here too: a subscriber that stopped reading long
+			// enough to lose events has nothing new to read afterwards, so
+			// waiting for the next event to report the loss could wait
+			// forever.
+			tellGap()
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case e, open := <-sub.C:
 			if !open {
 				return
 			}
+			tellGap()
 			b, err := json.Marshal(e)
 			if err != nil {
 				continue
 			}
 			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
+			lastSeq = e.Seq
 			flusher.Flush()
 		}
 	}
@@ -1619,4 +1666,54 @@ func (s *Server) handleLogRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sink.Write(rec, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// callRegistry returns the daemon's shared exec call-frame registry,
+// creating it on first use.
+func (s *Server) callRegistry() *execsvc.CallRegistry {
+	s.callOnce.Do(func() { s.calls = execsvc.NewCallRegistry() })
+	return s.calls
+}
+
+// reportCallFrame tells the exec stream that is running this call, if
+// any, that the call happened: a call frame with the tool's resolved
+// destructiveHint. A call with no run id, or a run this daemon is not
+// executing, has no stream to join and is not reported.
+func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args any, start time.Time, res json.RawMessage, callErr error) {
+	run := runFrom(ctx)
+	if run == "" {
+		return
+	}
+	// A tool that ran and returned isError failed, even though the
+	// transport call itself succeeded: the frame must say so, the way
+	// the path-per-tool handler already does with resultFailed.
+	if callErr == nil && resultFailed(res) {
+		callErr = errors.New("tool returned an error result (isError)")
+	}
+	var dh *bool
+	tools := s.reg.Tools([]string{server})
+	// Dispatch resolves an exact server name before a namespace
+	// (Registry.Pool), so the annotations must be picked the same way:
+	// a server whose namespace equals another server's name must not
+	// lend its annotations to that server's calls.
+	var picked *ToolInfo
+	for i := range tools {
+		if tools[i].Tool == tool && tools[i].Server == server {
+			picked = &tools[i]
+			break
+		}
+	}
+	if picked == nil {
+		for i := range tools {
+			if tools[i].Tool == tool && tools[i].Namespace == server {
+				picked = &tools[i]
+				break
+			}
+		}
+	}
+	if picked != nil {
+		d := destructiveHint(picked.Annotations)
+		dh = &d
+	}
+	s.callRegistry().ReportCall(run, server, tool, args, time.Since(start), callErr, dh)
 }

@@ -37,6 +37,16 @@
 #   the unit is declared here per Drew's all-services-in-nix rule the
 #   same day. Script: ~/tools/supabase-backup.sh (wrapper; the dump
 #   program + config live in ~/tools/supabase-backup/).
+# - atlas-backup (daily ~04:47): the canonical local atlas.db
+#   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
+#   .backup, gzipped deterministically, and filed to the local backup
+#   dir, R2 (supabase-backups, atlas/<date>/) and Google Drive
+#   (Cloud/cold-store/db-backups/local-atlas/), every copy
+#   sha256-verified, content-hash dedupe against the backup log,
+#   7/7/4 retention (laptop/R2 dates, Drive archives). Migrated from
+#   the sandbox cron 2026-10-30 per Drew's laptop-only execution rule
+#   (code#1515). Script: ./atlas-backup.sh (vendored here; credentials
+#   from Bitwarden by name at runtime, never in the store).
 # - cold-store-nightly (daily 03:12): the cold-store reaper's nightly
 #   backup set (D1 exports, Supabase filing, Turso exports) to Google
 #   Drive. Migrated from the sandbox 2026-10-28 (code#1723). Script:
@@ -64,6 +74,9 @@ let
   openclawPkg = pkgs.writeShellScriptBin "openclaw-backup" (
     builtins.readFile ./openclaw-backup.sh
   );
+  atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
+    builtins.readFile ./atlas-backup.sh
+  );
   servicePath = lib.makeBinPath [
     pkgs.coreutils
     pkgs.findutils
@@ -71,13 +84,14 @@ let
     pkgs.zstd
     pkgs.python3
     pkgs.rclone
+    pkgs.sqlite
     pkgs.util-linux
     pkgs.systemd
   ];
 in
 {
   options.services.laptop-backups = {
-    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store)";
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store, atlas)";
 
     dashboard = {
       enable = lib.mkOption {
@@ -141,6 +155,19 @@ in
         type = lib.types.str;
         default = "${home}/tools/supabase-backup.sh";
         description = "Path of the Supabase backup wrapper script to run.";
+      };
+    };
+
+    atlas = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Daily atlas.db backup to local dir + R2 + Google Drive (code#1515).";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "04:47";
+        description = "Daily run time (local) for the atlas backup.";
       };
     };
 
@@ -222,6 +249,17 @@ in
           };
         };
       })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Daily atlas.db backup - local + R2 + Drive (code#1515)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${atlasPkg}/bin/atlas-backup";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
+            TimeoutStartSec = "90m";
+          };
+        };
+      })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
           Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
@@ -283,6 +321,17 @@ in
           Unit.Description = "Run the Supabase muse-dev backup twice daily";
           Timer = {
             OnCalendar = cfg.supabase.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.atlas.enable {
+        atlas-backup = {
+          Unit.Description = "Run the atlas backup daily (code#1515)";
+          Timer = {
+            OnCalendar = cfg.atlas.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

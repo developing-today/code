@@ -25,7 +25,25 @@ on:
     branches: [main]
     paths:
       - "pkgs/mcpx/**"
+      # The seed store is data the collector bot files (#1953): its
+      # commits must never re-trigger this workflow (the collector
+      # also marks its commits [skip ci] — both addendum fixes).
+      - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
+  # Added for the flake-policy jobs below (#1973): the PR stress job
+  # runs on pull requests, the full-suite stress job nightly. The
+  # original jobs keep their original event coverage via their own
+  # `if:` conditions, so these triggers change nothing for them.
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - "!pkgs/mcpx/testdata/seeds/**"
+      - ".opencode/plugin/**"
+      - ".github/workflows/mcpx.yml"
+  schedule:
+    # Nightly full-suite stress (#1973). Odd minute, off the hour.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
@@ -46,6 +64,9 @@ permissions:
 jobs:
   test:
     name: "basic: test"
+    # Original coverage was push-only; the pull_request/schedule
+    # triggers above exist for the flake-policy jobs (#1973).
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -137,6 +158,14 @@ jobs:
           fi
           exit "$rc"
 
+      # The opencode plugin's bun tests are the one suite `go test` never
+      # sees. Bun is already installed above (the Go e2e tests shell out to
+      # it); this step runs the plugin suite itself, so a broken plugin
+      # test fails CI instead of never running (#1978).
+      - name: Plugin tests (bun)
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
+
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)
     # Only on bot branches. A human changing dependencies should see the
@@ -182,3 +211,131 @@ jobs:
           git add "$file"
           git commit -m "mcpx: update vendorHash for the dependency bump"
           git push
+
+  stress-pr:
+    name: "stress: PR changed tests (race/shuffle/repeat)"
+    # Flake policy (#1973, approach C): detect by repetition off the
+    # critical path. This job is parallel to the main test job and is
+    # never a required check; it runs only the packages a PR changed,
+    # with the race detector, a deterministic shuffle seed derived
+    # from the workflow run identity (printed in the log, so a failing
+    # order reproduces with the same seed), and repetition: -count=10
+    # for unit packages, -count=3 for the e2e package. No retries:
+    # a failure here is a finding, not something to re-run to green.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Stress the packages this PR changed
+        working-directory: pkgs/mcpx
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_IDENTITY: ${{ github.run_id }}/${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          seed=$(python3 -c 'import hashlib, os; print(int(hashlib.sha256(("mcpx-shuffle/v1:" + os.environ["RUN_IDENTITY"]).encode()).hexdigest()[:15], 16))')
+          echo "shuffle seed: $seed (reproduce with: go test <pkg> -race -shuffle=$seed -count=<n>)"
+          changed=$(git -C "$GITHUB_WORKSPACE" diff --name-only "$BASE_SHA...$HEAD_SHA" -- pkgs/mcpx \
+            | sed 's|^pkgs/mcpx/||' | grep -E '\.go$' | grep -v '^testdata/' || true)
+          if [ -z "$changed" ]; then
+            echo "no Go files changed in pkgs/mcpx; nothing to stress"
+            exit 0
+          fi
+          unit=""; e2e=""
+          for d in $(printf '%s\n' "$changed" | xargs -n1 dirname | sort -u); do
+            if [ "$d" = "internal/e2e" ]; then e2e="./$d"; else unit="$unit ./$d"; fi
+          done
+          if [ -n "$unit" ]; then
+            echo "unit packages (-count=10):$unit"
+            go test $unit -race -shuffle=$seed -count=10
+          fi
+          if [ -n "$e2e" ]; then
+            echo "e2e package (-count=3): $e2e"
+            go test $e2e -race -shuffle=$seed -count=3
+          fi
+
+  stress-nightly:
+    name: "stress: nightly full suite (race/shuffle/repeat)"
+    # Flake policy (#1973): the whole suite, nightly, on two OSes, off
+    # the PR critical path. A failure opens or updates one tracking
+    # issue instead of blocking anything. Quarantined tests run here
+    # like everywhere else: testsupport.Quarantine skips them until
+    # their expiry and fails the suite after it, so the nightly log
+    # and the failure issue are where quarantines surface.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Full suite under race/shuffle/repeat
+        working-directory: pkgs/mcpx
+        env:
+          RUN_IDENTITY: ${{ github.run_id }}/${{ github.run_attempt }}/${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          seed=$(python3 -c 'import hashlib, os; print(int(hashlib.sha256(("mcpx-shuffle/v1:" + os.environ["RUN_IDENTITY"]).encode()).hexdigest()[:15], 16))')
+          echo "SHUFFLE_SEED=$seed" >> "$GITHUB_ENV"
+          echo "shuffle seed: $seed (reproduce with: go test ./... -race -shuffle=$seed -count=3)"
+          go test ./... -race -shuffle=$seed -count=3
+
+      - name: Open or update the nightly failure issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="mcpx nightly stress failure"
+          body="The nightly flake-policy stress run failed on ${{ matrix.os }} (shuffle seed: $SHUFFLE_SEED).
+
+          Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          Reproduce: \`go test ./... -race -shuffle=$SHUFFLE_SEED -count=3\` in pkgs/mcpx.
+
+          Policy: #1973 — fix the flake; quarantine only via testsupport.Quarantine with an issue link and an expiry."
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --search "$title in:title" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi

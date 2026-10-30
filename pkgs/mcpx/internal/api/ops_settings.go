@@ -151,5 +151,54 @@ func settingsOps() []Op {
 					Desc: "which file to edit; by default, the one that defines it"},
 			},
 		},
+		{
+			Name: "adapters_add", Method: "POST", Path: "/v1/adapters",
+			Permission: PermissionAdmin,
+			Command:    "adapter add",
+			Summary:    "Add an adapter declaration, live",
+			Description: "Writes the declaration to the first file paths.adapters " +
+				"names and reloads, so the adapter is callable immediately and " +
+				"is still there after a restart. The body is the declaration " +
+				"itself: name, command, and its tools. A name another configured " +
+				"file already declares is refused rather than duplicated across " +
+				"files, and a replacement edits the file that defines it. " +
+				"Refused, with the remedy, when paths.adapters names no file, " +
+				"because a declaration written somewhere nothing reads would " +
+				"report success and change nothing.",
+			Admin: true, Mutating: true,
+			Params: []Param{
+				{Name: "name", In: InBody, Type: "string", Required: true,
+					Desc: "the adapter's name, which is also its namespace"},
+				{Name: "command", In: InBody, Type: "string", Required: true,
+					Desc: "the executable the declaration wraps"},
+				{Name: "runtime", In: InBody, Type: "string",
+					Desc: "the interpreter a script command needs: bash, js, ts or py"},
+				{Name: "args", In: InBody, Type: "array", Desc: "arguments prepended to every invocation",
+					Schema: `{"type":"array","items":{"type":"string"}}`},
+				{Name: "env", In: InBody, Type: "object", Desc: "environment added to every invocation",
+					Schema: `{"type":"object","additionalProperties":{"type":"string"}}`},
+				{Name: "description", In: InBody, Type: "string",
+					Desc: "one line shown beside the namespace"},
+				{Name: "tools", In: InBody, Type: "array", Desc: "the subcommands worth exposing",
+					Schema: `{"type":"array","items":{"type":"object","additionalProperties":true}}`},
+				{Name: "replace", In: InBody, Type: "boolean",
+					Desc: "overwrite a declaration of the same name instead of refusing"},
+			},
+		},
+		{
+			Name: "adapters_remove", Method: "DELETE", Path: "/v1/adapters/{name}",
+			Permission: PermissionAdmin,
+			Idempotent: true,
+			Command:    "adapter remove",
+			Summary:    "Remove an adapter declaration, live",
+			Description: "Deletes the declaration from whichever configured " +
+				"adapters file defines it and reloads. Instances of that " +
+				"adapter stop; a caller mid-call against it fails.",
+			Admin: true, Mutating: true, Destructive: true,
+			Params: []Param{
+				{Name: "name", In: InPath, Type: "string", Required: true,
+					Desc: "the adapter to remove, by its declared name"},
+			},
+		},
 	}
 }

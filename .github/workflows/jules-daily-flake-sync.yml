@@ -1,7 +1,8 @@
-name: Jules Daily Flake Sync & Config Optimization
+name: Daily Flake Sync & Config Optimization
 
 # Daily NixOS configuration optimization and dependency auditing for
-# developing-today/code using Google Jules. The `opencode` and `openchamber`
+# developing-today/code using an OpenCode session launched via pm-dispatch
+# (the pm-dispatch-start reusable action). The `opencode` and `openchamber`
 # flake inputs are NOT maintained here: they are owned by the deterministic
 # flake-inputs-update workflow (.github/workflows/flake-inputs-update.yml).
 
@@ -34,17 +35,22 @@ jobs:
   daily-flake-sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Run Jules Flake Sync & Config Agent
-        uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Run Flake Sync & Config Agent via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          include_commit_log: true
+          title: "Daily flake sync & config optimization"
           prompt: >-
             Perform the daily configuration review for developing-today/code. Do NOT update the `opencode` or `openchamber` flake inputs — the flake-inputs-update workflow owns them.
 
