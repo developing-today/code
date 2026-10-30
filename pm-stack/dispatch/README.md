@@ -89,6 +89,11 @@ would. This is deliberate and is the only place dispatch writes task
 rows outside the RPCs. One FK wrinkle: `tasks.worker_id` references
 `agent.workers`, so dispatch idempotently registers its own worker row
 (`dispatch-opencode`, role `build`) before the first claim PATCH.
+Right after the PATCH it also calls `assign_repo_task_lane` — the lane
+ledger assignment the queue workers record after claiming — reading
+the lane from the progress the PATCH just set, so dispatch tasks are
+indistinguishable from worker-claimed ones downstream (including
+completion with an execution record).
 
 ## Auth
 Every endpoint except `GET /health` requires `Authorization: Bearer …`:
