@@ -175,7 +175,10 @@ jobs:
 
       # Approach C (#1996): the linters are the dev shell's, so their
       # versions are pinned by flake.lock and this workflow passes no
-      # per-action version input of its own.
+      # per-action version input of its own. The shell is the flake's
+      # minimal `mcpx-lint` shell, not the default: realising the full
+      # monorepo dev shell on a cold runner exceeded this job's timeout
+      # and the leg was cancelled before any linter ran (PR #2718).
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
@@ -201,7 +204,7 @@ jobs:
           # covers the client side of `nix develop` itself. Without
           # both, this step dies with "experimental Nix feature
           # 'cgroups' is disabled" before any linter runs (#1996).
-          nix develop --extra-experimental-features cgroups --command bash -euo pipefail -c '
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
             cd pkgs/mcpx
             go vet ./...
             golangci-lint run
