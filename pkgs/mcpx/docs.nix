@@ -35,5 +35,17 @@ runCommand "mcpx-docs"
     cp -r ${src} work
     chmod -R u+w work
     cd work
+    # Links that escape the book source tree would 404 in the rendered
+    # book: from docs/, ../AGENTS.md means pkgs/mcpx/AGENTS.md, which is
+    # not part of the artifact. Rewrite those links - in the copied
+    # pages only, the sources keep their relative links for GitHub - to
+    # the file's repository URL, at the depth where the link escapes:
+    # ../ from a top-level page, ../../ from a page one directory down.
+    # Links that stay inside docs/ are left for mdBook to resolve.
+    repoURL="https://github.com/developing-today/code/blob/main/pkgs/mcpx/"
+    find docs -maxdepth 1 -name '*.md' -exec sed -i \
+      "s|](\.\./|](''${repoURL}|g" {} +
+    find docs -mindepth 2 -maxdepth 2 -name '*.md' -exec sed -i \
+      "s|](\.\./\.\./|](''${repoURL}|g" {} +
     mdbook build --dest-dir $out
   ''
