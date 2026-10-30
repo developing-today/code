@@ -6733,7 +6733,7 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Argon round-robin",
+        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Argon / Sonnet round-robin",
         // 2026-10-30: the Spark leg now runs through muse-proxy
         // (provider "muse", muse/muse-spark-1.3) — the direct meta
         // door is dead (attestation; see the "muse" provider note).
@@ -6784,17 +6784,27 @@
         // successes on 2026-10-29). The leg still burns the Meta plan
         // toward the 2026-11-02 reset as intended; revert this one
         // line if Meta serves the plain SKU to this client again.
+        // 2026-10-30 (Drew): Sonnet joins the temporary primary
+        // round-robin — opencode-route/sonnet-plan#high at weight 1.
+        // Its live door is antigravity-ls/claude-sonnet-5-5, and the
+        // Antigravity Claude pool sits nearly full and idle, so this
+        // also puts that pool to work. The Argon leg below has been
+        // configured since 2026-10-29 but the router has yet to send
+        // it route traffic (direct sessions work) — that defect lives
+        // in the opencode router, not in this config.
         "targets": [
           "opencode-route/deepseek-flash#high",
           "muse/muse-spark-1.3",
-          "antigravity-agy/gemini-4-argon#high"
+          "antigravity-agy/gemini-4-argon#high",
+          "opencode-route/sonnet-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-route/deepseek-flash": 1,
           "muse/muse-spark-1.3": 1,
-          "antigravity-agy/gemini-4-argon": 2
+          "antigravity-agy/gemini-4-argon": 2,
+          "opencode-route/sonnet-plan": 1
         }
       },
       "workhorse": {
