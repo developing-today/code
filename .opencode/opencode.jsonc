@@ -24,6 +24,10 @@
   //   they are inert while the provider is disabled, until they are
   //   re-pointed or the door is restored. Undo: delete both ids from
   //   disabled_providers, restore the two proxy units, re-point seats.
+  //   2026-10-30 (Drew, later the same day): "only the direct —
+  //   replace all others": the sonnet-plan and opus-plan Claude seats
+  //   are re-pointed to antigravity-direct as well; no route leaf
+  //   names antigravity-ls or antigravity-agy anymore.
   // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
   //   itself is confirmed working — the proxy (:18749) is live and serves
@@ -6696,10 +6700,15 @@
         // is text-only (no tool-call bridging — see the note in
         // gemini-flash-plan). The pool's resilience is the ls proxy
         // plus claude-code's return.
+        // 2026-10-30 (Drew): the seat moved to antigravity-direct —
+        // "only the direct, replace all others". The direct door
+        // serves claude-sonnet-5-5 and bridges tool calls; the pool
+        // is single-live-door on the direct door, plus claude-code's
+        // return.
         "targets": [
           "claude-code/claude-sonnet-5-5",
           {
-            "model": "antigravity-ls/claude-sonnet-5-5",
+            "model": "antigravity-direct/claude-sonnet-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -6717,10 +6726,13 @@
         // antigravity-ls, same as sonnet-plan — antigravity-agy is
         // not seated (text-only proxy, no tool-call bridging; see
         // the note in gemini-flash-plan).
+        // 2026-10-30 (Drew): the seat moved to antigravity-direct —
+        // "only the direct, replace all others". The direct door
+        // serves claude-opus-5-5 and bridges tool calls.
         "targets": [
           "claude-code/claude-opus-5-5",
           {
-            "model": "antigravity-ls/claude-opus-5-5",
+            "model": "antigravity-direct/claude-opus-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
