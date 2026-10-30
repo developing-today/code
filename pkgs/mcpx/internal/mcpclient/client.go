@@ -882,11 +882,32 @@ func (c *Client) UnsubscribeResource(ctx context.Context, uri string) error {
 
 // ListResourceTemplates returns the server's parameterised resources.
 func (c *Client) ListResourceTemplates(ctx context.Context) ([]Resource, error) {
-	var tres resourceTemplatesListResult
-	if err := c.call(ctx, "resources/templates/list", json.RawMessage(`{}`), &tres); err != nil {
-		return nil, err
+	all, _, err := c.ListResourceTemplatesWithHints(ctx)
+	return all, err
+}
+
+// ListResourceTemplatesWithHints is ListResourceTemplates plus the cache
+// hints the server declared on the pages it returned. It pages like the
+// other list calls (PG-07, #1924): templates past page 1 used to be
+// silently dropped by the single unpaginated call this replaces.
+func (c *Client) ListResourceTemplatesWithHints(ctx context.Context) ([]Resource, CacheHints, error) {
+	var all []Resource
+	var hints CacheHints
+	var cursor *string
+	for i := 0; i < defaults.ListPageLimit; i++ {
+		var tres resourceTemplatesListResult
+		if err := c.call(ctx, "resources/templates/list", pageParams(cursor), &tres); err != nil {
+			return all, hints, err
+		}
+		hints.merge(tres.TTLMs, tres.CacheScope)
+		all = append(all, tres.ResourceTemplates...)
+		next, more := c.nextPage(tres.NextCursor, cursor)
+		if !more {
+			break
+		}
+		cursor = &next
 	}
-	return tres.ResourceTemplates, nil
+	return all, hints, nil
 }
 
 // SetLogLevel asks the server to send messages at or above a level.
@@ -1168,7 +1189,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 			// The HTTP transport's Send lasts until the response headers
 			// arrive, so a server that is slow to start answering is timed
 			// out here, not below -- and was never told.
-			c.cancelled(method, id)
+			c.cancelled(method, id, ctx.Err())
 		}
 		return nil, err
 	}
@@ -1178,7 +1199,7 @@ func (c *Client) roundTripOnce(ctx context.Context, method string, params json.R
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
-		c.cancelled(method, id)
+		c.cancelled(method, id, ctx.Err())
 		return nil, ctx.Err()
 	case resp := <-ch:
 		if resp.Error != nil {
@@ -1379,8 +1400,14 @@ func (c *Client) ListPromptsWithHints(ctx context.Context) ([]Prompt, CacheHints
 		if err := c.call(ctx, "prompts/list", pageParams(cursor), &res); err != nil {
 			// A server without prompts answers method-not-found, which is an
 			// absence rather than a failure. Treating it as an error would
-			// make every listing fail on the majority of servers.
-			return all, hints, nil
+			// make every listing fail on the majority of servers. Every
+			// OTHER error is a real failure and surfaces (PG-07, #1924):
+			// swallowing it made a broken server look prompt-less.
+			var re *rpcError
+			if errors.As(err, &re) && re.Code == -32601 {
+				return all, hints, nil
+			}
+			return all, hints, err
 		}
 		hints.merge(res.TTLMs, res.CacheScope)
 		all = append(all, res.Prompts...)
