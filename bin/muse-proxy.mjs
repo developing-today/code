@@ -1067,6 +1067,55 @@ const directToolAlias = (name, taken) => {
 };
 const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
 
+// The /v1/responses passthrough forwards client bodies in Responses shape;
+// apply the same tool-name aliasing there, in both directions, so a native
+// client (the muse-direct provider) passes the attestation gate too. An
+// unparseable body forwards verbatim, exactly as before.
+const aliasResponsesRequestBody = (bodyText) => {
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false }; }
+  if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false };
+  const taken = new Set((Array.isArray(parsed.tools) ? parsed.tools : [])
+    .map(t => t && t.name).filter(Boolean));
+  let aliased = false;
+  const rename = (holder) => {
+    if (holder && typeof holder.name === 'string') {
+      const next = directToolAlias(holder.name, taken);
+      if (next !== holder.name) { holder.name = next; aliased = true; }
+    }
+  };
+  if (Array.isArray(parsed.tools)) for (const t of parsed.tools) rename(t);
+  if (Array.isArray(parsed.input)) {
+    for (const item of parsed.input) {
+      if (item && item.type === 'function_call') rename(item);
+    }
+  }
+  if (parsed.tool_choice && parsed.tool_choice.type === 'function') rename(parsed.tool_choice);
+  return aliased ? { text: JSON.stringify(parsed), aliased } : { text: bodyText, aliased };
+};
+
+const unaliasResponsesOutput = (holder) => {
+  if (!holder || typeof holder !== 'object') return;
+  for (const item of holder.output || []) {
+    if (item && item.type === 'function_call' && typeof item.name === 'string') {
+      item.name = clientToolName(item.name);
+    }
+  }
+};
+
+// Rewrite one SSE data payload if it carries an aliased tool name in a
+// function_call item; anything else passes through untouched.
+const unaliasSseData = (data) => {
+  if (!data.includes('run_command') && !data.includes('terminal')) return data;
+  let evt;
+  try { evt = JSON.parse(data); } catch { return data; }
+  if (evt && evt.item && evt.item.type === 'function_call' && typeof evt.item.name === 'string') {
+    evt.item.name = clientToolName(evt.item.name);
+  }
+  if (evt && evt.response) unaliasResponsesOutput(evt.response);
+  return JSON.stringify(evt);
+};
+
 const buildResponsesRequest = (body, baseModel, effort) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const instructions = messages
@@ -1454,8 +1503,10 @@ const server = http.createServer((req, res) => {
         return;
       }
       let outcome;
+      let aliasedBody = { text: bodyText, aliased: false };
       try {
-        outcome = await directResponsesFetch(keyResult, bodyText, req.headers.accept || 'application/json');
+        aliasedBody = aliasResponsesRequestBody(bodyText);
+        outcome = await directResponsesFetch(keyResult, aliasedBody.text, req.headers.accept || 'application/json');
       } catch (err) {
         writeJsonBody(res, 502, { error: { message: `Direct Meta route request failed: ${err.message}` } });
         return;
@@ -1465,22 +1516,62 @@ const server = http.createServer((req, res) => {
         return;
       }
       const response = outcome.response;
-      res.writeHead(response.status, {
-        'Content-Type': response.headers.get('content-type') || 'application/json'
-      });
-      if (response.body && typeof response.body.getReader === 'function') {
+      const contentType = response.headers.get('content-type') || 'application/json';
+      if (!aliasedBody.aliased) {
+        res.writeHead(response.status, { 'Content-Type': contentType });
+        if (response.body && typeof response.body.getReader === 'function') {
+          try {
+            const reader = response.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(Buffer.from(value));
+            }
+          } catch { /* upstream stream cut: end with what was sent */ }
+          res.end();
+        } else {
+          res.end(await response.text().catch(() => ''));
+        }
+        return;
+      }
+      // Aliased request: the model's tool calls come back under the alias
+      // names and must be translated before the client sees them.
+      if (contentType.includes('text/event-stream') && response.body && typeof response.body.getReader === 'function') {
+        res.writeHead(response.status, { 'Content-Type': contentType });
         try {
           const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          const flushLine = (line) => {
+            if (line.startsWith('data: ') && line.length > 6 && !line.startsWith('data: [DONE]')) {
+              res.write(`data: ${unaliasSseData(line.slice(6))}\n`);
+            } else {
+              res.write(line + '\n');
+            }
+          };
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            res.write(Buffer.from(value));
+            buffer += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buffer.indexOf('\n')) >= 0) {
+              flushLine(buffer.slice(0, nl));
+              buffer = buffer.slice(nl + 1);
+            }
           }
+          if (buffer) flushLine(buffer);
         } catch { /* upstream stream cut: end with what was sent */ }
         res.end();
-      } else {
-        res.end(await response.text().catch(() => ''));
+        return;
       }
+      let text = await response.text().catch(() => '');
+      try {
+        const parsedJson = JSON.parse(text);
+        unaliasResponsesOutput(parsedJson);
+        text = JSON.stringify(parsedJson);
+      } catch { /* not JSON: pass through as-is */ }
+      res.writeHead(response.status, { 'Content-Type': contentType });
+      res.end(text);
     });
     return;
   }
