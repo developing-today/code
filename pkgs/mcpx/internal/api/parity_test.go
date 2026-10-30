@@ -59,9 +59,18 @@ func TestEveryDaemonRouteIsDeclared(t *testing.T) {
 	}
 	var missing []string
 	for route, file := range routes {
-		if !declared[route] {
-			missing = append(missing, route+" (registered in daemon/"+file+")")
+		if declared[route] {
+			continue
 		}
+		// A trailing-slash subtree route is the asset space of the page
+		// route above it: /v1/dashboard/ serves the files beside the
+		// /v1/dashboard page, exists only when that page is served from
+		// a directory, and is not an operation of its own. The parent
+		// route's declaration covers it.
+		if strings.HasSuffix(route, "/") && declared[strings.TrimSuffix(route, "/")] {
+			continue
+		}
+		missing = append(missing, route+" (registered in daemon/"+file+")")
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {

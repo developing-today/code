@@ -208,12 +208,6 @@ export const OPS: Record<string, OpSpec> = {
     params: {},
     response: "response",
   },
-  dashboard_asset: {
-    method: "GET",
-    path: "/v1/dashboard/",
-    params: {},
-    response: "response",
-  },
   diagnose: {
     method: "POST",
     path: "/v1/diagnose",
@@ -1000,13 +994,6 @@ export class DaemonOps {
    */
   dashboard(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<Response> {
     return this.invoke("dashboard", args, opts) as Promise<Response>
-  }
-
-  /**
-   * Dashboard static assets. `GET /v1/dashboard/`.
-   */
-  dashboardAsset(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<Response> {
-    return this.invoke("dashboard_asset", args, opts) as Promise<Response>
   }
 
   /**
