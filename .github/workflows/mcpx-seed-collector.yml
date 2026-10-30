@@ -1,0 +1,143 @@
+name: mcpx-seed-collector
+
+# The collector half of the mcpx seed store (#1953, Approach C): on a
+# weekly schedule (well inside Actions' 90-day artifact retention), on
+# release, and on demand, it scoops the `test-seed` artifacts that
+# mcpx runs upload (#1949) into pkgs/mcpx/testdata/seeds/v1 — one file
+# per seed — and opens or updates ONE PR (bot/seeds) with the batch.
+#
+# It is deliberately boring:
+# - GITHUB_TOKEN only (actions: read to list/download runs, contents
+#   + pull-requests: write for the PR). No PAT, no repository variable
+#   (the variable design was rejected in #1953: read-modify-write race
+#   and a 48 KB cap).
+# - Idempotent: a seed whose file already exists is skipped, so
+#   re-runs and overlapping windows never duplicate or conflict.
+# - A run with no test-seed artifact is a logged skip, never a
+#   failure — minting (#1949) may land after this collector, and until
+#   it does every dispatch is a clean no-op.
+# - The batch can never re-trigger the mcpx workflow: mcpx.yml's push
+#   paths exclude the seed store, AND the collector's commit carries
+#   [skip ci] (both fixes from the #1953 addendum).
+
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: mcpx-seed-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Collect new seeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          store="pkgs/mcpx/testdata/seeds/v1"
+          work="$(mktemp -d)"
+
+          # Completed runs of the mcpx workflow, newest first. The
+          # keep rules are #1953's "Which seeds are kept": main-branch
+          # push runs, the run that validated a PR's merge, and every
+          # failing seed from anywhere.
+          gh run list --workflow mcpx.yml --status completed --limit 200 \
+            --json databaseId,headSha,headBranch,event,conclusion,url,createdAt \
+            > "$work/runs.json"
+
+          jq -c '.[]' "$work/runs.json" | while read -r run; do
+            id="$(jq -r .databaseId <<<"$run")"
+            sha="$(jq -r .headSha <<<"$run")"
+            branch="$(jq -r .headBranch <<<"$run")"
+            event="$(jq -r .event <<<"$run")"
+            conclusion="$(jq -r .conclusion <<<"$run")"
+
+            keep=0
+            [ "$conclusion" = "failure" ] && keep=1
+            if [ "$event" = "push" ] && [ "$branch" = "main" ]; then keep=1; fi
+            if [ "$event" = "pull_request" ]; then
+              # Merge validation: a completed run on the head commit
+              # of a PR that has since merged.
+              merged="$(gh api "repos/${{ github.repository }}/commits/$sha/pulls" \
+                --jq "[.[] | select(.merged_at != null and .head.sha == \"$sha\")] | length" 2>/dev/null || echo 0)"
+              [ "$merged" -gt 0 ] && keep=1
+            fi
+            [ "$keep" = 1 ] || continue
+
+            # Graceful no-op per run: no artifact (minting is #1949
+            # and may not have landed, or the run predates it) is a
+            # skip, never a failed collector.
+            if ! gh run download "$id" --name test-seed --dir "$work/dl-$id" 2>/dev/null; then
+              echo "run $id: no test-seed artifact; skipping"
+              continue
+            fi
+            seedfile="$(find "$work/dl-$id" -name seed.json -print -quit)"
+            [ -n "$seedfile" ] || { echo "run $id: artifact holds no seed.json; skipping"; continue; }
+
+            seed="$(jq -r '.seed // empty' "$seedfile")"
+            [ -n "$seed" ] || { echo "run $id: seed.json names no seed; skipping"; continue; }
+            date="$(jq -r '.date // empty' "$seedfile")"
+            [ -n "$date" ] || date="$(jq -r .createdAt <<<"$run" | cut -c1-10)"
+            path="$store/${date:0:4}/${date:5:2}/$seed.json"
+            if [ -f "$path" ]; then
+              echo "run $id: seed $seed already stored; skipping"
+              continue
+            fi
+
+            attempt="$(gh run view "$id" --json attemptCount --jq .attemptCount)"
+            mkdir -p "$(dirname "$path")"
+            jq -cn \
+              --arg seed "$seed" \
+              --arg commit "$sha" \
+              --arg ref "refs/heads/$branch" \
+              --arg event "$event" \
+              --arg run "$(jq -r .url <<<"$run")" \
+              --argjson attempt "$attempt" \
+              --arg result "$conclusion" \
+              --arg derivation "$(jq -r '.derivation // "v1"' "$seedfile")" \
+              --arg generators "$(jq -r '.generators // ""' "$seedfile")" \
+              --arg date "$date" \
+              '{seed:$seed, commit:$commit, ref:$ref, event:$event, run:$run, attempt:$attempt, result:$result, derivation:$derivation, generators:$generators, date:$date}' \
+              > "$path"
+            echo "run $id: stored seed $seed"
+          done
+
+          if [ -z "$(git status --porcelain -- "$store")" ]; then
+            echo "No new seeds; nothing to do."
+            exit 0
+          fi
+
+          # One PR per batch, updated in place on later batches: the
+          # branch is collector-owned, so it is rebuilt from main and
+          # force-pushed with lease, and an open PR simply picks up
+          # the new head.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B bot/seeds origin/main
+          git add -- "$store"
+          git commit -m "chore(mcpx): collect run seeds [skip ci]"
+          git push --force-with-lease origin bot/seeds
+          if [ -z "$(gh pr list --head bot/seeds --state open --json number --jq '.[0].number')" ]; then
+            gh pr create --head bot/seeds --base main \
+              --title "chore(mcpx): collected run seeds [skip ci]" \
+              --body "Seed records collected by the mcpx-seed-collector workflow (#1953) from \`test-seed\` run artifacts (#1949). One file per seed under \`pkgs/mcpx/testdata/seeds/v1\`; the seedstore guard test validates every record. Data only — no code changes."
+          else
+            echo "bot/seeds PR already open; it now carries the new batch."
+          fi
