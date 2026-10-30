@@ -9,6 +9,12 @@
 //! delivered before the device is welcomed: a create or a welcome opens delivery, and earlier
 //! messages wait in the queue.
 //!
+//! A message that waits only because a message it names has not been delivered is a stalled
+//! delivery (#187): [`OrdererState::waiting`] reports it with the names it still lacks, and
+//! [`super::scheme::Session::stalled_delivery`] surfaces that to callers. Nothing expires a wait
+//! and nothing is dropped: the caller polls the surface and drives recovery (a welcome, a history
+//! answer, a re-sync) until the missing messages arrive and the queue drains on its own.
+//!
 //! Application messages are never named by other messages, so the adapter may leave one out
 //! without stalling anything. [`super::scheme`] does that for messages whose group secret the
 //! device does not hold.
@@ -244,6 +250,28 @@ impl OrdererState {
     /// How many parents a message published now would name.
     pub fn parent_count(&self) -> usize {
         self.parent_list().len()
+    }
+
+    /// The messages that still wait for a message they name, with the names they still lack, in
+    /// message ID order (the map's order). A recorded name that has since become ready is not
+    /// reported: what is reported is what the message still waits for, in the order the names
+    /// were recorded. This is the read side of the stalled-delivery surface (#187): the orderer
+    /// keeps no timer and drops nothing that waits, so a caller polls this and drives recovery.
+    pub fn waiting(&self) -> Vec<(Hash, Vec<Hash>)> {
+        self.waiting
+            .iter()
+            .map(|(id, missing)| {
+                (
+                    *id,
+                    missing
+                        .iter()
+                        .copied()
+                        .filter(|named| !self.ready.contains(named))
+                        .collect::<Vec<Hash>>(),
+                )
+            })
+            .filter(|(_, missing)| !missing.is_empty())
+            .collect()
     }
 
     /// A control message is a head from the time it is delivered or published, until a control

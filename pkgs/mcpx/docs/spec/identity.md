@@ -1,7 +1,7 @@
 # Who an MCP request is from
 
 mcpx's own MCP server passes every call on to an upstream server, and which
-*instance* of that server answers depends on its `scope`: one per session, per
+_instance_ of that server answers depends on its `scope`: one per session, per
 cwd, per pid, per repository, or per call. So every request has to answer the
 question "who is asking?", and the answer has to come from the transport, not
 from the process.
@@ -35,8 +35,10 @@ from that (`mcpCaller` in `internal/cli/serve.go`):
 | any request carrying `_meta["ai.opencode/sessionID"]` (and no `dev.mcpx/session`) | that id | the id, verbatim | unknown |
 | a 2026-07-28 request without it, or a legacy POST outside a session | none | none: a fresh call id | unknown |
 
-The rows are in precedence order except that an explicit
-`_meta["dev.mcpx/session"]` wins over the connection's own identity.
+The rows are in precedence order except that an explicit session key
+wins over the connection's own identity. When a request carries more
+than one listed key, the first key in `transport.sessionMetaKeys` order
+whose value is a non-empty string wins.
 
 ### Why cwd and pid are unknown over HTTP
 
@@ -54,13 +56,19 @@ yet.
 mcpx doesn't invent one: an unnamed request is its own scope, which for a
 `session`-scoped upstream means a new instance per request.
 
-### `dev.mcpx/session`
+### The session keys: `transport.sessionMetaKeys`
 
 For a client that wants continuity, such as an agent host that keeps one
-browser across its calls, mcpx reads `_meta["dev.mcpx/session"]` (a string)
-from any request of any revision. The key uses mcpx's own prefix because the
-specification reserves `io.modelcontextprotocol/` and defines no session key
-of its own. The value is used verbatim as the session id, so a client can join
+browser across its calls, mcpx reads a session name (a string) from any
+request of any revision, under the keys listed in the
+`transport.sessionMetaKeys` setting, in order. The default list is
+`dev.mcpx/session` — mcpx's own key, which uses mcpx's prefix because the
+specification reserves `io.modelcontextprotocol/` and defines no session
+key of its own — followed by `ai.opencode/sessionID`, the key OpenCode v2
+sends on every `tools/call`, so each OpenCode session is scoped as its
+own session instead of sharing the daemon's. A deployment can replace
+the list (dropping either key, or adding a host's own) in configuration;
+an empty or non-string value is ignored, as if the key were absent. The value is used verbatim as the session id, so a client can join
 the same session a CLI user names with `--session` or `$MCPX_SESSION_ID`.
 That is deliberate. Anyone who can reach the daemon can already run any tool
 as its user (see the warning the daemon prints for a non-loopback address), so

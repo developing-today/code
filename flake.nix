@@ -150,12 +150,17 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
+    neovim-src = {
+      url = "github:neovim/neovim"; # ?shallow=1";
+      flake = false;
+    };
     neovim-nightly-overlay = {
       url = "github:nix-community/neovim-nightly-overlay"; # ?shallow=1";
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       # inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-parts.follows = "flake-parts";
+      inputs.neovim-src.follows = "neovim-src";
     };
     git-hooks = {
       url = "github:cachix/git-hooks.nix"; # ?shallow=1";

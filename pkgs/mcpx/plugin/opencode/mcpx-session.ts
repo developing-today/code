@@ -12,6 +12,7 @@ import {
   label,
   rank,
   readRemembered,
+  renderExec,
   runBin,
   splitArgs,
   stateDir,
@@ -612,15 +613,15 @@ export default (async ({ directory, worktree, project, client }, options) => {
       args: {
         source: tool.schema.string().describe("TypeScript; top-level await works"),
       },
-      async execute(args) {
+      async execute(args, context) {
         await announceOnUse()
         // undefined from the daemon means the route is absent -- an older
         // daemon -- which is a reason to fall back, not a failure to report.
-        const out = await viaDaemon((c) => c.exec(args.source))
-        const body =
-          out === undefined
-            ? await viaCLI(["exec", args.source])
-            : (out.output ?? pretty(out.result ?? out))
+        // The session goes with the script: the daemon leases one pooled
+        // instance per session, so state set by one mcpx_exec is there for
+        // the next one in the same opencode session.
+        const out = await viaDaemon((c) => c.exec(args.source, context?.sessionID))
+        const body = out === undefined ? await viaCLI(["exec", args.source]) : renderExec(out)
         return body + (await annotation())
       },
     }),

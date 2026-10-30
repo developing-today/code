@@ -1565,6 +1565,90 @@ fn add_welcome_len(rotations: usize) -> usize {
     encode_cbor(&add).expect("encode the add").len()
 }
 
+// --- stalled delivery (#187) ---------------------------------------------------------------------
+
+#[test]
+fn test_stalled_delivery_is_empty_before_create_and_when_caught_up() {
+    let mut cast = Cast::new(&[1, 2]);
+    assert!(
+        cast.session(1).stalled_delivery().is_empty(),
+        "before create"
+    );
+    assert!(
+        cast.session(2).stalled_delivery().is_empty(),
+        "before create"
+    );
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    let message = cast.send(1, "caught up");
+    cast.deliver(&message, &[2]);
+    assert!(cast.session(2).stalled_delivery().is_empty(), "caught up");
+}
+
+#[test]
+fn test_a_joiner_sees_the_control_message_it_missed_and_drains_when_it_arrives() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = cast.add(1, 4);
+    cast.deliver(&add, &[2, 3]);
+    let update = cast.update(1);
+    cast.deliver(&update, &[2, 3]);
+
+    // The joiner is handed the update before the add that welcomes it: the update names the
+    // add, so it waits in the orderer, and the stall names exactly the add.
+    cast.deliver(&update, &[4]);
+    assert_eq!(
+        cast.session(4).stalled_delivery(),
+        vec![StalledDelivery {
+            message: update.id(),
+            missing: vec![add.id()]
+        }],
+    );
+
+    // The add arrives: the stall drains and the joiner is welcomed.
+    cast.deliver(&add, &[4]);
+    assert!(cast.session(4).stalled_delivery().is_empty());
+    assert!(cast.session(4).is_welcomed());
+}
+
+#[test]
+fn test_an_application_message_stalled_on_a_concurrent_add_reports_exactly_the_missing_add() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4, 5]);
+
+    // Two concurrent adds: neither names the other.
+    let add_by_2 = concurrent_add(&mut cast, 2, 4, &[1, 2, 3, 4]);
+    let add_by_3 = concurrent_add(&mut cast, 3, 5, &[1, 2, 3, 5]);
+
+    // Member 1 hears both adds (2's first, then 3's), so a message it sends names both, under
+    // the newest epoch it holds.
+    cast.deliver(&add_by_2, &[1]);
+    cast.deliver(&add_by_3, &[1]);
+    let message = cast.send(1, "names both adds");
+
+    // Member 3 authored the second add but never heard the first: it holds the epoch the
+    // message is under, so the message reaches its orderer and waits there instead of being
+    // read, naming exactly the add it lacks.
+    assert_eq!(cast.deliver(&message, &[3]), vec![Vec::<Received>::new()]);
+    assert_eq!(
+        cast.session(3).stalled_delivery(),
+        vec![StalledDelivery {
+            message: message.id(),
+            missing: vec![add_by_2.id()]
+        }],
+    );
+
+    // The missing add arrives: the message is delivered and the stall is gone.
+    assert_eq!(
+        cast.deliver(&add_by_2, &[3]),
+        vec![vec![text("names both adds")]]
+    );
+    assert!(cast.session(3).stalled_delivery().is_empty());
+}
+
 #[test]
 fn test_each_epoch_adds_about_forty_bytes_to_the_welcome() {
     // S12: serde_bytes on the two byte fields costs 40.0 bytes per epoch. The stock integer arrays
@@ -2451,7 +2535,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
     // so CBOR encodes it as an integer array at ~1.9 bytes per byte - roughly
     // 12 MiB encoded: over half the 16 MiB cap, under the cap itself.
     let big = vec![7_u8; 6 * 1024 * 1024];
-    let first = cast.session_mut(1).send(&big, &rng).expect("send");
+    let first = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
@@ -2461,7 +2545,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
         cast.session_mut(3).process(&first).expect("process"),
         vec![Received::Withheld(first.id())]
     );
-    let second = cast.session_mut(1).send(&big, &rng).expect("send");
+    let second = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     match cast.session_mut(3).process(&second) {
         Err(SchemeError::HeldFull {
             count,
@@ -2486,7 +2570,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     let mut cast = removed_member_cast();
     let rng = Rng::default();
     let big = vec![9_u8; 6 * 1024 * 1024];
-    let held = cast.session_mut(1).send(&big, &rng).expect("send");
+    let held = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&held).expect("process"),
         vec![Received::Withheld(held.id())]
@@ -2514,7 +2598,7 @@ fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     // tracked count and byte totals.
     let remove = cast.remove(1, 3);
     cast.deliver(&remove, &[2, 3]);
-    let again = cast.session_mut(1).send(&big, &rng).expect("send");
+    let again = Cast::alone(cast.session_mut(1).send(&big, &rng).expect("send"));
     assert_eq!(
         cast.session_mut(3).process(&again).expect("process"),
         vec![Received::Withheld(again.id())]

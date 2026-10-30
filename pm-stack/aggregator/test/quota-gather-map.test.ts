@@ -155,6 +155,46 @@ describe("recordsFromEntries", () => {
   });
 });
 
+describe("recordsFromEntries — CNY balances (#1052)", () => {
+  // The DeepSeek provider answers { credits_balance: { usedPercent: null,
+  // valueLabel: "¥44.29" } } — a yuan figure with no percent.
+  const deepseek = (label: string): QuotaProviderResult => ({
+    providerId: "deepseek",
+    providerName: "DeepSeek",
+    ok: true,
+    configured: true,
+    fetchedAt: Date.parse("2026-10-25T09:00:00Z"),
+    usage: { windows: { credits_balance: { usedPercent: null, valueLabel: label } } },
+  });
+  const at = "2026-10-25T09:00:00.000Z";
+
+  test("a ¥ label becomes one cny record, stored in yuan", () => {
+    const entry = entryFromResult(deepseek("¥44.63"), at);
+    const first = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    expect(first.records).toHaveLength(1);
+    expect(first.records[0]).toMatchObject({
+      serviceId: "deepseek:api",
+      metricId: "credits_balance",
+      value: 44.63,
+      unit: "cny",
+      source: "api",
+      observedBy: "quota-gatherer",
+    });
+  });
+
+  test("value-moved dedupe: unchanged appends nothing, a moved balance appends", () => {
+    const state = new Map(recordsFromEntries([entryFromResult(deepseek("¥44.63"), at)], new Map(), "q").appended);
+    expect(recordsFromEntries([entryFromResult(deepseek("¥44.63"), at)], state, "q").records).toHaveLength(0);
+    const moved = recordsFromEntries([entryFromResult(deepseek("¥44.29"), at)], state, "q");
+    expect(moved.records).toHaveLength(1);
+    expect(moved.records[0]).toMatchObject({ value: 44.29, unit: "cny" });
+  });
+
+  test("a USD-labelled balance still yields no record (no USD balance series)", () => {
+    expect(recordsFromEntries([entryFromResult(deepseek("$12.50"), at)], new Map(), "q").records).toEqual([]);
+  });
+});
+
 describe("recordsFromEntries multi-credential pool pinning (#1624)", () => {
   const T1 = "2026-10-28T05:00:00.000Z";
   const T2 = "2026-10-28T05:15:00.000Z";
