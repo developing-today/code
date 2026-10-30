@@ -198,6 +198,113 @@ function segmentize(src) {
   return segs;
 }
 
+// --- Parameter annotations ------------------------------------------------
+// The naive pass — "an identifier after '(' or ',' followed by ': Type'
+// and then ',', ')' or '='" — cannot tell a parameter list from an object
+// literal inside a call: `{ first: 0, actual: expected }` matches it, and
+// stripping there silently rewrites a property into shorthand, changing
+// what the program computes. So annotations are stripped only inside
+// paren groups that are actually parameter lists, and only at the
+// group's own depth (an object literal in a default value is nested,
+// and its properties are data, not annotations).
+
+const CONTROL_KEYWORDS = new Set(["if", "for", "while", "switch", "catch", "with"]);
+
+function findMatchingParen(src, open) {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "(") depth++;
+    else if (src[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function isParamList(src, open, close) {
+  // What follows the group decides: an optional return annotation, then
+  // a body ('{') or an arrow ('=>'). A call is followed by neither.
+  let rest = src.slice(close + 1).replace(/^\s+/, "");
+  if (rest.startsWith(":")) {
+    const t = new RegExp(String.raw`^:\s*` + TYPE).exec(rest);
+    if (!t) return false;
+    rest = rest.slice(t[0].length).replace(/^\s+/, "");
+  }
+  if (!rest.startsWith("{") && !rest.startsWith("=>")) return false;
+  // Control-flow parens are followed by a body too, but hold no params.
+  const before = /(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*(?:<[^<>]*>)?\s*$/.exec(
+    src.slice(0, open),
+  );
+  return !(before && CONTROL_KEYWORDS.has(before[1]));
+}
+
+function maskNested(text) {
+  // Length-preserving: characters inside nested (), {} or [] become
+  // spaces (delimiters stay), so a match found in the masked text maps
+  // to the same span in the original.
+  let out = "";
+  let depth = 0;
+  for (const c of text) {
+    if (c === "(" || c === "{" || c === "[") {
+      out += c;
+      depth++;
+    } else if (c === ")" || c === "}" || c === "]") {
+      depth--;
+      out += c;
+    } else out += depth > 0 ? " " : c;
+  }
+  return out;
+}
+
+function applyParamPass(text, re) {
+  const masked = maskNested(text);
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(masked)) !== null) {
+    out += text.slice(last, m.index) + text.slice(m.index, m.index + m[1].length);
+    last = m.index + m[0].length;
+  }
+  return out + text.slice(last);
+}
+
+function stripGroupParams(inner) {
+  // The passes anchor on the '(' or ',' before a parameter and look
+  // ahead to the ',', ')' or '=' after its type; the group's own parens
+  // are not part of `inner`, so lend the text a synthetic comma before
+  // and a synthetic ')' after, and take both back off at the end. (The
+  // ')' is only ever a lookahead, never part of a match.)
+  let text = applyParamPass(
+    "," + inner + ")",
+    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\?\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
+  );
+  text = applyParamPass(
+    text,
+    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
+  );
+  return text.slice(1, -1);
+}
+
+function stripParamAnnotations(src) {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const open = src.indexOf("(", i);
+    if (open < 0) return out + src.slice(i);
+    const close = findMatchingParen(src, open);
+    if (close < 0) return out + src.slice(i);
+    out += src.slice(i, open + 1);
+    // Nested groups first: an arrow in a default value or an argument
+    // has its own parameter list, stripped on its own merits.
+    const inner = stripParamAnnotations(src.slice(open + 1, close));
+    out += isParamList(src, open, close) ? stripGroupParams(inner) : inner;
+    out += ")";
+    i = close + 1;
+  }
+  return out;
+}
+
 function stripCode(source) {
   if (/^\s*(?:export\s+)?(?:enum|namespace)\s/m.test(source) || /constructor\s*\([^)]*\b(?:private|public|protected|readonly)\b/.test(source)) {
     throw new Error(
@@ -214,15 +321,9 @@ function stripCode(source) {
     new RegExp(String.raw`(\b(?:const|let|var)\s+[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[=;])`, "g"),
     "$1",
   );
-  // Parameter annotations and optional markers, inside parens: (a: T, b?: U)
-  src = src.replace(
-    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\?\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
-    "$1",
-  );
-  src = src.replace(
-    new RegExp(String.raw`([(,]\s*[A-Za-z_$][\w$]*)\s*:\s*` + TYPE + String.raw`(?=\s*[,)=])`, "g"),
-    "$1",
-  );
+  // Parameter annotations and optional markers — only inside paren
+  // groups that are really parameter lists (see stripParamAnnotations).
+  src = stripParamAnnotations(src);
   // Return annotations: ): T {  and  ): T =>
   src = src.replace(
     new RegExp(String.raw`\)\s*:\s*` + TYPE + String.raw`(?=\s*(?:\{|=>))`, "g"),

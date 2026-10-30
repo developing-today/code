@@ -83,6 +83,38 @@ const check = (name, ok, detail = "") => {
   );
 }
 
+// --- 1c. strip-types: object properties are not parameter annotations ----
+{
+  const objLine =
+    "const expected = 1, actual = 2;\n" +
+    "console.log({ first: 0, actual: expected, last: 0 }.actual);";
+  check(
+    "strip: object property after a comma keeps its value",
+    stripTypes(objLine) === objLine,
+    stripTypes(objLine),
+  );
+  check(
+    "strip: declarations, arrows and methods still strip",
+    stripTypes(
+      "function f(a: number, b?: string): void {}\n" +
+        "const g = (x: number): number => x;\n" +
+        "class C { run(v: string): string { return v; } }",
+    ) ===
+      "function f(a, b) {}\nconst g = (x) => x;\nclass C { run(v) { return v; } }",
+    stripTypes(
+      "function f(a: number, b?: string): void {}\n" +
+        "const g = (x: number): number => x;\n" +
+        "class C { run(v: string): string { return v; } }",
+    ),
+  );
+  check(
+    "strip: default-value object literals keep their properties",
+    stripTypes("function h(o = { a: 1, b: 2 }, n: number): void {}") ===
+      "function h(o = { a: 1, b: 2 }, n) {}",
+    stripTypes("function h(o = { a: 1, b: 2 }, n: number): void {}"),
+  );
+}
+
 // --- 2+3. fake daemon + real generated client -----------------------------
 const clientPath = existsSync(join(here, "client.browser.js"))
   ? join(here, "client.browser.js")
@@ -91,13 +123,29 @@ const clientPath = existsSync(join(here, "client.browser.js"))
 async function runSource(source) {
   const lines = [];
   const prevLog = console.log;
-  console.log = (...args) =>
+  // Braces, deliberately: console.log returns undefined, and a default
+  // export that ends in a log call must "return" undefined too — an
+  // expression-bodied capture would hand back push()'s count and the
+  // runner mirror below would print it as the script's result.
+  console.log = (...args) => {
     lines.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
+  };
   try {
     const dir = mkdtempSync(join(tmpdir(), "mcpx-home-run-"));
     const mod = join(dir, "example.mjs");
     writeFileSync(mod, stripTypes(source));
-    await import(pathToFileURL(mod).href + `?t=${Date.now()}`);
+    // Mirror runExampleOnce (run-example.js), which mirrors the real
+    // runner: import, then invoke a function default export with an
+    // empty argv array and print a non-undefined return value.
+    const imported = await import(pathToFileURL(mod).href + `?t=${Date.now()}`);
+    if (typeof imported?.default === "function") {
+      const value = await imported.default([]);
+      if (value !== undefined) {
+        console.log(
+          typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        );
+      }
+    }
   } finally {
     console.log = prevLog;
   }
@@ -129,6 +177,32 @@ async function runSource(source) {
       "stage2: strip-only transform runs a typed edit",
       typedLines.join("\n") === "demo.echo: typed edit",
       typedLines.join("\n"),
+    );
+
+    const objLines = await runSource(
+      "const expected = 1, actual = 2;\n" +
+        "console.log({ first: 0, actual: expected, last: 0 }.actual);",
+    );
+    check(
+      "stage2: object-property example prints the same as the copied command",
+      objLines.join("\n") === "1",
+      objLines.join("\n"),
+    );
+
+    const defLines = await runSource(
+      `export default () => console.log("ran via default export");`,
+    );
+    check(
+      "stage2: a default-export edit is invoked like the real runner",
+      defLines.join("\n") === "ran via default export",
+      defLines.join("\n"),
+    );
+
+    const defRetLines = await runSource(`export default () => "returned";`);
+    check(
+      "stage2: a default export's return value is printed",
+      defRetLines.join("\n") === "returned",
+      defRetLines.join("\n"),
     );
   } finally {
     delete globalThis.tools;

@@ -55,7 +55,21 @@ async function runExampleOnce(source, clientTools, onLine) {
       new Blob([code], { type: "text/javascript" }),
     );
     try {
-      await import(/* @vite-ignore */ url);
+      const mod = await import(/* @vite-ignore */ url);
+      // Mirror the real runner (internal/runner/runner.go): a default
+      // export is the program's main. Invoke it with the (empty) argv
+      // array and print a non-undefined return value — an edit shaped
+      // as `export default () => ...` must behave in the simulation
+      // exactly as the copied command behaves against a real daemon.
+      const entry = mod?.default;
+      if (typeof entry === "function") {
+        const value = await entry([]);
+        if (value !== undefined) {
+          console.log(
+            typeof value === "string" ? value : JSON.stringify(value, null, 2),
+          );
+        }
+      }
     } finally {
       URL.revokeObjectURL(url);
     }
