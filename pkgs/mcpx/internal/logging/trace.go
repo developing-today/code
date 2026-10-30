@@ -186,17 +186,37 @@ var sensitiveName = regexp.MustCompile(`(?i)(token|secret|key|password|passwd|pw
 // KEY=VALUE pairs for the script, so a perfectly innocuous name holds
 // "API_TOKEN=..." as its value; the same is true of any variable holding a
 // header. The name test cannot see inside those, so the value is checked too.
-var sensitiveValue = regexp.MustCompile(`(?i)(bearer\s+\S+|` +
+//
+// The credential shapes are spelled once and composed into the matchers
+// below, so a shape added to one place cannot drift out of the other.
+const (
 	// No \b around the keyword: underscore is a word character, so \btoken\b
 	// does not match inside API_TOKEN, which is exactly the spelling that
 	// matters. Surrounding name characters are absorbed instead.
-	`[A-Za-z0-9_.-]*(token|secret|key|password|passwd|pwd|credential|auth|session[_-]?id|session|cookie|signature|private)[A-Za-z0-9_.-]*\s*[:=]\s*(?:bearer\s+)?\S+|` +
-	`[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@|` +
-	`\bgh[pousr]_[A-Za-z0-9]{16,}|` +
-	`\bsk-[A-Za-z0-9]{16,}|` +
-	`\bxox[baprs]-[A-Za-z0-9-]{10,}|` +
-	`\bAKIA[0-9A-Z]{16}\b|` +
-	`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})`)
+	credentialPairShape = `[A-Za-z0-9_.-]*(token|secret|key|password|passwd|pwd|credential|auth|session[_-]?id|session|cookie|signature|private)[A-Za-z0-9_.-]*\s*[:=]\s*(?:bearer\s+)?\S+`
+	bearerShape         = `bearer\s+\S+`
+	urlUserinfoShape    = `[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`
+	// Well-known token literals need no name or pair around them.
+	credentialLiteralShape = `\bgh[pousr]_[A-Za-z0-9]{16,}|` +
+		`\bsk-[A-Za-z0-9]{16,}|` +
+		`\bxox[baprs]-[A-Za-z0-9-]{10,}|` +
+		`\bAKIA[0-9A-Z]{16}\b|` +
+		`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`
+)
+
+var sensitiveValue = regexp.MustCompile(`(?i)(` + bearerShape + `|` +
+	credentialPairShape + `|` + urlUserinfoShape + `|` + credentialLiteralShape + `)`)
+
+// credentialInURL matches a credential shape nested inside a URL that
+// Redact keeps for its context: a bearer token or a token literal, which
+// can sit anywhere in the path, query or fragment.
+var credentialInURL = regexp.MustCompile(`(?i)(` + bearerShape + `|` + credentialLiteralShape + `)`)
+
+// credentialInQuery matches a KEY=VALUE credential pair inside a URL's
+// query or fragment. The same spelling in the authority is a hostname
+// (auth.example.com:8443), not a credential, so this matcher is applied
+// only after the query separator.
+var credentialInQuery = regexp.MustCompile(`(?i)(` + credentialPairShape + `)`)
 
 // Redact returns a value safe to record.
 //
@@ -210,37 +230,46 @@ func Redact(name, value string) string {
 	if value == "" || !sensitiveValue.MatchString(value) {
 		return value
 	}
-	return sensitiveValue.ReplaceAllStringFunc(value, func(m string) string {
-		// A match containing a URL is decided by its shape (#2463):
-		// the userinfo alternative matches a bare scheme://user:pw@
-		// prefix, but the keyword-pair alternative matches a whole
-		// KEY=VALUE token whose value happens to be a URL. Running
-		// the userinfo reconstruction on the pair shape truncated
-		// the URL at its port colon and fabricated an "@".
-		if i := strings.Index(m, "://"); i >= 0 {
-			if out, ok := redactURLMatch(m, i); ok {
-				return out
-			}
+	return sensitiveValue.ReplaceAllStringFunc(value, redactMatch)
+}
+
+// redactMatch elides one sensitiveValue match.
+func redactMatch(m string) string {
+	// A match containing a URL is decided by its shape (#2463):
+	// the userinfo alternative matches a bare scheme://user:pw@
+	// prefix, but the keyword-pair alternative matches a whole
+	// KEY=VALUE token whose value happens to be a URL. Running
+	// the userinfo reconstruction on the pair shape truncated
+	// the URL at its port colon and fabricated an "@".
+	if i := strings.Index(m, "://"); i >= 0 {
+		if out, ok := redactURLMatch(m, i); ok {
+			return out
 		}
-		// Keep the part that identifies what was elided, drop the secret.
-		if i := strings.IndexAny(m, ":="); i > 0 {
-			return m[:i+1] + "<elided>"
-		}
-		if i := strings.IndexAny(m, " \t"); i > 0 {
-			return m[:i] + " <elided>"
-		}
-		return "<elided>"
-	})
+	}
+	return redactPairMatch(m)
+}
+
+// redactPairMatch keeps the part that identifies what was elided and
+// drops the secret.
+func redactPairMatch(m string) string {
+	if i := strings.IndexAny(m, ":="); i > 0 {
+		return m[:i+1] + "<elided>"
+	}
+	if i := strings.IndexAny(m, " \t"); i > 0 {
+		return m[:i] + " <elided>"
+	}
+	return "<elided>"
 }
 
 // redactURLMatch handles a sensitiveValue match that contains a
 // URL; i is the index of "://" in m. The URL decides the outcome: a
-// credential-free URL is kept verbatim (readable context, nothing to
-// elide), and a URL whose userinfo carries a password elides only
-// the password, keeping scheme, user, host, port and path. A pair
-// prefix (KEY= / KEY:) or bearer lead-in in front of the URL is
-// preserved either way. ok is false when m holds no well-formed
-// scheme, leaving the generic pair/token handling to decide.
+// credential-free URL is kept readable (nothing to elide), and a URL
+// whose userinfo carries a password elides only the password, keeping
+// scheme, user, host, port and path. Either way, any credential nested
+// in the URL itself -- a token literal in the path, or a token pair in
+// the query -- is still elided, so keeping the URL for context never
+// keeps a credential with it. A pair prefix (KEY= / KEY:) or bearer
+// lead-in in front of the URL is preserved.
 func redactURLMatch(m string, i int) (string, bool) {
 	// The scheme starts where the run of scheme characters before
 	// "://" begins; anything before that is not part of the URL.
@@ -258,17 +287,22 @@ func redactURLMatch(m string, i int) (string, bool) {
 		authority, remainder = rest[:slash], rest[slash:]
 	}
 	at := strings.LastIndex(authority, "@")
-	if at < 0 {
-		// No userinfo: nothing in this URL is a credential.
-		return m, true
+	if at >= 0 {
+		userinfo := authority[:at]
+		if colon := strings.Index(userinfo, ":"); colon >= 0 {
+			userinfo = userinfo[:colon+1] + "<elided>"
+		}
+		authority = userinfo + "@" + authority[at+1:]
 	}
-	userinfo := authority[:at]
-	colon := strings.Index(userinfo, ":")
-	if colon < 0 {
-		// Userinfo without a password carries no credential.
-		return m, true
+	// A pair in the authority would be a hostname, so the pair shape is
+	// only applied from the query separator on; literals apply anywhere.
+	head, tail := remainder, ""
+	if cut := strings.IndexAny(remainder, "?#"); cut >= 0 {
+		head, tail = remainder[:cut], remainder[cut:]
 	}
-	return prefix + url[:i-start+3] + userinfo[:colon+1] + "<elided>@" + authority[at+1:] + remainder, true
+	head = credentialInURL.ReplaceAllStringFunc(head, redactMatch)
+	tail = credentialInQuery.ReplaceAllStringFunc(tail, redactMatch)
+	return prefix + url[:i-start+3] + authority + head + tail, true
 }
 
 func isSchemeChar(c byte) bool {

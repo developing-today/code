@@ -122,7 +122,7 @@ func TestRedactKeywordPairURLValues(t *testing.T) {
 	// host/port/path dropped.
 	cases := []struct{ name, value, want string }{
 		// Credential-free ported URL under a keyword: kept readable,
-		// byte for byte.
+		// byte for byte, with no fabricated userinfo.
 		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://auth.example.com:8443/callback", "AUTH_URL=https://auth.example.com:8443/callback"},
 		// Userinfo without a password carries no credential either.
 		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://user@example.com/path", "AUTH_URL=https://user@example.com/path"},
@@ -131,6 +131,13 @@ func TestRedactKeywordPairURLValues(t *testing.T) {
 		{"MCPX_SCRIPT_ENV", "TOKEN_URL=https://deploy:s3cr3tpw@example.com:8443/path", "TOKEN_URL=https://deploy:<elided>@example.com:8443/path"},
 		// The pair sits in surrounding context, which survives too.
 		{"MCPX_SCRIPT_ENV", "DEBUG=1 AUTH_URL=https://auth.example.com:8443/callback", "DEBUG=1 AUTH_URL=https://auth.example.com:8443/callback"},
+		// A keyword-pair URL stays readable, but the credential nested
+		// inside it is still elided (#2463 review): keeping the URL for
+		// its context must never keep a secret with it.
+		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://example.com/callback?token=abc123", "AUTH_URL=https://example.com/callback?token=<elided>"},
+		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://example.com/path?q=1&api_key=abcdef", "AUTH_URL=https://example.com/path?q=1&api_key=<elided>"},
+		// A token literal in the path is a credential wherever it sits.
+		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://example.com/ghp_abcdefghijklmnopqrst", "AUTH_URL=https://example.com/<elided>"},
 	}
 	for _, c := range cases {
 		if got := logging.Redact(c.name, c.value); got != c.want {
