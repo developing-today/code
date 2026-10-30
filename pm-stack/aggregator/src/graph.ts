@@ -17,7 +17,11 @@ import { effortWeight, modeOf } from "./weights.ts";
 /** True when any pool item carries at least one graph edge. */
 export function hasGraphEdges(items: readonly ProjectPoolItem[]): boolean {
   return items.some(
-    (p) => p.parentRef !== undefined || p.epicRef !== undefined || (p.blockedBy?.length ?? 0) > 0 || (p.blocks?.length ?? 0) > 0,
+    (p) =>
+      p.parentRef !== undefined ||
+      p.epicRef !== undefined ||
+      (p.blockedBy?.length ?? 0) > 0 ||
+      (p.blocks?.length ?? 0) > 0,
   );
 }
 

@@ -67,10 +67,7 @@ describe("blockedSummary", () => {
   });
 
   test("a blocked-by cycle terminates instead of looping", () => {
-    const s = blockedSummary([
-      item({ number: 1, blockedBy: [R(2)] }),
-      item({ number: 2, blockedBy: [R(1)] }),
-    ]);
+    const s = blockedSummary([item({ number: 1, blockedBy: [R(2)] }), item({ number: 2, blockedBy: [R(1)] })]);
     expect(s.blockedCount).toBe(2);
     expect(new Set(s.longestChain).size).toBe(s.longestChain.length);
   });
