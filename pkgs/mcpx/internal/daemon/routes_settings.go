@@ -31,14 +31,14 @@ import (
 const CallSettingsHeader = "X-Mcpx-Settings"
 
 func (s *Server) routesSettings(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/settings", s.handleSettingsList)
-	mux.HandleFunc("GET /v1/settings/{path}", s.handleSettingsGet)
-	mux.HandleFunc("PUT /v1/settings/{path}", s.handleSettingsSet)
-	mux.HandleFunc("DELETE /v1/settings/{path}", s.handleSettingsUnset)
-	mux.HandleFunc("GET /v1/servers", s.handleServersList)
-	mux.HandleFunc("GET /v1/servers/{name}", s.handleServerGet)
-	mux.HandleFunc("POST /v1/servers", s.handleServersAdd)
-	mux.HandleFunc("DELETE /v1/servers/{name}", s.handleServersRemove)
+	s.route(mux, "GET /v1/settings", s.handleSettingsList)
+	s.route(mux, "GET /v1/settings/{path}", s.handleSettingsGet)
+	s.route(mux, "PUT /v1/settings/{path}", s.handleSettingsSet)
+	s.route(mux, "DELETE /v1/settings/{path}", s.handleSettingsUnset)
+	s.route(mux, "GET /v1/servers", s.handleServersList)
+	s.route(mux, "GET /v1/servers/{name}", s.handleServerGet)
+	s.route(mux, "POST /v1/servers", s.handleServersAdd)
+	s.route(mux, "DELETE /v1/servers/{name}", s.handleServersRemove)
 }
 
 // Settings exposes the daemon's resolved configuration.

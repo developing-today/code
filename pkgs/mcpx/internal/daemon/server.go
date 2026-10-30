@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/api"
 	"github.com/dezren39/mcpx/internal/codegen"
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -522,7 +523,11 @@ func (s *Server) InProcessHandler(ctx context.Context) http.Handler {
 		<-ctx.Done()
 		s.stopServing()
 	}()
-	return s.Handler()
+	// The callers are the process itself by construction — including the
+	// CLI's inline mode, whose net.Pipe transport would otherwise read
+	// as a TCP caller with address "pipe" — so the principal is stamped
+	// here, not inferred from the request.
+	return withPrincipal(api.InProcessPrincipal(), s.Handler())
 }
 
 // ServeSocket serves the daemon's API on a unix socket until ctx ends.
@@ -752,42 +757,42 @@ func (s *Server) WarmAsync() {
 // ---- routes ----
 
 func (s *Server) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/health", s.handleHealth)
-	mux.HandleFunc("POST "+takeoverRoute, s.handleTakeover)
-	mux.HandleFunc("POST "+upgradeRoute, s.handleUpgrade)
-	mux.HandleFunc("GET /v1/status", s.handleStatus)
+	s.route(mux, "GET /v1/health", s.handleHealth)
+	s.route(mux, "POST "+takeoverRoute, s.handleTakeover)
+	s.route(mux, "POST "+upgradeRoute, s.handleUpgrade)
+	s.route(mux, "GET /v1/status", s.handleStatus)
 	// Server-sent events, because they are plain HTTP: they go through every
 	// proxy that HTTP goes through, reconnect themselves in a browser, and
 	// need nothing but a GET to consume. A WebSocket would buy
 	// bidirectionality nobody needs here -- answers go back as ordinary
 	// POSTs -- at the cost of an upgrade that half of all middleboxes
 	// mishandle.
-	mux.HandleFunc("GET /v1/events", s.handleEvents)
+	s.route(mux, "GET /v1/events", s.handleEvents)
 	// Elicitation over the daemon's own API, so a client that already holds
 	// the socket -- the plugin, the TUI -- can see and answer questions
 	// without spawning the binary to do it. The 135x difference between a
 	// socket call and a spawn is exactly the difference that matters for
 	// something sitting on the path of every tool call.
-	mux.HandleFunc("GET /v1/elicit", s.handleElicitList)
-	mux.HandleFunc("GET /v1/elicit/{id}", s.handleElicitGet)
-	mux.HandleFunc("POST /v1/elicit/{id}/{action}", s.handleElicitAnswer)
-	mux.HandleFunc("POST /v1/log", s.handleLogRecord)
-	mux.HandleFunc("GET /v1/resource-templates", func(w http.ResponseWriter, r *http.Request) {
+	s.route(mux, "GET /v1/elicit", s.handleElicitList)
+	s.route(mux, "GET /v1/elicit/{id}", s.handleElicitGet)
+	s.route(mux, "POST /v1/elicit/{id}/{action}", s.handleElicitAnswer)
+	s.route(mux, "POST /v1/log", s.handleLogRecord)
+	s.route(mux, "GET /v1/resource-templates", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resourceTemplates": s.reg.ResourceTemplates(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
-	mux.HandleFunc("GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
+	s.route(mux, "GET /v1/prompts", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"prompts": s.reg.Prompts(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
-	mux.HandleFunc("GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
+	s.route(mux, "GET /v1/resources", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"resources": s.reg.Resources(splitCSV(r.URL.Query().Get("ns"))),
 		})
 	})
-	mux.HandleFunc("POST /v1/prompt", func(w http.ResponseWriter, r *http.Request) {
+	s.route(mux, "POST /v1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Server    string            `json:"server"`
 			Name      string            `json:"name"`
@@ -807,35 +812,35 @@ func (s *Server) routes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"result": out})
 	})
-	mux.HandleFunc("GET /v1/namespaces", s.handleNamespaces)
-	mux.HandleFunc("GET /v1/tools", s.handleTools)
-	mux.HandleFunc("GET /v1/search", s.handleSearch)
-	mux.HandleFunc("GET /v1/types", s.handleTypes)
-	mux.HandleFunc("GET /v1/catalog", s.handleCatalog)
-	mux.HandleFunc("GET /v1/client.ts", s.handleClient)
-	mux.HandleFunc("GET /v1/globals.d.ts", s.handleGlobals)
-	mux.HandleFunc("POST /v1/call", s.handleCall)
-	mux.HandleFunc("POST /v1/batch", s.handleBatch)
-	mux.HandleFunc("POST /v1/resource", s.handleResource)
-	mux.HandleFunc("POST /v1/session/release", s.handleRelease)
-	mux.HandleFunc("POST /v1/refresh", s.handleRefresh)
-	mux.HandleFunc("POST /v1/reload", s.handleReload)
-	mux.HandleFunc("POST /v1/restart", s.handleRestart)
-	mux.HandleFunc("GET /dashboard", s.handleDashboard)
-	mux.HandleFunc("GET /v1/dashboard", s.handleDashboard)
-	mux.HandleFunc("GET /dashboard/", s.handleDashboardAsset)
-	mux.HandleFunc("GET /v1/dashboard/", s.handleDashboardAsset)
-	mux.HandleFunc("GET /v1/metrics/tokens", s.handleMetricsTokens)
-	mux.HandleFunc("GET /v1/metrics/tools", s.handleMetricsTools)
-	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
-	mux.HandleFunc("POST /v1/embeddings", s.handleEmbeddings)
-	mux.HandleFunc("GET /v1/embeddings/export", s.handleEmbeddingsExport)
-	mux.HandleFunc("POST /v1/embeddings/import", s.handleEmbeddingsImport)
-	mux.HandleFunc("POST /v1/feedback", s.handleFeedbackSubmit)
-	mux.HandleFunc("GET /v1/interactions", s.handleInteractionsList)
-	mux.HandleFunc("GET /v1/interactions/{id}", s.handleInteractionGet)
-	mux.HandleFunc("POST /v1/daemon/restart", s.handleDaemonRestart)
-	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
+	s.route(mux, "GET /v1/namespaces", s.handleNamespaces)
+	s.route(mux, "GET /v1/tools", s.handleTools)
+	s.route(mux, "GET /v1/search", s.handleSearch)
+	s.route(mux, "GET /v1/types", s.handleTypes)
+	s.route(mux, "GET /v1/catalog", s.handleCatalog)
+	s.route(mux, "GET /v1/client.ts", s.handleClient)
+	s.route(mux, "GET /v1/globals.d.ts", s.handleGlobals)
+	s.route(mux, "POST /v1/call", s.handleCall)
+	s.route(mux, "POST /v1/batch", s.handleBatch)
+	s.route(mux, "POST /v1/resource", s.handleResource)
+	s.route(mux, "POST /v1/session/release", s.handleRelease)
+	s.route(mux, "POST /v1/refresh", s.handleRefresh)
+	s.route(mux, "POST /v1/reload", s.handleReload)
+	s.route(mux, "POST /v1/restart", s.handleRestart)
+	s.route(mux, "GET /dashboard", s.handleDashboard)
+	s.route(mux, "GET /v1/dashboard", s.handleDashboard)
+	s.route(mux, "GET /dashboard/", s.handleDashboardAsset)
+	s.route(mux, "GET /v1/dashboard/", s.handleDashboardAsset)
+	s.route(mux, "GET /v1/metrics/tokens", s.handleMetricsTokens)
+	s.route(mux, "GET /v1/metrics/tools", s.handleMetricsTools)
+	s.route(mux, "POST /v1/chat/completions", s.handleChatCompletions)
+	s.route(mux, "POST /v1/embeddings", s.handleEmbeddings)
+	s.route(mux, "GET /v1/embeddings/export", s.handleEmbeddingsExport)
+	s.route(mux, "POST /v1/embeddings/import", s.handleEmbeddingsImport)
+	s.route(mux, "POST /v1/feedback", s.handleFeedbackSubmit)
+	s.route(mux, "GET /v1/interactions", s.handleInteractionsList)
+	s.route(mux, "GET /v1/interactions/{id}", s.handleInteractionGet)
+	s.route(mux, "POST /v1/daemon/restart", s.handleDaemonRestart)
+	s.route(mux, "POST /v1/shutdown", s.handleShutdown)
 	s.routesExec(mux)
 	s.routesSettings(mux)
 	s.routesSecrets(mux)
@@ -851,7 +856,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 		if path == "" {
 			path = defaults.ProtoMCPPath
 		}
-		mux.Handle(path, s.MCP)
+		s.route(mux, path, s.MCP.ServeHTTP)
 	}
 	s.routesConsumer(mux)
 	s.routesResolve(mux)

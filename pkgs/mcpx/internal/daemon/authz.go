@@ -79,20 +79,49 @@ func principalForRequest(r *http.Request) api.Principal {
 }
 
 // authorize is the middleware half of the funnel, wrapping the mux in
-// both serving paths (startHTTP and Handler). Before dispatch it makes
-// sure the request context carries a principal; after dispatch, when
-// the mux has named the route it matched, it records the permission
-// decision for the operation that route declares. Requests matching no
-// declared operation (the dashboard, hand-written routes) get a
-// principal but no decision — there is no declared permission to check
-// them against.
+// both serving paths (startHTTP and Handler). It makes sure the request
+// context carries a principal: the connection's own from ConnContext
+// where a listener accepted it, the explicitly stamped one on the
+// in-process path, or the request's best-effort answer otherwise. The
+// permission decision itself is recorded by route, before the handler
+// runs — recording it here, after dispatch, would leave long-lived
+// handlers (GET /v1/events streams until the client disconnects)
+// unrecorded for their whole lifetime, and unrecorded forever if the
+// daemon stops first. Requests matching no declared operation (the
+// dashboard, hand-written routes) get a principal but no decision —
+// there is no declared permission to check them against.
 func (s *Server) authorize(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := principalForRequest(r)
 		r = r.WithContext(api.WithPrincipal(r.Context(), p))
 		next.ServeHTTP(w, r)
-		if op, ok := api.ByRoute(r.Pattern); ok {
+	})
+}
+
+// route registers one API route, recording the permission decision for
+// the operation its pattern declares before the handler runs. Patterns
+// with no declared operation (the MCP surface, hand-written routes)
+// register plainly: a principal but no decision, exactly as before.
+func (s *Server) route(mux *http.ServeMux, pattern string, h func(http.ResponseWriter, *http.Request)) {
+	op, ok := api.ByRoute(pattern)
+	if !ok {
+		mux.HandleFunc(pattern, h)
+		return
+	}
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := api.PrincipalFrom(r.Context()); ok {
 			api.Authorize(p, op)
 		}
+		h(w, r)
+	})
+}
+
+// withPrincipal stamps every request with the given principal before it
+// reaches the wrapped handler. It is how a serving path whose callers
+// are known by construction states them explicitly instead of letting
+// the request's address imply them.
+func withPrincipal(p api.Principal, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(api.WithPrincipal(r.Context(), p)))
 	})
 }
