@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/execsvc"
@@ -258,5 +259,24 @@ func TestDepsOptionsDiscoverFromScriptDir(t *testing.T) {
 	}
 	if got == nil || got.Manifest != body {
 		t.Fatalf("should carry repoB's manifest, got %+v", got)
+	}
+}
+
+func TestDepsOptionsReportConflicts(t *testing.T) {
+	// Codex finding on #2589: a contradictory explicit pin used to be
+	// dropped with the resolution metadata and sent silently.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"dependencies":{"left-pad":"1.3.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.packages", "left-pad@2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.depsOptions(dir, "")
+	if err == nil || !strings.Contains(err.Error(), "left-pad") ||
+		!strings.Contains(err.Error(), "2.0.0") || !strings.Contains(err.Error(), "1.3.0") {
+		t.Fatalf("err = %v, want a conflict error naming both versions", err)
 	}
 }

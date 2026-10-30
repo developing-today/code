@@ -216,3 +216,33 @@ func TestParseKeepsScope(t *testing.T) {
 		}
 	}
 }
+
+func TestUnversionedRequestInheritsTheLowerLayerPin(t *testing.T) {
+	// Codex finding on #2589: an unversioned explicit request used to
+	// mark the name seen, so the configuration layer's pin was
+	// discarded and the payload carried a floating name.
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{"dependencies":{"foo":"1.2.3"}}`)
+
+	c := cfg(t, deps.SourceConfig, t.TempDir())
+	c.Packages = []string{"foo"}
+	set, err := deps.Resolve(c, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Packages) != 1 || set.Packages[0].Name != "foo" || set.Packages[0].Version != "1.2.3" {
+		t.Fatalf("Packages = %+v, want foo@1.2.3 inherited from the config layer", set.Packages)
+	}
+}
+
+func TestConfigLayerManifestErrorIsNotSwallowed(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{not json`)
+
+	c := cfg(t, deps.SourceConfig, t.TempDir())
+	if _, err := deps.Resolve(c, t.TempDir()); err == nil {
+		t.Fatal("a malformed configuration manifest must fail resolution, not resolve empty")
+	}
+}

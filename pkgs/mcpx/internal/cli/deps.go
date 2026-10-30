@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/dezren39/mcpx/internal/deps"
 	"github.com/dezren39/mcpx/internal/execsvc"
@@ -42,6 +44,18 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 	set, err := deps.Resolve(cfg, startDir)
 	if err != nil {
 		return nil, err
+	}
+	if len(set.Conflicts) > 0 {
+		// A conflict is reported, never silently carried: the payload
+		// has no field for resolution metadata, so a contradictory pin
+		// that reached the wire would read as agreement. Failing here
+		// names both versions and the manifest they came from.
+		var parts []string
+		for _, c := range set.Conflicts {
+			parts = append(parts, fmt.Sprintf("%s: explicit %s contradicts manifest %s",
+				c.Name, c.Explicit, c.Manifest))
+		}
+		return nil, fmt.Errorf("deps: %s", strings.Join(parts, "; "))
 	}
 	out := &execsvc.DepsOptions{
 		Source:      string(cfg.Source),

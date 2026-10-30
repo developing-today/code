@@ -309,17 +309,26 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 		return Set{}, nil
 	}
 	var set Set
-	seen := map[string]bool{}
+	seen := map[string]int{}
 
 	add := func(p Package) {
 		if p.Name == "" {
 			return
 		}
-		// A later, less specific layer never replaces a more specific one.
-		if _, ok := seen[p.Name]; ok {
+		// A later, less specific layer never replaces a more specific
+		// one -- with one exception: an entry that names no version
+		// inherits the version a lower layer declares. An unversioned
+		// request is a request for the package, not a claim about its
+		// version, and erasing the pin would leave the payload with a
+		// floating name whose declared version exists only in a
+		// manifest that is not itself transported.
+		if i, ok := seen[p.Name]; ok {
+			if set.Packages[i].Version == "" && p.Version != "" {
+				set.Packages[i].Version = p.Version
+			}
 			return
 		}
-		seen[p.Name] = true
+		seen[p.Name] = len(set.Packages)
 		set.Packages = append(set.Packages, p)
 	}
 
@@ -348,7 +357,14 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 
 	if cfg.Source == SourceConfig {
 		if dir := ConfigDir(); dir != "" {
-			if m, err := LoadDir(dir); err == nil {
+			m, err := LoadDir(dir)
+			if err != nil && !errors.Is(err, ErrNoManifest) {
+				// Only an absent manifest is an absent layer: a
+				// malformed or unreadable one is a resolution
+				// failure, exactly as the project branch treats it.
+				return Set{}, err
+			}
+			if m != nil {
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}
