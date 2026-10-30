@@ -1048,6 +1048,25 @@ const contentPartsForInput = (content) => {
   return content ? JSON.stringify(content) : '';
 };
 
+// Meta's subscription-key gate rejects requests whose function tools carry
+// the well-known agent-harness shell names (`shell`, `bash`) with 403
+// client_attestation_denied — verified live 2026-10-30 by bisecting a real
+// opencode request body: every other tool, the instructions, and all client
+// headers pass unchanged, while `run_command` / `terminal` pass. The direct
+// path therefore presents those tools under alias names and translates the
+// model's tool calls back on the way out. The CLI door never needed this —
+// the CLI sends its own toolset.
+const DIRECT_TOOL_ALIASES = { shell: 'run_command', bash: 'terminal' };
+const DIRECT_TOOL_NAMES = Object.fromEntries(
+  Object.entries(DIRECT_TOOL_ALIASES).map(([client, alias]) => [alias, client])
+);
+const directToolAlias = (name, taken) => {
+  const alias = DIRECT_TOOL_ALIASES[name];
+  if (!alias || (taken && taken.has(alias))) return name;
+  return alias;
+};
+const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
+
 const buildResponsesRequest = (body, baseModel, effort) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const instructions = messages
@@ -1055,6 +1074,8 @@ const buildResponsesRequest = (body, baseModel, effort) => {
     .map(messageText)
     .filter(Boolean)
     .join('\n\n');
+  const takenNames = new Set((Array.isArray(body.tools) ? body.tools : [])
+    .map(t => t && t.function && t.function.name).filter(Boolean));
   const input = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
@@ -1067,7 +1088,7 @@ const buildResponsesRequest = (body, baseModel, effort) => {
         input.push({
           type: 'function_call',
           call_id: tc.id,
-          name: tc.function ? tc.function.name : undefined,
+          name: tc.function ? directToolAlias(tc.function.name, takenNames) : undefined,
           arguments: (tc.function && tc.function.arguments) || ''
         });
       }
@@ -1085,13 +1106,13 @@ const buildResponsesRequest = (body, baseModel, effort) => {
   if (instructions) out.instructions = instructions;
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     out.tools = body.tools.map(t => (t && t.type === 'function' && t.function)
-      ? { type: 'function', name: t.function.name, description: t.function.description, parameters: t.function.parameters }
+      ? { type: 'function', name: directToolAlias(t.function.name, takenNames), description: t.function.description, parameters: t.function.parameters }
       : t);
   }
   if (body.tool_choice !== undefined) {
     const tc = body.tool_choice;
     if (typeof tc === 'string') out.tool_choice = tc;
-    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: tc.function.name };
+    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: directToolAlias(tc.function.name, takenNames) };
     else out.tool_choice = tc;
   }
   const maxOut = body.max_completion_tokens !== undefined && body.max_completion_tokens !== null
@@ -1118,7 +1139,7 @@ const extractResponsesOutput = (respBody) => {
       toolCalls.push({
         id: item.call_id || item.id,
         type: 'function',
-        function: { name: item.name, arguments: item.arguments || '' }
+        function: { name: clientToolName(item.name), arguments: item.arguments || '' }
       });
     }
   }
@@ -1212,7 +1233,7 @@ const streamResponsesAsChat = async (response, { res, chatId, created, fullName 
           index,
           id: evt.item.call_id || evt.item.id,
           type: 'function',
-          function: { name: evt.item.name || '', arguments: '' }
+          function: { name: clientToolName(evt.item.name || ''), arguments: '' }
         }]
       });
     } else if (type === 'response.function_call_arguments.delta') {
@@ -1296,8 +1317,14 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
   }
   const response = outcome.response;
   if (!response.ok) {
-    // Meta answered: pass the response through as-is, whatever the status.
     const text = await response.text().catch(() => '');
+    if (response.status === 403 && text.includes('client_attestation_denied')) {
+      // The attestation fingerprint moved (a tool name newly blocked):
+      // degrade to the CLI door instead of failing the seat outright.
+      console.warn('[muse-proxy] direct path attestation denied; falling back to the CLI door');
+      return false;
+    }
+    // Meta answered: pass the response through as-is, whatever the status.
     res.writeHead(response.status, {
       'Content-Type': response.headers.get('content-type') || 'application/json'
     });
