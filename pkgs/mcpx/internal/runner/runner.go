@@ -19,8 +19,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"sort"
 
+	"github.com/dezren39/mcpx/internal/cache"
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/launcher"
 	"github.com/dezren39/mcpx/internal/logging"
@@ -178,6 +178,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		pruneWorkDirs(opts.WorkRoot, workDir)
+		// Lease the workdir while this run uses it, so another run's
+		// pruning cannot delete it from under a live exec (#1908).
+		if lease, lerr := cache.Acquire(workDir); lerr == nil {
+			cleanup = lease.Release
+		}
 	default:
 		d, err := os.MkdirTemp("", "mcpx-run-")
 		if err != nil {
@@ -218,6 +223,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		// Kept, not deleted: it is the cache entry. Bounded instead.
 		prunePrograms(workDir, scriptPath)
+		if lease, lerr := cache.Acquire(scriptPath); lerr == nil {
+			defer lease.Release()
+		}
 	} else {
 		abs, err := filepath.Abs(scriptPath)
 		if err != nil {
@@ -248,6 +256,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if launcher != "" {
 			scriptPath = launcher
+		}
+		if lease, lerr := cache.Acquire(scriptPath); lerr == nil {
+			defer lease.Release()
 		}
 	}
 
@@ -714,42 +725,23 @@ func allowsRead(kind string, perms []string) bool {
 	return true
 }
 
+// The three pruners below are adapters onto the one cache mechanism
+// (#1908, internal/cache): each names a directory, the entry it must
+// keep, a pattern for what counts as an entry, and its historical count
+// bound — now a limit of the mechanism, alongside the shared byte/age
+// bounds and lease pinning the count-only pruners never had.
+
 // prunePrograms bounds how many generated programs a client directory keeps.
 //
 // Each is a cache entry for the type checker, worth keeping while it is
 // still being run and worth nothing afterwards. The newest survive.
 func prunePrograms(dir, keep string) {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	type aged struct {
-		path string
-		at   time.Time
-	}
-	var progs []aged
-	for _, e := range ents {
-		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, "script-") || !strings.HasSuffix(name, ".ts") {
-			continue
-		}
-		p := filepath.Join(dir, name)
-		if p == keep {
-			continue
-		}
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
-		}
-		progs = append(progs, aged{p, info.ModTime()})
-	}
-	if len(progs) < defaults.ExecPrograms {
-		return
-	}
-	sort.Slice(progs, func(i, j int) bool { return progs[i].at.After(progs[j].at) })
-	for _, p := range progs[defaults.ExecPrograms-1:] {
-		_ = os.Remove(p.path)
-	}
+	cache.Prune(dir, cache.Limits{
+		MaxEntries:    defaults.ExecPrograms,
+		LeaseStaleAge: defaults.CacheLeaseStaleAge,
+	}, keep, func(name string) bool {
+		return strings.HasPrefix(name, "script-") && strings.HasSuffix(name, ".ts")
+	})
 }
 
 // pruneWorkDirs bounds how many client directories are kept.
@@ -757,38 +749,15 @@ func prunePrograms(dir, keep string) {
 // One per distinct catalogue, and a catalogue changes whenever a server is
 // added or updates its schema, so without a bound this grows for as long as
 // mcpx is used. The newest are kept, because they are the ones whose cache
-// is worth having.
+// is worth having. Workdirs are the large kind, so the shared byte and age
+// bounds apply as well as the count.
 func pruneWorkDirs(root, keep string) {
-	ents, err := os.ReadDir(root)
-	if err != nil || len(ents) <= defaults.ExecWorkDirs {
-		return
-	}
-	type aged struct {
-		path string
-		at   time.Time
-	}
-	var dirs []aged
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
-		p := filepath.Join(root, e.Name())
-		if p == keep {
-			continue
-		}
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
-		}
-		dirs = append(dirs, aged{p, info.ModTime()})
-	}
-	if len(dirs) < defaults.ExecWorkDirs {
-		return
-	}
-	sort.Slice(dirs, func(i, j int) bool { return dirs[i].at.After(dirs[j].at) })
-	for _, d := range dirs[defaults.ExecWorkDirs-1:] {
-		_ = os.RemoveAll(d.path)
-	}
+	cache.Prune(root, cache.Limits{
+		MaxBytes:      defaults.CacheMaxBytes,
+		MaxAge:        defaults.CacheMaxAge,
+		MaxEntries:    defaults.ExecWorkDirs,
+		LeaseStaleAge: defaults.CacheLeaseStaleAge,
+	}, keep, nil)
 }
 
 // pruneEntries bounds how many generated entry points one script leaves
@@ -798,35 +767,10 @@ func pruneWorkDirs(root, keep string) {
 // resolves, which means they are visible and must not accumulate. The newest
 // survive, because those are the ones still being run.
 func pruneEntries(dir, stem, keep string) {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	type aged struct {
-		path string
-		at   time.Time
-	}
-	var found []aged
-	for _, e := range ents {
-		name := e.Name()
-		if e.IsDir() || !strings.HasPrefix(name, stem+".") || !strings.HasSuffix(name, ".mcpx-entry.ts") {
-			continue
-		}
-		p := filepath.Join(dir, name)
-		if p == keep {
-			continue
-		}
-		info, ierr := e.Info()
-		if ierr != nil {
-			continue
-		}
-		found = append(found, aged{p, info.ModTime()})
-	}
-	if len(found) < defaults.ExecEntries {
-		return
-	}
-	sort.Slice(found, func(i, j int) bool { return found[i].at.After(found[j].at) })
-	for _, f := range found[defaults.ExecEntries-1:] {
-		_ = os.Remove(f.path)
-	}
+	cache.Prune(dir, cache.Limits{
+		MaxEntries:    defaults.ExecEntries,
+		LeaseStaleAge: defaults.CacheLeaseStaleAge,
+	}, keep, func(name string) bool {
+		return strings.HasPrefix(name, stem+".") && strings.HasSuffix(name, ".mcpx-entry.ts")
+	})
 }

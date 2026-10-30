@@ -44,6 +44,21 @@ ever require checks by name, require the `basic`-prefixed names
 (plus `nix flake check` for `id`) — full main-tier jobs must
 never become merge requirements.
 
+## Merge queue (pilot, 2026-10-29)
+
+`main` runs a merge queue (ruleset `main: merge queue pilot`):
+merge method MERGE (merge commits only), grouping HEADGREEN
+(only the group's combined head must pass the required checks),
+min entries to merge 1 with a 1-minute wait (a lone PR is never
+held for a batch), max entries to merge 100, max entries to build
+100, check response timeout 30 minutes. The queue enforces the
+same required check as branch protection — `basic: proxy port
+fallbacks` — which is why `nix ci` also runs on `merge_group`
+events: the queue validates the combined merge-group head, never
+the PR head alone. Operationally: `gh pr merge` now ENQUEUES a
+PR instead of merging it; "in the merge queue" is merge-pending,
+not a failure.
+
 ## Change classes (§3.3 of the design)
 
 | class                        | trigger paths (examples)                                                                                                                       | PR tier                                                                         |

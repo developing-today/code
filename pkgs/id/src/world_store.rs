@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -1563,7 +1563,7 @@ mod tests {
             ));
             journal
                 .append(&JournalEntry::ExecutionProfile {
-                    profile: profile.clone(),
+                    profile,
                 })
                 .unwrap();
         }

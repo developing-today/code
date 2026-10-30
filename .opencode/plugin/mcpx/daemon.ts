@@ -136,7 +136,10 @@ export type DaemonInfo = {
   socket?: string
   endpoint?: string
   configPath?: string
-  configHash?: string
+  /** Digest of the server definitions (schema cache invalidation). */
+  schemaHash?: string
+  /** The daemon key: the fingerprint naming the socket and info file. */
+  daemonKey?: string
   version?: string
   startedAt?: string
 }
@@ -849,7 +852,7 @@ export const liveCandidates = async (opts: DiscoverOptions = {}): Promise<Candid
       pid: info.pid,
       endpoint: info.endpoint,
       configPath: info.configPath,
-      // The info file's own "configHash" is the digest of the server
+      // The info file's own "schemaHash" is the digest of the server
       // definitions, used to invalidate the schema cache. The daemon *key*
       // -- the thing that names this file and the socket -- is in the file
       // name, and that is the one discovery compares against /v1/resolve.

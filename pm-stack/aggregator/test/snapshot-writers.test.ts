@@ -8,13 +8,14 @@ import { join } from "node:path";
 import type { PaygLine, QuotaPool, SaasService } from "../src/model.ts";
 import {
   dayTs,
+  recordsFromDeepseekBalance,
   recordsFromDns,
   recordsFromPaygLines,
   recordsFromPools,
   recordsFromProviderUsage,
   recordsFromSaasServices,
 } from "../src/snapshot-records.ts";
-import { SnapshotStore } from "../src/snapshots.ts";
+import { SnapshotStore, isSnapshotRecord } from "../src/snapshots.ts";
 
 const svc = (partial: Partial<SaasService>): SaasService => ({
   id: "turso",
@@ -195,6 +196,59 @@ describe("recordsFromProviderUsage", () => {
     ]);
     expect(recordsFromProviderUsage(null, "check-usage")).toEqual([]);
     expect(recordsFromProviderUsage({ sessions: [] }, "check-usage")).toEqual([]);
+  });
+});
+
+describe("DeepSeek CNY balance (#1052)", () => {
+  // The quota-view DeepSeek section as the backfill reads it: the date
+  // rides on the balance line itself.
+  const QUOTA_VIEW = `# Quota view
+
+### DeepSeek
+- **Plan / price:** API PAYG reserve, list rates; never a routine route.
+- **PAYG balance:** ¥44.63 (2026-10-25 read), parked.
+
+### GitHub
+- **Last checked:** 2026-10-26
+`;
+
+  test("the dated ¥ read becomes a cny record at its own date, never usd", () => {
+    const recs = recordsFromDeepseekBalance(QUOTA_VIEW, "backfill:quota-view.md");
+    expect(recs).toHaveLength(1);
+    expect(recs[0]).toMatchObject({
+      ts: dayTs("2026-10-25"),
+      serviceId: "deepseek:api",
+      metricId: "credits_balance",
+      value: 44.63,
+      unit: "cny",
+      source: "api",
+      observedBy: "backfill:quota-view.md",
+    });
+    expect(recs.every((r) => r.unit !== "usd")).toBe(true);
+  });
+
+  test("no ¥ line, no section, or no date yields no record (nothing invented)", () => {
+    expect(recordsFromDeepseekBalance("# Nothing\n", "b")).toEqual([]);
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: $6.00\n", "b")).toEqual([]);
+    expect(recordsFromDeepseekBalance("### DeepSeek\n- balance: ¥44.63\n", "b")).toEqual([]);
+  });
+
+  test("a cny record validates, round-trips the store, and no DeepSeek record is usd", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-cny-"));
+    try {
+      const store = new SnapshotStore(dir);
+      const recs = recordsFromDeepseekBalance(QUOTA_VIEW, "backfill:quota-view.md");
+      expect(isSnapshotRecord(recs[0])).toBe(true);
+      expect(await store.append(recs)).toBe(1);
+      expect(await store.append(recs)).toBe(0); // re-run dedupes
+      const stored = (await store.readAll()).filter((r) => r.serviceId === "deepseek:api");
+      expect(stored).toHaveLength(1);
+      expect(stored[0].unit).toBe("cny");
+      expect(stored[0].value).toBe(44.63);
+      expect(stored.filter((r) => r.unit === "usd")).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 
