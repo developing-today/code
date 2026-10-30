@@ -838,6 +838,12 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The lookup, the file write and the reload are one transaction: two
+	// live changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success (Codex
+	// review, PR #2565). The servers handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	files := s.adapterFiles()
 	if len(files) == 0 {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf(
@@ -856,7 +862,25 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// The name is looked up across every configured file, not just the
+	// destination: loadAdapterFiles refuses a name two files declare, so
+	// writing a second definition into the first file would persist a
+	// duplicate the next reload — and the next daemon start — rejects
+	// (Codex review, PR #2565). A replacement edits the file that
+	// defines the adapter, like remove does.
 	path := files[0]
+	if existing, found, err := config.AdapterDefinedIn(files, req.Spec.Name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	} else if found {
+		if !req.Replace {
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%s already declares adapter %q; remove it first or pick another name",
+				existing, req.Spec.Name))
+			return
+		}
+		path = existing
+	}
 	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -873,6 +897,11 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdaptersRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// Same transaction rule as add: lookup, write and reload under
+	// reloadMu, so a concurrent add cannot resurrect what this removes
+	// (or be discarded by it).
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	path, found, err := config.AdapterDefinedIn(s.adapterFiles(), name)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)

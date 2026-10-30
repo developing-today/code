@@ -150,10 +150,12 @@ func settingsOps() []Op {
 			Description: "Writes the declaration to the first file paths.adapters " +
 				"names and reloads, so the adapter is callable immediately and " +
 				"is still there after a restart. The body is the declaration " +
-				"itself: name, command, and its tools. Refused, with the remedy, " +
-				"when paths.adapters names no file, because a declaration " +
-				"written somewhere nothing reads would report success and " +
-				"change nothing.",
+				"itself: name, command, and its tools. A name another configured " +
+				"file already declares is refused rather than duplicated across " +
+				"files, and a replacement edits the file that defines it. " +
+				"Refused, with the remedy, when paths.adapters names no file, " +
+				"because a declaration written somewhere nothing reads would " +
+				"report success and change nothing.",
 			Admin: true, Mutating: true,
 			Params: []Param{
 				{Name: "name", In: InBody, Type: "string", Required: true,

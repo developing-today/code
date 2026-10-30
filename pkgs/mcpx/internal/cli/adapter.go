@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -252,11 +254,48 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 			Name:    s.Name,
 			Command: self,
 			Args:    append([]string{"adapter", "serve", s.Name}, files...),
+			// The declaration's fingerprint rides in the environment
+			// because PoolID hashes the environment: replacing the
+			// declaration (command, env, tools) and reloading then
+			// replaces this adapter's pool instead of silently keeping
+			// the child that captured the old declaration at startup
+			// (Codex review, PR #2565; the same shape augmentAPIs uses
+			// for APIs since PR #2514).
+			Env: map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)},
 			// Instructions arrive from initialize, as a real server's do.
 			Mcpx: &config.Extras{Description: s.Description},
 		}
 	}
 	return nil
+}
+
+// adapterDeclarationFingerprint identifies one adapter declaration's
+// content, for the process identity augmentAdapters builds.
+func adapterDeclarationFingerprint(s adapter.Spec) string {
+	h := sha256.New()
+	if raw, err := json.Marshal(s); err == nil {
+		h.Write(raw)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// adapterAddValuedFlags are adapter add's flags that take a value, for
+// hoistFlags: a flag and its value move together, so --tool status stays
+// a pair wherever it started (Codex review, PR #2565).
+var adapterAddValuedFlags = map[string]bool{"runtime": true, "description": true, "tool": true}
+
+// adapterToolEntries builds the declaration's tools from the subcommands
+// named on the command line.
+func adapterToolEntries(values []string) []map[string]any {
+	tools := []map[string]any{}
+	for _, t := range values {
+		// The subcommand is the tool's fixed argument, not just its name:
+		// ToolSpec.buildArgs starts from ToolSpec.Args, so a tool with no
+		// args would run the bare command — every tool the same command
+		// (Codex review, PR #2565).
+		tools = append(tools, map[string]any{"name": t, "args": []string{t}})
+	}
+	return tools
 }
 
 // adapterAdd declares a new adapter through the daemon, the way servers
@@ -273,7 +312,7 @@ func (a *App) adapterAdd(ctx context.Context, args []string) error {
 			break
 		}
 	}
-	args = hoistFlags(args, map[string]bool{"runtime": true, "description": true})
+	args = hoistFlags(args, adapterAddValuedFlags)
 	runtime := fs.String("runtime", "", "the interpreter a script command needs: bash, js, ts or py")
 	desc := fs.String("description", "", "one line about what it wraps")
 	tool := newRepeated()
@@ -290,10 +329,7 @@ func (a *App) adapterAdd(ctx context.Context, args []string) error {
 	if len(rest) == 0 {
 		return fmt.Errorf("an adapter needs a command after --")
 	}
-	tools := []map[string]any{}
-	for _, t := range tool.values {
-		tools = append(tools, map[string]any{"name": t})
-	}
+	tools := adapterToolEntries(tool.values)
 	body := map[string]any{
 		"name": name, "command": rest[0], "replace": *replace, "tools": tools,
 	}
