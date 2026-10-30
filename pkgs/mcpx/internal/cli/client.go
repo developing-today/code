@@ -617,9 +617,21 @@ func (c *Client) Globals(ctx context.Context, ns []string, prof Profile) (string
 
 // Search ranks tools against a query.
 func (c *Client) Search(ctx context.Context, q string, limit int, semantic ...bool) ([]daemon.ToolInfo, error) {
+	return c.SearchOpts(ctx, q, limit, len(semantic) > 0 && semantic[0], "", false)
+}
+
+// SearchOpts is Search with the #1923 options: an exact tag filter and
+// per-term score explanations.
+func (c *Client) SearchOpts(ctx context.Context, q string, limit int, semantic bool, tag string, explain bool) ([]daemon.ToolInfo, error) {
 	semQ := ""
-	if len(semantic) > 0 && semantic[0] {
+	if semantic {
 		semQ = "&semantic=true"
+	}
+	if tag != "" {
+		semQ += "&tag=" + urlEscape(tag)
+	}
+	if explain {
+		semQ += "&explain=true"
 	}
 	b, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/search?q=%s&limit=%d%s", urlEscape(q), limit, semQ), nil)
 	if err != nil {
