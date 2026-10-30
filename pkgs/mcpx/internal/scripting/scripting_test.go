@@ -228,4 +228,3 @@ func TestResolveProviderNamedDrivers(t *testing.T) {
 		t.Fatalf("expected auto provider to be opencode or claude, got %s", pAuto.Name())
 	}
 }
-

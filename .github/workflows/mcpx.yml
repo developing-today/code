@@ -209,6 +209,96 @@ jobs:
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
 
+  lint:
+    name: "basic: lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Approach C (#1996): the linters are the dev shell's, so their
+      # versions are pinned by flake.lock and this workflow passes no
+      # per-action version input of its own. The shell is the flake's
+      # minimal `mcpx-lint` shell, not the default: realising the full
+      # monorepo dev shell on a cold runner exceeded this job's timeout
+      # and the leg was cancelled before any linter ran (PR #2718).
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            # The default dev shell's closure needs the cgroups
+            # feature at build time. That gate is enforced by the nix
+            # daemon, whose config is written here — a client-side
+            # --extra-experimental-features flag alone does not lift
+            # it (verified on this PR: the flag was accepted and the
+            # build still died). Drew's NixOS machines never see this
+            # because the flake's nixConfig is fed into their system
+            # nix.settings; a stock runner's is not (#1996).
+            experimental-features = nix-command flakes cgroups
+
+      # shellcheck reads the repository's .shellcheckrc, which enables every
+      # optional check; --severity=warning keeps this leg to findings that
+      # are wrong rather than merely unidiomatic (the style class is
+      # treefmt's shfmt job). actionlint checks these workflow files.
+      - name: go vet, gofmt, shellcheck, actionlint
+        run: |
+          # The cgroups feature is enabled in the installer step's
+          # extra-conf above (the daemon enforces it); the flag here
+          # covers the client side of `nix develop` itself. Without
+          # both, this step dies with "experimental Nix feature
+          # 'cgroups' is disabled" before any linter runs (#1996).
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            go vet ./...
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "gofmt would rewrite:"
+              echo "$unformatted"
+              exit 1
+            fi
+            cd ../..
+            shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
+            # actionlint is scoped to the mcpx workflows: #1996 assigns it
+            # the mcpx workflow set, not the whole repo (repo-wide findings
+            # are tracked separately). -S warning matches the shellcheck
+            # severity above, so info/style notes inside run: blocks do
+            # not fail this leg.
+            actionlint -shellcheck "shellcheck -S warning" .github/workflows/mcpx*.yml
+          '
+
+      # golangci-lint runs, but is NOT blocking yet — explicitly, per
+      # #1996's acceptance fallback. Its first full run (PR #2718, run
+      # 41131293079) reported 119 pre-existing findings across the
+      # module (errcheck 50, staticcheck 50, unused 17, ineffassign 2),
+      # far beyond this slice's baseline. They are filed as #2836;
+      # when #2836 lands, this step loses `continue-on-error` and the
+      # leg becomes fully blocking. Until then the findings print on
+      # every run, visible but not gating.
+      - name: golangci-lint (non-blocking until #2836)
+        continue-on-error: true
+        run: |
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            golangci-lint run
+          '
+
+  plugin:
+    name: "basic: plugin tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Every test file the plugin has, not the single daemon.test.ts #1996
+      # was written against. Ops tests skip unless OPS_LIVE_SOCKET is set:
+      # they need a running daemon, and this leg deliberately does not
+      # provide one (the Go test job is where the daemon itself is tested).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: bun test
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
+
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)
     # Only on bot branches. A human changing dependencies should see the
