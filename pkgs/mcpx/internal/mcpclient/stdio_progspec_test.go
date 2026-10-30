@@ -3,6 +3,7 @@ package mcpclient_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -95,6 +96,57 @@ func TestSupervisedResolvesNixSpecForItsChild(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NewSupervised with a nix: spec: %v", err)
+	}
+	defer killChild(t, tr)
+	defer tr.Close()
+	ctx := context.Background()
+	frame := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	if err := tr.Send(ctx, frame); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	got, err := tr.Recv()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if string(got) != string(frame) {
+		t.Fatalf("echo = %s, want %s", got, frame)
+	}
+}
+
+// Codex P2 (PR #2585): a supervised server whose own Env overrides
+// PATH with one that excludes nix must still launch: the daemon
+// resolves the spec with its own PATH and hands the resolved store
+// path to the supervisor it spawns, instead of leaving the
+// supervisor to resolve the spec again under the server's PATH.
+// The stub tool here execs cat by absolute path, so the only thing
+// the restricted PATH needs to hide is nix itself.
+func TestSupervisedNixSpecWithServerPathExcludingNix(t *testing.T) {
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		t.Skip("no cat on PATH for the stub tool")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "store", "aaaa-fakepkg-1.0", "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := "#!/bin/sh\nexec " + cat + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "faketool"), []byte(tool), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := "#!/bin/sh\necho \"" + filepath.Dir(bin) + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "nix"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tr, err := mcpclient.NewSupervised(mcpclient.SupervisedOptions{
+		Name: "nixrestrictedpath", StateDir: t.TempDir(),
+		Command: "nix:nixpkgs#faketool", InheritEnv: true,
+		Env: map[string]string{"PATH": "/usr/bin:/bin"},
+	})
+	if err != nil {
+		t.Fatalf("NewSupervised with a nix: spec and a nix-less server PATH: %v", err)
 	}
 	defer killChild(t, tr)
 	defer tr.Close()

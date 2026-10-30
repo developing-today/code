@@ -139,6 +139,12 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	}
 	memoMu.Unlock()
 
+	return resolveNixMemoized(ctx, spec, dir, key)
+}
+
+// resolveNixMemoized resolves a nix spec and records the outcome in
+// the memo under key.
+func resolveNixMemoized(ctx context.Context, spec Spec, dir, key string) (Resolved, error) {
 	r, err := resolveNix(ctx, spec, dir)
 	if err != nil {
 		return Resolved{}, err
@@ -147,6 +153,29 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	memo[key] = r
 	memoMu.Unlock()
 	return r, nil
+}
+
+// ResolveFreshInDir is ResolveInDir without the memo READ: the
+// resolution happens now, in this process, with this process's
+// environment and the current state of the world. Callers that hand
+// the result to ANOTHER process (the supervised spawn, #2585) must
+// use this form: a memoized path names whatever an earlier context
+// resolved — possibly a build output that has since been cleaned
+// up, or one produced under a different PATH — and the receiving
+// process cannot tell. The fresh result still updates the memo.
+func ResolveFreshInDir(ctx context.Context, raw, dir string) (Resolved, error) {
+	spec, err := Parse(raw)
+	if err != nil {
+		return Resolved{}, err
+	}
+	if !spec.Nix {
+		return ResolveInDir(ctx, raw, dir)
+	}
+	key := raw
+	if dir != "" {
+		key = raw + "\x00dir:" + dir
+	}
+	return resolveNixMemoized(ctx, spec, dir, key)
 }
 
 // ResolvePath is Resolve for callers that only need the executable.
@@ -159,6 +188,13 @@ func ResolvePath(ctx context.Context, raw string) (string, error) {
 // executable.
 func ResolvePathInDir(ctx context.Context, raw, dir string) (string, error) {
 	r, err := ResolveInDir(ctx, raw, dir)
+	return r.Path, err
+}
+
+// ResolvePathFreshInDir is ResolveFreshInDir for callers that only
+// need the executable.
+func ResolvePathFreshInDir(ctx context.Context, raw, dir string) (string, error) {
+	r, err := ResolveFreshInDir(ctx, raw, dir)
 	return r.Path, err
 }
 

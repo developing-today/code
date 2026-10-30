@@ -583,28 +583,40 @@ func newSupervised(opts SupervisedOptions, spawn spawnFunc) (*SupervisedTranspor
 		return nil, err
 	}
 	// Not live: remove a possible stale socket and spawn on demand.
+	spawnOpts := opts
 	if progspec.IsNix(opts.Command) {
 		// Fail fast, in this process, when the spec cannot resolve at
-		// all; the supervisor resolves it again at child spawn (the
-		// memo is in-process, and the store path is the child's, not
-		// this process's to hand over). This check belongs HERE, not
-		// before the attach attempt above: a live supervisor with a
-		// healthy child needs no build, and a daemon reattaching
+		// all — and hand the resolved store path to the supervisor
+		// being spawned, in place of the spec. The supervisor runs
+		// with the SERVER's environment (opts.Env rides along), whose
+		// PATH may exclude nix entirely, so a supervisor left to
+		// resolve the spec again at child spawn can fail where this
+		// process succeeded (Codex review, PR #2585). A store path is
+		// immutable and self-contained, so handing it over is safe,
+		// and the supervisor's own restarts of the child stop
+		// depending on nix being findable. The resolution is FRESH
+		// (no memo read): a memoized path names whatever an earlier
+		// context resolved, which another process cannot trust.
+		// This check belongs HERE,
+		// not before the attach attempt above: a live supervisor with
+		// a healthy child needs no build, and a daemon reattaching
 		// after a restart must not be failed by a nix that has since
 		// left PATH or a flake that no longer resolves.
 		ctx := opts.Context
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		if _, err := progspec.ResolvePathInDir(ctx, opts.Command, opts.Cwd); err != nil {
+		resolved, err := progspec.ResolvePathFreshInDir(ctx, opts.Command, opts.Cwd)
+		if err != nil {
 			return nil, fmt.Errorf("supervised transport: %w", err)
 		}
+		spawnOpts.Command = resolved
 	}
 	_ = os.Remove(sock)
 	if spawn == nil {
 		spawn = spawnSupervisorProcess
 	}
-	if serr := spawn(sock, opts); serr != nil {
+	if serr := spawn(sock, spawnOpts); serr != nil {
 		return nil, fmt.Errorf("supervised transport for %s: spawn supervisor: %w", opts.Name, serr)
 	}
 	deadline := time.Now().Add(opts.SpawnTimeout)
