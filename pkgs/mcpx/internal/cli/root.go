@@ -800,6 +800,20 @@ func (a *App) helpText(name string) (string, error) {
 		b.WriteString(strings.Join(lines, "\n"))
 		b.WriteString("\n\n  mcpx config --schema   shows every setting with its variable\n")
 	}
+	if groups := handFlagGroups(found.Name); len(groups) > 0 {
+		var flagLines []string
+		for _, g := range groups {
+			if g.Scope != found.Name {
+				flagLines = append(flagLines, "  "+g.Scope+":")
+			}
+			for _, f := range g.Flags {
+				flagLines = append(flagLines, fmt.Sprintf("  --%-26s %s", f.Name, f.Usage))
+			}
+		}
+		b.WriteString("\nFLAGS\n")
+		b.WriteString(strings.Join(flagLines, "\n"))
+		b.WriteString("\n")
+	}
 	return b.String(), nil
 }
 
