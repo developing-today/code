@@ -102,3 +102,25 @@ describe("request validation", () => {
     expect(titleFromPrompt("x".repeat(200)).length).toBe(120);
   });
 });
+
+describe("task issue_number parsing", () => {
+  const base = { repo: "developing-today/code", title: "t", prompt: "p" };
+
+  test("accepts a positive integer and exposes it as issueNumber", () => {
+    expect(parseTaskRequest({ ...base, issue_number: 2672 }).issueNumber).toBe(2672);
+    expect(parseTaskRequest({ ...base, issue_number: 1 }).issueNumber).toBe(1);
+  });
+
+  test("absent issue_number is undefined", () => {
+    expect(parseTaskRequest(base).issueNumber).toBeUndefined();
+    expect(parseTaskRequest({ ...base, issue_number: null }).issueNumber).toBeUndefined();
+  });
+
+  test("rejects zero, negatives, floats and strings", () => {
+    expect(() => parseTaskRequest({ ...base, issue_number: 0 })).toThrow(/issue_number/);
+    expect(() => parseTaskRequest({ ...base, issue_number: -3 })).toThrow(ValidationError);
+    expect(() => parseTaskRequest({ ...base, issue_number: 1.5 })).toThrow(ValidationError);
+    expect(() => parseTaskRequest({ ...base, issue_number: "42" })).toThrow(ValidationError);
+    expect(() => parseTaskRequest({ ...base, issue_number: true })).toThrow(ValidationError);
+  });
+});

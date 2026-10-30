@@ -1,0 +1,116 @@
+name: pm-dispatch-queue
+description: >-
+  Enqueue work via pm-dispatch (POST /v1/tasks), optionally tracked by a
+  GitHub issue. The calling job MUST grant `permissions: id-token: write` —
+  this action mints a GitHub Actions OIDC token (audience pm-dispatch) to
+  authenticate.
+inputs:
+  repo:
+    description: "Target repo (owner/name). Any allowlisted repo may target any allowlisted repo."
+    required: false
+    default: ${{ github.repository }}
+  title:
+    description: "Queue task title."
+    required: true
+  prompt:
+    description: "The work text (sent as the task prompt/body)."
+    required: true
+  model:
+    description: 'Optional model hint, "provider/model" (stored as the payload model hint only).'
+    required: false
+    default: ""
+  priority:
+    description: "Optional priority: 10-90 or critical|high|normal|low."
+    required: false
+    default: ""
+  kind:
+    description: "Optional task kind: triage|small_fix|pr_shepherd|ci_investigation."
+    required: false
+    default: ""
+  issue:
+    description: '"true" to create a tracking issue in the target repo (ignored when issue_number is set).'
+    required: false
+    default: "true"
+  issue_number:
+    description: "Optional existing issue number in the target repo to attach to instead of creating an issue. Takes precedence over issue."
+    required: false
+    default: ""
+outputs:
+  task_id:
+    description: "pm-dispatch queue task id."
+    value: ${{ steps.dispatch.outputs.task_id }}
+  issue_number:
+    description: "Tracking/attached issue number (empty when no issue is involved)."
+    value: ${{ steps.dispatch.outputs.issue_number }}
+  issue_url:
+    description: "Issue URL (empty when no issue is involved)."
+    value: ${{ steps.dispatch.outputs.issue_url }}
+runs:
+  using: composite
+  steps:
+    - name: Enqueue work via pm-dispatch
+      id: dispatch
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_TITLE: ${{ inputs.title }}
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_PRIORITY: ${{ inputs.priority }}
+        INPUT_KIND: ${{ inputs.kind }}
+        INPUT_ISSUE: ${{ inputs.issue }}
+        INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error::pm-dispatch-queue: ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN are not set. The calling job must grant 'permissions: id-token: write' so this action can mint an OIDC token." >&2
+          exit 1
+        fi
+        case "$INPUT_ISSUE" in
+          true|false) ;;
+          *) echo "::error::pm-dispatch-queue: issue must be \"true\" or \"false\", got: $INPUT_ISSUE" >&2; exit 1 ;;
+        esac
+        oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pm-dispatch" | jq -r '.value // empty')"
+        if [ -z "$oidc_token" ]; then
+          echo "::error::pm-dispatch-queue: failed to mint a GitHub Actions OIDC token (audience pm-dispatch)." >&2
+          exit 1
+        fi
+        payload="$(jq -n \
+          --arg repo "$INPUT_REPO" \
+          --arg title "$INPUT_TITLE" \
+          --arg prompt "$INPUT_PROMPT" \
+          --arg model "$INPUT_MODEL" \
+          --arg priority "$INPUT_PRIORITY" \
+          --arg kind "$INPUT_KIND" \
+          --argjson issue "$INPUT_ISSUE" \
+          '{repo: $repo, title: $title, prompt: $prompt, issue: $issue}
+           + (if $model != "" then {model: $model} else {} end)
+           + (if $priority != "" then {priority: $priority} else {} end)
+           + (if $kind != "" then {kind: $kind} else {} end)')"
+        if [ -n "$INPUT_ISSUE_NUMBER" ]; then
+          payload="$(printf '%s' "$payload" | jq --argjson issue_number "$INPUT_ISSUE_NUMBER" '. + {issue_number: $issue_number}')"
+        fi
+        response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/tasks" \
+          -H "Authorization: Bearer $oidc_token" \
+          -H "Content-Type: application/json" \
+          -d "$payload")"
+        http_code="${response##*$'\n'}"
+        body="${response%$'\n'*}"
+        if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+          echo "::error::pm-dispatch-queue: pm-dispatch POST /v1/tasks failed (HTTP $http_code):" >&2
+          echo "$body" >&2
+          exit 1
+        fi
+        echo "$body"
+        task_id="$(printf '%s' "$body" | jq -r '.task_id // empty')"
+        issue_number="$(printf '%s' "$body" | jq -r '.issue_number // empty')"
+        issue_url="$(printf '%s' "$body" | jq -r '.issue_url // empty')"
+        if [ -z "$issue_url" ] && [ -n "$issue_number" ]; then
+          issue_url="https://github.com/${INPUT_REPO}/issues/${issue_number}"
+        fi
+        {
+          echo "task_id=$task_id"
+          echo "issue_number=$issue_number"
+          echo "issue_url=$issue_url"
+        } >> "$GITHUB_OUTPUT"

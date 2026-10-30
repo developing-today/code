@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,6 +76,15 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 	sub := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub, args = args[0], args[1:]
+	}
+	// add and remove go through the daemon, like servers add/remove: the
+	// write has to land where the running daemon reads, and the local
+	// declaration files are not the authority for a live change.
+	if sub == "add" {
+		return a.adapterAdd(ctx, args)
+	}
+	if sub == "remove" {
+		return a.adapterRemove(ctx, args)
 	}
 	fs := newFlagSet("adapter")
 	if err := parseFlags(a, fs, args); err != nil {
@@ -200,7 +212,7 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 		}
 		return fmt.Errorf("no adapter named %q", fs.Arg(0))
 	}
-	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools or serve", sub)
+	return fmt.Errorf("no adapter subcommand %q; list, check, call, tools, serve, add or remove", sub)
 }
 
 // augmentAdapters adds every declared adapter to cfg as a server of its
@@ -242,9 +254,139 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 			Name:    s.Name,
 			Command: self,
 			Args:    append([]string{"adapter", "serve", s.Name}, files...),
+			// The declaration's fingerprint rides in the environment
+			// because PoolID hashes the environment: replacing the
+			// declaration (command, env, tools) and reloading then
+			// replaces this adapter's pool instead of silently keeping
+			// the child that captured the old declaration at startup
+			// (Codex review, PR #2565; the same shape augmentAPIs uses
+			// for APIs since PR #2514).
+			Env: map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)},
 			// Instructions arrive from initialize, as a real server's do.
 			Mcpx: &config.Extras{Description: s.Description},
 		}
 	}
+	return nil
+}
+
+// adapterDeclarationFingerprint identifies one adapter declaration's
+// content, for the process identity augmentAdapters builds.
+func adapterDeclarationFingerprint(s adapter.Spec) string {
+	h := sha256.New()
+	if raw, err := json.Marshal(s); err == nil {
+		h.Write(raw)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// adapterAddValuedFlags are adapter add's flags that take a value, for
+// hoistFlags: a flag and its value move together, so --tool status stays
+// a pair wherever it started (Codex review, PR #2565).
+var adapterAddValuedFlags = map[string]bool{"runtime": true, "description": true, "tool": true}
+
+// adapterToolEntries builds the declaration's tools from the subcommands
+// named on the command line.
+func adapterToolEntries(values []string) []map[string]any {
+	tools := []map[string]any{}
+	for _, t := range values {
+		// The subcommand is the tool's fixed argument, not just its name:
+		// ToolSpec.buildArgs starts from ToolSpec.Args, so a tool with no
+		// args would run the bare command — every tool the same command
+		// (Codex review, PR #2565).
+		tools = append(tools, map[string]any{"name": t, "args": []string{t}})
+	}
+	return tools
+}
+
+// adapterAdd declares a new adapter through the daemon, the way servers
+// add does: the write lands in the declaration file the running daemon
+// reads and the reload makes it callable at once. The tools named here
+// are a starting declaration; the file is the editable source, and
+// `mcpx adapter check` validates whatever it grows into.
+func (a *App) adapterAdd(ctx context.Context, args []string) error {
+	fs := newFlagSet("adapter")
+	var after []string
+	for i, v := range args {
+		if v == "--" {
+			args, after = args[:i], args[i+1:]
+			break
+		}
+	}
+	args = hoistFlags(args, adapterAddValuedFlags)
+	runtime := fs.String("runtime", "", "the interpreter a script command needs: bash, js, ts or py")
+	desc := fs.String("description", "", "one line about what it wraps")
+	tool := newRepeated()
+	fs.Var(tool, "tool", "a subcommand worth exposing (repeatable)")
+	replace := fs.Bool("replace", false, "overwrite a declaration of the same name")
+	if err := parseFlags(a, fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: mcpx adapter add <name> [--tool <subcommand>]... -- <command> [args...]")
+	}
+	name := fs.Arg(0)
+	rest := append(fs.Args()[1:], after...)
+	if len(rest) == 0 {
+		return fmt.Errorf("an adapter needs a command after --")
+	}
+	tools := adapterToolEntries(tool.values)
+	body := map[string]any{
+		"name": name, "command": rest[0], "replace": *replace, "tools": tools,
+	}
+	if len(rest) > 1 {
+		body["args"] = rest[1:]
+	}
+	if *runtime != "" {
+		body["runtime"] = *runtime
+	}
+	if *desc != "" {
+		body["description"] = *desc
+	}
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := c.Do(ctx, http.MethodPost, "/v1/adapters", mustMarshal(body))
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(out)
+	}
+	fmt.Printf("added adapter %s to %v; it is live now\n", name, out["written"])
+	return nil
+}
+
+// adapterRemove removes a declaration through the daemon, mirroring
+// servers remove: the file that defines it is the one edited.
+func (a *App) adapterRemove(ctx context.Context, args []string) error {
+	fs := newFlagSet("adapter")
+	if err := parseFlags(a, fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("usage: mcpx adapter remove <name>")
+	}
+	name := fs.Arg(0)
+	c, err := a.ensure(ctx)
+	if err != nil {
+		return err
+	}
+	raw, err := c.Do(ctx, http.MethodDelete, "/v1/adapters/"+urlEscape(name), nil)
+	if err != nil {
+		return err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return err
+	}
+	if a.JSON {
+		return a.out(out)
+	}
+	fmt.Printf("removed adapter %s from %v; it is gone from the running daemon\n", name, out["written"])
 	return nil
 }

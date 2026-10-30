@@ -25,6 +25,10 @@ on:
     branches: [main]
     paths:
       - "pkgs/mcpx/**"
+      # The seed store is data the collector bot files (#1953): its
+      # commits must never re-trigger this workflow (the collector
+      # also marks its commits [skip ci] — both addendum fixes).
+      - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
 
 # Push-to-main runs each get their own group (keyed by run_id), so a

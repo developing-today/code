@@ -288,8 +288,21 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   const warnings: string[] = [];
   const directory = REPO_DIRS[body.repo]!;
 
+  // `issue_number` takes precedence over `issue`: when it is present, do
+  // NOT create an issue — the task attaches to that existing issue in
+  // body.repo (canonical dedupe key + agent-note comment + labels below).
   let issue: IssueRef | null = null;
-  if (body.issue) {
+  if (body.issueNumber !== undefined) {
+    issue = {
+      number: body.issueNumber,
+      url: `https://github.com/${body.repo}/issues/${body.issueNumber}`,
+    };
+    if (!APP_INSTALLED_REPOS.has(body.repo)) {
+      warnings.push(
+        `github app is not installed on ${body.repo}; issue attach skipped (task is the tracking record)`,
+      );
+    }
+  } else if (body.issue) {
     issue = await maybeCreateIssue(
       body.repo,
       body.title,
@@ -328,25 +341,41 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     return json(502, {
       error: e instanceof Error ? e.message : String(e),
       issue_number: issue?.number ?? null,
+      ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
       ...(warnings.length ? { warnings } : {}),
     });
   }
 
   if (issue) {
-    try {
-      await github.comment(
-        body.repo,
-        issue.number,
-        `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n- Status: queued`,
-      );
-    } catch (e) {
-      warnings.push(`issue agent-note comment failed: ${e instanceof Error ? e.message : String(e)}`);
+    // Attach is skipped where the GitHub App is not installed (warning
+    // already recorded above); the create path needs no skip — its issue
+    // exists precisely because the app route worked there.
+    const attachSkipped =
+      body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
+    if (!attachSkipped) {
+      try {
+        await github.comment(
+          body.repo,
+          issue.number,
+          `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n- Status: queued`,
+        );
+      } catch (e) {
+        warnings.push(`issue agent-note comment failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (body.issueNumber !== undefined) {
+        try {
+          await github.addLabels(body.repo, issue.number, ["queue/queued", "source/dispatch"]);
+        } catch (e) {
+          warnings.push(`issue attach labels failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
     }
   }
 
   return json(201, {
     task_id: task.id,
     issue_number: issue?.number ?? null,
+    ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
     queue: REPO_QUEUES[body.repo],
     ...(warnings.length ? { warnings } : {}),
   });

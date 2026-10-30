@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/cli"
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/testsupport"
 
@@ -2940,6 +2941,40 @@ func TestTwoConfigurationsDoNotShareAGeneratedClient(t *testing.T) {
 	}
 }
 
+// TestExecFlagProbeRowsMatchCoverage pins the rows above to the
+// contract in internal/cli (cli.ExecFlagProbes / ExecFlagExemptions):
+// a row added without a contract update — or a contract entry with no
+// row — fails here instead of drifting silently.
+func TestExecFlagProbeRowsMatchCoverage(t *testing.T) {
+	rows := map[string]bool{}
+	for _, r := range execFlagProbeRows {
+		name := strings.TrimPrefix(r.flag, "--")
+		if rows[name] {
+			t.Errorf("two probe rows for --%s", name)
+		}
+		rows[name] = true
+		if _, exempt := cli.ExecFlagExemptions[name]; exempt {
+			t.Errorf("--%s has a probe row AND an exemption; pick one", name)
+		}
+	}
+	for _, name := range cli.ExecFlagProbes {
+		if !rows[name] {
+			t.Errorf("cli.ExecFlagProbes names %q but there is no probe row for it here", name)
+		}
+	}
+	for name := range rows {
+		found := false
+		for _, p := range cli.ExecFlagProbes {
+			if p == name {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("probe row for --%s is not in cli.ExecFlagProbes", name)
+		}
+	}
+}
+
 // TestEveryExecFlagChangesSomething is the guard for a fault this repository
 // has now shipped three times: a flag defined on a shared flag set, described
 // in the help, and read on only one of the two paths that share it.
@@ -2950,111 +2985,129 @@ func TestTwoConfigurationsDoNotShareAGeneratedClient(t *testing.T) {
 // looks exactly like a flag that worked.
 //
 // A flag earns its place by changing an observable outcome. Add a row when
-// you add a flag to `mcpx exec`.
+// you add a flag to `mcpx exec`. The rows are the contract in
+// cli.ExecFlagProbes: TestExecFlagSetIsFullyProbed (internal/cli,
+// unit-speed) enumerates the real exec/run FlagSet and fails when a
+// hand-written flag has neither a row here nor a reasoned exemption
+// in cli.ExecFlagExemptions (#2188), and
+// TestExecFlagProbeRowsMatchCoverage below fails when these rows and
+// the contract drift apart.
 //
 // Every row runs twice: here, and with --remote on the daemon. The remote
 // path was handed five of these flags and dropped the rest (#192) -- parsed,
 // described in the help, and absent from the program the daemon ran.
+// execFlagProbeRow is one probe row of
+// TestEveryExecFlagChangesSomething: the flag is run with and without,
+// and must change an observable outcome.
+type execFlagProbeRow struct {
+	flag string
+	// base is given both with and without the flag, so the comparison
+	// isolates the flag rather than everything around it.
+	base   []string
+	args   []string
+	source string
+	// want must appear with the flag and must not appear without it.
+	want string
+	// gone must appear without the flag and must not appear with it,
+	// for a flag whose effect is to take something away.
+	gone string
+	// fails marks a flag whose whole purpose is to refuse the run, or a
+	// source that fails so a failure hook can be seen.
+	fails bool
+}
+
+var execFlagProbeRows = []execFlagProbeRow{
+	{
+		flag:   "--export",
+		args:   []string{"--export=main"},
+		source: `export const main = async () => { emit({via: "main"}); };`,
+		want:   `"via":"main"`,
+	},
+	{
+		flag:   "--launcher",
+		args:   []string{"--launcher", `console.log("LAUNCHED"); @entry`},
+		source: `emit({ok: 1});`,
+		want:   "LAUNCHED",
+	},
+	{
+		flag:   "--no-launcher",
+		args:   []string{"--no-launcher"},
+		source: `export default () => emit({wrapped: 1});`,
+		gone:   `"wrapped":1`,
+	},
+	{
+		flag:   "--prefix",
+		args:   []string{"--prefix", "const shared = 41;"},
+		source: `emit({v: shared + 1});`,
+		want:   `"v":42`,
+	},
+	{
+		flag:   "--suffix",
+		args:   []string{"--suffix", `emit({tail: "SUFFIXED"});`},
+		source: `emit({ok: 1});`,
+		want:   "SUFFIXED",
+	},
+	{
+		flag:   "--before",
+		args:   []string{"--before", `console.log("BEFORE-RAN");`},
+		source: `emit({ok: 1});`,
+		want:   "BEFORE-RAN",
+	},
+	{
+		flag:   "--on-success",
+		args:   []string{"--on-success", `console.log("SUCCESS-HOOK");`},
+		source: `emit({ok: 1});`,
+		want:   "SUCCESS-HOOK",
+	},
+	{
+		flag:   "--on-error",
+		args:   []string{"--on-error", `console.log("ERROR-HOOK");`},
+		source: `throw new Error("boom");`,
+		want:   "ERROR-HOOK",
+		fails:  true,
+	},
+	{
+		flag:   "--env",
+		args:   []string{"--env", "MCPX_FLAG_PROBE=FROM-ENV-FLAG"},
+		source: `const g = globalThis as any; emit({e: g.Deno ? g.Deno.env.get("MCPX_FLAG_PROBE") : g.process.env.MCPX_FLAG_PROBE});`,
+		want:   "FROM-ENV-FLAG",
+	},
+	{
+		flag:   "--no-capture-console",
+		args:   []string{"--no-capture-console"},
+		source: `console.log("WRAPPED:" + String((globalThis.console as any).__mcpxWrapped));`,
+		want:   "WRAPPED:undefined",
+	},
+	{
+		// Without permission the repeated placeholder is refused before
+		// anything runs, so the launcher's line is the evidence.
+		flag:   "--allow-repeat",
+		base:   []string{`--launcher=console.log("REPEAT-OK"); @entry @entry`},
+		args:   []string{"--allow-repeat", "entry"},
+		source: `emit({ok: 1});`,
+		want:   "REPEAT-OK",
+	},
+	{
+		// The marker is the point: with the check the script is refused
+		// before it runs, without it the emit has already happened by
+		// the time the name turns out not to exist.
+		flag:   "--typecheck",
+		args:   []string{"--typecheck=on"},
+		source: `emit({ran: 1}); await totally_made_up.x({});`,
+		want:   "does not type check",
+		fails:  true,
+	},
+	{
+		flag:   "--validate",
+		args:   []string{"--validate"},
+		source: `emit({ok: 1});`,
+		want:   "valid=true",
+	},
+}
+
 func TestEveryExecFlagChangesSomething(t *testing.T) {
 	e := newEnv(t, oneServer)
-	type row struct {
-		flag string
-		// base is given both with and without the flag, so the comparison
-		// isolates the flag rather than everything around it.
-		base   []string
-		args   []string
-		source string
-		// want must appear with the flag and must not appear without it.
-		want string
-		// gone must appear without the flag and must not appear with it,
-		// for a flag whose effect is to take something away.
-		gone string
-		// fails marks a flag whose whole purpose is to refuse the run, or a
-		// source that fails so a failure hook can be seen.
-		fails bool
-	}
-	rows := []row{
-		{
-			flag:   "--export",
-			args:   []string{"--export=main"},
-			source: `export const main = async () => { emit({via: "main"}); };`,
-			want:   `"via":"main"`,
-		},
-		{
-			flag:   "--launcher",
-			args:   []string{"--launcher", `console.log("LAUNCHED"); @entry`},
-			source: `emit({ok: 1});`,
-			want:   "LAUNCHED",
-		},
-		{
-			flag:   "--no-launcher",
-			args:   []string{"--no-launcher"},
-			source: `export default () => emit({wrapped: 1});`,
-			gone:   `"wrapped":1`,
-		},
-		{
-			flag:   "--prefix",
-			args:   []string{"--prefix", "const shared = 41;"},
-			source: `emit({v: shared + 1});`,
-			want:   `"v":42`,
-		},
-		{
-			flag:   "--suffix",
-			args:   []string{"--suffix", `emit({tail: "SUFFIXED"});`},
-			source: `emit({ok: 1});`,
-			want:   "SUFFIXED",
-		},
-		{
-			flag:   "--before",
-			args:   []string{"--before", `console.log("BEFORE-RAN");`},
-			source: `emit({ok: 1});`,
-			want:   "BEFORE-RAN",
-		},
-		{
-			flag:   "--on-success",
-			args:   []string{"--on-success", `console.log("SUCCESS-HOOK");`},
-			source: `emit({ok: 1});`,
-			want:   "SUCCESS-HOOK",
-		},
-		{
-			flag:   "--on-error",
-			args:   []string{"--on-error", `console.log("ERROR-HOOK");`},
-			source: `throw new Error("boom");`,
-			want:   "ERROR-HOOK",
-			fails:  true,
-		},
-		{
-			flag:   "--env",
-			args:   []string{"--env", "MCPX_FLAG_PROBE=FROM-ENV-FLAG"},
-			source: `const g = globalThis as any; emit({e: g.Deno ? g.Deno.env.get("MCPX_FLAG_PROBE") : g.process.env.MCPX_FLAG_PROBE});`,
-			want:   "FROM-ENV-FLAG",
-		},
-		{
-			flag:   "--no-capture-console",
-			args:   []string{"--no-capture-console"},
-			source: `console.log("WRAPPED:" + String((globalThis.console as any).__mcpxWrapped));`,
-			want:   "WRAPPED:undefined",
-		},
-		{
-			// Without permission the repeated placeholder is refused before
-			// anything runs, so the launcher's line is the evidence.
-			flag:   "--allow-repeat",
-			base:   []string{`--launcher=console.log("REPEAT-OK"); @entry @entry`},
-			args:   []string{"--allow-repeat", "entry"},
-			source: `emit({ok: 1});`,
-			want:   "REPEAT-OK",
-		},
-		{
-			// The marker is the point: with the check the script is refused
-			// before it runs, without it the emit has already happened by
-			// the time the name turns out not to exist.
-			flag:   "--typecheck",
-			args:   []string{"--typecheck=on"},
-			source: `emit({ran: 1}); await totally_made_up.x({});`,
-			want:   "does not type check",
-			fails:  true,
-		},
-	}
+	rows := execFlagProbeRows
 	for _, where := range []string{"local", "remote"} {
 		for _, c := range rows {
 			t.Run(where+"/"+c.flag, func(t *testing.T) {

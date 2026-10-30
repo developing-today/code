@@ -32,10 +32,12 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (81)
+## /v1 operations (83)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
+| `adapters_add` | `POST /v1/adapters` | `mcpx adapter add` | `mcpx_adapters_add` | `ops.adaptersAdd()` | Privileged. |
+| `adapters_remove` | `DELETE /v1/adapters/{name}` | `mcpx adapter remove` | `mcpx_adapters_remove` | `ops.adaptersRemove()` | Privileged. Destructive. |
 | `artifacts_list` | `GET /v1/artifacts` | `mcpx artifact list` *generated* | `mcpx_artifacts_list` | `ops.artifactsList()` |  |
 | `artifact_put` | `POST /v1/artifacts` | `mcpx artifact put` *generated* | `mcpx_artifact_put` | `ops.artifactPut()` | Privileged. |
 | `artifact_delete` | `DELETE /v1/artifacts/{id}` | `mcpx artifact delete` *generated* | `mcpx_artifact_delete` | `ops.artifactDelete()` | Privileged. Destructive. |
@@ -125,7 +127,7 @@ that reaches none says why: those are decisions, not gaps.
 
 | Command | Operations | Notes |
 | --- | --- | --- |
-| `adapter` | – | Adapter declarations are files the CLI reads; the daemon serves each adapter as a server of its own, so its tools reach every tool operation (call, types, search, catalog) like any upstream's. |
+| `adapter` | `adapters_add`, `adapters_remove` |  |
 | `api` | – | OpenAPI declarations are files the CLI reads; the tools they produce are served over MCP, and are not yet a tool source the daemon owns (#83). |
 | `artifact` / `artifacts` | `artifacts_list`, `artifact_put`, `artifact_delete`, `artifact_get` | Generated from the operation table. |
 | `ask` | `ask_begin`, `ask_poll`, `ask_abandon`, `ask_answers` | Generated from the operation table. |

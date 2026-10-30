@@ -138,7 +138,19 @@ export interface TaskRequest {
   priority: number;
   model: ModelRef | null;
   issue: boolean;
+  issueNumber?: number;
   dedupeKey?: string;
+}
+
+/** Optional `issue_number`: when present it must be a positive integer —
+ * the existing issue in `repo` the task attaches to instead of creating
+ * a new one. */
+export function parseIssueNumber(input: unknown): number | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== "number" || !Number.isInteger(input) || input <= 0) {
+    throw new ValidationError(`issue_number: must be a positive integer`);
+  }
+  return input;
 }
 
 export function parseTaskRequest(body: unknown): TaskRequest {
@@ -163,6 +175,7 @@ export function parseTaskRequest(body: unknown): TaskRequest {
     priority: resolvePriority(b.priority),
     model: parseModel(b.model),
     issue: optBool(b, "issue", false),
+    issueNumber: parseIssueNumber(b.issue_number),
     dedupeKey: optString(b, "dedupe_key"),
   };
 }

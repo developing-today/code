@@ -137,6 +137,18 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 			add(check{"server commands", "ok",
 				fmt.Sprintf("all %d runnable", len(servers)), ""})
 		}
+
+		// Auth posture, from the same redacted summary `mcpx config`
+		// prints (#1926): which credential shape each server declares,
+		// by variable reference only — doctor output gets pasted into
+		// issues too, so the resolved value must never appear here.
+		if len(servers) > 0 {
+			var parts []string
+			for _, s := range servers {
+				parts = append(parts, fmt.Sprintf("%s: %s", s.Name, s.Auth.Describe()))
+			}
+			add(check{"auth", "ok", strings.Join(parts, "; "), ""})
+		}
 	}
 
 	// Directories.
