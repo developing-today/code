@@ -106,7 +106,16 @@ type Options struct {
 	TypeCheck string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
-	Stdout, Stderr   interface{ Write([]byte) (int, error) }
+	// Imports selects the preflight import-graph stage: "off" or "report"
+	// (script.imports). Empty means the stage does not run, as with
+	// TypeCheck; the CLI resolves the registry default into it.
+	Imports string
+	// ImportsOnDynamic selects what a computed dynamic import does:
+	// "warn", "fail" or "ignore" (script.importsOnDynamic).
+	ImportsOnDynamic string
+	// ImportsTimeout bounds the graph computation.
+	ImportsTimeout time.Duration
+	Stdout, Stderr interface{ Write([]byte) (int, error) }
 	// Stdin is what the script reads. Nil inherits the caller's, which is
 	// right for a terminal and wrong for a daemon: a script run on somebody
 	// else's behalf must not be able to read the daemon's standard input.
@@ -271,6 +280,42 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			timeout = defaults.TypecheckTimeout
 		}
 		rep := preflight.TypeCheck(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout)
+		if err := rep.Err(); err != nil {
+			return nil, err
+		}
+		for _, w := range rep.Warnings() {
+			fmt.Fprintln(os.Stderr, "mcpx:", w.String())
+		}
+	}
+
+	// The import graph belongs at the same point as the type check, for
+	// the same reason: it is computed on the launcher, and an unresolved
+	// import is found before a single server starts. A script that arrived
+	// as text has no file graph; it degrades to analysing the specifiers
+	// visible in the source (preflight.CheckImportsText).
+	if mode := opts.Imports; mode != "" && mode != string(preflight.ImportsOff) {
+		timeout := opts.ImportsTimeout
+		if timeout == 0 {
+			timeout = defaults.TypecheckTimeout
+		}
+		var rep *preflight.Report
+		if opts.File == "" && opts.Source != "" {
+			rep = preflight.CheckImportsText("the script", opts.Source,
+				preflight.DynamicImportMode(opts.ImportsOnDynamic))
+		} else {
+			denoBin := ""
+			if strings.Contains(filepath.Base(rt.Bin), "deno") {
+				denoBin = rt.Bin
+			} else if found, lerr := exec.LookPath("deno"); lerr == nil {
+				// The graph is a property of the source, not of the
+				// runtime that will execute it, so a deno beside a bun
+				// or node run still serves as the graph oracle.
+				denoBin = found
+			}
+			rep = preflight.CheckImports(ctx, denoBin, scriptPath,
+				preflight.ImportsMode(mode),
+				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout)
+		}
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}

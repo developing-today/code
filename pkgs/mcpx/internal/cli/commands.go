@@ -991,6 +991,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		},
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.Imports = shape.imports
+	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.Launcher, opts.LauncherName = shape.launcher, shape.launcherName
 	opts.PlaceholderFiles = PlaceholderFiles()
 	opts.AllowRepeat = shape.allowRepeat
@@ -2217,6 +2219,7 @@ type scriptShape struct {
 	hooks                      *hookGate
 	env                        map[string]string
 	typecheck                  string
+	imports, importsOnDynamic  string
 	launcher, launcherName     string
 	allowRepeat                []string
 	captureConsole             bool
@@ -2303,6 +2306,11 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// short --typecheck spelling, the generated --script-typecheck, a
 	// variable, or the config file.
 	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+
+	// No short flag spelling: the registry value is the whole story, from
+	// the generated --script-imports flag, a variable, or the config file.
+	sh.imports = a.Settings().String("script.imports")
+	sh.importsOnDynamic = a.Settings().String("script.importsOnDynamic")
 
 	if f.noLauncher && f.launcher != "" {
 		return sh, errors.New("--launcher and --no-launcher contradict each other; " +
