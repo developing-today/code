@@ -110,7 +110,16 @@ type Options struct {
 	TypeCheck string
 	// TypeCheckTimeout bounds that check.
 	TypeCheckTimeout time.Duration
-	Stdout, Stderr   interface{ Write([]byte) (int, error) }
+	// Imports selects the preflight import-graph stage: "off" or "report"
+	// (script.imports). Empty means the stage does not run, as with
+	// TypeCheck; the CLI resolves the registry default into it.
+	Imports string
+	// ImportsOnDynamic selects what a computed dynamic import does:
+	// "warn", "fail" or "ignore" (script.importsOnDynamic).
+	ImportsOnDynamic string
+	// ImportsTimeout bounds the graph computation.
+	ImportsTimeout time.Duration
+	Stdout, Stderr interface{ Write([]byte) (int, error) }
 	// Stdin is what the script reads. Nil inherits the caller's, which is
 	// right for a terminal and wrong for a daemon: a script run on somebody
 	// else's behalf must not be able to read the daemon's standard input.
@@ -157,6 +166,18 @@ type Result struct {
 }
 
 const clientFileName = "mcpx-client.ts"
+
+// warnSink is where preflight warnings go: the caller's configured
+// diagnostic writer (execsvc installs a buffer there, so daemon callers
+// receive the warnings with the result), or the process's stderr for a
+// direct CLI run. Writing to os.Stderr unconditionally sent daemon
+// warnings to the daemon's own log, where the caller never saw them.
+func warnSink(opts Options) io.Writer {
+	if opts.Stderr != nil {
+		return opts.Stderr
+	}
+	return os.Stderr
+}
 
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
@@ -304,7 +325,56 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 		for _, w := range rep.Warnings() {
-			fmt.Fprintln(os.Stderr, "mcpx:", w.String())
+			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
+		}
+	}
+
+	// The import graph belongs at the same point as the type check, for
+	// the same reason: it is computed on the launcher, and an unresolved
+	// import is found before a single server starts. A script that arrived
+	// as text has no file graph; it degrades to analysing the specifiers
+	// visible in the source (preflight.CheckImportsText).
+	if mode := opts.Imports; mode != "" && mode != string(preflight.ImportsOff) {
+		timeout := opts.ImportsTimeout
+		if timeout == 0 {
+			timeout = defaults.TypecheckTimeout
+		}
+		var rep *preflight.Report
+		if opts.File == "" && opts.Source != "" {
+			// Scan the launcher's executable content as well as the
+			// script: writeLauncher injects the phase snippets (and a
+			// custom launcher replaces the shim entirely), and a phase
+			// containing a computed import executes exactly like the
+			// script does -- the file-backed path sees it because its
+			// graph is computed on the launcher (Codex review, PR
+			// #2575). scriptPath at this point IS the launcher (or,
+			// with launcher "none", the script file itself, whose
+			// prelude + source only repeats this scan harmlessly).
+			rep = preflight.CheckImportsText("the script", textScanSource(opts, scriptPath),
+				preflight.DynamicImportMode(opts.ImportsOnDynamic))
+		} else {
+			denoBin := ""
+			// The kind, not the binary's name: a declared runtime such
+			// as {"kind":"deno","bin":"/opt/js"} is Deno whatever its
+			// executable is called (Codex review, PR #2575).
+			if rt.Kind == KindDeno {
+				denoBin = rt.Bin
+			} else if found, lerr := exec.LookPath("deno"); lerr == nil {
+				// The graph is a property of the source, not of the
+				// runtime that will execute it, so a deno beside a bun
+				// or node run still serves as the graph oracle.
+				denoBin = found
+			}
+			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
+				preflight.ImportsMode(mode),
+				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
+				rt.ConfigArgs, opts.Dir)
+		}
+		if err := rep.Err(); err != nil {
+			return nil, err
+		}
+		for _, w := range rep.Warnings() {
+			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
 	}
 
@@ -455,6 +525,21 @@ const ClientFileName = clientFileName
 
 // GlobalsFileName holds ambient declarations for the installed globals.
 const GlobalsFileName = "mcpx-globals.d.ts"
+
+// textScanSource is what the text-mode import scan reads: the script
+// itself plus the generated launcher's content, because the launcher's
+// phase snippets (and a custom launcher) are executable code that runs
+// with the script -- a computed import in a phase must be seen by the
+// scan exactly as one in the script is (Codex review, PR #2575).
+// scriptPath names the launcher at scan time; an unreadable file
+// degrades to the script alone rather than failing the run here.
+func textScanSource(opts Options, scriptPath string) string {
+	scan := opts.Source
+	if b, err := os.ReadFile(scriptPath); err == nil {
+		scan += "\n" + string(b)
+	}
+	return scan
+}
 
 // writeLauncher emits a shim that imports the user's module and calls its
 // entry point if it has one.

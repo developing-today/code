@@ -12,17 +12,6 @@ name: identity build
 # vets both variants whenever the module changes.
 
 on:
-  pull_request:
-    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
-    # changes (lockfiles, module roots, flake files, build definitions,
-    # workflow files, shared libs); on push to main they always run.
-    paths:
-      - "pkgs/identity/go.mod"
-      - "pkgs/identity/go.sum"
-      - "pkgs/identity/package.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/**"
   push:
     branches: [main]
 

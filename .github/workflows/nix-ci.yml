@@ -4,7 +4,6 @@ name: nix ci
 on:
   push:
     branches: [main]
-  pull_request:
   # Merge queue pilot (see .github/ci-policy.md): the queue validates
   # the combined merge-group head, and this workflow's PR-tier job
   # (basic: proxy port fallbacks) is main's required status check —
@@ -65,3 +64,23 @@ jobs:
           nix eval .#devShells.x86_64-linux.default.drvPath
           nix eval .#packages.x86_64-linux.mcpx.drvPath
           nix eval .#apps.x86_64-linux.format-check.program
+
+  # ci-fix: when any main job above fails, dispatch a pm-dispatch
+  # ci-fix task from inside this failing run (via the thin
+  # pm-dispatch-ci-fix wrapper over pm-dispatch-task). This replaces
+  # the old workflow_run-triggered ci-failure-fix job in jules.yml.
+  # continue-on-error: a dispatch failure must never change this
+  # workflow's own result.
+  ci-fix:
+    needs: [proxy-port-fallbacks, flake-check]
+    if: failure()
+    permissions:
+      id-token: write
+      issues: read
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}

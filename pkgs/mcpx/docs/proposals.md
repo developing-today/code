@@ -868,14 +868,19 @@ differently, which the author controls.
 ## Better tool search
 
 ```
-status:  proposed
+status:  slice 1 shipped 2026-10-30 (#1923) — tags, word-splitting/stemming
+         and --explain are in; typo tolerance (on #1904's shared near-miss
+         matcher) and concept similarity remain proposed
 effort:  small to large depending on how far it goes
 ```
 
-Search is substring scoring today: exact 100, prefix 60, contains 40, function
-path 30, namespace 20, description 10, all terms required with an any-term
-fallback. It is fast and has no dependencies, and it fails on typos and on
-concepts that share no substring with the tool name.
+Search scoring today: exact 100, prefix 60, tag 50, contains 40, a
+split/stemmed name word 40, function path 30, namespace 20, description 10,
+all terms required with an any-term fallback. It is fast and has no
+dependencies, and it fails on typos and on concepts that share no substring
+with the tool name. `mcpx search --explain` prints the per-term breakdown
+behind a hit's score, and `--tag <tag>` filters on config tags exactly
+(server `tags`, inherited by its tools, plus per-tool `toolTags`).
 
 Three tiers, in increasing cost:
 

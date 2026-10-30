@@ -17,7 +17,11 @@ import (
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
-var version = "0.1.0"
+// The default is a sentinel, not a release number (decision 0005 §3):
+// the release version's single source is pkgs/mcpx/VERSION, and a
+// binary built without ldflags must announce that it is not a release
+// instead of impersonating one.
+var version = "0.0.0-dev"
 
 // splitList accepts comma or space separated values.
 func splitList(s string) []string {

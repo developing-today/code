@@ -495,3 +495,54 @@ func TestModernSamplingShape(t *testing.T) {
 		}
 	})
 }
+
+func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
+	// Register CAP-11 (#1918): a 2026-07-28 connection declares the
+	// extensions map -- empty, because mcpx implements no extension yet
+	// and an identifier is added only with its implementation. A legacy
+	// initialize has no extensions key at all: the map has no counterpart
+	// in that era's shape.
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "server/discover":
+			return modernDiscover(params)
+		case "tools/list":
+			return map[string]any{"resultType": "complete", "tools": []any{}}
+		}
+		return nil
+	})
+	c := dialModern(t, s, mcpclient.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range s.requests() {
+		params, _ := r["params"].(map[string]any)
+		meta, _ := params["_meta"].(map[string]any)
+		caps, _ := meta[mcpclient.MetaClientCapabilities].(map[string]any)
+		ext, ok := caps["extensions"].(map[string]any)
+		if !ok {
+			t.Errorf("%s: modern capabilities carry no extensions map: %v", r["method"], caps)
+			continue
+		}
+		if len(ext) != 0 {
+			t.Errorf("%s: extensions declares %v; nothing is implemented yet, so it must be empty", r["method"], ext)
+		}
+	}
+
+	var lcaps map[string]any
+	ls := legacyServer(&lcaps)
+	lctx, lcancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer lcancel()
+	lc, err := mcpclient.NewWithOptions(lctx, ls, mcpclient.Options{
+		ClientName: "mcpx", ClientVersion: "t", Preference: mcpclient.ForceLegacy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lc.Close()
+	if _, ok := lcaps["extensions"]; ok {
+		t.Errorf("legacy initialize must not carry extensions: %v", lcaps)
+	}
+}

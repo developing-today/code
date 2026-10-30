@@ -272,3 +272,58 @@ func TestOnlyKeysTheCallerMintedAreCallerOwned(t *testing.T) {
 		t.Error("a per-call key is always the caller's")
 	}
 }
+
+// An ephemeral /v1/exec run reports the daemon's own PID, which every
+// overlapping run shares: that pid: key must stay out of caller ownership
+// even though the caller's own session and call keys remain its own
+// (#1942 follow-up).
+func TestSharedDaemonPIDIsNotCallerOwned(t *testing.T) {
+	shared := config.CallContext{SessionID: "exec-1", PID: 4242, CallID: "c",
+		Ephemeral: true, PIDShared: true}
+	if shared.CallerOwned("pid:4242") {
+		t.Error("the shared daemon pid: key must not be released at one run's end")
+	}
+	if !shared.CallerOwned("session:exec-1") || !shared.CallerOwned("call:c") {
+		t.Error("the run's own session and call keys stay caller-owned")
+	}
+	own := shared
+	own.PIDShared = false
+	if !own.CallerOwned("pid:4242") {
+		t.Error("a caller's own pid: key is caller-owned when ephemeral")
+	}
+}
+
+func TestCwdScopeCaseDifferingDirectoriesStaySeparate(t *testing.T) {
+	// On a case-sensitive volume these are two directories and must never
+	// share a key (#1912: identity keying makes the unsafe direction
+	// impossible). On a case-insensitive volume the second is the first,
+	// and the two spellings must key together instead.
+	base := t.TempDir()
+	upper := filepath.Join(base, "CaseDir")
+	lower := filepath.Join(base, "casedir")
+	if err := os.Mkdir(upper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(lower, 0o755); err != nil {
+		// The name is taken because the volume already resolved it to
+		// CaseDir -- that is the case-insensitive outcome, tested below.
+		t.Logf("second mkdir: %v", err)
+	}
+	fiU, err := os.Stat(upper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fiL, err := os.Stat(lower)
+	if err != nil {
+		t.Skip("lower-case spelling does not resolve")
+	}
+	a, _ := config.ScopeCwd.Key(config.CallContext{Cwd: upper, CallID: "c1"})
+	b, _ := config.ScopeCwd.Key(config.CallContext{Cwd: lower, CallID: "c2"})
+	if os.SameFile(fiU, fiL) {
+		if a != b {
+			t.Fatalf("two spellings of one directory must key together: %q vs %q", a, b)
+		}
+	} else if a == b {
+		t.Fatal("case-differing distinct directories must not share a cwd key")
+	}
+}

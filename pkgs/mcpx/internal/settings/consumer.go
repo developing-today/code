@@ -69,7 +69,11 @@ func consumerSettings() []Setting {
 				"client uses it to ask before acting. The specification's " +
 				"defaults apply: a tool not annotated readOnlyHint, and not " +
 				"annotated destructiveHint false, may be destructive, so an " +
-				"unannotated tool is asked about too. A script has no such step. " +
+				"unannotated tool is asked about too. Annotations are hints, " +
+				"not proof: a remote server's readOnlyHint or destructiveHint " +
+				"false never clears a call (#2191) -- only a locally declared " +
+				"(stdio) server's annotations are taken at face value. " +
+				"A script has no such step. " +
 				"Turning this on gives it one. Off by default: it puts a question " +
 				"on the path of every destructive call, and a caller that cannot " +
 				"answer waits out the deadline before the call proceeds.",

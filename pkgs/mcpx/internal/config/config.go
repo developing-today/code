@@ -123,6 +123,15 @@ type Extras struct {
 	// Profiles names the groups this server belongs to. `mcpx --profile web`
 	// selects by them.
 	Profiles []string `json:"profiles,omitempty"`
+	// Tags are search vocabulary for this server (#1923): words a caller
+	// would use that the tool names do not contain. Every tool on the
+	// server inherits them; ToolTags adds per-tool words on top. A tag
+	// match ranks between a name prefix and a name substring in search,
+	// and `mcpx search --tag <tag>` filters on them exactly.
+	Tags []string `json:"tags,omitempty"`
+	// ToolTags maps a tool name to its own tags, for the common case: one
+	// tool the server named badly, on a server that is otherwise fine.
+	ToolTags map[string][]string `json:"toolTags,omitempty"`
 	// Default says whether this server is included when no profile is
 	// requested. Nil means inherit; the built-in default is true.
 	Default *bool `json:"default,omitempty"`
@@ -293,6 +302,83 @@ type ScriptConfig struct {
 	Before    []any `json:"before,omitempty"`
 	OnSuccess []any `json:"onSuccess,omitempty"`
 	OnError   []any `json:"onError,omitempty"`
+	// Hooks are scripts run at the edges of every script run, layered the way
+	// Prefix is: an element is a {phase, script} object, or null, which
+	// splices in whatever this setting inherited.
+	Hooks []any `json:"hooks,omitempty"`
+}
+
+// HookConfig is one resolved hook: a phase and the script that runs in it.
+type HookConfig struct {
+	Phase  string `json:"phase"`
+	Script string `json:"script"`
+	Name   string `json:"name,omitempty"`
+}
+
+// ScriptHooks returns the resolved hooks, nearest layer last.
+func (c *Config) ScriptHooks() []HookConfig {
+	layers := [][]any{c.Script.Hooks}
+	for _, l := range c.scriptLayers {
+		layers = append(layers, l.Hooks)
+	}
+	return ResolveHooks(layers)
+}
+
+// ResolveHooks folds a layered hooks list the way ResolveLines folds a prefix.
+//
+// Layers arrive nearest-first and a null element splices in what the layer
+// inherited, so a nearer config can add a hook to a farther one's list. The
+// result runs in the order written, outermost layer first.
+func ResolveHooks(layers [][]any) []HookConfig {
+	var inherited []HookConfig
+	for i := len(layers) - 1; i >= 0; i-- {
+		layer := layers[i]
+		if layer == nil {
+			continue
+		}
+		var next []HookConfig
+		for _, el := range layer {
+			if el == nil {
+				next = append(next, inherited...)
+				continue
+			}
+			if h, ok := hookEntry(el); ok {
+				next = append(next, h)
+			}
+		}
+		inherited = next
+	}
+	return inherited
+}
+
+// hookEntry decodes one element of a hooks list. An entry that names no phase
+// or no script is dropped here rather than failing every run of the config: it
+// is the one defect a config can carry that would otherwise break unrelated
+// work.
+func hookEntry(el any) (HookConfig, bool) {
+	switch v := el.(type) {
+	case HookConfig:
+		if v.Phase == "" || strings.TrimSpace(v.Script) == "" {
+			return HookConfig{}, false
+		}
+		return v, true
+	case map[string]any:
+		h := HookConfig{}
+		if s, ok := v["phase"].(string); ok {
+			h.Phase = s
+		}
+		if s, ok := v["script"].(string); ok {
+			h.Script = s
+		}
+		if s, ok := v["name"].(string); ok {
+			h.Name = s
+		}
+		if h.Phase == "" || strings.TrimSpace(h.Script) == "" {
+			return HookConfig{}, false
+		}
+		return h, true
+	}
+	return HookConfig{}, false
 }
 
 // ResolveLines folds a layered prefix or suffix into final lines.
@@ -366,6 +452,8 @@ type Resolved struct {
 	Tools           ToolPatterns
 	ExcludeTools    ToolPatterns
 	Profiles        []string
+	Tags            []string
+	ToolTags        map[string][]string
 	Default         bool
 	RequiresSecrets []string
 	RequiresServers []string
@@ -654,6 +742,8 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		Tools:           allow,
 		ExcludeTools:    deny,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
+		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
+		ToolTags:        mergeToolTags(d.ToolTags, ex.ToolTags),
 		Default:         boolOr(ex.Default, d.Default, true),
 		RequiresSecrets: ex.RequiresSecrets,
 		RequiresServers: ex.RequiresServers,
@@ -882,9 +972,35 @@ func mergeExtras(near, far Extras) Extras {
 	if len(near.Preconditions) == 0 {
 		near.Preconditions = far.Preconditions
 	}
+	if len(near.Tags) == 0 {
+		near.Tags = far.Tags
+	}
+	if len(near.ToolTags) == 0 {
+		near.ToolTags = far.ToolTags
+	}
 	// Appending is the point of the field, across files as within one.
 	near.ExtraIncludeTools = concat(far.ExtraIncludeTools, near.ExtraIncludeTools)
 	return near
+}
+
+// mergeToolTags overlays near (the server's own) per-tool tags on far
+// (pool defaults): a tool named in both keeps the near list, matching how
+// the scalar Extras fields resolve.
+func mergeToolTags(far, near map[string][]string) map[string][]string {
+	if len(far) == 0 {
+		return near
+	}
+	if len(near) == 0 {
+		return far
+	}
+	out := make(map[string][]string, len(far)+len(near))
+	for k, v := range far {
+		out[k] = v
+	}
+	for k, v := range near {
+		out[k] = v
+	}
+	return out
 }
 
 func originsOf(c *Config, path string) map[string]string {

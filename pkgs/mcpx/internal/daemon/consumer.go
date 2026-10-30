@@ -404,7 +404,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 			break
 		}
 	}
-	if found == nil || !destructiveHint(found.Annotations) {
+	if found == nil || annotationClearsCall(p, found) {
 		return nil
 	}
 	path := p.Namespace() + "." + tool
@@ -412,7 +412,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		Server:  p.Name(),
 		Tool:    tool,
 		Session: cc.SessionID,
-		Message: fmt.Sprintf("%s.%s may be destructive: its server does not mark it read-only or non-destructive. Let this call proceed?",
+		Message: fmt.Sprintf("%s.%s may be destructive: no trusted annotation clears this call. Let this call proceed?",
 			p.Namespace(), tool),
 		Default: "false",
 		TTL:     r.consumer.AskTimeout,
@@ -434,6 +434,28 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
 	}
 	return nil
+}
+
+// annotationClearsCall reports whether a tool's annotations may clear
+// its call without asking. Tool annotations are hints, not decisions
+// (#2191): the specification forbids basing a security decision on
+// annotations from an untrusted server, and mcpx establishes trust in
+// exactly one way today -- the server is one the user declared locally,
+// a stdio command from their own configuration, whose annotations are
+// part of the interface they chose to run. A remote upstream's
+// readOnlyHint or destructiveHint:false is worth nothing here: a lying
+// or compromised server could suppress every confirmation by claiming
+// its tools are harmless, so for a remote server the annotation can
+// never be the deciding input and the call is confirmed when in doubt.
+func annotationClearsCall(p *pool.Pool, found *mcpclient.Tool) bool {
+	if p == nil || found == nil {
+		return false
+	}
+	cfg := p.Config()
+	if cfg == nil || !cfg.Stdio() {
+		return false
+	}
+	return !destructiveHint(found.Annotations)
 }
 
 // destructiveHint reads the one annotation mcpx acts on, with the

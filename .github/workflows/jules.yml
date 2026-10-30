@@ -1,23 +1,23 @@
-name: Jules
+name: pm-dispatch
 
-# google-labs-code/jules-action -- fires Jules (Google's async coding agent) from
-# any GitHub event. All three of upstream's shipped example triggers are wired
-# up here; each is independently disable-able by deleting its job.
+# pm-dispatch dispatch hub -- fires a tracked OpenCode session on the
+# laptop (via pm-dispatch) from any GitHub event. This workflow was
+# previously backed by the Jules service; it now uses the reusable
+# pm-dispatch starter action
+# (developing-today/code/.github/actions/pm-dispatch-start@main), which
+# creates the tracking issue, enqueues the task, and launches the
+# session. Each job is independently disable-able by deleting it.
 #
-# Requires repository secret JULES_API_KEY. Mint at
-# https://jules.google.com/settings (max 3 keys per account), then:
-#   gh secret set JULES_API_KEY
+# No repository secret is required: each job grants
+# `permissions: id-token: write`, and the starter action mints a GitHub
+# Actions OIDC token (audience pm-dispatch) to authenticate to
+# pm-dispatch. The filename stays jules.yml because other workflows
+# (main-broken.yml, repo-sweeper.yml) reference that path, and the
+# `jules` label name is unchanged -- applying it still starts
+# remediation, now via this dispatch flow instead of Jules.
 #
-# Jules also needs its GitHub App authorised on this repository before any
-# source is usable -- the API alone is not enough.
-#
-# NOTE: upstream's README still references `google-labs-code/jules-invoke@v1`.
-# That repo was renamed to jules-action; the old path 301-redirects, but the
-# current name is used here.
-#
-# Free tier is 15 tasks/day and 3 concurrent, so the cron schedules below are
-# deliberately infrequent. Raising them can exhaust the daily quota and starve
-# the interactive/CLI path.
+# Dispatch launches sessions promptly, so the cron schedules below are
+# deliberately infrequent to avoid flooding the laptop session pool.
 
 on:
   schedule:
@@ -25,19 +25,10 @@ on:
     - cron: "0 4 * * 1"
   issues:
     types: [labeled]
-  workflow_run:
-    # Only the CI workflows ci-failure-fix can act on (#304). "*" created a
-    # skipped no-op run for every workflow completion in the repo (48 of the
-    # last 100 runs at filing time were exactly that).
-    workflows: ["mcpx", "mcpx conformance", "mcpx nix build", "nix ci", "id"]
-    types: [completed]
-    # ci-failure-fix ignores main-branch failures, so main completions
-    # should not create a run at all.
-    branches-ignore: ["main"]
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Prompt to send to Jules"
+        description: "Prompt to send to the dispatched OpenCode session"
         required: true
         type: string
 
@@ -47,6 +38,9 @@ on:
 # carries its own group below, keyed by its target, so a run whose jobs all
 # skip can never displace a run that would act.
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
   issues: read
@@ -60,11 +54,16 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch weekly cleanup via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          include_commit_log: true
+          title: "Weekly housekeeping cleanup"
           prompt: >-
             Review the repository for low-risk housekeeping: dead code,
             unused dependencies, stale TODOs and obvious documentation drift.
@@ -76,9 +75,10 @@ jobs:
             certain the PR is correct and low-risk; otherwise leave it open
             and state your confidence and what a human should check.
 
-  # Triggered by applying the `jules` label to an issue. Note this is the same
-  # convention the Jules GitHub App uses natively; keep one or the other to
-  # avoid two agents racing on the same issue.
+  # Triggered by applying the `jules` label to an issue. The label name is
+  # kept from the Jules era (main-broken.yml applies it under its
+  # remediation budget); it now starts an OpenCode session via pm-dispatch
+  # instead of a Jules session.
   issue-labeled:
     if: github.event_name == 'issues' && github.event.label.name == 'jules'
     concurrency:
@@ -87,10 +87,16 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch issue fix via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          title: ${{ github.event.issue.title }}
           prompt: >-
             Address GitHub issue #${{ github.event.issue.number }}:
             "${{ github.event.issue.title }}".
@@ -100,31 +106,12 @@ jobs:
             cover any same-set instances of the problem (including related
             dependency updates) in the same PR rather than separately.
 
-  ci-failure-fix:
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.conclusion == 'failure' &&
-      github.event.workflow_run.head_branch != 'main'
-    concurrency:
-      group: >-
-        ${{ github.workflow }}-ci-failure-fix-${{
-        github.event.workflow_run.name }}-${{
-        github.event.workflow_run.head_branch }}
-      cancel-in-progress: false
-      queue: max
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
-        with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          starting_branch: ${{ github.event.workflow_run.head_branch }}
-          include_last_commit: true
-          prompt: >-
-            The workflow "${{ github.event.workflow_run.name }}" failed on branch
-            ${{ github.event.workflow_run.head_branch }}. Read the failing run at
-            ${{ github.event.workflow_run.html_url }}, work out the cause, and
-            push a fix to that branch.
+  # ci-failure-fix (the workflow_run-triggered CI-failure fixer) was
+  # removed: it is superseded by the ci-fix job inside the main CI
+  # workflow (.github/workflows/nix-ci.yml), which dispatches via
+  # pm-dispatch-ci-fix from inside the failing run itself -- there is
+  # no workflow_run design anymore. The workflow_run trigger above
+  # went with it (it existed only for that job).
 
   manual:
     if: github.event_name == 'workflow_dispatch'
@@ -134,8 +121,14 @@ jobs:
       queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      id-token: write
     steps:
-      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Dispatch manual prompt via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          title: "Manual pm-dispatch run"
           prompt: ${{ inputs.prompt }}

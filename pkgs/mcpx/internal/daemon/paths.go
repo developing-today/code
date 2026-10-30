@@ -106,10 +106,22 @@ const maxSocketPath = 100
 // is too long for a unix socket. Deep XDG paths and Go's t.TempDir() both
 // exceed the limit easily, and the failure mode is an opaque
 // "bind: invalid argument", so this is worth handling rather than documenting.
+//
+// The computed path is a hint, not a contract (#1886): it is a pure function
+// of the *calling* process's environment (TMPDIR, XDG_RUNTIME_DIR), so two
+// processes can compute two different paths for the same daemon. Clients
+// dial Paths.Resolve / Paths.ClientSocket, which prefer the daemon's own
+// info record; the daemon binds Paths.BindSocket. MCPX_SOCKET is read at
+// those connect/bind call sites only — never here — so answers computed
+// about *other* keys (resolveDir, ListDaemons) cannot leak the caller's
+// override as some other daemon's socket (#1886 step 6, collision 8).
+//
+// A symlink at the preferred path cannot fix the long-path case, and that
+// is measured, not guessed (#1886, macOS 26.5.1): connect() through a short
+// symlink to a bound socket works, but bind()/connect() check the length
+// of the path handed to them *before* resolution, and the preferred path
+// is over the limit by definition in exactly the case that relocates.
 func socketPath(state, key string) string {
-	if p := os.Getenv("MCPX_SOCKET"); p != "" {
-		return p
-	}
 	name := "daemon.sock"
 	if key != "" {
 		name = "daemon-" + key + ".sock"
@@ -136,6 +148,81 @@ func socketPath(state, key string) string {
 	}
 	// Last resort, still inside a directory this user owns.
 	return filepath.Join(os.TempDir(), "mcpx-"+sum+".sock")
+}
+
+// socketOverride is the MCPX_SOCKET value for this process, or "".
+// Read only by the connect/bind call-site helpers below (#1886 step 6).
+func socketOverride() string {
+	return os.Getenv("MCPX_SOCKET")
+}
+
+// Resolve returns the socket a client should dial for this Paths' daemon:
+// the info record's socket when a live record exists, and the computed
+// path otherwise (#1886, Approach C). The record is the daemon's own
+// statement of where it bound — the state path may have been too long for
+// sun_path, moving the real socket to a private runtime directory keyed
+// to the *daemon's* environment, which a recomputing client cannot
+// reproduce from its own TMPDIR/XDG_RUNTIME_DIR.
+//
+// The fast path stays I/O-light for the common case (#79's startup
+// budget): when the computed path is already a live socket, the record
+// is not read at all. When there is no record — a daemon whose info
+// file was deleted is still a daemon — the computed path is the answer.
+// A present record wins even when its socket is not answering right
+// now: liveness is the caller's separate question (resolveDir reports
+// it as Running; a client learns it from the dial), and a record is
+// never worse evidence than a path recomputed from the wrong
+// environment.
+func (p Paths) Resolve() string {
+	computed := p.Socket
+	if computed != "" && listening(computed) {
+		return computed
+	}
+	if info, err := p.ReadInfo(); err == nil && info.Socket != "" {
+		return info.Socket
+	}
+	return computed
+}
+
+// ClientSocket is the connect call site for MCPX_SOCKET (#1886 step 6):
+// for a client connecting to *its own* daemon the precedence is
+// MCPX_SOCKET > the info record > the computed path. (daemon.endpoint
+// outranks all three and is handled before a socket client is built.)
+// Answers about another key must use Resolve or the computed path, never
+// this — the override names one daemon, for the process it was given to.
+func (p Paths) ClientSocket() string {
+	if s := socketOverride(); s != "" {
+		return s
+	}
+	return p.Resolve()
+}
+
+// BindSocket is the bind call site for MCPX_SOCKET: a daemon started with
+// the variable set binds the named socket. Everything else about the
+// daemon — its info record included — then names that socket, because
+// WriteInfo publishes the bound path.
+func (p Paths) BindSocket() string {
+	if s := socketOverride(); s != "" {
+		return s
+	}
+	return p.Socket
+}
+
+// Relocated reports whether the socket moved away from the state
+// directory because the preferred in-state path exceeded maxSocketPath,
+// and what that preferred path was. The daemon logs it once at startup
+// (#1886 step 4): an invisible relocation is how a live daemon reads as
+// "not running" to a client looking in the state directory.
+func (p Paths) Relocated() (string, bool) {
+	name := "daemon.sock"
+	if base := filepath.Base(p.Info); strings.HasPrefix(base, "daemon") && strings.HasSuffix(base, ".json") {
+		name = strings.TrimSuffix(base, ".json") + ".sock"
+	}
+	preferred := filepath.Join(p.State, name)
+	if len(preferred) <= maxSocketPath || p.Socket == preferred {
+		return preferred, false
+	}
+	return preferred, true
 }
 
 // privateRuntimeDir returns a per-user directory only that user can enter.
@@ -366,13 +453,31 @@ func (p Paths) mirrorInfoPath() string {
 
 // RemoveInfo removes the daemon record, including its mirror in the
 // default state directory when there is one.
+//
+// Ownership (#1886 step 3): a record that names another live process's
+// pid is not this process's to remove. A daemon that lost its record to
+// a second daemon for the same key (the old recomputed-path miss used to
+// start those) must not delete the survivor's record on its way out.
+// Records with no pid, an unreadable record, or this process's own pid
+// are removed as before.
 func (p Paths) RemoveInfo() {
 	if p.Info != "" {
-		_ = os.Remove(p.Info)
+		removeInfoIfOwned(p.Info)
 	}
 	if m := p.mirrorInfoPath(); m != "" {
-		_ = os.Remove(m)
+		removeInfoIfOwned(m)
 	}
+}
+
+func removeInfoIfOwned(path string) {
+	b, err := os.ReadFile(path)
+	if err == nil {
+		var i Info
+		if json.Unmarshal(b, &i) == nil && i.PID > 0 && i.PID != os.Getpid() {
+			return
+		}
+	}
+	_ = os.Remove(path)
 }
 
 // ListDaemons returns the info records of every daemon in this state dir.
