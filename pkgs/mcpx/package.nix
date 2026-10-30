@@ -123,9 +123,17 @@ buildGo127Module {
   checkPhase =
     let
       checkExclude = [
-        # Empty: every tested package, internal/e2e included, passes in the
-        # sandbox. Add "internal/<pkg>" here with a comment naming what the
-        # sandbox lacks.
+        # internal/e2e spawns real script subprocess trees and the build
+        # sandbox has no init reaping them: they pile up as zombies and the
+        # package burns its whole 30m timeout (#2686). It runs in CI on
+        # main instead.
+        "internal/e2e"
+        # internal/settings asserts the process environment is exactly
+        # what the code sets (TestNoUndeclaredEnvRead,
+        # TestTheScriptEnvironmentIsWhatTheCodeSets); the stdenv builder
+        # environment makes that untrue in the sandbox (#2686). It runs in
+        # CI on main instead.
+        "internal/settings"
       ];
     in
     ''
