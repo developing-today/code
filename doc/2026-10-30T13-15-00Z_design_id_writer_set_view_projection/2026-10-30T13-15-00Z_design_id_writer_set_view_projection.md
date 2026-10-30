@@ -342,10 +342,26 @@ similar but is not it: `Veto` voids a *grant* from a position on
 ([`groups/mod.rs:121-125`](../../pkgs/id/src/groups/mod.rs)) and requires authority in the group.
 An exclusion requires only that I own the view.
 
-`Excludes(Public)` is deliberate, but it means exactly one thing: **count nobody**. Because
-`Public` matches every author and exclusions win over every admission, a set with
-`entries = [Public], excludes = [Public]` is empty by construction. It is the emergency "stop
-counting everything in this view" switch, not a moderation tool.
+`Excludes(Public)` is deliberate, but it means exactly one thing: **admit nobody**. Because
+`Public` matches every author and exclusions win over every admission, `expand(v)` is empty for a
+set with `entries = [Public], excludes = [Public]` (the expression is in §4.1). It is the emergency
+"stop counting everything in this view" switch, not a moderation tool.
+
+**It stops *prospective* admission, not past totals, and saying otherwise was an overclaim.**
+§4.1's `seen_by` resolves each claim against the latest admission-bearing version in *its own*
+causal past, so a claim Alice wrote while v1 admitted her keeps resolving to v1 under v2 — an empty
+v2 cannot reach back and un-admit her, exactly as §3.2 requires. A claim she writes after seeing v2
+is not counted. So the switch has two halves, and an owner who wants both publishes both:
+
+1. the empty v2, which stops everything from v2 on; **and**
+2. an `idset.rescind` (§3.3) with `target: Public`, which erases every claim in its causal past —
+   one signed event, not one per author, and it appears in the set's version history instead of
+   happening invisibly.
+
+That two-act shape is deliberate rather than inconvenient: it keeps "stop admitting" and "erase
+what was admitted" as separate, auditable decisions, which is §0's fifth principle applied to the
+emergency case. The doc previously said the single empty version was sufficient; it is not, and
+the correction is here rather than in a footnote.
 
 The moderated public feed Codex-style readers will expect — everyone except a few blocked
 authors — is the opposite shape and is spelled with the two fields doing different jobs:
@@ -406,7 +422,10 @@ Because §4.1 clause 3 is a term in the predicate, its meaning has to be as prec
 ```
 rescinded(S, c)  ⇔  ∃ r ∈ versions(S):                                   // r is a rescind version
                       r.kind = idset.rescind
-                    ∧ r.target admits author(c)                          // entry-shaped target
+                    ∧ author(c) ∈ expand({ entries: [r.target], excludes: [] })
+                                                                         // target is entry-shaped,
+                                                                         // so target: Public erases
+                                                                         // everyone's claims
                     ∧ c ∈ causal_past(r)                                 // r saw the claim
                     ∧ ( r.through is None ∨ c ∈ causal_past(r.through) ) // the optional bound
                     ∧ r.from_version.seq ≤ S.set_seq
@@ -414,6 +433,9 @@ rescinded(S, c)  ⇔  ∃ r ∈ versions(S):                                   /
 
 Three things this pins down that the prose left open:
 
+- **`target: Public` is a valid and useful rescind.** It erases every claim in the rescind's causal
+  past, which is the second half of the emergency stop in §D6: §D6's empty version stops prospective
+  admission, this erases what was already counted. One signed act, not one per author.
 - **It erases only claims `r` had actually seen.** A claim written *after* the rescind is untouched
   by it, exactly as a removal does not stop claims it never saw (§3.2). Erasing those takes a later
   rescind — a new signed act, not a silent widening.
@@ -506,6 +528,10 @@ admitted_at(S, c)  ⇔  seen_by(S, c) is defined
                         ∧ author(c) ∈ expand(seen_by(S, c))   // that version's expansion, not any
 retro(S, c)     ⇔  ∃ v ∈ adm_versions(S):  c ∈ causal_past(v)     // v saw the claim
                         ∧ author(c) ∈ expand_retro(v)     // only entries marked include_history
+expand(v)       ⇔  { author(a) : a ∈ v.entries } \ { author(x) : x ∈ v.excludes }
+                    // D6's rule, in one place: exclusions win over entries, including Public.
+                    // expand_retro(v) is the same expression over the entries carrying
+                    // include_history, minus the same exclusions.
 in_scope(C, c)  ⇔  subject(c) ∈ C.subject_scope ∧ kind(c) ∈ C.kind_scope
                     // exceptions are handled by clause 5, not inside in_scope,
                     // so there is exactly one place they bypass anything
@@ -728,8 +754,9 @@ enum WhyNotCounted {
     AfterFrontier,                    // clause 2 — written after the view's frontier
     RescindedSince(SetSeq),           // clause 3 — the rescind version that erased it
     AuthorRemoved(SetSeq),            // clause 4 — seen_by saw this version, which removed them
-    BackupNotImported,                // clause 4 — predates every version, and no version that
-                                      //            admits the author carries include_history
+    HistoryNotImported,               // clause 4 — the claim precedes the author's first
+                                      //            admission and no admission carrying
+                                      //            include_history covers it
     OutOfScope(ScopeMismatch),        // clause 5 — subject or kind
 }
 ```
@@ -737,9 +764,18 @@ enum WhyNotCounted {
 The set is **exactly the failure modes reachable through §4.2's retrieval**, which is why there is
 no `AuthorNotInSet`: an author no version ever admitted is in no historical author range, so their
 claims are never candidates and can never appear in either collection. A variant for that case
-would be an arm a test can never reach. The two clause-4 reasons that *are* reachable stay
-distinct because the user-facing messages differ — "you removed them" (where §3.2's `rescind`
-affordance belongs) is not "you never imported this" (where `include_history` belongs).
+would be an arm a test can never reach.
+
+`HistoryNotImported` covers **both** shapes of "too early", and an earlier draft only covered one:
+a claim that predates *every* set version, and — the case finding 25 caught — a claim written while
+v0 admitted nobody, by an author who is admitted later **without** `include_history`. v0 never
+removed them and the claim need not predate every version, so neither `AuthorRemoved` nor a
+"predates everything" reading fits. Naming it by the *cause* ("this author's history was not
+imported") rather than by one of its instances is what makes the variant cover the reachable set.
+
+The two clause-4 reasons that remain stay distinct because the user-facing messages differ — "you
+removed them" (where §3.2's `rescind` affordance belongs) is not "you never imported this" (where
+`include_history` belongs).
 
 A free-text reason would drift, and collapsing these into one code would erase an affordance.
 
@@ -1095,6 +1131,12 @@ Each is independently reviewable and small enough to land alone.
      writer the rescind did not target.** `seen_by` quantifies over `adm_versions`, so a rescind is
      never mistaken for the admission state in force, and its empty `expand` cannot reject the
      world's claims;
+   - the **emergency stop takes two acts** (finding 24): `entries=[Public], excludes=[Public]` in v2
+     leaves v1-admitted claims counted, and a `target: Public` rescind then erases them — the test
+     asserts the intermediate total is *not* zero, because an earlier draft claimed it was;
+   - a claim written **before its author's first admission**, by an author admitted later without
+     `include_history`, is uncounted with `HistoryNotImported` (finding 25) — the shape that fits
+     neither `AuthorRemoved` nor "predates every version";
    - a **forked set version** is not a version: a set chain forked at `set_seq` does not make
      `seen_by` ambiguous, and a never-applied `idset.writer` cannot admit an author (finding 17 —
      the set-side counterpart of the fork test above).
@@ -1182,7 +1224,7 @@ consulted. All accepted and fixed.
 | 17 | `seen_by` took `max` over **every** `idset.writer` event in the store. A set chain that forked at a `set_seq` gives two versions that `seq`, so `max` was ambiguous and §4.1 stopped being a function — and a forked, never-applied set version could still admit an author or satisfy `retro`, contradicting clause 1's own fork discipline. | **Fixed.** `versions(S)` is now explicitly the owner's **applied prefix under `R`**, which `chains`/`forks` already make linear ([`event_store/mod.rs:90-91`](../../pkgs/id/src/event_store/mod.rs)). `max` is a function again, and the set's history is gated the same way claims are. |
 | 18 | Clause 3's `rescinded(S, c)` was **used but never defined**: §3.3 gave prose and a `through` field but no semantics, so the predicate rested on an undefined term. Relatedly, a rescind is "a new set version", so it would have entered `versions(S)` where `expand(_)` is meaningless for it. | **Fixed.** §3.3 now defines `rescinded` formally — target admits the author, the claim is in the rescind's causal past, `through` bounds it, `from_version` gates it — and states that a rescind carries no entries, so `expand(r)`/`expand_retro(r)` are empty and only clause 3 reads it. |
 | 19 | `kind_scope` was applied **twice** (index filter and `in_scope`), so `OutOfScope(kind)` was unreachable and every claim the owner filtered by kind vanished from the uncounted side — the "uncounted must not be a bin" failure. | **Fixed.** §4.2 applies **neither** scope at retrieval; the index records `kind` so the predicate can test it cheaply. Round 4's finding 15 was half a fix. |
-| 20 | Two `WhyNotCounted` variants were unreachable: `AuthorNotInSet` (such an author is in no historical range, so their claims are never candidates) and `BackupNotImported` as worded. | **Fixed.** `AuthorNotInSet` removed; the two clause-4 reasons that *are* reachable — `AuthorRemoved` and `BackupNotImported` — are re-worded to their actual conditions. An arm a test can never reach is a defect in a closed enum. |
+| 20 | Two `WhyNotCounted` variants were unreachable: `AuthorNotInSet` (such an author is in no historical range, so their claims are never candidates) and `BackupNotImported` as worded. | **Fixed.** `AuthorNotInSet` removed; the clause-4 reasons that *are* reachable — `AuthorRemoved` and `HistoryNotImported` — are worded to their actual conditions (round 7 renamed the second, finding 25). An arm a test can never reach is a defect in a closed enum. |
 | 21 | §4.4 claimed an excepted claim "still appears on the uncounted side for any other view that did not name it". Under §4.2 that is false: a stranger's claim is fetched only by an author range or that view's own exception list. | **Fixed by narrowing.** §4.4 now states the true reach — other views that *admit* the author still show it uncounted, and a third party who neither admits nor excepts it never sees it, which is §5.3's whole point rather than a gap. |
 
 Two smaller corrections rode along: §7 row 1 still explained case 1 with the current-snapshot test
@@ -1206,19 +1248,31 @@ the problem, since even a rewrite leaves a seam. Both accepted and fixed.
 Round 6 is why the doc no longer says a frontier is sufficient to make anything permanent: §D4, §4.1
 and §4.5 each pin a frontier, and only the pair *(frontier, `R`)* makes a replay reproducible.
 
+**Round 7** (Codex, on the round-6 fix commit) found two more, both consequences of the
+historical-admission predicate rather than of the round-6 fixes. All accepted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 24 | §D6 called `entries=[Public], excludes=[Public]` the emergency "stop counting everything" switch, but §4.1's `seen_by` resolves each claim against the latest admitting version in **its own** causal past — so claims Alice wrote while v1 admitted her keep resolving to v1 under an empty v2. The switch stopped *prospective* admission and left existing totals populated. | **Fixed by narrowing the claim, not the mechanism.** §D6 now says it admits nobody from that version on, and names the two-act stop: the empty version **plus** an `idset.rescind` with `target: Public` (§3.3). Keeping the acts separate is deliberate — "stop admitting" and "erase what was admitted" stay independently auditable, which is §0's fifth principle applied to the emergency case. |
+| 25 | `BackupNotImported` as worded ("predates every version") did not cover a claim written while v0 admitted nobody, by an author admitted later **without** `include_history`: v0 never removed them, and the claim need not predate every version, so no `WhyNotCounted` variant fit and an implementation could not construct the hit without misreporting why. | **Fixed.** Renamed `HistoryNotImported` and defined by the *cause* — the author's history was not imported — so it covers both shapes. `expand(v)` is now also defined once in §4.1 (entries minus excludes), since §D6, `rescind`'s target test and this variant all need the same expression. |
+
+Round 7 is why the variants are named by cause rather than by instance: `HistoryNotImported` covers
+two distinct histories that a reviewer will construct separately, and naming it after either one
+leaves the other unrepresentable.
+
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what six rounds actually shows.** Every round found a real defect, and rounds 2–6 each
-found at least one that the round before had *introduced*: an interval predicate patched into a
+**A note on what seven rounds actually shows.** Every round found a real defect, and rounds 2–7 each
+found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
 resolution state. That is the argument for the shape this document settled on — one statement over a
 fully-named input tuple, with retrieval specified to match it — rather than for confidence that the
 current text is defect-free. A reviewer should treat §4.1 as a claim to attack, not as settled.
 
-Three places are the most likely to still be wrong, and naming them is more useful than a claim of
+Four places are the most likely to still be wrong, and naming them is more useful than a claim of
 completeness:
 
 1. **`retro` against a set that later revokes the flag** (§3.1). The import is monotone by design and
@@ -1227,10 +1281,17 @@ completeness:
 2. **The cost bound for a `Public` set** (§4.2), where the complexity claim is explicitly qualified
    rather than proved, because `Entry::Public` admits every author and collapses source 1 into a
    store-shaped scan.
-3. **The resolution-state plumbing** (§4.5, §4.6, §D4). `R` now has to reach more places than any
-   other input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6
-   each found a place it had not reached. Any remaining input that is evaluated without `R` is a
-   reproducibility bug of the same shape as findings 16, 23.
+3. **The interaction between "in force at the claim" and "what the owner says now"** (§3.2, §3.3,
+   §4.1, §D6). Every round from 2 onward produced a finding in this seam: an interval predicate, a
+   removal that did not stop new claims, a rescind mistaken for an admission, and an emergency stop
+   that stopped admitting without erasing. The rule is consistent — the claim is judged by the state
+   *it* saw, and changing the past takes an explicit `rescind` — but that rule has more visible
+   consequences than any other in the document, and each one was found by a reviewer rather than by
+   the author.
+4. **The resolution-state plumbing** (§4.5, §4.6, §D4). `R` has to reach more places than any other
+   input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6 each
+   found a place it had not reached. Any remaining input evaluated without `R` is a reproducibility
+   bug of the same shape as findings 16 and 23.
 
 ---
 
