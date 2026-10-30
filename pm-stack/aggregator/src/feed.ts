@@ -4,6 +4,7 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
+import type { UnmatchedCharge } from "./charges-match.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -43,6 +44,12 @@ export interface FleetFeed {
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
   charges?: ChargeRow[];
+  /** Charges auto-matching (#1057): unmatched SaaS/AI-looking charges
+   * surfacing for the FIRST time this run — the collector filters out
+   * anything its persisted surfaced-state already showed, so a charge
+   * appears here exactly once and the live source turns each entry
+   * into a hub attention flag. Absent when nothing new surfaced. */
+  chargesAttention?: UnmatchedCharge[];
   /** Hub subscriptions strip rows (Q5: renewal-only). */
   subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
   /** Usage snapshot records (hub §4 writers): derived by the collector
@@ -121,7 +128,7 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (typeof v !== "object" || v === null) return "not an object";
   const s = v as Partial<OrchestrationSection>;
   if (s.version !== 1) return "version";
-  if (typeof s.generatedAt !== "string") return "generatedAt";
+  if (typeof s.generatedAt !== "string" || !Number.isFinite(Date.parse(s.generatedAt))) return "generatedAt";
   if (typeof s.runId !== "string") return "runId";
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
@@ -145,6 +152,9 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
+/** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
+export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
+
 /**
  * The diagnosis behind the honesty surfaces (#1139/#1140): a section
  * the aggregator holds is in exactly one of these states. "invalid"
@@ -167,7 +177,11 @@ export function diagnoseOrchestrationSection(v: unknown, now = Date.now()): Sect
   const problem = orchestrationSectionProblem(v);
   if (problem !== null) return { state: "invalid", failedChecks: [problem] };
   const s = v as OrchestrationSection;
-  const ageMs = Math.max(0, now - Date.parse(s.generatedAt));
+  const parsedAt = Date.parse(s.generatedAt);
+  if (parsedAt - now > GENERATED_AT_FUTURE_SKEW_MS) {
+    return { state: "invalid", failedChecks: ["generatedAt"], generatedAt: s.generatedAt, runId: s.runId };
+  }
+  const ageMs = Math.max(0, now - parsedAt);
   return {
     state: ageMs > ORCHESTRATION_STALE_MS ? "stale" : "live",
     generatedAt: s.generatedAt,
@@ -196,6 +210,7 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   return (
     f.version === 1 &&
     typeof f.generatedAt === "string" &&
+    Number.isFinite(Date.parse(f.generatedAt)) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&
@@ -214,6 +229,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
 
 /** "3m old", "2h old", "fresh" — for an age in milliseconds. */
 export function ageMsText(ageMs: number): string {
+  if (!Number.isFinite(ageMs)) return "unknown";
   const ms = Math.max(0, ageMs);
   if (ms < 90_000) return "fresh";
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m old`;

@@ -18,18 +18,45 @@ const INDENT = "  "; // 2 spaces
  * (the standard editor rule), unless the selection is empty.
  */
 export function selectedLineStarts(lineStarts: number[], from: number, to: number): number[] {
-  const lineContaining = (pos: number): number => {
-    let found = lineStarts[0];
-    for (const lineStart of lineStarts) {
-      if (lineStart > pos) break;
-      found = lineStart;
+  if (lineStarts.length === 0) return [];
+
+  // Helper to find index of the line start containing pos via binary search
+  const lineIndexContaining = (pos: number): number => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    let ans = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (lineStarts[mid] <= pos) {
+        ans = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
     }
-    return found;
+    return ans;
   };
-  const endPos = to > from && lineStarts.includes(to) ? to - 1 : to;
-  const first = lineContaining(from);
-  const last = lineContaining(endPos);
-  return lineStarts.filter((lineStart) => lineStart >= first && lineStart <= last);
+
+  // ⚡ Bolt optimization: lineStarts is sorted in ascending order.
+  // Binary search for exact match instead of O(N) includes()
+  const isLineStart = (pos: number): boolean => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (lineStarts[mid] === pos) return true;
+      if (lineStarts[mid] < pos) low = mid + 1;
+      else high = mid - 1;
+    }
+    return false;
+  };
+
+  const endPos = to > from && isLineStart(to) ? to - 1 : to;
+  const firstIdx = lineIndexContaining(from);
+  const lastIdx = lineIndexContaining(endPos);
+
+  // ⚡ Bolt optimization: Slice contiguous range in O(M) instead of O(N) array filter
+  return lineStarts.slice(firstIdx, lastIdx + 1);
 }
 
 /**
@@ -112,15 +139,8 @@ export const dedentCommand: Command = (state, dispatch) => {
     let tr = state.tr;
     let offset = 0;
 
-    // For single cursor, only handle current line
-    const linesToDedent =
-      from === to
-        ? lineStarts.filter(
-            (ls) =>
-              ls <= from &&
-              (lineStarts.indexOf(ls) === lineStarts.length - 1 || lineStarts[lineStarts.indexOf(ls) + 1] > from),
-          )
-        : selectedLineStarts(lineStarts, from, to);
+    // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
+    const linesToDedent = selectedLineStarts(lineStarts, from, to);
 
     for (const lineStart of linesToDedent) {
       const adjustedPos = lineStart + offset;

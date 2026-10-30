@@ -3,6 +3,8 @@ package adapter_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -192,5 +194,177 @@ func TestEnumIsEnforced(t *testing.T) {
 	}
 	if _, err := spec.Call(context.Background(), "pick", map[string]any{"mode": "sideways"}); err == nil {
 		t.Fatal("a value outside the enum should be refused")
+	}
+}
+
+func TestValidateRefusesNegativeTimeouts(t *testing.T) {
+	// A negative timeout passes time.ParseDuration, so without an explicit
+	// refusal it validates and then every call is born expired (#1758).
+	server := echoSpec()
+	server.Timeout = "-5s"
+	err := server.Validate()
+	if err == nil {
+		t.Fatal("a negative server timeout should not validate")
+	}
+	for _, want := range []string{"negative", `"-5s"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("server error should name the offending value, missing %q from:\n%v", want, err)
+		}
+	}
+
+	tool := echoSpec()
+	tool.Tools[0].Timeout = "-1ms"
+	err = tool.Validate()
+	if err == nil {
+		t.Fatal("a negative tool timeout should not validate")
+	}
+	for _, want := range []string{"negative", `"-1ms"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("tool error should name the offending value, missing %q from:\n%v", want, err)
+		}
+	}
+}
+
+func TestZeroTimeoutIsUnset(t *testing.T) {
+	// Zero is unset at both levels: a "0s" tool timeout inherits the server
+	// timeout, and a "0s" server timeout means the 60s default - never an
+	// already-expired context (#1758).
+	spec := echoSpec()
+	spec.Timeout = "0s"
+	spec.Tools[0].Timeout = "0s"
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("zero timeouts are unset and should validate: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "say", map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "said: hello") {
+		t.Errorf("got %q", res.Stdout)
+	}
+}
+
+func TestAnUnsupportedRuntimeIsRefusedWithTheList(t *testing.T) {
+	spec := echoSpec()
+	spec.Runtime = "ruby"
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("ruby is not one of bash|js|ts|py")
+	}
+	if !strings.Contains(err.Error(), `runtime "ruby" is not supported; want bash|js|ts|py`) {
+		t.Errorf("the message should name the supported set: %v", err)
+	}
+}
+
+func TestSupportedRuntimesValidateWithoutAnInterpreterInstalled(t *testing.T) {
+	// Validate is a structural question: a declaration is well formed even
+	// on a machine where the interpreter is missing, and Probe is what
+	// says whether it can run.
+	for _, rt := range []string{"bash", "js", "ts", "py"} {
+		spec := echoSpec()
+		spec.Runtime = rt
+		spec.Command = "/nonexistent/script"
+		if err := spec.Validate(); err != nil {
+			t.Errorf("%s should validate: %v", rt, err)
+		}
+	}
+}
+
+func TestAScriptWithARuntimeProbesAndRuns(t *testing.T) {
+	// The two things a declaration with a runtime buys: `adapter check`
+	// passes for a path that is not on PATH, and Call spawns it through
+	// the interpreter.
+	if _, _, err := adapter.RuntimeInterpreter("bash"); err != nil {
+		t.Skip("no bash on this machine: ", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho native\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "s", Command: path, Runtime: "bash",
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("a script file with a runtime should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "native") {
+		t.Errorf("got %q", res.Stdout)
+	}
+	if !strings.Contains(res.Command, "bash") || !strings.Contains(res.Command, path) {
+		t.Errorf("the resolved command should be reported: %q", res.Command)
+	}
+}
+
+func TestARuntimeWithNoScriptIsRefusedClearly(t *testing.T) {
+	spec := adapter.Spec{Name: "s", Command: "/nonexistent/x.sh", Runtime: "bash",
+		Tools: []adapter.ToolSpec{{Name: "go"}}}
+	err := spec.Probe()
+	if err == nil {
+		t.Fatal("a missing script should not probe")
+	}
+	if !strings.Contains(err.Error(), "not a file") {
+		t.Errorf("the message should say what is wrong: %v", err)
+	}
+}
+
+func TestAScriptOnPathFallsBackWhenAbsentFromDir(t *testing.T) {
+	// A runtime adapter may name a bare script that lives on PATH while
+	// its working dir is elsewhere: the dir-relative file is tried first,
+	// then the documented PATH fallback, not a stat error on the join.
+	if _, _, err := adapter.RuntimeInterpreter("bash"); err != nil {
+		t.Skip("no bash on this machine: ", err)
+	}
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "onpath.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho frompath\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	spec := adapter.Spec{
+		Name: "s", Command: "onpath.sh", Runtime: "bash", Dir: t.TempDir(),
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("a PATH script with a working dir elsewhere should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "frompath") {
+		t.Errorf("got %q", res.Stdout)
+	}
+}
+
+func TestARelativeExecutableResolvesAgainstDirWithoutARuntime(t *testing.T) {
+	// Regression (Codex on #2504): a declaration with command "./tool",
+	// an explicit dir and no runtime used to resolve the executable
+	// against the caller's working directory, so a tool that exists only
+	// under dir failed before it ever ran. Before commands were resolved
+	// in command(), exec resolved the path against cmd.Dir.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho dirlocal\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "d", Command: "./tool", Dir: dir,
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("an executable under Dir should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "dirlocal") {
+		t.Errorf("got %q", res.Stdout)
 	}
 }

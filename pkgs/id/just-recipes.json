@@ -665,7 +665,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/tmp/wt-tf2/root.just",
+      "source": "/home/hatch/git/worktrees/queue-1283-551/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -746,6 +746,35 @@
       "private": false,
       "quiet": false,
       "namepath": "audit",
+      "shebang": false
+    },
+    "bench": {
+      "attributes": [],
+      "body": [["cargo bench --bench world_bench -- ", ["variable", "args"]]],
+      "dependencies": [],
+      "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
+      "name": "bench",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "bench",
       "shebang": false
     },
     "build": {
@@ -1382,6 +1411,72 @@
       "private": false,
       "quiet": false,
       "namepath": "crash-gate",
+      "shebang": false
+    },
+    "crash-gate-control": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        [
+          "cargo test --release --features web --test crash -- --include-ignored full_lying_sync_control_produces_failures"
+        ],
+        ["@echo \"✓ Crash gate (full lying-sync controls) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-control",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-control",
+      "shebang": false
+    },
+    "crash-gate-ingest": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored ingest_survives_every_crash_point"],
+        ["@echo \"✓ Crash gate (full ingest sweep) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-ingest",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-ingest",
+      "shebang": false
+    },
+    "crash-gate-sampled": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --skip write_corpus"],
+        ["@echo \"✓ Crash gate (sampled + corpus replay) passed\""]
+      ],
+      "dependencies": [],
+      "doc": "excluded everywhere (they rewrite the checked-in corpus files).",
+      "name": "crash-gate-sampled",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sampled",
+      "shebang": false
+    },
+    "crash-gate-sweep": {
+      "attributes": [{ "group": "test" }],
+      "body": [
+        ["cargo test --release --features web --test crash -- --include-ignored full_sweep_has_no_failures"],
+        ["@echo \"✓ Crash gate (full sweeps) passed\""]
+      ],
+      "dependencies": [],
+      "doc": null,
+      "name": "crash-gate-sweep",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "crash-gate-sweep",
       "shebang": false
     },
     "default": {
@@ -2419,7 +2514,7 @@
       "attributes": [{ "group": "test" }],
       "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
       "dependencies": [],
-      "doc": "pair (#869).",
+      "doc": "pair (#869; 3 → 4 shards in #551 to rebalance the ~12.5 min shards).",
       "name": "test-shard-sandbox",
       "parameters": [
         {
@@ -3001,7 +3096,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/tmp/wt-tf2/pkgs/id/justfile",
+  "source": "/home/hatch/git/worktrees/queue-1283-551/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

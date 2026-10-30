@@ -1,0 +1,5 @@
+tools: boom, chatty, echo, fancy_name, open, slow, state, structured, wipe
+demo.echo({ message })
+      Echo a message back.
+echo: two tools
+structured: {"n":42}

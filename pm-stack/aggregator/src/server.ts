@@ -8,13 +8,17 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { ActionsStore, validateNewAction } from "./actions.ts";
+import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, type HealthView } from "./health.ts";
-import { PAGES } from "./pages.ts";
+import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import { manifestRouteFor } from "./pages.ts";
+import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
-import type { DashComment, RefKey } from "./model.ts";
+import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -25,14 +29,22 @@ import {
 } from "./project-config.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
+  attentionFragment,
+  attentionSections,
   ghObjectRef,
   renderAa,
   renderAttention,
+  renderAttentionShell,
   renderBoard,
+  renderBoardBody,
   renderDiscuss,
   renderDns,
   renderHealth,
   renderItem,
+  deriveOverview,
+  renderOverview,
+  renderOverviewBody,
+  renderOverviewShell,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -42,21 +54,30 @@ import {
   renderServiceDetail,
   renderSessions,
   renderToday,
+  renderTodayBody,
+  renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 
-function pickSource(): Source {
-  const cfg = loadConfig();
-  return cfg.source === "live" ? liveSource(cfg) : fixtureSource();
-}
-
-const source = pickSource();
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const actionsStore = new ActionsStore(cfg.actionsFile);
+
+function pickSource(): Source {
+  // #1290: the live source reads the standing delegation default from
+  // the actions store's preference records when it stamps the
+  // needs-user fallbacks onto tier items.
+  return cfg.source === "live"
+    ? liveSource(cfg, {
+        standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+      })
+    : fixtureSource();
+}
+
+const source = pickSource();
 
 /**
  * #1267: the live source populates its provenance strings lazily, one
@@ -72,12 +93,16 @@ const actionsStore = new ActionsStore(cfg.actionsFile);
  * which is precisely what health exists to report.
  */
 let lastPrimedAt = 0;
+/** #1141: item coverage measured by the latest priming pass (below),
+ *  from the same board items() resolution that sets facet provenance. */
+let lastItemsCoverage: ItemsCoverage | null = null;
 let priming: Promise<void> | null = null;
 async function ensureProvenancePrimed(): Promise<void> {
   if (Date.now() - lastPrimedAt < 60_000) return;
   priming ??= (async () => {
     try {
       const { items } = await boardContext();
+      lastItemsCoverage = summarizeItemCoverage(items);
       const refs = [...items.keys()];
       await Promise.allSettled([
         source.roadmap(),
@@ -108,8 +133,15 @@ async function ensureProvenancePrimed(): Promise<void> {
  * 60 s inside health.ts). Page and API read this same view, so they
  * cannot disagree.
  */
-async function healthContext(): Promise<HealthView> {
-  await ensureProvenancePrimed();
+async function healthContext(prime = true): Promise<HealthView> {
+  // Priming exercises every facet so /health provenance never depends
+  // on request order. Callers that only need the feed snapshot and the
+  // cached probes (the attention path's watchdog assembly, #1148) pass
+  // prime=false: a stalled unrelated facet (e.g. Grist's roadmap API
+  // and its 8s timeout) must not delay attention rendering (Codex P2
+  // on PR #2431). The registry age the watchdog reads comes from the
+  // live source's lastFeed, which attention's own reads already load.
+  if (prime) await ensureProvenancePrimed();
   const [feed, feedFileMtimeMs] = await Promise.all([
     loadFeed(cfg.feedFile).catch(() => null),
     stat(cfg.feedFile)
@@ -123,6 +155,8 @@ async function healthContext(): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    itemsCoverage: lastItemsCoverage,
+    comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
 
@@ -181,6 +215,28 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+// Self-unregistering service worker, served at /sw.js on purpose. Until
+// 2026-10-27 this origin (the laptop's tailnet-serve address) fronted the
+// opencode web app, which registered a Workbox service worker that keeps
+// serving the opencode shell from cache even though the origin now serves
+// the dashboard. Browsers holding that registration pick this script up
+// on their next update check: it installs, unregisters itself, and
+// reloads open tabs into the dashboard. Harmless for fresh browsers --
+// it removes itself immediately.
+const SW_KILL_SWITCH = `self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', async () => {
+  try { await self.registration.unregister(); } catch {}
+  const cs = await self.clients.matchAll({ type: 'window' });
+  for (const c of cs) { try { c.navigate(c.url); } catch {} }
+});
+`;
+
+function serviceWorkerKillSwitch(): Response {
+  return new Response(SW_KILL_SWITCH, {
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
 async function boardContext() {
   const board = await source.board();
   const refs = allRefs(board);
@@ -191,8 +247,58 @@ async function boardContext() {
 async function roadmapContext() {
   const rows = await source.roadmap();
   const refs = allRefs(rows);
-  const items = await source.items(refs);
-  return { rows, items };
+  const [items, poolResult] = await Promise.all([
+    source.items(refs),
+    source.projects().then(
+      (pool) => ({ pool, failed: false }),
+      () => ({ pool: [] as ProjectPoolItem[], failed: true }),
+    ),
+  ]);
+  // #1144: reconcile the Grist rows against the Project's Kind=Epic
+  // pool items on every roadmap read, so the page flag and the JSON
+  // drift report always describe the same pass as the rows themselves.
+  // Codex P2 on PR 2428: an unread source is NOT an empty source — in
+  // live mode, a Grist fixtures fallback or a fleet feed with no
+  // projects section means reconciliation is unavailable, and no
+  // drift may be asserted from it.
+  let reconciliation: RoadmapReconciliation;
+  if (cfg.source === "live") {
+    const reasons: string[] = [];
+    const roadmapProv = source.provenance().roadmap;
+    if (!roadmapProv.startsWith("live")) reasons.push(`Grist roadmap read unavailable (${roadmapProv})`);
+    if (poolResult.failed) reasons.push("Project pool read failed");
+    const feed = await loadFeed(cfg.feedFile).catch(() => null);
+    if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
+    else if (feed.projects === undefined) reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length ? unavailableRoadmapReconciliation(reasons.join("; ")) : reconcileRoadmap(rows, poolResult.pool);
+  } else {
+    reconciliation = reconcileRoadmap(rows, poolResult.pool);
+  }
+  return { rows, items, reconciliation };
+}
+
+// #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
+// current diagnoses (feed age + probes via the health assembly —
+// its probe cache keeps this cheap — plus the orchestration
+// diagnosis and registry facet age). Live mode only: fixtures mode
+// has no real inputs to watch. Derived per request, never stored,
+// so recovery clears the cards on the next render. The health
+// assembly here is deliberately UNPRIMED (see healthContext): the
+// watchdog needs only the feed file, the cached probes, and the
+// registry age from the source's already-loaded feed.
+async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
+  if (cfg.source !== "live") return [];
+  const health = await healthContext(false);
+  return watchdogTierItems({
+    now: Date.now(),
+    feedAgeMs: health.feed.ageMs,
+    feedGeneratedAt: health.feed.generatedAt,
+    ...(diagnosis ? { orchestration: diagnosis } : {}),
+    ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
+    probes: health.services
+      .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
+      .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+  });
 }
 
 async function attentionContext() {
@@ -200,7 +306,68 @@ async function attentionContext() {
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
+  const watchdog = await deriveWatchdogItems(diagnosis);
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
+}
+
+/**
+ * One Datastar patch-elements event (#1444). The fragment root
+ * carries its own id + data-on-load attributes, so "outer" mode
+ * replaces the shell's placeholder with a self-refreshing container.
+ */
+function ssePatch(selector: string, elementHtml: string): string {
+  const lines = elementHtml
+    .split("\n")
+    .map((l) => `data: elements ${l}`)
+    .join("\n");
+  return `event: datastar-patch-elements\ndata: mode outer\ndata: selector ${selector}\n${lines}\n\n`;
+}
+
+function sseResponse(body: string): Response {
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
+/** The render inputs the board page and its fragment share. */
+async function boardRender() {
+  const { board, items } = await boardContext();
+  const [pool, formOpts, actionsByObject, counts] = await Promise.all([
+    source.projects().catch(() => []),
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.counts(),
+  ]);
+  const act = {
+    actionsByObject,
+    poolByRef: new Map(pool.map((p) => [p.ref, p])),
+    identities: formOpts.identities,
+  };
+  return { board, items, counts, act };
+}
+
+/** The render inputs the attention page and its fragments share:
+ *  the view, the action/comment stores grouped by object, and the
+ *  effective Needs-you order preference (#1456). */
+async function attentionRender() {
+  const { view, coverage } = await attentionContext();
+  const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.byObject(),
+    commentsStore.counts(),
+    actionsStore.all(),
+  ]);
+  const order = effectiveNeedsOrder(allActions);
+  const act = {
+    actionsByObject,
+    identities: formOpts.identities,
+    commentsByObject,
+    commentOpts: formOpts,
+    needsOrder: order.order,
+    needsOrderPending: order.pending,
+  };
+  return { view, coverage, counts, act };
 }
 
 async function todayContext() {
@@ -213,6 +380,21 @@ async function todayContext() {
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+}
+
+/** The render inputs the overview (front door, #1134) assembles:
+ *  the attention view, the Project pool, quota, the health view, and
+ *  the board — the same contexts the dedicated pages render from. */
+async function overviewContext() {
+  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
+    attentionContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.quota(),
+    healthContext(),
+    boardContext(),
+    actionsStore.byObject().catch(() => new Map()),
+  ]);
+  return { attention: view, pool, quota, health, board, actionsByObject };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -228,7 +410,14 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const comment = await commentsStore.add(parsed.value);
+      // #1509: a persistence failure is a server error, not bad input -
+      // only the validation/body-parse path above earns a 400.
+      let comment;
+      try {
+        comment = await commentsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
       return json({ comment }, 201);
     } catch (err) {
       return json({ error: `invalid comment: ${err instanceof Error ? err.message : err}` }, 400);
@@ -265,7 +454,31 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const { action, created } = await actionsStore.add(parsed.value);
+      // #1291/#1293: checks that need the currently published item —
+      // option/survey membership, required-question coverage, proposal
+      // identity, the access/policy auto ban. Enforced only when the
+      // aggregator actually holds a section; with none, the store
+      // stays the permissive boundary of the triage slice and the
+      // consumer rejects what it cannot apply.
+      if (parsed.value.kind === "triage") {
+        const section = await source.orchestration().catch(() => null);
+        if (section) {
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
+          if (problem) return json({ error: problem }, 400);
+        }
+      }
+      // #1509: persistence failure -> 5xx (see /api/comments above).
+      let added;
+      try {
+        added = await actionsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+      const { action, created } = added;
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
@@ -318,32 +531,48 @@ async function handler(req: Request): Promise<Response> {
     });
   }
 
-  if (path === "/" || path === "/board") {
-    const { board, items } = await boardContext();
-    const [pool, formOpts, actionsByObject] = await Promise.all([
-      source.projects().catch(() => []),
-      commentFormOpts(),
-      actionsStore.byObject(),
-    ]);
-    return html(
-      renderBoard(board, items, prov(), await commentsStore.counts(), provDetail(), {
-        actionsByObject,
-        poolByRef: new Map(pool.map((p) => [p.ref, p])),
-        identities: formOpts.identities,
-      }),
-    );
+  if (path === "/") {
+    // #1134: the front door is the overview — shell first, the
+    // summary streams in as a fragment (#1444 pattern). ?full=1
+    // keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderOverviewShell(prov(), provDetail()));
+    }
+    return html(renderOverview(await overviewContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/overview") {
+    const data = await overviewContext();
+    const wrapped = `<div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')">${renderOverviewBody(deriveOverview(data))}</div>`;
+    return sseResponse(ssePatch("#overview-main", wrapped));
+  }
+  if (path === "/board") {
+    const { board, items, counts, act } = await boardRender();
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act));
+  }
+  if (path === "/frag/board") {
+    const { board, items, counts, act } = await boardRender();
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    return sseResponse(ssePatch("#board-main", wrapped));
   }
 
   if (path === "/today") {
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderTodayShell(prov(), provDetail()));
+    }
     const { today, view, coverage, quota } = await todayContext();
     return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
   }
+  if (path === "/frag/today") {
+    const { today, view, coverage, quota } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    return sseResponse(ssePatch("#today-main", wrapped));
+  }
 
   if (path === "/roadmap") {
-    const { rows, items } = await roadmapContext();
+    const { rows, items, reconciliation } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail()));
+    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation));
   }
 
   if (path === "/quota") {
@@ -362,14 +591,29 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/attention") {
-    const { view, coverage } = await attentionContext();
-    const [formOpts, actionsByObject] = await Promise.all([commentFormOpts(), actionsStore.byObject()]);
-    return html(
-      renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail(), {
-        actionsByObject,
-        identities: formOpts.identities,
-      }),
-    );
+    // #1444: shell first; header/queues/sessions stream in as
+    // fragments. ?full=1 keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderAttentionShell(prov(), provDetail()));
+    }
+    const { view, coverage, counts, act } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
+  }
+  const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
+  if (attnFragMatch) {
+    const section = attnFragMatch[1] as "header" | "queues" | "sessions";
+    const { view, coverage, counts, act } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act);
+    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+  }
+  if (path === "/assets/datastar.js") {
+    // The vendored Datastar bundle (#1444) — a static asset, never a
+    // service worker; /sw.js keeps serving the kill switch.
+    const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
   }
 
   if (path === "/dns") {
@@ -489,13 +733,16 @@ async function handler(req: Request): Promise<Response> {
     return html(renderDiscuss(objectRef, title, thread, await commentFormOpts(githubRefs), prov()));
   }
 
+  if (path === "/api/overview.json") {
+    return json(deriveOverview(await overviewContext()));
+  }
   if (path === "/api/board.json") {
     const { board, items } = await boardContext();
     return json({ board, items: [...items.values()] });
   }
   if (path === "/api/roadmap.json") {
-    const { rows, items } = await roadmapContext();
-    return json({ rows, items: [...items.values()] });
+    const { rows, items, reconciliation } = await roadmapContext();
+    return json({ rows, items: [...items.values()], drift: roadmapDriftReport(reconciliation) });
   }
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
@@ -527,9 +774,13 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
     // (expired dropped) and tier-annotated (tier/drewReason/
-    // orchestratorNote, source, parentId).
+    // orchestratorNote, source, parentId). #1148: the derived watchdog
+    // tier items are appended in their TierItem shape (tier-annotated
+    // needs-orchestrator) so machine consumers see the same queue the
+    // HTML renders — the array shape itself is unchanged (Codex P2
+    // on PR #2431).
     const { view } = await attentionContext();
-    return json(view.all);
+    return json([...view.all, ...view.watchdog.map((i) => ({ ...i, tier: "needs-orchestrator" as const }))]);
   }
   if (path === "/api/coverage.json") {
     const { view, coverage } = await attentionContext();
@@ -541,9 +792,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
-    // means "not measured yet" — never an empty queue.
+    // means "not measured yet" — never an empty queue. #1148: the
+    // aggregator-derived watchdog items ride along as an additive
+    // field (the published section itself stays verbatim) so JSON
+    // consumers can see derived queue items next to the published
+    // tiers (Codex P2 on PR #2431).
     const section = await source.orchestration();
-    return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
+    const diagnosis = source.diagnostics?.().orchestration;
+    const derivedWatchdogItems = await deriveWatchdogItems(diagnosis);
+    return json(
+      section
+        ? { ...section, derivedWatchdogItems }
+        : { status: "absent", reason: "no orchestration run has published yet", derivedWatchdogItems },
+    );
+  }
+  if (path === "/sw.js") {
+    // Kill switch for the opencode service worker stranded on this
+    // origin (see SW_KILL_SWITCH above) -- never a real worker here.
+    return serviceWorkerKillSwitch();
   }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
@@ -553,7 +819,7 @@ async function handler(req: Request): Promise<Response> {
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
     const view = await healthContext();
-    const body: Record<string, unknown> = { status: "ok", source: prov() };
+    const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
@@ -566,6 +832,7 @@ async function handler(req: Request): Promise<Response> {
     body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
+    body.comments = view.comments;
     body.degraded = view.degraded;
     return json(body);
   }
@@ -599,6 +866,7 @@ async function handler(req: Request): Promise<Response> {
       const extras = {
         dashComments,
         formRef: id,
+        serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),
         sessions,
         actions: allActions.filter((a) => wanted.has(a.objectRef)),
@@ -624,15 +892,10 @@ async function handler(req: Request): Promise<Response> {
  * #1147's render registry: every successful HTML page render is
  * recorded against its manifest route (subroutes count toward their
  * parent page), so /health can report each page's real last-render
- * time — measured from actual traffic, never self-probed.
+ * time — measured from actual traffic, never self-probed. The mapping
+ * lives with the manifest (#1135) so nav reachability and render
+ * attribution can never disagree.
  */
-function manifestRouteFor(path: string): string | null {
-  const exact = PAGES.find((p) => p.route === path);
-  if (exact) return exact.route;
-  if (path.startsWith("/program/")) return "/program";
-  if (path.startsWith("/quota/service/")) return "/quota";
-  return null;
-}
 
 async function fetchHandler(req: Request): Promise<Response> {
   const res = await handler(req);

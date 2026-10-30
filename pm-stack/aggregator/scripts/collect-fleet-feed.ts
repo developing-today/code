@@ -11,6 +11,16 @@
 //   - the sandbox OpenCode server API — sandbox session feed entries
 //     (shared mapper, src/sources/opencode.ts) + live per-pool burn
 //     attribution for the quota view.
+//   - charges-candidates.json — the Muse-side producer's
+//     (#1057, scripts/produce-charge-candidates.ts) Plaid + Gmail
+//     charge candidates for the period. The collector runs the pure
+//     matcher (src/charges-match.ts) over them, merges the rows with
+//     the hand-fed registry/quota-view charges (auto wins on a
+//     duplicate), and surfaces unmatched SaaS/AI-looking charges in
+//     the feed's chargesAttention exactly once — charges-surfaced-
+//     state.json persists the keys already shown. Absent file = the
+//     pre-#1057 hand-fed charges only. No balances or debt data ever
+//     pass through: candidates are charge evidence only.
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
@@ -30,8 +40,10 @@
 //     section and logs only that it was omitted.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
 //     workbook import: v_rankings, v_threshold_metrics,
-//     benchmark_results, the Test_Runs sheet), read through
-//     v_latest_workbook_batch via the Management API SQL endpoint.
+//     benchmark_results — both the AA Intelligence Index rows and the
+//     Coding Agent Index rows, kept as separate benchmark families —
+//     the Test_Runs sheet, and the price event log's v_current_prices),
+//     read through v_latest_workbook_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
 //     named `supabase.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
@@ -49,6 +61,8 @@
 // USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest),
+// CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
+// producer's candidates file and the collector's surfaced-once state),
 // SUPABASE_PROJECT_REF (default: the muse-dev project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
@@ -57,7 +71,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
-import { aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
+import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
 import type {
   AaFeedSection,
@@ -68,6 +82,8 @@ import type {
   SessionFeedEntry,
   SessionRecord,
 } from "../src/model.ts";
+import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
@@ -100,6 +116,8 @@ const dnsRegisterPath =
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
+const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
@@ -289,6 +307,33 @@ select jsonb_build_object(
     from ainventory.sheet_rows sr
     where sr.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
       and sr.sheet_name = 'Test_Runs'
+  ), '[]'::jsonb),
+  'cai', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
+      'score', value_num, 'cost', cost_per_task_usd,
+      'wallSec', nullif(raw->>'time_per_task_seconds', '')::numeric,
+      'tokensPerTask', nullif(raw->>'token_usage_per_task', '')::numeric,
+      'harness', raw->>'agent_harness',
+      'creatorSlug', split_part(raw->>'observation_key', '|', 3),
+      'deepSwe', nullif(raw->>'deep_swe_v1_1_pct', '')::numeric,
+      'terminalBench', nullif(raw->>'terminal_bench_4_0_pct', '')::numeric,
+      'sweAtlas', nullif(raw->>'swe_atlas_qna_pct', '')::numeric,
+      'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
+    ) order by value_num desc nulls last, model_name)
+    from ainventory.benchmark_results br
+    where br.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+      and br.benchmark like 'Artificial Analysis Coding Agent Index%'
+      and br.metric = 'cai_index_score'
+  ), '[]'::jsonb),
+  'prices', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
+      'cacheReadPer1M', cached_input_usd_per_1m, 'cacheWritePer1M', cache_write_usd_per_1m,
+      'contextMinTokens', context_min_tokens, 'contextMaxTokens', context_max_tokens,
+      'windowKind', window_kind
+    ) order by model_name, context_min_tokens nulls first)
+    from ainventory.v_current_prices
   ), '[]'::jsonb)
 ) as aa`;
 
@@ -342,7 +387,18 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    pools = extractQuotaPools(quotaViewText, now);
+    // #1114: enforce the deployed config's disabled_providers at pool
+    // assembly. The config read mirrors the AA section's; an unreadable
+    // config leaves the set empty (fail soft, pools unfiltered).
+    let disabledProviderIds: ReadonlySet<string> = new Set();
+    try {
+      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
+    } catch {
+      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
+    }
+    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
+      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
+    );
   } catch (err) {
     console.error(`collector: quota view unreadable (${err}); emitting no pools`);
   }
@@ -363,6 +419,45 @@ async function main(): Promise<void> {
     payg = extractPaygLines(quotaViewText, registryText);
     charges = extractCharges(quotaViewText, registryText);
     subscriptions = extractSubscriptions(quotaViewText);
+  }
+
+  // --- charges auto-matching (#1057) -------------------------------------
+  // The producer's candidates (Plaid + Gmail) run through the pure
+  // matcher; auto rows merge over the hand-fed rows above, and
+  // unmatched SaaS/AI charges surface exactly once via the persisted
+  // surfaced-state. Fail-soft like every other section: no readable
+  // candidates file = the hand-fed charges stand as they were.
+  let chargesAttention: UnmatchedCharge[] | undefined;
+  try {
+    const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
+    if (candidates.length) {
+      const auto = matchCharges(
+        candidates,
+        (saas ?? []).map((s) => ({ name: s.name })),
+      );
+      charges = mergeChargeRows(auto.rows, charges ?? []);
+      let surfaced = new Set<string>();
+      try {
+        const state: unknown = JSON.parse(await readFile(chargesSurfacedStatePath, "utf8"));
+        const keys = (state as { surfaced?: unknown }).surfaced;
+        if (Array.isArray(keys)) surfaced = new Set(keys.filter((k): k is string => typeof k === "string"));
+      } catch {
+        /* no state yet: everything unmatched is new */
+      }
+      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      if (fresh.length) {
+        chargesAttention = fresh;
+        await writeFile(
+          chargesSurfacedStatePath,
+          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
+        );
+      }
+      console.log(
+        `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
+      );
+    }
+  } catch {
+    console.error("collector: charge candidates unreadable; hub charges stay hand-fed only this run");
   }
 
   // --- sandbox attention + burn -------------------------------------------
@@ -534,6 +629,7 @@ async function main(): Promise<void> {
     ...(saas ? { saas } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
+    ...(chargesAttention ? { chargesAttention } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),

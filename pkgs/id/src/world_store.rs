@@ -29,7 +29,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
     JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
-    WorldLimits, WorldProgram,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -41,6 +41,9 @@ pub struct FileJournal {
     /// Set when a compaction left durability uncertain; appends then fail so
     /// no acknowledged event can be lost.
     broken: bool,
+    /// The version in the journal's `Created` header, kept in step with the
+    /// bump-on-first-write contract (see `world::JOURNAL_VERSION`).
+    version: u32,
 }
 
 impl FileJournal {
@@ -119,10 +122,15 @@ impl FileJournal {
         }
         file.seek(SeekFrom::End(0))?;
 
+        let version = match entries.first() {
+            Some(JournalEntry::Created { version, .. }) => *version,
+            _ => JOURNAL_VERSION,
+        };
         let mut journal = Self {
             file,
             path: path.to_owned(),
             broken: false,
+            version,
         };
         if entries.is_empty() {
             let header = JournalEntry::Created {
@@ -132,7 +140,37 @@ impl FileJournal {
             journal.append(&header)?;
             entries.push(header);
         }
+        // Journals written before the issue-#227 contract can already hold
+        // an entry a version-1 binary cannot read under a version-1 header.
+        // Bump such a journal on open, so a later rollback to a version-1
+        // binary refuses it at the header check instead of mid-read.
+        let required = entries
+            .iter()
+            .map(journal_version_required_by)
+            .max()
+            .unwrap_or(JOURNAL_VERSION);
+        if required > journal.version {
+            journal.bump_header(&mut entries, required)?;
+        }
         Ok((journal, entries))
+    }
+
+    /// Atomically rewrite the journal in place with its header version set
+    /// to `new_version` (sibling temp file, fsync, rename — the `compact`
+    /// machinery), and update `entries` to match. A failure leaves the old
+    /// journal untouched.
+    fn bump_header(&mut self, entries: &mut [JournalEntry], new_version: u32) -> Result<()> {
+        ensure!(
+            matches!(entries.first(), Some(JournalEntry::Created { .. })),
+            "world journal {} has no header to bump",
+            self.path.display()
+        );
+        if let Some(JournalEntry::Created { version, .. }) = entries.first_mut() {
+            *version = new_version;
+        }
+        self.compact(entries)?;
+        self.version = new_version;
+        Ok(())
     }
 }
 
@@ -142,6 +180,16 @@ impl WorldJournal for FileJournal {
             !self.broken,
             "world journal is unusable after a failed compaction"
         );
+        // Bump-on-first-write (issue #227): before appending the first
+        // entry a version-1 binary cannot read, atomically rewrite the
+        // journal under the header version that entry requires, so the
+        // old binary refuses the journal at its header check and never
+        // reaches the entry mid-read.
+        let required = journal_version_required_by(entry);
+        if required > self.version {
+            let mut entries = read_journal_entries(&self.path)?;
+            self.bump_header(&mut entries, required)?;
+        }
         let mut line = serde_json::to_vec(entry).context("encode journal entry")?;
         line.push(b'\n');
         self.file.write_all(&line).context("write world journal")?;
@@ -197,6 +245,9 @@ impl WorldJournal for FileJournal {
         if let Err(error) = synced {
             self.broken = true;
             return Err(anyhow::Error::from(error).context("sync world directory"));
+        }
+        if let Some(JournalEntry::Created { version, .. }) = entries.first() {
+            self.version = *version;
         }
         Ok(())
     }
@@ -426,9 +477,14 @@ fn read_journal_entries(path: &Path) -> Result<Vec<JournalEntry>> {
 /// different world, or I/O failures writing the destination.
 pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()> {
     let mut entries = read_journal_entries(&src_dir.join("journal.jsonl"))?;
-    let Some(JournalEntry::Created { world_id, .. }) = entries.first() else {
+    let Some(JournalEntry::Created {
+        world_id,
+        version: source_version,
+    }) = entries.first()
+    else {
         bail!("source journal has no Created header");
     };
+    let source_version = *source_version;
     ensure!(
         world_id == &spec.from_world_id,
         "source journal belongs to {world_id:?}, not {:?}",
@@ -458,10 +514,19 @@ pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()>
         }
     }
 
-    // Rewrite the header to the new world and record the origin.
+    // Rewrite the header to the new world and record the origin. The fork
+    // keeps at least the source's header version (and whatever its entries
+    // require): resetting it to `JOURNAL_VERSION` would re-create the
+    // issue-#227 hazard for a source that already carries a profile entry.
+    let fork_version = entries
+        .iter()
+        .map(journal_version_required_by)
+        .max()
+        .unwrap_or(JOURNAL_VERSION)
+        .max(source_version);
     entries[0] = JournalEntry::Created {
         world_id: spec.to_world_id.clone(),
-        version: JOURNAL_VERSION,
+        version: fork_version,
     };
     entries.push(JournalEntry::Forked {
         from_world_id: spec.from_world_id.clone(),
@@ -1422,6 +1487,155 @@ mod tests {
         }
         let (_, reread) = FileJournal::open(&path, "w").unwrap();
         assert_eq!(reread[1..], written);
+    }
+
+    #[tokio::test]
+    async fn durable_world_metrics_count_journal_appends() {
+        // F11.7 slice 1: on a journaled world, the actor's metrics count
+        // every durable append (fsync included) — the journal half of the
+        // registry the session test cannot reach with an in-memory world.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, entries) = FileJournal::open(&path, "lobby").unwrap();
+        let core = WorldCore::restore("lobby", WorldLimits::default(), entries)
+            .unwrap()
+            .core;
+        let world = WorldHandle::spawn_durable(
+            core,
+            Box::<crate::world::EmptyWorldProgram>::default(),
+            Some(Box::new(journal)),
+        );
+        world
+            .set_isolation(
+                crate::world::Authority::Admin,
+                crate::world::Isolation::Unisolated,
+            )
+            .await
+            .unwrap();
+        let metrics = world.metrics().await.unwrap();
+        assert!(
+            metrics.journal_appends_total >= 1,
+            "the isolation change was journaled: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.journal_append_latency.count, metrics.journal_appends_total,
+            "every append lands in the latency histogram: {metrics:?}"
+        );
+        assert!(metrics.commands_total >= 1, "{metrics:?}");
+        assert_eq!(metrics.command_latency.count, metrics.commands_total);
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn first_execution_profile_append_bumps_the_journal_header() {
+        // Cross-version fixture for the issue-#227 contract: a version-1
+        // journal stays version 1 until the first entry a version-1 binary
+        // cannot read, then its header is bumped before that entry lands.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(7),
+            ..Default::default()
+        };
+        {
+            let (mut journal, entries) = FileJournal::open(&path, "w").unwrap();
+            assert!(matches!(
+                entries[0],
+                JournalEntry::Created {
+                    version: JOURNAL_VERSION,
+                    ..
+                }
+            ));
+            journal
+                .append(&JournalEntry::ScheduleSet {
+                    id: "a".to_owned(),
+                    at_ms: 9,
+                })
+                .unwrap();
+            // A v1-readable entry does not bump the header.
+            let on_disk = journal_entries(dir.path());
+            assert!(matches!(
+                on_disk[0],
+                JournalEntry::Created {
+                    version: JOURNAL_VERSION,
+                    ..
+                }
+            ));
+            journal
+                .append(&JournalEntry::ExecutionProfile {
+                    profile,
+                })
+                .unwrap();
+        }
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert!(
+            matches!(
+                entries[0],
+                JournalEntry::Created {
+                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    ..
+                }
+            ),
+            "header bumped before the profile entry: {entries:?}"
+        );
+        assert!(matches!(entries[1], JournalEntry::ScheduleSet { .. }));
+        assert!(matches!(entries[2], JournalEntry::ExecutionProfile { .. }));
+        assert!(
+            !dir.path().join("journal.jsonl.tmp").exists(),
+            "the atomic bump leaves no staging file behind"
+        );
+        // The new binary reads the bumped journal back, profile included.
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
+    fn a_legacy_v1_journal_holding_a_profile_entry_is_bumped_on_open() {
+        // A journal written before the issue-#227 contract: profile entry
+        // already sitting under a version-1 header. Opening it with the new
+        // binary bumps the header, so a rollback refuses it early.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let legacy = [
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::ExecutionProfile {
+                profile: crate::world_limits::WorldExecutionProfile {
+                    wasm_fuel: Some(3),
+                    ..Default::default()
+                },
+            },
+        ];
+        let text: String = legacy
+            .iter()
+            .map(|entry| format!("{}\n", serde_json::to_string(entry).unwrap()))
+            .collect();
+        std::fs::write(&path, text).unwrap();
+
+        let (_, entries) = FileJournal::open(&path, "w").unwrap();
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        let on_disk = journal_entries(dir.path());
+        assert!(matches!(
+            on_disk[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert_eq!(
+            on_disk.len(),
+            2,
+            "no entry is lost in the bump: {on_disk:?}"
+        );
     }
 
     #[cfg(feature = "sandbox")]

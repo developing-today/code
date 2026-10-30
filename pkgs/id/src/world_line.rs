@@ -71,6 +71,9 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
             prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
         });
     }
+    if line == "/document" {
+        return Some(WorldLine::Message("usage: /document <name>".to_owned()));
+    }
     if let Some(rest) = line.strip_prefix("/document ") {
         let name = rest.trim();
         if !name.is_empty() && name == rest {
@@ -78,8 +81,8 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         }
         return Some(WorldLine::Message("usage: /document <name>".to_owned()));
     }
-    if let Some(rest) = line.strip_prefix("/logs") {
-        let rest = rest.trim();
+    if line == "/logs" || line.starts_with("/logs ") {
+        let rest = line.strip_prefix("/logs").unwrap_or_default().trim();
         if rest.is_empty() {
             return Some(WorldLine::Logs { seconds: None });
         }
@@ -89,6 +92,9 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
             });
         }
         return Some(WorldLine::Message("usage: /logs [seconds]".to_owned()));
+    }
+    if line == "/input" {
+        return Some(WorldLine::Message("usage: /input <hex>".to_owned()));
     }
     if let Some(hex) = line.strip_prefix("/input ") {
         if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -155,6 +161,34 @@ mod tests {
         assert_eq!(
             parse_line("/input 00aF"),
             Some(WorldLine::Input("00af".into()))
+        );
+    }
+
+    #[test]
+    fn glued_and_bare_verbs_do_not_parse_as_commands() {
+        // #1507: every verb needs its boundary — exact, or the verb, a space,
+        // and its argument. A glued argument is not the command.
+        assert_eq!(
+            parse_line("/logs5"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/logs55"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/logs\t5"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        // A bare verb that takes an argument answers with its usage, like
+        // the trailing-space form already did — not "unknown command".
+        assert_eq!(
+            parse_line("/document"),
+            Some(WorldLine::Message("usage: /document <name>".into()))
+        );
+        assert_eq!(
+            parse_line("/input"),
+            Some(WorldLine::Message("usage: /input <hex>".into()))
         );
     }
 

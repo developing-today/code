@@ -57,7 +57,10 @@ export class ExportError extends Error {
 const round2 = (n) => Math.round(n * 100) / 100;
 
 /** Parse a subscription-quota payload into export windows. Throws on
- * any shape drift — fail-closed, never partial zeros. */
+ * any shape drift — fail-closed, never partial zeros. The one tolerated
+ * absence is a not-yet-started window (used = 0) whose reset the
+ * console returns as null or omits: that window is emitted with
+ * resetAt: null instead of failing the whole export (#1301). */
 export function parseSubscriptionQuota(payload) {
   const q = payload?.subscription_quota;
   if (!q || typeof q !== "object") {
@@ -68,17 +71,43 @@ export function parseSubscriptionQuota(payload) {
   const windowLimit = num(q.window_weighted_limit);
   const weeklyUsed = num(q.weekly_weighted_used);
   const weeklyLimit = num(q.weekly_weighted_limit);
-  const windowReset = num(q.window_resets_at);
-  const weeklyReset = num(q.weekly_resets_at);
   const durationSecs = num(q.window_duration_secs);
-  const fields = { windowUsed, windowLimit, weeklyUsed, weeklyLimit, windowReset, weeklyReset };
+  const fields = { windowUsed, windowLimit, weeklyUsed, weeklyLimit };
   for (const [k, v] of Object.entries(fields)) {
     if (!Number.isFinite(v) || v < 0) {
       throw new ExportError("unparseable", 6, `subscription-quota: field ${k} not a finite number`);
     }
   }
+  // A window the console has not started yet (no usage recorded in it)
+  // has no reset: window_resets_at / weekly_resets_at comes back null
+  // or the field is omitted entirely (observed live 2026-10-29, #1301:
+  // after the 16:15Z short-window roll the absent reset poisoned every
+  // export, including the healthy weekly window and free credits).
+  // Tolerate exactly that shape — emit the window with resetAt: null.
+  // A missing reset on a window WITH recorded usage, and any malformed
+  // reset value, still fail closed.
+  const resetField = (raw, used, label) => {
+    if (raw === null || raw === undefined) {
+      if (used === 0) return null;
+      throw new ExportError(
+        "unparseable",
+        6,
+        `subscription-quota: field ${label} absent but the window has recorded usage`,
+      );
+    }
+    const v = num(raw);
+    if (!Number.isFinite(v) || v < 0) {
+      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
+    }
+    return v;
+  };
+  const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
+  const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
   if (windowLimit === 0 || weeklyLimit === 0) {
     throw new ExportError("unparseable", 6, "subscription-quota: zero limit");
+  }
+  if (!Number.isFinite(durationSecs) || durationSecs <= 0) {
+    throw new ExportError("unparseable", 6, "subscription-quota: field window_duration_secs not a finite positive number");
   }
   const shortName = durationSecs === 18_000 ? "5h" : durationSecs === 3_600 ? "1h" : `window-${durationSecs}s`;
   const iso = (epochSecs) => new Date(epochSecs * 1000).toISOString();
@@ -86,8 +115,8 @@ export function parseSubscriptionQuota(payload) {
     tier: typeof q.tier === "string" ? q.tier : null,
     consoleAsOf: Number.isFinite(num(q.as_of)) ? iso(num(q.as_of)) : null,
     windows: [
-      { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: iso(windowReset) },
-      { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: iso(weeklyReset) },
+      { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
+      { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },
     ],
   };
 }

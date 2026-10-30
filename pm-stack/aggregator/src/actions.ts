@@ -32,6 +32,11 @@
 //   consumes the OpenCode sources ("opencode-sandbox",
 //   "opencode-laptop") for poke/answer/stop. Sources with no live
 //   control channel (claude-code, cron) render no enabled controls.
+// - kind "preference" — the orchestration pass: set-delegation-default
+//   records the standing auto toggle (#1290; Drew's 2026-10-27 decision
+//   is the initial record). The aggregator also reads these records to
+//   compute the effective default for items the publisher has not yet
+//   stamped with a delegation state.
 //
 // Consumers poll GET /api/actions.json?state=new (filtered by their
 // slice) and report each outcome via POST /api/actions/result
@@ -58,7 +63,7 @@ import { dirname } from "node:path";
 import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
 
-export type DashActionKind = "triage" | "status-request" | "session";
+export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
 export type DashActionVerb =
   // triage (#1152)
@@ -72,11 +77,21 @@ export type DashActionVerb =
   | "dismiss"
   | "approve-proposal"
   | "reject-proposal"
+  // triage — quick actions + restore (#1449/#1450): "mark-done" is the
+  // one-tap "Already done" (the consumer closes the item out; for gh:
+  // refs it performs the Done status write). "restore" undoes a
+  // suppression — it MUST name the suppressing action in `supersedes`.
+  | "mark-done"
+  | "restore"
   // status-request (#1154)
   | "request-status"
   // session (#1156)
   | "poke"
-  | "stop";
+  | "stop"
+  // preference (#1290)
+  | "set-delegation-default"
+  // preference — Needs-you card order (#1456)
+  | "set-needs-order";
 
 export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = {
   triage: [
@@ -89,9 +104,12 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
     "dismiss",
     "approve-proposal",
     "reject-proposal",
+    "mark-done",
+    "restore",
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
+  preference: ["set-delegation-default", "set-needs-order"],
 };
 
 export interface DashActionPayload {
@@ -105,12 +123,26 @@ export interface DashActionPayload {
   text?: string;
   /** Optional on most verbs; REQUIRED for dismiss / reject-proposal. */
   reason?: string;
-  /** delegate mode: first-pass | auto | drew (take it back). */
-  mode?: "first-pass" | "auto" | "drew";
+  /** delegate mode: first-pass | auto | user (take it back). The legacy
+   *  spelling "drew" is accepted at the boundary and normalized to
+   *  "user" — role-based naming (2026-10-27), no new Drew-named ids. */
+  mode?: "first-pass" | "auto" | "user";
   /** answer: the published option the user picked (one content verb). */
   optionId?: string;
-  /** answer: survey answers, keyed by the published question id. */
-  answers?: { questionId: string; value: string }[];
+  /** answer: survey answers, keyed by the published question id. A
+   *  multi-choice answer carries an array of option ids. */
+  answers?: { questionId: string; value: string | string[] }[];
+  /** approve-proposal / reject-proposal: the proposal identity the user
+   *  reviewed (#1293) — (delegation runId, delegation updatedAt) of the
+   *  item at render time. The consumer applies only on an exact match
+   *  with the still-live proposal. */
+  proposalRunId?: string;
+  proposalUpdatedAt?: string;
+  /** set-delegation-default: the standing auto toggle value. */
+  standingAuto?: boolean;
+  /** set-needs-order: the Needs-you card ordering (#1456). "urgency" is
+   *  the orchestrator's published order; the rest sort at render. */
+  needsOrder?: "urgency" | "newest" | "oldest" | "deadline";
 }
 
 export interface DashAction {
@@ -179,8 +211,8 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   ) {
     return { ok: false, error: "clientToken must be an 8–200 char token without whitespace" };
   }
-  if (b.kind !== "triage" && b.kind !== "status-request" && b.kind !== "session") {
-    return { ok: false, error: "kind must be triage | status-request | session" };
+  if (b.kind !== "triage" && b.kind !== "status-request" && b.kind !== "session" && b.kind !== "preference") {
+    return { ok: false, error: "kind must be triage | status-request | session | preference" };
   }
   const kind = b.kind as DashActionKind;
   if (typeof b.verb !== "string" || !VERBS_BY_KIND[kind].includes(b.verb as DashActionVerb)) {
@@ -211,10 +243,15 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   const reason = cleanText(rawPayload.reason, 2_000);
   if (reason !== undefined) payload.reason = reason;
   if (rawPayload.mode !== undefined) {
-    if (rawPayload.mode !== "first-pass" && rawPayload.mode !== "auto" && rawPayload.mode !== "drew") {
-      return { ok: false, error: "payload.mode must be first-pass | auto | drew" };
+    if (
+      rawPayload.mode !== "first-pass" &&
+      rawPayload.mode !== "auto" &&
+      rawPayload.mode !== "user" &&
+      rawPayload.mode !== "drew"
+    ) {
+      return { ok: false, error: "payload.mode must be first-pass | auto | user" };
     }
-    payload.mode = rawPayload.mode;
+    payload.mode = rawPayload.mode === "drew" ? "user" : rawPayload.mode;
   }
   const optionId = cleanText(rawPayload.optionId, 200);
   if (optionId !== undefined) payload.optionId = optionId;
@@ -222,19 +259,58 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
     if (!Array.isArray(rawPayload.answers) || rawPayload.answers.length > 50) {
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
-    const answers: { questionId: string; value: string }[] = [];
+    const answers: { questionId: string; value: string | string[] }[] = [];
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
       }
       const q = cleanText((entry as Record<string, unknown>).questionId, 200);
-      const v = cleanText((entry as Record<string, unknown>).value, 2_000);
+      const rawValue = (entry as Record<string, unknown>).value;
+      let v: string | string[] | undefined;
+      if (Array.isArray(rawValue)) {
+        if (rawValue.length < 1 || rawValue.length > 10) {
+          return { ok: false, error: "payload.answers array values must hold 1–10 choices" };
+        }
+        const parts = rawValue.map((x) => cleanText(x, 200));
+        if (parts.some((x) => x === undefined)) {
+          return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
+        }
+        v = parts as string[];
+      } else {
+        v = cleanText(rawValue, 2_000);
+      }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;
+  }
+  const proposalRunId = cleanText(rawPayload.proposalRunId, 80);
+  if (proposalRunId !== undefined) payload.proposalRunId = proposalRunId;
+  const proposalUpdatedAt = cleanText(rawPayload.proposalUpdatedAt, 64);
+  if (proposalUpdatedAt !== undefined) {
+    if (Number.isNaN(Date.parse(proposalUpdatedAt))) {
+      return { ok: false, error: "payload.proposalUpdatedAt must be an ISO date/time" };
+    }
+    payload.proposalUpdatedAt = proposalUpdatedAt;
+  }
+  if (rawPayload.standingAuto !== undefined) {
+    if (typeof rawPayload.standingAuto !== "boolean") {
+      return { ok: false, error: "payload.standingAuto must be a boolean" };
+    }
+    payload.standingAuto = rawPayload.standingAuto;
+  }
+  if (rawPayload.needsOrder !== undefined) {
+    if (
+      rawPayload.needsOrder !== "urgency" &&
+      rawPayload.needsOrder !== "newest" &&
+      rawPayload.needsOrder !== "oldest" &&
+      rawPayload.needsOrder !== "deadline"
+    ) {
+      return { ok: false, error: "payload.needsOrder must be urgency | newest | oldest | deadline" };
+    }
+    payload.needsOrder = rawPayload.needsOrder;
   }
 
   let targetRef: RefKey | undefined;
@@ -276,7 +352,16 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
     return { ok: false, error: "answer requires payload.text, payload.optionId, or payload.answers" };
   }
   if (verb === "delegate" && payload.mode === undefined) {
-    return { ok: false, error: "delegate requires payload.mode (first-pass | auto | drew)" };
+    return { ok: false, error: "delegate requires payload.mode (first-pass | auto | user)" };
+  }
+  if (verb === "set-delegation-default" && payload.standingAuto === undefined) {
+    return { ok: false, error: "set-delegation-default requires payload.standingAuto (boolean)" };
+  }
+  if (verb === "set-needs-order" && payload.needsOrder === undefined) {
+    return { ok: false, error: "set-needs-order requires payload.needsOrder" };
+  }
+  if (verb === "restore" && supersedes === undefined) {
+    return { ok: false, error: "restore requires supersedes (the id of the action it undoes)" };
   }
   if ((verb === "dismiss" || verb === "reject-proposal") && payload.reason === undefined) {
     return { ok: false, error: `${verb} requires payload.reason` };
@@ -331,31 +416,75 @@ export function newClientToken(): string {
 
 export class ActionsStore {
   private actions: DashAction[] = [];
-  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
 
   constructor(private readonly file: string) {}
 
+  // The load is memoized as a single promise (#1509): the old
+  // loaded-flag version let concurrent first callers proceed before
+  // the read finished, and the read's completion then reset the
+  // in-memory array, wiping records those callers had just pushed.
   async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+    if (!this.loadPromise) this.loadPromise = this.doLoad();
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
+    // #1452: a missing file is the only silent empty start ("no store
+    // yet"). An unparseable or wrongly-shaped file is NOT an empty
+    // store: it is the append-only audit history, so quarantine the
+    // original bytes to <file>.corrupt-<timestamp>, start empty, and
+    // log loudly — the next persist then writes a fresh valid file and
+    // never touches the quarantined copy.
+    let raw: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as ActionsFile).actions)) {
-        this.actions = (parsed as ActionsFile).actions.filter(
-          (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
-        );
-      }
+      raw = await readFile(this.file, "utf8");
     } catch {
       this.actions = []; // no store yet — the first write creates it
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as ActionsFile).actions)) {
+        throw new Error("store file does not have the expected { actions: [...] } shape");
+      }
+      this.actions = (parsed as ActionsFile).actions.filter(
+        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
+      );
+    } catch (err) {
+      this.actions = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[actions] WARNING: actions store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
     }
   }
 
-  private async persist(): Promise<void> {
-    const data: ActionsFile = { version: 1, actions: this.actions };
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    await writeFile(tmp, JSON.stringify(data, null, 2));
-    await rename(tmp, this.file);
+  // Serialized persists + unique temp path per write - see
+  // CommentsStore.persist (#1509).
+  private persist(): Promise<void> {
+    const run = this.writeChain.then(async () => {
+      const data: ActionsFile = { version: 1, actions: this.actions };
+      await mkdir(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
+      await writeFile(tmp, JSON.stringify(data, null, 2));
+      await rename(tmp, this.file);
+    });
+    this.writeChain = run.catch(() => {});
+    return run;
   }
 
   async all(): Promise<DashAction[]> {
@@ -375,12 +504,13 @@ export class ActionsStore {
   }
 
   /** Pending (state "new") counts per kind, for /api/actions.json. */
-  async pendingCounts(): Promise<{ triage: number; statusRequests: number; session: number }> {
+  async pendingCounts(): Promise<{ triage: number; statusRequests: number; session: number; preference: number }> {
     const pending = (await this.all()).filter((a) => a.state === "new");
     return {
       triage: pending.filter((a) => a.kind === "triage").length,
       statusRequests: pending.filter((a) => a.kind === "status-request").length,
       session: pending.filter((a) => a.kind === "session").length,
+      preference: pending.filter((a) => a.kind === "preference").length,
     };
   }
 
@@ -450,6 +580,7 @@ export const VERB_FAMILIES: Partial<Record<DashActionVerb, string>> = {
   "de-escalate": "tier",
   delegate: "delegation",
   dismiss: "dismiss",
+  "mark-done": "done",
   "request-status": "status",
   poke: "poke",
   stop: "stop",

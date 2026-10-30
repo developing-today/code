@@ -164,7 +164,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -204,8 +204,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
         html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
         html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add bulk tag\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" aria-label=\"Clear file selection\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
         html.push_str("<ul class=\"list-none m-0 p-0\">");
@@ -336,7 +336,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
     }
 
     // Pagination controls
-    let total_pages = (page.total + page.per_page - 1) / page.per_page.max(1);
+    let per_page = page.per_page.max(1);
+    let total_pages = page.total.saturating_add(per_page.saturating_sub(1)) / per_page;
     if total_pages > 1 {
         let search_param = page
             .search
@@ -347,8 +348,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
         // Info text
-        let start = (page.page - 1) * page.per_page + 1;
-        let end = (start + page.files.len()).saturating_sub(1);
+        // Display arithmetic must be saturating (#1472): paginate() echoes
+        // the requested page unclamped, so page can be usize::MAX here.
+        // An out-of-range page has no files; pin its range to 0-0 so the
+        // rendered range never inverts and never exceeds the total.
+        let (start, end) = if page.files.is_empty() {
+            (0, 0)
+        } else {
+            let start = page
+                .page
+                .saturating_sub(1)
+                .saturating_mul(page.per_page)
+                .saturating_add(1)
+                .min(page.total);
+            let end = start
+                .saturating_add(page.files.len())
+                .saturating_sub(1)
+                .min(page.total);
+            (start, end)
+        };
         let _ = write!(
             html,
             "<span class=\"text-base-content/50\">{}-{} of {}</span>",
@@ -437,7 +455,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" aria-label=\"Save document\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
     html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
@@ -454,9 +472,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
     // Rename button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
@@ -623,8 +641,8 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -673,8 +691,8 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -722,9 +740,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\" aria-label=\"Sneak theme\">Sneak</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\" aria-label=\"Arch theme\">Arch</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\" aria-label=\"Mech theme\">Mech</button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
@@ -768,15 +786,15 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
@@ -1064,6 +1082,9 @@ mod tests {
         assert!(html.contains("data-world-view"));
         assert!(html.contains("href=\"/files\""));
         assert!(html.contains("ProseMirror collaborative editor/viewer"));
+        assert!(html.contains("aria-label=\"Display name\""));
+        assert!(html.contains("aria-label=\"World name\""));
+        assert!(html.contains("aria-label=\"Guest capability\""));
     }
 
     #[test]
@@ -1120,6 +1141,67 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_normal_page_display() {
+        // Normal paging renders exactly as before (#1472): page 2 at
+        // per_page 50 over 300 files shows 51-100 of 300.
+        let files: Vec<FileInfo> = (0..50)
+            .map(|i| FileInfo {
+                name: format!("f{i}.txt"),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            })
+            .collect();
+        let page = FileListPage {
+            files,
+            total: 300,
+            page: 2,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("51-100 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_50() {
+        // Regression (#1472): paginate() echoes page=usize::MAX unclamped;
+        // the display arithmetic used to panic (debug) / wrap (release).
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_200() {
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 200,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
     }
 
     #[test]
@@ -1191,6 +1273,56 @@ mod tests {
     // ========================================================================
 
     #[test]
+    fn test_render_editor_action_buttons_have_aria_labels() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
+        assert!(
+            html.contains("aria-label=\"Save document\""),
+            "save button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "copy button should have aria-label"
+        );
+    }
+
+    #[test]
+    fn test_render_file_list_bulk_action_buttons_have_aria_labels() {
+        let page = FileListPage {
+            total: 1,
+            files: vec![FileInfo {
+                name: "test.txt".to_owned(),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            }],
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(
+            html.contains("aria-label=\"Add bulk tag\""),
+            "bulk tag button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Clear file selection\""),
+            "clear selection button should have aria-label"
+        );
+    }
+
+    #[test]
     fn test_render_editor_has_rename_button() {
         let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
         assert!(
@@ -1243,6 +1375,19 @@ mod tests {
     // ========================================================================
     // Media viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_media_viewer_action_buttons_have_aria_labels() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "media viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "media viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_media_viewer_has_rename_button() {
@@ -1344,6 +1489,19 @@ mod tests {
     // ========================================================================
     // Binary viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_binary_viewer_action_buttons_have_aria_labels() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "binary viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "binary viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_binary_viewer_has_rename_button() {

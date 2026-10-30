@@ -8,11 +8,13 @@
 // like src/dns.ts for the register.
 import type {
   AaAbsentSection,
+  AaCaiRow,
   AaCatalogEntry,
   AaConfig,
   AaCoverage,
   AaFeedSection,
   AaPoint,
+  AaPrice,
   AaRanking,
   AaSection,
   AaSourceInfo,
@@ -430,6 +432,110 @@ export function aaPoints(section: AaSection): AaPoint[] {
       scorePerSecond: b.score !== null && b.time !== null && b.time > 0 ? b.score / b.time : null,
       eligible: r.eligible,
       qualStatus: r.qualStatus,
+      harness: null,
+      tokensPerTask: null,
+      components: null,
+      frontierCost: frontierCost.has(b.key),
+      frontierTime: frontierTime.has(b.key),
+      frontierCostTime: frontierCostTime.has(b.key),
+      beatenBy,
+    };
+  });
+}
+
+// --- Coding Agent Index points (the "Coding agents" perspective) ------------
+// The ChatGPT explorers keep the Coding Agent Index as its own
+// benchmark family and never convert between it and the Intelligence
+// Index. Here it rides as a second point set in the same shape: score =
+// CAI score, cost = published task cost, time = average agent wall
+// time per task. Frontier flags and beaten-by are computed within the
+// CAI population only, exactly like aaPoints does within its own.
+
+/** Creator slugs in CAI observation keys -> display names. */
+const CAI_CREATORS: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  google: "Google",
+  meta: "Meta",
+  deepseek: "DeepSeek",
+  "z-ai": "Z AI",
+  zai: "Z AI",
+  alibaba: "Alibaba",
+  xai: "xAI",
+  moonshotai: "Moonshot AI",
+  xiaomi: "Xiaomi",
+  mistral: "Mistral AI",
+};
+
+/** "GPT-6.1 Sol (xhigh)" + effort "xhigh" -> "GPT-6.1 Sol". The suffix
+ * is stripped only when it restates the row's own effort label, so a
+ * name that merely ends in parentheses survives untouched. */
+export function caiFamily(modelName: string, effort: string | null): string {
+  if (effort && effort.toLowerCase() !== "not stated") {
+    const suffix = `(${effort})`;
+    if (modelName.toLowerCase().endsWith(suffix.toLowerCase())) {
+      return modelName.slice(0, modelName.length - suffix.length).trim();
+    }
+  }
+  return modelName;
+}
+
+export function aaCaiPoints(rows: AaCaiRow[]): AaPoint[] {
+  const base: MetricRow[] = rows.map((r) => ({
+    key: `cai|${r.version ?? ""}|${r.modelName}`,
+    score: r.score,
+    cost: r.cost,
+    time: r.wallSec,
+  }));
+  const frontierCost = paretoKeys(base, (r) => (r.cost !== null && r.score !== null ? [r.cost, -r.score] : null));
+  const frontierTime = paretoKeys(base, (r) => (r.time !== null && r.score !== null ? [r.time, -r.score] : null));
+  const frontierCostTime = paretoKeys(base, (r) => (r.cost !== null && r.time !== null ? [r.cost, r.time] : null));
+  const label = (r: AaCaiRow): string => `${r.family}${r.effort ? ` ${r.effort}` : ""}`;
+  return rows.map((r, i) => {
+    const b = base[i];
+    const beatenBy =
+      b.score !== null && b.cost !== null && b.time !== null
+        ? rows
+            .filter((q, j) => {
+              const o = base[j];
+              return (
+                j !== i &&
+                o.score !== null &&
+                o.cost !== null &&
+                o.time !== null &&
+                o.score >= (b.score as number) &&
+                o.cost <= (b.cost as number) &&
+                o.time <= (b.time as number) &&
+                (o.score > (b.score as number) || o.cost < (b.cost as number) || o.time < (b.time as number))
+              );
+            })
+            .map(label)
+        : [];
+    return {
+      key: b.key,
+      family: r.family,
+      creator: r.creator,
+      effort: r.effort,
+      benchmark: `Coding Agent Index ${r.version ?? ""}`.trim(),
+      score: b.score,
+      cost: b.cost,
+      time: b.time,
+      tps: null,
+      ttft: null,
+      pointsPerDollar: null,
+      pointsPerSecond: null,
+      scorePerDollar: b.score !== null && b.cost !== null && b.cost > 0 ? b.score / b.cost : null,
+      scorePerSecond: b.score !== null && b.time !== null && b.time > 0 ? b.score / b.time : null,
+      // CAI rows are published results; the workbook's "eligible" flag
+      // is a rankings-view concept and does not exist for them.
+      eligible: true,
+      qualStatus: null,
+      harness: r.harness,
+      tokensPerTask: r.tokensPerTask,
+      components:
+        r.deepSwe !== null || r.terminalBench !== null || r.sweAtlas !== null
+          ? { deepSwe: r.deepSwe, terminalBench: r.terminalBench, sweAtlas: r.sweAtlas }
+          : null,
       frontierCost: frontierCost.has(b.key),
       frontierTime: frontierTime.has(b.key),
       frontierCostTime: frontierCostTime.has(b.key),
@@ -621,9 +727,81 @@ function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<
  * coverage. Name matching reuses the coverage normalizer/aliases, so
  * a miss means "not matched", never "not measured anywhere".
  */
+/** Rates for one catalog model, grouped from the price event log. */
+interface CatalogRate {
+  bands: NonNullable<AaCatalogEntry["rate"]>["bands"];
+  windowed: boolean;
+}
+
+/**
+ * Group current prices by model: bands sorted by context floor, and a
+ * lookup by full id plus one by bare model part (models.dev provider
+ * slugs differ from fleet provider ids — "opencode-go.personal" vs
+ * "opencode-go" — so the model part is the reliable join key; the
+ * coverage normalizer arbitrates collisions by keeping the first).
+ */
+function catalogRates(prices: AaPrice[]): Map<string, CatalogRate> {
+  const byModel = new Map<string, AaPrice[]>();
+  for (const p of prices) {
+    const list = byModel.get(p.modelName) ?? [];
+    list.push(p);
+    byModel.set(p.modelName, list);
+  }
+  const out = new Map<string, CatalogRate>();
+  for (const [modelName, rows] of byModel) {
+    const rate: CatalogRate = {
+      bands: rows
+        .slice()
+        .sort((a, b) => (a.contextMinTokens ?? 0) - (b.contextMinTokens ?? 0))
+        .map((p) => ({
+          minTokens: p.contextMinTokens,
+          maxTokens: p.contextMaxTokens,
+          input: p.inputPer1M,
+          output: p.outputPer1M,
+          cacheRead: p.cacheReadPer1M,
+          cacheWrite: p.cacheWritePer1M,
+          window: p.windowKind,
+        })),
+      windowed: rows.some((p) => p.windowKind !== null && p.windowKind !== "flat"),
+    };
+    out.set(modelName, rate);
+    const part = modelPart(modelName);
+    const partKey = `part:${normalizeModelName(part)}`;
+    if (!out.has(partKey)) out.set(partKey, rate);
+  }
+  return out;
+}
+
+/** The disabled_providers set of a parsed opencode config root. */
+function disabledProvidersFromRoot(root: { disabled_providers?: unknown }): Set<string> {
+  return new Set(
+    Array.isArray(root.disabled_providers)
+      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
+      : [],
+  );
+}
+
+/**
+ * The deployed opencode config's disabled_providers set, parsed with the
+ * same JSONC handling as the AA catalog (#1114). An unparseable config
+ * yields an empty set — callers fail soft and keep every pool, exactly as
+ * the catalog does when the config cannot be read.
+ */
+export function disabledProvidersFromConfig(text: string): Set<string> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(stripJsonComments(text));
+  } catch {
+    return new Set();
+  }
+  if (typeof cfg !== "object" || cfg === null) return new Set();
+  return disabledProvidersFromRoot(cfg as { disabled_providers?: unknown });
+}
+
 export function aaCatalogFromConfig(
   text: string,
   measured: { configs: AaConfig[]; rankings: AaRanking[] },
+  prices?: AaPrice[],
 ): AaCatalogEntry[] | null {
   let cfg: unknown;
   try {
@@ -638,12 +816,9 @@ export function aaCatalogFromConfig(
     experimental?: { model_routes?: unknown };
   };
   if (typeof root.provider !== "object" || root.provider === null) return null;
-  const disabled = new Set(
-    Array.isArray(root.disabled_providers)
-      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
-      : [],
-  );
+  const disabled = disabledProvidersFromRoot(root);
   const leafSets = routeLeafSets(root);
+  const rates = prices ? catalogRates(prices) : null;
   const routesByLeaf = new Map<string, string[]>();
   for (const [routeId, leaves] of leafSets) {
     for (const leaf of leaves) {
@@ -712,6 +887,7 @@ export function aaCatalogFromConfig(
         aaScore: conf?.intelligence ?? rank?.adjustedScore ?? rank?.rawScore ?? null,
         aaCostPerTask: conf?.costPerTaskUsd ?? rank?.costTask ?? null,
         aaTimePerTask: fastestRanking.get(norm)?.timeTaskSec ?? null,
+        ...(rates ? { rate: rates.get(id) ?? rates.get(`part:${norm}`) ?? null } : {}),
       });
     }
   }
@@ -729,6 +905,8 @@ export interface AaRawPayload {
   thresholds?: unknown;
   configs?: unknown;
   testRunRows?: unknown;
+  cai?: unknown;
+  prices?: unknown;
 }
 
 function rankingFromRaw(v: unknown): AaRanking | null {
@@ -808,6 +986,47 @@ function sourceFromRaw(v: unknown): AaSourceInfo | null {
   };
 }
 
+function caiFromRaw(v: unknown): AaCaiRow | null {
+  if (typeof v !== "object" || v === null) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.modelName !== "string" || r.modelName === "") return null;
+  const effort = str(r.effort);
+  const slug = str(r.creatorSlug);
+  return {
+    modelName: r.modelName,
+    family: caiFamily(r.modelName, effort),
+    creator: slug ? (CAI_CREATORS[slug.toLowerCase()] ?? slug) : "",
+    effort,
+    version: str(r.version),
+    score: num(r.score),
+    cost: num(r.cost),
+    wallSec: num(r.wallSec),
+    tokensPerTask: num(r.tokensPerTask),
+    harness: str(r.harness),
+    deepSwe: num(r.deepSwe),
+    terminalBench: num(r.terminalBench),
+    sweAtlas: num(r.sweAtlas),
+    snapshotDate: str(r.snapshotDate),
+    sourceUrl: str(r.sourceUrl),
+  };
+}
+
+function priceFromRaw(v: unknown): AaPrice | null {
+  if (typeof v !== "object" || v === null) return null;
+  const p = v as Record<string, unknown>;
+  if (typeof p.modelName !== "string" || p.modelName === "") return null;
+  return {
+    modelName: p.modelName,
+    inputPer1M: num(p.inputPer1M),
+    outputPer1M: num(p.outputPer1M),
+    cacheReadPer1M: num(p.cacheReadPer1M),
+    cacheWritePer1M: num(p.cacheWritePer1M),
+    contextMinTokens: num(p.contextMinTokens),
+    contextMaxTokens: num(p.contextMaxTokens),
+    windowKind: str(p.windowKind),
+  };
+}
+
 function sheetRowsFromRaw(v: unknown): SheetRow[] {
   if (!Array.isArray(v)) return [];
   const out: SheetRow[] = [];
@@ -841,13 +1060,17 @@ export function aaSectionFromSupabase(
     ? raw.sources.map(sourceFromRaw).filter((s): s is AaSourceInfo => s !== null)
     : [];
   const testRuns = testRunsFromSheetRows(sheetRowsFromRaw(raw.testRunRows));
+  const cai = Array.isArray(raw.cai) ? raw.cai.map(caiFromRaw).filter((r): r is AaCaiRow => r !== null) : undefined;
+  const prices = Array.isArray(raw.prices)
+    ? raw.prices.map(priceFromRaw).filter((p): p is AaPrice => p !== null)
+    : undefined;
   const measuredNames = [...new Set([...rankings.map((r) => r.family), ...configs.map((c) => c.modelName)])];
   let coverage: AaCoverage | undefined;
   let catalog: AaCatalogEntry[] | undefined;
   if (opencodeConfigText) {
     const inputs = parseOpencodeCoverageInputs(opencodeConfigText);
     if (inputs) coverage = computeAaCoverage(measuredNames, inputs);
-    catalog = aaCatalogFromConfig(opencodeConfigText, { configs, rankings }) ?? undefined;
+    catalog = aaCatalogFromConfig(opencodeConfigText, { configs, rankings }, prices) ?? undefined;
   }
   return {
     status: "ok",
@@ -860,6 +1083,8 @@ export function aaSectionFromSupabase(
     testRuns,
     ...(coverage ? { coverage } : {}),
     ...(catalog ? { catalog } : {}),
+    ...(cai && cai.length ? { cai } : {}),
+    ...(prices && prices.length ? { prices } : {}),
   };
 }
 

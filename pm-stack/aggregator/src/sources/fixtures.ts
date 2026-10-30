@@ -25,6 +25,7 @@ import {
   refUrl,
 } from "../model.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { gristDocUrl } from "../service-links.ts";
 import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
@@ -208,6 +209,7 @@ export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i)
     source: r.Source,
     notes: r.Notes,
     links: [...refs].map((ref) => link(ref)),
+    gristUrl: gristDocUrl(GRIST_DOC),
   };
 });
 
@@ -962,6 +964,90 @@ export const FIXTURE_AA: AaSection = {
       aaScore: 38,
       aaCostPerTask: 0.07,
       aaTimePerTask: 407.3,
+      rate: {
+        bands: [
+          {
+            minTokens: null,
+            maxTokens: null,
+            input: 0.75,
+            output: 4.5,
+            cacheRead: 0.075,
+            cacheWrite: null,
+            window: "flat",
+          },
+        ],
+        windowed: false,
+      },
+    },
+  ],
+  cai: [
+    {
+      modelName: "GPT-6.1 Sol (xhigh)",
+      family: "GPT-6.1 Sol",
+      creator: "OpenAI",
+      effort: "xhigh",
+      version: "v1.5",
+      score: 63,
+      cost: 1.04,
+      wallSec: 931.2,
+      tokensPerTask: 3212528,
+      harness: "Codex",
+      deepSwe: null,
+      terminalBench: null,
+      sweAtlas: null,
+      snapshotDate: "2026-10-17",
+      sourceUrl: null,
+    },
+    {
+      modelName: "Claude Sonnet 5.5 (low)",
+      family: "Claude Sonnet 5.5",
+      creator: "Anthropic",
+      effort: "low",
+      version: "v1.5",
+      score: 42,
+      cost: 0.48,
+      wallSec: 381,
+      tokensPerTask: 512000,
+      harness: "Claude Code",
+      deepSwe: 0.41,
+      terminalBench: 0.44,
+      sweAtlas: 0.41,
+      snapshotDate: "2026-10-17",
+      sourceUrl: null,
+    },
+    {
+      modelName: "DeepSeek V4 Flash 0731 (max)",
+      family: "DeepSeek V4 Flash 0731",
+      creator: "DeepSeek",
+      effort: "max",
+      version: "v1.5",
+      score: 39,
+      cost: 0.0851,
+      wallSec: 1096.8,
+      tokensPerTask: 890000,
+      harness: "Codex",
+      deepSwe: null,
+      terminalBench: null,
+      sweAtlas: null,
+      snapshotDate: "2026-10-17",
+      sourceUrl: null,
+    },
+    {
+      modelName: "Muse Wonder Full (max)",
+      family: "Muse Wonder Full",
+      creator: "Meta",
+      effort: "max",
+      version: "v1.5",
+      score: 68,
+      cost: null,
+      wallSec: 1725.6,
+      tokensPerTask: null,
+      harness: "Muse Code",
+      deepSwe: null,
+      terminalBench: null,
+      sweAtlas: null,
+      snapshotDate: "2026-10-17",
+      sourceUrl: null,
     },
   ],
 };

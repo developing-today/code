@@ -1373,11 +1373,20 @@ class TestS3TransportRetry(S3TestBase):
     def test_list_permanent_truncation_raises_named_error_after_4(self):
         self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
         self.s3.list_failures = ["truncate"] * 10
-        with self.assertRaises(cold_store.ColdStoreError) as ctx:
-            self.store.s3_list_objects("supabase-backups")
+
+        # urllib exhausts its 4 attempts, then the GET curl fallback
+        # (TestS3RequestCurlFallback) is attempted and also fails —
+        # the exhaustion error must name both.
+        def failing_status(url, access, secret):
+            raise cold_store.ColdStoreError("curl fallback failed (exit 18): simulated")
+
+        with mock.patch.object(self.store, "_curl_fetch_status", failing_status):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
         message = str(ctx.exception)
         self.assertIn("S3 GET supabase-backups failed after 4 attempts", message)
         self.assertIn("IncompleteRead", message)
+        self.assertIn("curl fallback also failed", message)
         self.assertEqual(self.s3.list_attempts, 4)  # exactly 4, no more
 
     def test_delete_transport_failure_retries(self):
@@ -1565,6 +1574,196 @@ class TestS3CurlFallback(S3TestBase):
         head_requests = [r for r in self.s3.requests if r["method"] == "HEAD"]
         self.assertEqual(len(head_requests), 1)
         self.assertTrue(head_requests[0]["path"].endswith("/" + key))
+
+
+class TestS3RequestCurlFallback(S3TestBase):
+    """The curl fallback inside _s3_request for GET-class requests:
+    on a hostile-proxy night (live 2026-10-28) EVERY urllib attempt
+    at the bucket LIST truncated at a different offset, so the
+    transport retry loop exhausted and backup-supabase / evict-scan
+    died before their first object — the object-download fallback in
+    TestS3CurlFallback never got a chance to run. A GET whose urllib
+    attempts all fail at the transport level now gets exactly one
+    curl attempt (stubbed here at the _curl_fetch_status transport
+    seam; no network, no real curl) whose response flows through the
+    same status handling as a urllib response."""
+
+    @staticmethod
+    def _list_xml(entries):
+        """A ListObjectsV2 page in the fake's shape. entries are
+        (key, size, last_modified) triples."""
+        contents = "".join(
+            f"<Contents><Key>{k}</Key><LastModified>{lm}</LastModified>"
+            f"<Size>{size}</Size></Contents>"
+            for k, size, lm in entries
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            "<Name>supabase-backups</Name><IsTruncated>false</IsTruncated>"
+            f"{contents}</ListBucketResult>"
+        ).encode()
+
+    def _stub_curl_status(self, result):
+        """Patch the store's curl-status transport; return the call
+        log. Each entry snapshots the fake's urllib list_attempts
+        count at call time, proving the fallback fires only after
+        urllib exhaustion, never alongside it."""
+        calls = []
+
+        def fake_status(url, access, secret):
+            calls.append(
+                {
+                    "url": url,
+                    "access": access,
+                    "secret": secret,
+                    "list_attempts": self.s3.list_attempts,
+                }
+            )
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return mock.patch.object(self.store, "_curl_fetch_status", fake_status), calls
+
+    def test_list_truncated_on_all_attempts_falls_back_to_curl(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.put("pg/muse-dev/b.bin", b"yy", "2026-10-02T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                ("pg/muse-dev/a.bin", 1, "2026-10-01T00:00:00.000Z"),
+                ("pg/muse-dev/b.bin", 2, "2026-10-02T00:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(
+            [o["key"] for o in objects], ["pg/muse-dev/a.bin", "pg/muse-dev/b.bin"]
+        )
+        # exactly one curl attempt, only after all 4 urllib attempts
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["list_attempts"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertIn("list-type=2", calls[0]["url"])
+        self.assertEqual(calls[0]["access"], "test-access-key")
+        self.assertEqual(self.s3.list_attempts, cold_store.S3_TRANSPORT_ATTEMPTS)
+
+    def test_backup_supabase_proceeds_when_list_falls_back(self):
+        body = b"newest backup payload " * 60
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                (key, len(body), "2026-10-21T02:00:00.000Z"),
+                ("pg/muse-dev/manifest.json", 2, "2026-10-22T02:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            result = self.store.backup_supabase()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["source_key"], key)
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(self.fake.files[result["drive_file_id"]], body)
+
+    def test_curl_http_error_surfaces_as_s3_error_not_transport(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        error_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Error><Code>AccessDenied</Code>"
+            "<Message>Access Denied</Message></Error>"
+        ).encode()
+        patcher, calls = self._stub_curl_status((403, error_xml))
+        with patcher:
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(len(calls), 1)
+        message = str(ctx.exception)
+        # the same error shape _s3_check gives a urllib 403
+        self.assertIn("S3 list of supabase-backups failed (HTTP 403)", message)
+        self.assertIn("Access Denied", message)
+        self.assertNotIn("transport error", message)
+        self.assertNotIn("failed after 4 attempts", message)
+
+    def test_curl_fetch_status_splits_status_trailer(self):
+        """The real _curl_fetch_status (subprocess.run stubbed): the
+        --write-out trailer splits status from body, an HTTP error
+        status is a normal result (no --fail), and credentials ride
+        stdin config, never argv."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            trailer = cold_store.ColdStore._CURL_STATUS_TRAILER.encode()
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=b"<xml>page</xml>" + trailer + b"403>>>", stderr=b""
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            status, body = self.store._curl_fetch_status(
+                "https://store.example/supabase-backups?list-type=2",
+                "test-access-key",
+                "test-secret-key",
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(body, b"<xml>page</xml>")
+        argv = seen["argv"]
+        self.assertNotIn("--fail", argv)
+        self.assertNotIn("--user", argv)
+        for element in argv:
+            self.assertNotIn("test-secret-key", element)
+        self.assertIn(
+            'user = "test-access-key:test-secret-key"',
+            seen["kwargs"]["input"].decode(),
+        )
+
+    def test_curl_fetch_status_transport_failure_raises_scrubbed(self):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv,
+                18,
+                stdout=b"",
+                stderr=b"curl: (18) transfer closed, keyed by test-secret-key",
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store._curl_fetch_status(
+                    "https://store.example/supabase-backups?list-type=2",
+                    "test-access-key",
+                    "test-secret-key",
+                )
+        message = str(ctx.exception)
+        self.assertIn("curl fallback failed (exit 18)", message)
+        self.assertNotIn("test-secret-key", message)
+
+    def test_delete_exhaustion_never_invokes_curl(self):
+        # DELETE is not GET-class: it keeps the plain exhaustion
+        # error and the curl fallback must not fire for it.
+        import http.client
+
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        state = {"n": 0}
+
+        def always_drop(method, url, headers=None, data=None, timeout=120):
+            state["n"] += 1
+            raise http.client.RemoteDisconnected("simulated drop")
+
+        patcher, calls = self._stub_curl_status((204, b""))
+        with patcher, mock.patch.object(cold_store, "http_request", always_drop):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_delete_object("supabase-backups", "pg/muse-dev/a.bin")
+        self.assertEqual(state["n"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertEqual(calls, [])
+        message = str(ctx.exception)
+        self.assertIn("S3 DELETE supabase-backups", message)
+        self.assertIn("failed after 4 attempts", message)
+        self.assertNotIn("curl fallback", message)
 
 
 class EvictTestBase(S3TestBase):
@@ -1993,9 +2192,65 @@ class FakeTurso:
         "INSERT INTO notes VALUES(1,'hello');\n"
         "COMMIT;\n"
     )
+    # A dump cut mid-stream: complete statements, but the transaction
+    # never commits — it would rebuild into an integrity-clean shell
+    # with every row rolled back.
+    TRUNCATED_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+        "INSERT INTO notes VALUES(1,'hello');\n"
+    )
+    # Well-formed and committed, but carries no user tables at all.
+    EMPTY_SQL = "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCOMMIT;\n"
+    # The atlas shape (#1391): an FTS5 external-content table whose
+    # CREATE carries single quotes. libsql registers it inside a
+    # writable_schema block with the embedded SQL verbatim — quotes
+    # NOT doubled — so the literal terminates early and stock parsers
+    # fail with: near "chunks": syntax error. The shadow tables and
+    # the FTS index rows (real bytes from a live FTS5 index holding
+    # the seeded row) follow as ordinary statements, as in a real
+    # dump.
+    FTS_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, text TEXT);\n"
+        "INSERT INTO chunks VALUES(1,'hello fts world');\n"
+        "PRAGMA writable_schema=ON;\n"
+        "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+        " VALUES('table','chunks_fts','chunks_fts',0,"
+        "'CREATE VIRTUAL TABLE chunks_fts\n"
+        "      USING fts5(text, content='chunks', content_rowid='id')');\n"
+        "PRAGMA writable_schema=OFF;\n"
+        "CREATE TABLE 'chunks_fts_data'(id INTEGER PRIMARY KEY, block BLOB);\n"
+        "CREATE TABLE 'chunks_fts_idx'(segid, term, pgno,"
+        " PRIMARY KEY(segid, term)) WITHOUT ROWID;\n"
+        "CREATE TABLE 'chunks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);\n"
+        "CREATE TABLE 'chunks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;\n"
+        "INSERT INTO chunks_fts_data VALUES(1, X'0103');\n"
+        "INSERT INTO chunks_fts_data VALUES(10, X'000000000101010001010101');\n"
+        "INSERT INTO chunks_fts_data VALUES(137438953473,"
+        " X'000000200430667473010203010568656C6C6F0102020105776F726C6401020404080A');\n"
+        "INSERT INTO chunks_fts_idx VALUES(1, X'', 2);\n"
+        "INSERT INTO chunks_fts_docsize VALUES(1, X'03');\n"
+        "INSERT INTO chunks_fts_config VALUES('version', 4);\n"
+        "COMMIT;\n"
+    )
+    # The same dump with the schema literal correctly escaped ('' in
+    # place of each embedded quote): the repair filter must pass it
+    # through byte-identical, so the registered SQL stays exactly as
+    # authored.
+    ESCAPED_SQL = FTS_SQL.replace("content='chunks'", "content=''chunks''").replace(
+        "content_rowid='id'", "content_rowid=''id''"
+    )
 
     def __init__(self):
         self.failing_dumps = set()
+        self.truncated_dumps = set()
+        self.empty_dumps = set()
+        self.fts_dumps = set()
+        self.escaped_dumps = set()
+        self.dump_accept_encodings = {}
         self.databases = [
             {"Name": "fake-one", "Hostname": "fake-one.example.invalid"},
             {"Name": "fake-two", "Hostname": "fake-two.example.invalid"},
@@ -2028,10 +2283,19 @@ def make_turso_handler(fake: FakeTurso):
                 return self._send(200, json.dumps({"databases": fake.databases}))
             if len(parts) == 2 and parts[1] == "dump":
                 name = parts[0]
+                fake.dump_accept_encodings[name] = self.headers.get("Accept-Encoding")
                 if self.headers.get("Authorization") != f"Bearer fake-jwt-{name}":
                     return self._send(401, {"error": "bad db token"})
                 if name in fake.failing_dumps:
                     return self._send(500, "dump exploded", "text/plain")
+                if name in fake.truncated_dumps:
+                    return self._send(200, FakeTurso.TRUNCATED_SQL, "text/plain")
+                if name in fake.empty_dumps:
+                    return self._send(200, FakeTurso.EMPTY_SQL, "text/plain")
+                if name in fake.fts_dumps:
+                    return self._send(200, FakeTurso.FTS_SQL, "text/plain")
+                if name in fake.escaped_dumps:
+                    return self._send(200, FakeTurso.ESCAPED_SQL, "text/plain")
                 return self._send(200, FakeTurso.DUMP_SQL, "text/plain")
             return self._send(404, {"error": "not found"})
 
@@ -2084,7 +2348,7 @@ class TestTursoExportScript(unittest.TestCase):
         )
         self.stub.chmod(0o755)
 
-    def run_export(self, with_token=True):
+    def run_export(self, with_token=True, extra_env=None):
         script = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
         env = dict(os.environ)
         env.pop("TURSO_PLATFORM_API_TOKEN", None)
@@ -2100,6 +2364,8 @@ class TestTursoExportScript(unittest.TestCase):
                 "no_proxy": "127.0.0.1,localhost",
             }
         )
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", str(script)],
             env=env,
@@ -2156,6 +2422,115 @@ class TestTursoExportScript(unittest.TestCase):
         self.assertIn("fake-two", proc.stderr)
         self.assertTrue((self.captured / "fake-one.db.gz").is_file())
         self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_dump_download_offers_compression(self):
+        # --compressed on the client: the dump endpoint must see an
+        # Accept-Encoding offering gzip (uncompressed GB-class dumps
+        # get cut mid-stream by the sandbox proxy).
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(set(self.fake.dump_accept_encodings), {"fake-one", "fake-two"})
+        for name, encoding in self.fake.dump_accept_encodings.items():
+            self.assertIn("gzip", encoding or "", name)
+
+    def test_truncated_dump_is_rejected_and_other_still_files(self):
+        # A dump whose tail lacks COMMIT; would rebuild into an
+        # integrity-clean but empty database — it must be refused
+        # before rebuilding, by name, without starving the other DB.
+        self.fake.truncated_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("truncated", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_committed_but_tableless_dump_is_rejected(self):
+        self.fake.empty_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("no user tables", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def check_fts_export(self, name):
+        """The filed export of the FTS fixture: virtual table registered
+        with its SQL exactly as authored, MATCH serving the seeded row."""
+        raw = gzip.decompress((self.captured / f"{name}.db.gz").read_bytes())
+        check = self.tmp / f"check-{name}.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                con.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='chunks_fts'"
+                ).fetchone()[0],
+                "CREATE VIRTUAL TABLE chunks_fts\n"
+                "      USING fts5(text, content='chunks', content_rowid='id')",
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'hello'"
+                ).fetchall(),
+                [(1,)],
+            )
+        finally:
+            con.close()
+
+    def test_unescaped_virtual_table_dump_is_repaired_and_files(self):
+        # #1391: the mis-escaped writable_schema INSERT would kill the
+        # sqlite3 -bail rebuild with a syntax error; the repair filter
+        # must rewrite it so the database files, FTS index intact.
+        self.fake.fts_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
+
+    def test_escaped_virtual_table_dump_files_unchanged(self):
+        # A correctly-escaped schema INSERT needs no repair; if the
+        # filter touched it (e.g. doubled the quotes again) the
+        # registered SQL would differ from what was authored.
+        self.fake.escaped_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
+
+    def test_rebuild_streams_through_sqlite3_cli(self):
+        # SQLITE3_BIN is the rebuild seam: a recording shim that
+        # delegates to the real sqlite3 must be what builds and
+        # verifies the export (never an in-memory python read).
+        real_sqlite3 = shutil.which("sqlite3")
+        if not real_sqlite3:
+            self.skipTest("sqlite3 CLI unavailable")
+        shim_log = self.tmp / "sqlite3-shim.log"
+        shim = self.tmp / "sqlite3-shim"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >>"{shim_log}"\n'
+            f'exec "{real_sqlite3}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        proc = self.run_export(extra_env={"SQLITE3_BIN": str(shim)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = shim_log.read_text()
+        self.assertIn("-bail", calls)
+        self.assertIn("PRAGMA integrity_check;", calls)
+        raw = gzip.decompress((self.captured / "fake-one.db.gz").read_bytes())
+        check = self.tmp / "check-shim.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
+                "hello",
+            )
+        finally:
+            con.close()
 
 
 class TestWorkerDecoder(unittest.TestCase):

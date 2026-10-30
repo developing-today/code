@@ -172,8 +172,12 @@ environment only):
   `backup-supabase` (only when both R2 credentials are set; a skip
   notice is printed otherwise — never an error), then
   `scripts/export-turso.sh`, then `prune-backups --apply`, then
-  `sync-manifest`, then `status`. Any failing step aborts the run
-  non-zero. Requires `CLOUDFLARE_API_TOKEN` in the environment
+  `sync-manifest`, then `status`. Steps are isolated: a failing step
+  never starves the steps after it — every step is attempted, each
+  prints an outcome line (`ok` / `FAILED` / `skipped`), the status
+  summary always prints, and the script exits non-zero at the end if
+  any step failed (guarded skips are not failures). Requires
+  `CLOUDFLARE_API_TOKEN` in the environment
   (materialize from Bitwarden into the cron env);
   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
   the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
@@ -184,7 +188,11 @@ environment only):
   the SQL dump each database's own libsql endpoint serves at
   `/dump`, rebuilds it into a standalone SQLite file (filed only
   when `PRAGMA integrity_check` passes), gzips it, and files it
-  with `put-backup turso`. When `TURSO_PLATFORM_API_TOKEN` is
+  with `put-backup turso`. Each dump download allows
+  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 1800; a large
+  database's dump is ~500 MB of SQL and outgrew the old fixed 300 s
+  cap) and gets one whole-request retry on transport failure. When
+  `TURSO_PLATFORM_API_TOKEN` is
   unset it prints a one-line skip notice and exits 0 — the nightly
   run never fails for a missing Turso setup — but a database that
   fails to export is named in a loud error line and makes the step

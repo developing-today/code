@@ -191,11 +191,65 @@ Kinds and consumers (one consumer per kind/source slice):
   sessions are consumed by the orchestration pass, and sources with
   no live control channel (Muse, cron) render no enabled
   controls. Stop sits behind a two-step confirm.
+- **preference** — the orchestration pass: `set-delegation-default`
+  records the standing auto toggle (below). The aggregator also reads
+  these records to compute the effective default.
 
 Controls render only where they are honest: while the orchestration
 tier source is not live, section-derived items on `/attention`
 disable theirs with the reason shown (session-derived items stay
 enabled — the session feed is live).
+
+### Needs-user item contract (#1290–#1293)
+
+Needs-user tier items may carry optional extension fields, published
+by the orchestration pass, validated **per item** in the live source
+(`src/tier-items.ts`) — the section gate never learns them, so a
+malformed extension drops (the whole field for `delegation`, the
+offending entry for `options`/`questions`), never the item or the
+section. Naming is role-based; the legacy published tier array name
+(`needsDrew`) is the existing shape and stays.
+
+- `whyUser` — why the item needs the user: `decision` |
+  `missing-info` | `approval` | `access` | `policy`. Fallback when
+  absent: `decision` kind → `decision`; an item carrying a question →
+  `missing-info`; otherwise `decision`.
+- `summary`, `ifIgnored` — the plain-language item and what happens
+  if it sits. `ifIgnored` falls back to a line computed from `since`.
+- `options[]` (≤6) — `{ id (slug), label (≤80), description?,
+effect? }`; duplicate ids drop the later entry. Picking one posts
+  `answer` with `optionId`.
+- `questions[]` (≤5) — `{ id (slug), prompt (≤200), type:
+single|multi|text|yesno, options? (≥2, required for single/multi),
+required? (default true), covers (mandatory) }`. Answering posts
+  `answer` with `answers[]`; the POST boundary checks the ids against
+  the currently published item and enforces required questions with a
+  legible error.
+- `delegation` — `{ mode: user|first-pass|auto, status:
+idle|working|proposal-ready|unable|done, updatedAt, runId?,
+proposal?, unable? }`, validated as a unit: `proposal` is present
+  exactly when the status is `proposal-ready`, `unable` exactly when
+  `unable` (with a non-empty `whatItTried`). An `auto` delegation on
+  an `access`/`policy` item drops — those classes never auto.
+
+**Delegation default (the standing toggle).** When an item carries
+no `delegation`, the aggregator stamps the effective default: mode
+`auto` when the standing toggle is ON and the item's class is
+`decision`/`missing-info`/`approval`, else `user`. The toggle is a
+dashboard preference action (kind `preference`, verb
+`set-delegation-default`, object `needs-user-delegation-default`);
+the latest non-superseded record wins, and before any exists Drew's
+2026-10-27 decision — ON — is the initial record. A per-item
+`delegate` action always overrides the default.
+
+**Proposals (#1293).** One live proposal per item; its identity is
+(item id, `delegation.runId`, `delegation.updatedAt`).
+`approve-proposal` / `reject-proposal` (reason required) carry that
+identity, and the boundary refuses a stale triple as
+superseded/withdrawn. A proposal older than 48 h reads expired on
+the card and can no longer be approved. A proposal-pending or
+unable item is still one needs-user item — counts on `/attention`,
+`/today`, and the JSON twins count it once.
 
 ### Session identity registry (slice 3, #906)
 

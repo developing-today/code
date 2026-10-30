@@ -318,18 +318,31 @@
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int-sandbox";
-          # PR-gate shards of the integration suite (#869): the three
+          # PR-gate shards of the integration suite (#869): the four
           # shards together run every target test-sandbox runs, in
           # parallel jobs instead of one serial ~25-minute check.
-          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 3";
-          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 3";
-          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 3";
+          # (3 → 4 shards in #551: the 3-way shards had drifted to
+          # ~12.5 min, close to the fast-lane exit.)
+          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 4";
+          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 4";
+          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 4";
+          test-shard-3 = mkCheck "test-shard-3" "test-shard-sandbox 3 4";
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";
+          # PR-gate splits of crash-gate (#551): the aggregate above runs
+          # every heavy full sweep serially (~15 min, the slowest PR
+          # check). These four checks partition the same tests by name
+          # filter and run in parallel on PRs; crash-gate itself stays
+          # for local use and the nightly full flake check, and is
+          # excluded from the PR list in check-id-pr-checks.sh.
+          crash-gate-sampled = mkCheck "crash-gate-sampled" "crash-gate-sampled";
+          crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
+          crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
+          crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {

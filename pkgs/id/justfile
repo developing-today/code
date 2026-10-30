@@ -236,11 +236,45 @@ crash-gate:
     cargo test --release --features web --test crash -- --skip write_corpus --include-ignored
     @echo "✓ Crash gate passed"
 
+# PR-gate splits of crash-gate (#551): the full gate ran every heavy sweep
+# serially in one check (~15 min, the slowest PR job). The four recipes
+# below partition the same tests by name filter so the PR gate runs them
+# in parallel; together with the nightly full `crash-gate` they cover
+# every test crash-gate runs. write_corpus / write_corpus_identity stay
+# excluded everywhere (they rewrite the checked-in corpus files).
+# The partition is guarded by .github/scripts/check-crash-gate-coverage.sh
+# (#1635): a future #[ignore]d crash test matching none of the three split
+# filters below fails the id PR guard job by name instead of silently
+# losing all PR coverage.
+[group('test')]
+crash-gate-sampled:
+    cargo test --release --features web --test crash -- --skip write_corpus
+    @echo "✓ Crash gate (sampled + corpus replay) passed"
+
+[group('test')]
+crash-gate-sweep:
+    cargo test --release --features web --test crash -- --include-ignored full_sweep_has_no_failures
+    @echo "✓ Crash gate (full sweeps) passed"
+
+[group('test')]
+crash-gate-control:
+    cargo test --release --features web --test crash -- --include-ignored full_lying_sync_control_produces_failures
+    @echo "✓ Crash gate (full lying-sync controls) passed"
+
+[group('test')]
+crash-gate-ingest:
+    cargo test --release --features web --test crash -- --include-ignored ingest_survives_every_crash_point
+    @echo "✓ Crash gate (full ingest sweep) passed"
+
 # Run unit tests only (fast)
 [group('test')]
 test-unit:
     cargo test --all-features --lib
 alias test-lib := test-unit
+
+# Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
+bench *args:
+    cargo bench --bench world_bench -- {{args}}
 
 # Run integration tests only
 [group('test')]
@@ -256,8 +290,8 @@ test-int-sandbox:
 # Run one COUNT-th slice of the integration tests (sandbox-safe:
 # excludes serve_tests requiring network) — see
 # scripts/test-shard-sandbox.sh for the sharding logic. The PR gate
-# runs 3 shards in parallel instead of the single serial test/test-web
-# pair (#869).
+# runs 4 shards in parallel instead of the single serial test/test-web
+# pair (#869; 3 → 4 shards in #551 to rebalance the ~12.5 min shards).
 [group('test')]
 test-shard-sandbox SHARD COUNT:
     bash scripts/test-shard-sandbox.sh {{SHARD}} {{COUNT}}

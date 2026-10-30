@@ -44,6 +44,76 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
  */
 export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block")
+    .update("code_block", {
+      // Inherited prosemirror-schema-basic fields, preserved unchanged:
+      content: "text*",
+      marks: "",
+      group: "block",
+      code: true,
+      defining: true,
+      parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
+      toDOM() {
+        return ["pre", ["code", 0]];
+      },
+      // #1436: mirror the markdown codec's code_block attrs into the
+      // editor schema, following the #880 image linkHref / #881 table
+      // alignments mirror pattern. The Rust codec (markdown.rs) sets
+      // attrs {params: html, htmlBlock: true} for HTML blocks and
+      // {params: <info>} for authored fences, and on save reads
+      // attrs.params and requires attrs.htmlBlock == true to emit an
+      // HtmlBlock. Without these declared here, Node.fromJSON drops
+      // both attrs on editor load: HTML blocks re-fence as an html
+      // fence (the #982 regression path) and authored fences lose
+      // their language/info string.
+      attrs: {
+        params: { default: null },
+        htmlBlock: { default: null },
+      },
+    })
+    .update("bullet_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [{ tag: "ul" }],
+      toDOM() {
+        return ["ul", 0];
+      },
+      // #1469: mirror the markdown codec's bullet_list tight attr into
+      // the editor schema, following the #1036 task_list mirror. The
+      // Rust codec (markdown.rs) emits attrs {tight} for bullet lists
+      // and on save reads attrs.tight (missing -> false/loose). Without
+      // it declared here, Node.fromJSON drops tight on editor load and
+      // every tight bullet list saves as a loose list.
+      attrs: {
+        tight: { default: true },
+      },
+    })
+    .update("ordered_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [
+        {
+          tag: "ol",
+          getAttrs(dom) {
+            const el = dom as HTMLElement;
+            return { order: el.hasAttribute("start") ? Number(el.getAttribute("start")) : 1 };
+          },
+        },
+      ],
+      toDOM(node) {
+        return node.attrs.order === 1 ? ["ol", 0] : ["ol", { start: node.attrs.order }, 0];
+      },
+      // #1469: mirror the markdown codec's ordered_list tight attr,
+      // keeping the inherited order attr (default and validation)
+      // unchanged. The codec emits attrs {order, tight} and on save
+      // reads attrs.tight (missing -> false/loose); undeclared, tight
+      // was dropped on editor load and tight ordered lists saved loose.
+      attrs: {
+        order: { default: 1, validate: "number" },
+        tight: { default: true },
+      },
+    })
     .update("image", {
       inline: true,
       group: "inline",

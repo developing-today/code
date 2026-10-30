@@ -54,6 +54,43 @@ export interface ServiceDef {
   notes?: string;
 }
 
+/**
+ * The projector's topology row follows its config: a configured
+ * projector (live source + a base URL) is a real service with a real
+ * probe; anything else keeps the off-by-config row. The projector was
+ * deployed 2026-10-27 (#1199) — before that it had never run, and this
+ * row was statically "off".
+ */
+function projectorDef(cfg: Config): ServiceDef {
+  if (cfg.source === "live" && cfg.projector.baseUrl) {
+    return {
+      id: "projector",
+      name: "Projector",
+      port: 7801,
+      bind: "127.0.0.1 only",
+      runsAs: "systemd user unit pm-projector.service (NixOS) — runs from the ~/git/code checkout",
+      probe: "http",
+      loopbackUrl: cfg.projector.baseUrl,
+      healthPath: "/health",
+      expectStatuses: [200],
+      upWhen: "HTTP 200 on /health",
+      consumers: "the aggregator's item/comment/registry projection for refs outside the Project pool",
+      breaksIfDown: "refs outside the Project pool fall back to fixtures; comment streams lose PR-interior comments",
+    };
+  }
+  return {
+    id: "projector",
+    name: "Projector",
+    port: 7801,
+    bind: "— (not running)",
+    runsAs: "off by config (PM_PROJECTOR_URL=off)",
+    probe: "off",
+    consumers: "the aggregator's comment/registry projection (disabled while off)",
+    breaksIfDown: "nothing — while off, the comment projection runs on fixtures by design",
+    notes: "Off is a configuration state, not a failure.",
+  };
+}
+
 export function buildServices(cfg: Config): ServiceDef[] {
   return [
     {
@@ -153,16 +190,6 @@ export function buildServices(cfg: Config): ServiceDef[] {
       consumers: "the aggregator's Today / Needs User / board in-flight lane",
       breaksIfDown: "tiers fall back to derived views; the honesty banners name it",
     },
-    {
-      id: "projector",
-      name: "Projector",
-      port: 7801,
-      bind: "— (not running)",
-      runsAs: "off by config (PM_PROJECTOR_URL=off)",
-      probe: "off",
-      consumers: "the aggregator's comment/registry projection (disabled while off)",
-      breaksIfDown: "nothing — while off, the comment projection runs on fixtures by design",
-      notes: "Off is a configuration state, not a failure.",
-    },
+    projectorDef(cfg),
   ];
 }
