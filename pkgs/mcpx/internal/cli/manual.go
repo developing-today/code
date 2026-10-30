@@ -617,8 +617,7 @@ func handCommands() []Command {
 		},
 		{
 			Name: "adapter", Group: "configuration",
-			Local:   "Adapter declarations are files the CLI reads; the daemon serves each adapter as a server of its own, so its tools reach every tool operation (call, types, search, catalog) like any upstream's.",
-			Usage:   "[list|check|call|tools|serve|import] [<name>.<tool> '<json>' | <name> [file...] | --bare <binary>]",
+			Usage:   "[list|check|call|tools|serve|import|add|remove] [<name>.<tool> '<json>' | <name> [file...] | --bare <binary>]",
 			Summary: "command-line programs declared as MCP tools",
 			Detail: "An adapter file, named by paths.adapters, declares a program and " +
 				"the tools it offers. list shows them, check says whether each " +
@@ -628,11 +627,15 @@ func handCommands() []Command {
 				"with a loud warning about what passthrough costs. Every adapter is " +
 				"also a namespace: the daemon runs it as `mcpx adapter serve <name>`, " +
 				"so it is in mcpx ls, types, search, catalog and the generated " +
-				"client, and a script calls it as <name>.<tool>({...}).",
+				"client, and a script calls it as <name>.<tool>({...}). add and " +
+				"remove go through the daemon (/v1/adapters): the declaration " +
+				"is written to a configured file and reloaded, so the change " +
+				"is live at once and survives a restart.",
 			Examples: []string{
 				"mcpx adapter check",
 				`mcpx adapter call jq.run '{"filter":"."}'`,
 				`mcpx adapter import --bare git --description "version control"`,
+				"mcpx adapter add demo --tool status -- git",
 			},
 		},
 		{
