@@ -218,7 +218,7 @@ conflated (Decision D5).
 | **Discovery query** returning counted + uncounted with why-not-counted | **absent** — `search` returns live claims only, undifferentiated | [`search.rs:1-20`](../../pkgs/id/src/search.rs) |
 | **Retention tiering** (hot counted / cold uncounted, expiry, pin) | **absent** for events; only blob access control exists | grep `retention\|expiry\|quota` in `src`: waiting-pool age caps and auth-expiry only; [`blob_gate.rs:1-15`](../../pkgs/id/src/blob_gate.rs) is access control, not retention |
 | A **generic signer** for a new object type | **absent** — only `chain::sign` is body-opaque; artifacts and invites are fixed layouts | [`chain.rs:282`](../../pkgs/id/src/chain.rs), [`artifact.rs:226`](../../pkgs/id/src/artifact.rs), [`invites/event.rs:17`](../../pkgs/id/src/invites/event.rs) |
-| **Persisted** author index | **absent** — rebuilt per call | [`tag_index.rs:11-12,16`](../../pkgs/id/src/tag_index.rs) |
+| **Persisted, kind-generic** author index | **absent** — `TagIndex.by_author` covers tags only and is rebuilt per call | [`tag_index.rs:11-12,16`](../../pkgs/id/src/tag_index.rs), [`event_store/claims.rs:50-53`](../../pkgs/id/src/event_store/claims.rs) |
 
 ---
 
@@ -326,9 +326,17 @@ similar but is not it: `Veto` voids a *grant* from a position on
 ([`groups/mod.rs:121-125`](../../pkgs/id/src/groups/mod.rs)) and requires authority in the group.
 An exclusion requires only that I own the view.
 
-`Excludes(Public)` is deliberate: it inverts a public set into "everyone except these", which is
-the shape a moderated public feed needs. It is allowed because it is signed, visible in the set
-version, and reversible.
+`Excludes(Public)` is deliberate, but it means exactly one thing: **count nobody**. Because
+`Public` matches every author and exclusions win over every admission, a set with
+`entries = [Public], excludes = [Public]` is empty by construction. It is the emergency "stop
+counting everything in this view" switch, not a moderation tool.
+
+The moderated public feed Codex-style readers will expect — everyone except a few blocked
+authors — is the opposite shape and is spelled with the two fields doing different jobs:
+`entries = [Public]`, `excludes = [Key(a), Group(g)]`. That is "everyone, minus these", and it
+needs no special sentinel: the entries admit the crowd and the exclusions carve out of it. This
+distinction is stated explicitly because the two configurations differ by one entry and produce
+opposite results.
 
 ---
 
@@ -342,10 +350,12 @@ already-stored claims requires the set object to carry `include_history: true` f
 Reasons: the substrate has no time in the envelope — `ChainExt` has no timestamp, and time
 appears only as the local arrival clock on waiting rows
 ([`event_store/waiting_rows.rs:39-40`](../../pkgs/id/src/event_store/waiting_rows.rs)). So
-"history" cannot mean "before a wall-clock instant"; it must mean **"claims not in the causal
-past of this set version"**, which is exactly what `after` expresses. `include_history: true`
-therefore counts an author's claims that are *not* in the set version's causal past — a precise,
-order-independent definition that every device computes identically.
+"history" cannot mean "before a wall-clock instant"; it must mean **"claims in the causal past of
+this set version"**, which is exactly what `after` expresses. `include_history: true` therefore
+counts that author's claims **in** the set version's causal past **as well as** everything
+prospective — a precise, order-independent definition that every device computes identically.
+Without the flag, only claims outside that past (i.e. written after the set version) count, which
+is the "future claims" default.
 
 This is also the honest default for a *new* friend: you probably do want their past dog walks,
 but you must say so, because the same switch applied to an attacker silently imports their whole
@@ -394,14 +404,38 @@ people who trust different sets.
 ### 4.1 Counted vs uncounted, computed per view
 
 **Decision:** a **view** is `{ view_id, owner, set: (set_id, set_seq), subject_scope, kind_scope, exceptions }`.
-Projection is:
+Projection is **admission-history-aware, not a single-snapshot membership test**:
 
 ```
-counted(view, claim)   ⇔  author_of(claim) ∈ expand(view.set)
-                          ∧ claim ∉ rescinded(view.set, frontier)
-                          ∨ claim ∈ view.exceptions        // one-off "count this claim"
+admitted(view, claim)  ⇔  ∃ v ∈ versions(view.set_id), v.seq ≤ view.set_seq,
+                            author_of(claim) ∈ expand(v)
+                          ∧ ¬rescinded_at_or_before(view, author_of(claim), claim, v)
+counted(view, claim)   ⇔  applied(claim)
+                          ∧ (author_of(claim) ∈ expand(view.set) ∨ admitted(view, claim))
+                          ∧ ¬rescinded(view, claim)
+                        ∨ claim ∈ view.exceptions        // one-off "count this claim"
 uncounted(view, claim) ⇔  applied(claim) ∧ ¬counted(view, claim)   // stored, attributed, zero effect
 ```
+
+The `∨ admitted(...)` clause is load-bearing and was missing from the first draft: §3.2 says a
+removal stops *future* counting and never rewrites the past, so a claim Alice wrote while set
+version 1 admitted her must stay counted under version 2 — where she is gone — unless there is an
+explicit `rescind`. A plain `author ∈ expand(current set)` test would silently un-count her whole
+history on removal, which is precisely the retroactive rewrite §3.2 forbids and abuse case 7
+promises not to do.
+
+So projection must fold the **set's version history**, not one snapshot:
+
+- `admitted` walks the set versions in `(set_id)` order up to `view.set_seq` — they are a
+  contiguous prefix of the owner's chain (§D2), so this is a bounded, ordered walk, not a scan of
+  all chains.
+- An author admitted at version *v* is counted for claims whose causal position is at or after
+  *v*'s frontier, and un-counted from the version that removed them onward — unless a `rescind`
+  (§3.3) explicitly reaches back.
+- `expand(v)` is evaluated **at *v*'s pinned frontier**, never at head (see §4.5).
+
+The cost model in §4.2 still holds, because the number of *versions* is the owner's own history
+(small, and cached), while the number of *claims* is what §4.2's author-index bounds.
 
 Note the two predicates use different bases and that is the point: `applied` is the store-wide
 membership resolution (§1.2), `counted` is the view's writer set. A claim can be `applied` and
@@ -409,8 +443,11 @@ membership resolution (§1.2), `counted` is the view's writer set. A claim can b
 
 ### 4.2 Cost is proportional to the writer set, not the store
 
-**Decision:** projection reads the author-indexed `TagIndex` (`tag_index.rs:1-21`) restricted to
-the expanded writer set, rather than scanning `Vec<Claim>` from `tag_claims()`.
+**Decision:** projection reads an **author-keyed event index** restricted to the expanded writer
+set, rather than scanning the store. The precedent for the *shape* is `TagIndex`'s author key; the
+precedent for the *scope* is the `events` table's `author‖seq` ordering. Neither is sufficient as
+it stands (see "two gaps" below), so this slice is a **generic author-event index**, not a reuse
+of `TagIndex`.
 
 Reasons: `tag_claims()` opens `EVENTS` and walks **every row**, then decodes each one
 ([`event_store/claims.rs:44-60`](../../pkgs/id/src/event_store/claims.rs)) — cost is O(store). The
@@ -429,13 +466,32 @@ sequence number in big-endian, so one author's events sort in sequence order"
 events are a **contiguous key range**, and the code already ranges over it for exactly this
 purpose in `applied_events(author, after, until, limit)`
 ([`event_store/mod.rs:1298-1300`](../../pkgs/id/src/event_store/mod.rs)) and `lowest_proof`
-(`mod.rs:1257-1259`). The author index this spec needs is therefore a *persisted, incrementally
-maintained* version of a range scan the store already performs — not a new data structure.
+(`mod.rs:1257-1259`).
 
-**The gap this creates:** the index is rebuilt per call
-([`tag_index.rs:11-12,16`](../../pkgs/id/src/tag_index.rs)). Per-view projection makes that cost
-visible on every render, so §7's first implementation slice is a persisted, incrementally
-maintained author index — a *cost* change, not a semantics change.
+**Two gaps make "just persist `TagIndex`" wrong, and the first draft of this spec made that
+mistake:**
+
+1. **`TagIndex` covers tags only.** `tag_claims()` skips every non-tag event —
+   `if !is_tag_kind(kind) || !applied(id) { continue }`
+   ([`event_store/claims.rs:50-53`](../../pkgs/id/src/event_store/claims.rs)) — and `tag_index()`
+   builds exclusively from that result (`claims.rs:84`). The did-it tracker's walks are
+   `didit.record` events with CBOR bodies, a different kind entirely
+   ([tracker §3.2](../2026-10-29T13-04-50Z_investigation_didit_tracker_data_model/2026-10-29T13-04-50Z_investigation_didit_tracker_data_model.md)).
+   A projection built on `TagIndex` would therefore return **an empty tracker** — it would work
+   for tags and silently return nothing for the first real consumer.
+2. **`TagIndex` is rebuilt per call** (`tag_index.rs:11-12,16`), so per-view projection would pay
+   the O(store) scan on every render.
+
+**Decision (corrected):** the index this spec specifies is `AuthorEvents: (author, seq) →
+(event_id, kind, subject?)`, built by ranging the existing `events` table per author in the
+writer set and filtering by `kind_scope`. It is generic over kind, so it serves `tag.*`,
+`didit.*` and any future kind; it is persisted and incrementally maintained; and where a
+kind-specific projection (tags → `TagIndex.by_author`) is cheaper, that becomes an *adapter on
+top* of it rather than the only source. The tracker consequently reads real `didit.record`
+events, which is the test slice 7 exists to prove.
+
+The cost claim and its test are unchanged: a view query must touch only writer-set authors, and
+slice 3's test asserts *that*, not merely the answer.
 
 ### 4.3 Counted and uncounted are strictly separated in the type system
 
@@ -462,6 +518,26 @@ the code-level expression of that paragraph.
 
 ---
 
+### 4.5 Group expansion must be frontier-aware, not `members(group)`
+
+**Decision:** `expand(v)` resolves group references **at *v*'s pinned frontier** using
+`is_member_at(author, group, after)` / `access_at_position(after, group, member)`
+([`membership/layer.rs:338-364`](../../pkgs/id/src/membership/layer.rs)), and **must not use
+`Members::members(group)`**.
+
+Reasons: `members(group)` is explicitly a **current-state** query — "The members of `group` and
+their access, in the current state" — and takes no frontier
+([`membership/layer.rs:286-289`](../../pkgs/id/src/membership/layer.rs)). Using it to expand a
+pinned set version would let a group's later additions or removals silently change the expansion
+of a set version that has not changed — exactly the reproducibility guarantee §D4 promises, and
+exactly the group-capture surface abuse case 6 is about.
+
+The cost difference is real and is stated rather than hidden: a frontier-aware expansion does
+historical replay over the group's causal past instead of one snapshot read. For a set with *g*
+group entries this is *g* replays, cached against `(group, frontier)` — the frontier is immutable,
+so every cache entry is permanent. `members(group)` remains correct for *current-state* questions
+(e.g. "who is in this group right now"), and the spec uses it only for those.
+
 ## 5. Discovery query, and how it stays readable under flood
 
 ### 5.1 Subject/topic-first, returning both sides
@@ -474,9 +550,29 @@ Reasons: the existing search is subject-first and already returns `Hit { subject
 that it returns the uncounted side **at all**, which is what makes "uncounted" mean *findable*
 rather than *discarded* — #2030's "uncounted must not be a bin".
 
-Grouping by author is the anti-flood mechanism: 10,000 claims from one key read as **one
-cluster with a count**, not 10,000 facts. That is #2030 abuse case 2's mitigation, and it is a
-*layout* rule on the result type so it cannot be lost in a UI.
+Grouping by author handles the **one-key** flood: 10,000 claims from one key read as **one
+cluster with a count**, not 10,000 facts. That is a real mitigation and it is a *layout* rule on
+the result type so it cannot be lost in a UI.
+
+**But it does not answer a multi-key flood, and the first draft overclaimed by implying it did.**
+A Sybil flood of 10,000 *distinct* keys yields 10,000 clusters — grouping has bought nothing,
+because the attacker spread across keys rather than claims. #2030 abuse case 2 describes exactly
+the multi-key form ("an attacker mints 10,000 keys"). So:
+
+- **Bounded, ordered, paginated discovery** is required, not optional: `Discovery` carries
+  `total_authors` and a cursor, and a page is capped. §5.1's result type is therefore
+  `Discovery { counted, uncounted_page: Vec<UncountedGroup>, total_authors, next_cursor }`.
+- The page cap and any bucket-width values are **delegated to #2032** with the other budget
+  numbers (§6) — this spec sets the *shape* (bounded + cursor + honest total), not the number.
+- **Retained residual risk, stated plainly:** multi-key discovery flooding is **not solved** by
+  this spec. Grouping and pagination keep the UI *usable* under flood, but an attacker willing to
+  mint keys can still fill many pages and consume the viewer's attention. Author-clustering
+  heuristics (shared timing, identical bodies, IP/relay correlation) are the plausible next
+  mechanism, and are **out of scope here** — they belong with #2032/#2033's abuse controls, not
+  with the projection layer.
+- The §9 slice-5 test must therefore cover **both** shapes: 10k claims from 1 key (one cluster)
+  **and** 10k keys with 1 claim each (10k clusters, bounded page, honest `total_authors`). The
+  second is the one that fails today, so it is the test that matters.
 
 ### 5.2 `petname` is viewer-local and must never be presented as identity
 
@@ -566,7 +662,7 @@ Each case gets: the mechanism in this spec, or an explicitly accepted residual r
 | # | Case | Mechanism here | Verdict |
 |---|---|---|---|
 | 1 | **Montana stranger** claims they walked my dog | Signed claim is `applied` (content always applies, `resolve.rs:1-20`) and stored; `counted()` is false because `author_of ∉ expand(set)` (§4.1); discovery shows it attributed (§5.1). Owner may ignore, `view.exception` it, or add the writer (§4.4). | **✅ wholly answered** |
-| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1). Compute: projection is author-indexed, so cost ∝ writer set, not flood (§4.2). Readability: results group by author with a count (§5.1). Storage: cold tier + #2032 quotas (§6). | **✅ metrics + compute + readability; storage bounded by #2032** |
+| 2 | **Sybil flood** — 10k keys flood claims about my dog | Metrics: none count (§4.1). Compute: projection is author-indexed, so cost ∝ writer set, not flood (§4.2). Readability: bounded, cursor-paginated discovery with an honest `total_authors`; single-key floods collapse to one cluster, **multi-key floods do not** (§5.1). Storage: cold tier + #2032 quotas (§6). | **⚠️ metrics + compute answered; discovery readability only *bounded*, not solved — multi-key flood retained as an open risk routed to #2032/#2033** |
 | 3 | **Storage exhaustion** against a relay | Validity is not a storage entitlement: `Tier::Cold { expires_at }` (§6) plus #2032's per-IP/per-ID/per-topic MB windows. Reference-holding rule (§6) prevents expiry stranding hot dependents. | **⚠️ holds only with #2032 budgets in place — this is the model's real weak point, stated not buried** |
 | 4 | **Confusion attack** — spam crafted to look counted | `Projection.counted` and `.uncounted` are different types (§4.3); counted status is computed from the set, never read from the claim; every uncounted hit renders author + `WhyNotCounted`. | **✅ if the type split and the render rule hold** |
 | 5 | **Writer-set poisoning** — I'm talked into adding an attacker | Set changes are signed `idset.writer` versions (§D1/D2), so the version history is a reviewable list ("your set changed 3× this week"); `rescind` exists (§3.3); per-entry scoping (`Entry::Group{role_min}`, §D3) bounds blast radius. | **⚠️ accepted residual: the model makes an owner decision visible and reversible; it cannot make it wisely** |
@@ -608,6 +704,13 @@ These are routed, not defaulted. Each names why it is not this spec's to answer.
 6. **OQ-6 — Do view exceptions need their own audience?** A `view.exception` currently counts one
    claim for the view owner. Whether an exception can be *shared* (so two people agree to count a
    third party's claim) is unresolved; sharing it turns an exception into a mini-set. **→ #2028.**
+7. **OQ-7 — How is a multi-key flood actually detected?** This is the residual risk §5.1 and
+   abuse case 2 retain rather than claim: pagination keeps the UI usable, but nothing here
+   recognises that 10,000 keys are one actor. Author-clustering (shared timing, identical bodies,
+   relay/IP correlation) is the plausible mechanism and is deliberately **not** specified here —
+   it belongs with the abuse controls (#2032/#2033), and it needs a decision on whether clustering
+   is a *server* signal (which the viewer may not trust) or a *client* heuristic (which the server
+   cannot force). **→ #2032 / #2033, with #2028 for where the signal lives.**
 
 ---
 
@@ -619,17 +722,23 @@ Each is independently reviewable and small enough to land alone.
 1. **`idset` schema types + canonical body encoding + `chain::sign`/`decode` round-trip tests.**
    `WriterSet`, `Entry`, `Excludes`, `Rescind`, with golden-header tests in the style of
    `chain.rs:733-852`. Library only; no projection yet.
-2. **`expand(set, frontier) -> BTreeSet<AuthorKey>`** using `membership::Members::members` with
-   one-level flattening and `role_min` filtering (§D3/D4), plus a property test that expansion is
-   order-independent and frontier-pinned.
-3. **Persisted author index** — make the `TagIndex` author key incremental instead of rebuilt per
-   call (§4.2), with a test asserting a view query touches only writer-set authors (the cost
-   claim, not just the answer).
+2. **`expand(set_version) -> BTreeSet<AuthorKey>`** — frontier-aware via
+   `is_member_at`/`access_at_position` (**not** `members(group)`, §4.5), one-level flattening and
+   `role_min` filtering (§D3/D4). Property test: expansion is order-independent, frontier-pinned,
+   and **unchanged by a later group-membership event** (the reproducibility guarantee).
+3. **`AuthorEvents` index** — kind-generic `(author, seq) → (event_id, kind, subject?)`, persisted
+   and incremental, built by ranging the `events` table per writer (§4.2). Test asserts a view
+   query touches only writer-set authors (the cost claim, not just the answer) **and that
+   non-tag kinds are indexed** — a `didit.record` must come back, which is where `TagIndex` fails.
 4. **`Projection` + `WhyNotCounted` + `UncountedHit` types and the `counted`/`uncounted` split**
-   (§4.1–4.3), including a test that a stranger's `applied` claim is `uncounted` and a
-   `rescind`ed claim stops counting from its version.
-5. **`discover()` grouped by author with viewer-local petname labels** (§5), plus a flood test:
-   10k claims from one key yield one cluster of count 10k.
+   (§4.1–4.3), including tests that a stranger's `applied` claim is `uncounted`, that a
+   `rescind`ed claim stops counting from its version, and — the corrected one — that **a claim
+   counted under set v1 stays counted under v2 after its author is removed** (admission history,
+   §4.1).
+5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
+   labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
+   **10k distinct keys → 10k clusters, one bounded page, honest `total_authors`** (the one that
+   fails today).
 6. **`Tier` decision function** (§D7) with the reference-holding rule (§6), built on
    `prune_behind_cut`'s existing "protect dependencies and active backlinks" contract
    ([`event_store/mod.rs:527-545`](../../pkgs/id/src/event_store/mod.rs)) — give it a
@@ -641,6 +750,27 @@ Each is independently reviewable and small enough to land alone.
 
 None of these is a "permanent feature on the unreviewed #2030 investigation": the review round
 accepts this spec first, then these land against it.
+
+---
+
+## 10. Review dispositions
+
+First review round on PR #2739 (Codex). Six findings, all accepted and fixed in the doc; none
+dismissed. Recorded here because a spec whose defects are silently patched teaches the next reader
+nothing.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | `include_history` was defined as claims **not** in the set version's causal past — the exact inverse of what the option promises. | **Fixed.** §3.1 now says the flag counts claims **in** the past, in addition to everything prospective; the default (no flag) is the future-only set. |
+| 2 | `Excludes(Public)` was described as "everyone except these", but with exclusions winning it produces an **empty** set. | **Fixed.** §D6 now states `entries=[Public], excludes=[Public]` means "count nobody", and the moderated feed is `entries=[Public], excludes=[Key…]` — two configs one entry apart, spelled out. |
+| 3 | Projection tested membership only in the *current* set snapshot, so removing an author un-counted their whole history — contradicting §3.2 and abuse case 7. | **Fixed, and it was the most serious.** §4.1's predicate is now admission-history-aware (`∨ admitted(view, claim)` over the set's version prefix), with a test for it in slice 4. |
+| 4 | Group expansion prescribed `Members::members(group)`, a **current-state** query, so a later group change would alter an unchanged set version's expansion. | **Fixed.** New §4.5 requires frontier-aware `is_member_at`/`access_at_position`, states the replay cost honestly, and keeps `members(group)` for current-state questions only. |
+| 5 | Author-grouping was claimed to answer a 10k-**key** flood, but 10k distinct keys yield 10k clusters. | **Fixed by narrowing the claim.** §5.1 now scopes grouping to single-key floods, specifies bounded cursor pagination with an honest `total_authors`, and **retains the multi-key flood as an explicitly unsolved risk** routed to OQ-7 / #2032-#2033. The abuse-case table's row 2 verdict was downgraded accordingly. |
+| 6 | `TagIndex` covers tags only, so the did-it tracker's `didit.record` events would project to nothing. | **Fixed.** §4.2 now specifies a kind-generic `AuthorEvents` index built by ranging `events` per author, with `TagIndex` demoted to a tag-specific adapter on top; slice 3's test asserts a `didit.record` comes back. |
+
+Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
+`:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All 78
+internal links were checked programmatically and resolve.
 
 ---
 
