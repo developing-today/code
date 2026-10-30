@@ -11,6 +11,19 @@
   //   purpose: the agy CLI is a door that serves Gemini 4 Argon, so
   //   argon-plan seats antigravity-agy/gemini-4-argon. Its other models
   //   stay route-gated (seated nowhere).
+  // - 2026-10-30 (Drew): the Antigravity doors consolidated on
+  //   "antigravity-direct" — a proxy that speaks the agy CLI's own wire
+  //   protocol directly (keyring OAuth credential, the CLI's refresh
+  //   client, its v1internal envelope to daily-cloudcode-pa) with no
+  //   spawned CLI and no spawned language server. "antigravity-ls" and
+  //   "antigravity-agy" are in disabled_providers below and their proxy
+  //   services are retired in home/common/default.nix; their definitions
+  //   stay FULL below per the switchboard rule. The Gemini seats moved
+  //   to antigravity-direct (gemini-flash-plan, argon-plan). The Claude
+  //   seats in sonnet-plan and opus-plan still name antigravity-ls:
+  //   they are inert while the provider is disabled, until they are
+  //   re-pointed or the door is restored. Undo: delete both ids from
+  //   disabled_providers, restore the two proxy units, re-point seats.
   // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
   //   itself is confirmed working — the proxy (:18749) is live and serves
@@ -119,7 +132,9 @@
     "deepseek",
     "claude-code",
     "meta",
-    "muse"
+    "muse",
+    "antigravity-ls",
+    "antigravity-agy"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -2610,6 +2625,165 @@
           "name": "GPT-OSS 120B Medium (agy)"
         }
 
+      }
+    },
+    "antigravity-direct": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Antigravity Direct (CLI wire clone)",
+      "options": {
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_DIRECT_PORT:-18751}/v1",
+        "apiKey": "antigravity-direct-local"
+      },
+      "models": {
+        "gemini-4-argon": {
+          "name": "Gemini 4 Argon (direct)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-4-argon-low": {
+          "name": "Gemini 4 Argon Low (direct)"
+        },
+        "gemini-4-argon-medium": {
+          "name": "Gemini 4 Argon Medium (direct)"
+        },
+        "gemini-4-argon-high": {
+          "name": "Gemini 4 Argon High (direct)"
+        },
+        "gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (direct)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-low": {
+          "name": "Gemini 3.8 Flash Low (direct)"
+        },
+        "gemini-3.8-flash-medium": {
+          "name": "Gemini 3.8 Flash Medium (direct)"
+        },
+        "gemini-3.8-flash-high": {
+          "name": "Gemini 3.8 Flash High (direct)"
+        },
+        "claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (direct)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-sonnet-5-5-low": {
+          "name": "Claude Sonnet 5.5 Low (direct)"
+        },
+        "claude-sonnet-5-5-medium": {
+          "name": "Claude Sonnet 5.5 Medium (direct)"
+        },
+        "claude-sonnet-5-5-high": {
+          "name": "Claude Sonnet 5.5 High (direct)"
+        },
+        "claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (direct)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5-low": {
+          "name": "Claude Opus 5.5 Low (direct)"
+        },
+        "claude-opus-5-5-medium": {
+          "name": "Claude Opus 5.5 Medium (direct)"
+        },
+        "claude-opus-5-5-high": {
+          "name": "Claude Opus 5.5 High (direct)"
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (direct)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
+          }
+        },
+        "gpt-oss-120b-medium": {
+          "name": "GPT-OSS 120B Medium (direct)"
+        }
       }
     },
     "antigravity-ls": {
@@ -6495,9 +6669,14 @@
         // failover. Seat agy here only once the proxy bridges tool
         // calls; until then ls is the only tool-capable Gemini Flash
         // door and this pool rides on its proxy being up.
+        // 2026-10-30 (Drew): the seat moved to antigravity-direct. The
+        // direct door bridges tool calls (verified live, including the
+        // Gemini 3 thought_signature round-trip the objection above was
+        // about), the ls proxy service is retired, and this pool now
+        // rides on the direct door the same way.
         "targets": [
           {
-            "model": "antigravity-ls/gemini-3.8-flash",
+            "model": "antigravity-direct/gemini-3.8-flash",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -6671,11 +6850,14 @@
         // — now a 400). The provider leaves disabled_providers in
         // this PR; its other models stay route-gated (only Argon is
         // seated).
+        // 2026-10-30 (Drew): the agy leaf moved to antigravity-direct —
+        // the same CLI wire protocol with no CLI spawn (the agy proxy
+        // service is retired). Same model, same pool position.
         "targets": [
           "opencode-go.personal/gemini-4-argon",
           "opencode-go.lab/gemini-4-argon",
           "opencode-go/gemini-4-argon",
-          "antigravity-agy/gemini-4-argon"
+          "antigravity-direct/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
