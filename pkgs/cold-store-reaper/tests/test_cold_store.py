@@ -1851,6 +1851,100 @@ class TestEvictScan(EvictTestBase):
         self.assertIn(self.keys["evict1"], self.s3.objects)
 
 
+class TestOffsetLessLastModified(EvictTestBase):
+    """#2110: an offset-less LastModified has no zone, so it is
+    unparseable -> None (the aware-or-None contract of
+    _parse_s3_list_page). It must never reach a comparison or the
+    age subtraction as a naive datetime, and it must never be
+    reinterpreted as UTC: eviction deletes objects, and None reads
+    as too-young, which is non-evictable by construction."""
+
+    def _listed(self):
+        return {
+            o["key"]: o for o in self.store.s3_list_objects("supabase-backups")
+        }
+
+    def test_offset_less_stamp_parses_to_none(self):
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            "<Name>supabase-backups</Name><IsTruncated>false</IsTruncated>"
+            "<Contents><Key>a</Key>"
+            "<LastModified>2026-10-01T00:00:00.000</LastModified>"
+            "<Size>1</Size></Contents>"
+            "<Contents><Key>b</Key>"
+            "<LastModified>2026-10-01T00:00:00.000Z</LastModified>"
+            "<Size>1</Size></Contents>"
+            "<Contents><Key>c</Key>"
+            "<LastModified>2026-10-01T05:00:00+05:00</LastModified>"
+            "<Size>1</Size></Contents>"
+            "<Contents><Key>d</Key><Size>1</Size></Contents>"
+            "</ListBucketResult>"
+        ).encode()
+        objects, truncated, _token = cold_store._parse_s3_list_page(body)
+        self.assertFalse(truncated)
+        by_key = {o["key"]: o["last_modified"] for o in objects}
+        self.assertIsNone(by_key["a"])  # offset-less -> None
+        self.assertIsNone(by_key["d"])  # absent -> None, as before
+        # Z and explicit-offset stamps are unchanged
+        self.assertEqual(by_key["b"], datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.assertEqual(by_key["c"].utcoffset(), timedelta(hours=5))
+
+    def test_mixed_listing_scan_offset_less_is_too_young(self):
+        # one offset-less stamp among aware neighbours: the sort and
+        # the age check both used to die with TypeError
+        self.s3.put(self.keys["evict1"], b"1", "2026-01-05T00:00:00.000")
+        scan = self.scan_by_key()
+        self.assertIsNone(scan[self.keys["evict1"]]["last_modified"])
+        self.assertEqual(scan[self.keys["evict1"]]["verdict"], "too-young")
+        self.assertEqual(scan[self.keys["evict2"]]["verdict"], "evictable")
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_uniformly_offset_less_listing_scan_completes(self):
+        # every stamp offset-less: the sort survives naive stamps,
+        # but the age subtraction does not -- the trap a sort-only
+        # test would miss (triage case 5)
+        for key in self.keys.values():
+            self.s3.put(key, b"x", "2026-01-01T00:00:00.000")
+        scan = self.scan_by_key()
+        for name in ("young", "oldtimer", "evict1", "evict2"):
+            self.assertEqual(scan[self.keys[name]]["verdict"], "too-young")
+        self.assertEqual(
+            scan[self.keys["unverified"]]["verdict"], "bundle-unverified"
+        )
+        self.assertEqual(self.s3.deleted, [])
+
+    def test_aware_stamps_unchanged_in_listing(self):
+        listed = self._listed()
+        self.assertEqual(
+            listed[self.keys["oldtimer"]]["last_modified"],
+            datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+
+class TestOffsetLessBackupPick(S3TestBase):
+    """backup_supabase picks the newest by LastModified with max():
+    a mixed listing used to crash the pick outright (#2110)."""
+
+    def test_newest_pick_ignores_offset_less_stamp(self):
+        aware_body = b"aware backup payload " * 10
+        aware_key = self.key_for(hashlib.sha256(aware_body).hexdigest())
+        naive_body = b"naive backup payload " * 10
+        naive_key = self.key_for(hashlib.sha256(naive_body).hexdigest())
+        self.s3.put(aware_key, aware_body, "2026-10-21T02:00:00.000Z")
+        # a later wall-clock reading, but its zone is unknown, so it
+        # is not evidence of newness and must not win the pick
+        self.s3.put(naive_key, naive_body, "2026-10-23T02:00:00.000")
+        self.s3.put(
+            "pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z"
+        )
+        result = self.store.backup_supabase()
+        self.assertEqual(result["source_key"], aware_key)
+        self.assertEqual(
+            result["sha256"], hashlib.sha256(aware_body).hexdigest()
+        )
+
+
 class TestEvictApply(EvictTestBase):
     def test_apply_deletes_only_evictable_and_records(self):
         scan = self.store.evict_scan(min_age_days=14, keep_newest=2)
