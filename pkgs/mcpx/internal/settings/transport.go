@@ -21,16 +21,20 @@ func transportSettings() []Setting {
 		},
 		{
 			Path: "transport.sessionMetaKeys", Scope: ScopeDaemon, Kind: KindList,
-			Default: defaults.CSV(defaults.TransportSessionMetaKeys), Repeatable: true,
-			Commands: []string{"daemon"},
-			Name:     "Session meta keys",
-			Short:    "_meta keys, in order, a client may name its own session with",
-			Long: "A client names its own session in a request's _meta, and the " +
-				"first key in this list that carries a non-empty string wins. " +
-				"The default reads dev.mcpx/session (mcpx's own key) and then " +
-				"ai.opencode/sessionID, the key OpenCode v2 sends on every " +
-				"tools/call, so each OpenCode session gets its own scope " +
-				"instead of sharing the daemon's. See docs/spec/identity.md.",
+			Default: defaults.CSV(defaults.TransportSessionMetaKeys), Repeatable: true, Hot: true,
+			Commands: []string{"daemon", "serve"},
+			Name:     "Session _meta keys",
+			Short:    "the _meta keys a client may name its session with, first present wins",
+			Long: "Every request mcpx serves gets an identity, and a client that wants " +
+				"continuity across its calls names itself in `_meta`. This is the " +
+				"precedence list mcpx reads: the first key present on a request wins, " +
+				"and its value is used verbatim as the session id. mcpx's own " +
+				"dev.mcpx/session comes first so an explicit name beats the one a host " +
+				"attaches automatically; ai.opencode/sessionID is what opencode v2 puts " +
+				"on every tools/call, including calls from inside its code mode. A " +
+				"request that sends none keeps the fallback: its connection's identity " +
+				"where the transport gives one, otherwise its own call scope. " +
+				"See docs/spec/identity.md.",
 		},
 		{
 			Path: "transport.sseKeepAlive", Scope: ScopeDaemon, Kind: KindDuration,

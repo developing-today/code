@@ -44,3 +44,24 @@ is the validator the binary carries.
 - **Errors are flat and path-carrying.** A failed validation returns
   one line per problem in the form `$.count: got string, want integer`,
   so a caller can show a tool user exactly what to fix.
+
+## Output policy: `structuredContent` is warn-only
+
+Tool **inputs** are enforced: `internal/mcpclient` validates CallTool
+arguments against the tool's `inputSchema` and rejects invalid arguments
+before the transport (error -32602; design #1481, Phase 2 #1483).
+
+Tool **outputs** are deliberately **warn-only**. `checkToolOutput`
+(`internal/mcpclient/schemacheck.go`) validates a result's
+`structuredContent` against the tool's `outputSchema`, but a violation
+does not change the result: it is delivered unchanged and a `Warning`
+("structuredContent violates outputSchema (delivered unchanged)") is
+recorded instead.
+
+Rationale: mcpx is a gateway for servers it does not control. Rejecting
+an otherwise usable result because a third-party server's output drifts
+from its declared `outputSchema` would break working integrations for a
+documentation defect in someone else's schema; a warning keeps the
+drift visible without making mcpx the enforcement point. Flipping
+outputs to enforcing is a separate decision, not a default that may be
+turned on by accident (see the design in #1481 and Phase 2 in #1483).

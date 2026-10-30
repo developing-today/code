@@ -246,7 +246,7 @@ func (r *Registry) ObserveCatalog() {
 	for _, ch := range changes {
 		r.logf("catalog: %s %s", ch.Tool, ch.What)
 		r.publish(events.Event{
-			Kind: events.Kind("catalog.changed"), Data: mustJSON(ch),
+			Kind: events.CatalogChanged, Data: mustJSON(ch),
 		})
 	}
 }
@@ -322,7 +322,7 @@ func (r *Registry) disambiguate(ctx context.Context, p *pool.Pool, cc config.Cal
 		r.logf("disambiguate %s: %v", p.Name(), err)
 		return fallback
 	}
-	r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(opened)})
+	r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(elicitEventSummary(opened))})
 
 	actx, cancel := context.WithTimeout(ctx, r.consumer.AskTimeout)
 	defer cancel()
@@ -421,7 +421,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 	if err != nil {
 		return err
 	}
-	r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(opened)})
+	r.publish(events.Event{Kind: events.ElicitOpened, Server: p.Name(), Data: mustJSON(elicitEventSummary(opened))})
 
 	actx, cancel := context.WithTimeout(ctx, r.consumer.AskTimeout)
 	defer cancel()
@@ -502,7 +502,7 @@ func (s *Server) elicitPlaceholders(ctx context.Context, r recipes.Recipe,
 	if err != nil {
 		return nil, "", err
 	}
-	s.reg.publish(events.Event{Kind: events.ElicitOpened, Data: mustJSON(opened)})
+	s.reg.publish(events.Event{Kind: events.ElicitOpened, Data: mustJSON(elicitEventSummary(opened))})
 
 	actx, cancel := context.WithTimeout(ctx, s.consumer.policy.AskTimeout)
 	defer cancel()

@@ -74,7 +74,10 @@ const UNIT_MAP: Partial<Record<UsageUnit, SnapshotRecord["unit"]>> = {
   count: "count",
   gb: "gb",
   usd: "usd",
+  cny: "cny",
   pct: "pct",
+  minutes: "minutes",
+  hours: "hours",
 };
 
 /** Family-2 services: every measured metric becomes one record at the
@@ -151,6 +154,41 @@ export function recordsFromPaygLines(lines: PaygLine[], observedBy: string): Sna
     }
   }
   return out;
+}
+
+/**
+ * The DeepSeek PAYG reserve's balance read (#1052): the dated ¥
+ * observation the v1 backfill skipped because the unit enum had no
+ * CNY. It is stored as unit "cny" with the yuan figure kept exactly
+ * as read — there is no FX rate here and never a converted USD value.
+ * The metric id is the gatherer's own window name ("credits_balance")
+ * so a backfilled point and a live gathered point are one series.
+ *
+ * Fail-soft: a section without a ¥ balance, or without any date to
+ * stamp it, yields no record — the caller warns instead of guessing.
+ */
+export function recordsFromDeepseekBalance(quotaViewText: string, observedBy: string): SnapshotRecord[] {
+  const section = sectionOf(quotaViewText, /DeepSeek/i);
+  if (!section) return [];
+  const line = section.split("\n").find((l) => /¥/.test(l));
+  if (!line) return [];
+  const amount = /¥\s*([\d,]+(?:\.\d+)?)/.exec(line);
+  if (!amount) return [];
+  const value = Number(amount[1].replace(/,/g, ""));
+  if (!Number.isFinite(value)) return [];
+  const date = /\d{4}-\d{2}-\d{2}/.exec(line)?.[0] ?? lastCheckedDate(section) ?? freshestDate(section);
+  if (!date) return [];
+  return [
+    {
+      ts: dayTs(date),
+      serviceId: "deepseek:api",
+      metricId: "credits_balance",
+      value,
+      unit: "cny",
+      source: "api",
+      observedBy,
+    },
+  ];
 }
 
 /** Family-1 pools: window percentages / USD usage, stamped with the

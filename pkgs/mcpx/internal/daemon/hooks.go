@@ -91,6 +91,38 @@ func (r *Registry) publish(e events.Event) {
 	}
 }
 
+// elicitEventSummary is the only shape of an elicitation that may go
+// on the event bus (#1677, design #1675 Phase 2): id, server, tool,
+// mode, audience, state, expiry. Never a question's message, schema or
+// url, and never an answer's content -- the bus has no field-level
+// filtering, so every future subscriber would inherit whatever is
+// published here. Anyone who needs the question itself reads it from
+// the broker (Broker.Get / Broker.Await), which is the read path the
+// shrink points consumers at.
+func elicitEventSummary(req elicit.Request) map[string]any {
+	return map[string]any{
+		"id":       req.ID,
+		"server":   req.Server,
+		"tool":     req.Tool,
+		"mode":     string(req.Mode),
+		"audience": string(req.Audience),
+		"state":    string(req.State),
+		"expiry":   req.ExpiresAt,
+	}
+}
+
+// elicitAnsweredSummary is elicitEventSummary for the answer event:
+// the question's identity fields, with the state the answer settled
+// it into (expired when the answer came from expiry, per Respond).
+func elicitAnsweredSummary(req elicit.Request, ans elicit.Answer) map[string]any {
+	out := elicitEventSummary(req)
+	out["state"] = string(elicit.Answered)
+	if ans.By == "expiry" {
+		out["state"] = string(elicit.Expired)
+	}
+	return out
+}
+
 func mustJSON(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -162,13 +194,13 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	// this and is still correct.
 	callID, _ := r.attach(ctx, server, key, req, "elicitation/create", params)
 	r.publish(events.Event{Kind: events.ElicitOpened, Server: server, Trace: callID,
-		Data: mustJSON(req)})
+		Data: mustJSON(elicitEventSummary(req))})
 
 	ans, err := r.broker.Await(ctx, req.ID)
 	if err != nil {
 		return map[string]any{"action": "cancel"}, nil
 	}
-	r.publish(events.Event{Kind: events.ElicitAnswered, Server: server, Data: mustJSON(ans)})
+	r.publish(events.Event{Kind: events.ElicitAnswered, Server: server, Data: mustJSON(elicitAnsweredSummary(req, ans))})
 
 	out := map[string]any{"action": string(ans.Action)}
 	if ans.Action == elicit.Accept && len(ans.Content) > 0 {
@@ -192,6 +224,17 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	}
 	_ = json.Unmarshal(params, &p)
 
+	// The request is checked against the era the upstream negotiated before
+	// anybody is asked: a message list that is not sampling's shape is the
+	// server's mistake, and -32602 says so without a question nobody could
+	// answer well. No era on the context means this was called outside a
+	// connection's answer path (tests), where the permissive union applies.
+	era, known := mcpclient.SamplingEraFrom(ctx)
+	arrayOK := !known || era.Negotiated == "" || era.Negotiated >= "2025-11-25"
+	if err := elicit.ValidateSampleRequest(params, arrayOK); err != nil {
+		return nil, &elicit.SamplingInvalidParams{Err: err}
+	}
+
 	req, err := r.broker.OpenRequest(elicit.Request{
 		Server: server,
 		Trace:  r.askIDFor(ctx, server, key),
@@ -210,18 +253,28 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	}
 	callID, _ := r.attach(ctx, server, key, req, "sampling/createMessage", params)
 	r.publish(events.Event{Kind: events.SampleOpened, Server: server, Trace: callID,
-		Data: mustJSON(req)})
+		Data: mustJSON(elicitEventSummary(req))})
 
 	ans, err := r.broker.Await(ctx, req.ID)
 	if err != nil {
 		return nil, err
 	}
-	r.publish(events.Event{Kind: events.SampleAnswered, Server: server, Data: mustJSON(ans)})
+	r.publish(events.Event{Kind: events.SampleAnswered, Server: server, Data: mustJSON(elicitAnsweredSummary(req, ans))})
 
+	// An expired wait is not a refusal: nobody was there to refuse. The
+	// broker synthesizes the expiry answer itself (Action cancel, By
+	// "expiry"), so By is the only thing that tells it apart from a real
+	// cancel -- and the upstream must hear it as an internal failure
+	// (-32603) that names the expiry, never as a user rejection.
+	if ans.By == "expiry" {
+		return nil, mcpclient.InternalError("the sampling request expired before anyone answered it")
+	}
 	// Declining a sampling request is a refusal the server must hear as an
 	// error; there is no "decline" result shape for it in the specification.
+	// The 2025-11-25 sampling error table assigns it -1, so the upstream
+	// can tell a refusal apart from an internal failure.
 	if ans.Action != elicit.Accept {
-		return nil, errors.New("the sampling request was " + string(ans.Action))
+		return nil, mcpclient.UserRejectedError("the sampling request was " + string(ans.Action))
 	}
 	var result map[string]any
 	if err := json.Unmarshal(ans.Content, &result); err != nil {
@@ -233,14 +286,18 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	if result == nil {
 		return nil, errors.New("a sampling answer must be a CreateMessageResult, not null")
 	}
-	// The two fields a server relies on. Filled if the answerer left them
-	// out, since a result without a role or a model is rejected by strict
-	// servers for a reason unrelated to its content.
-	if _, ok := result["role"]; !ok {
-		result["role"] = "assistant"
+	// Role and model are no longer filled in when the answerer leaves them
+	// out: a result that is not a CreateMessageResult is refused upstream as
+	// -32602, and inventing a role or a model for it hid that from the
+	// server that asked. A model hint is still not checked -- hints are
+	// expressly ignorable, so a mismatch is not a failure.
+	var carriedTools struct {
+		Tools json.RawMessage `json:"tools"`
 	}
-	if _, ok := result["model"]; !ok {
-		result["model"] = "unknown"
+	_ = json.Unmarshal(params, &carriedTools)
+	tools := len(carriedTools.Tools) > 0 && string(carriedTools.Tools) != "null"
+	if err := elicit.ValidateSampleResult(ans.Content, arrayOK, tools); err != nil {
+		return nil, &elicit.SamplingInvalidParams{Err: err}
 	}
 	return result, nil
 }

@@ -24,6 +24,10 @@ const MetaOpenCodeSession = "ai.opencode/sessionID"
 // carries a non-empty string names the session.
 var DefaultSessionMetaKeys = []string{MetaSession, MetaOpenCodeSession}
 
+// MetaSessionOpenCode is the same key under the name main's wp11 tests
+// use; both spellings name the one constant above.
+const MetaSessionOpenCode = MetaOpenCodeSession
+
 // IdentitySource says where a request's identity came from, which decides
 // what the backend may build from it.
 type IdentitySource string

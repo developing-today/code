@@ -126,6 +126,47 @@ func TestEachConnectionHasItsOwnIdentity(t *testing.T) {
 		}
 	})
 
+	t.Run("2026-07-28/transport/opencode-session-id-names-the-client", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSessionOpenCode] = "ses_opencode_1"
+		postMCP(t, s, "", mcpserver.Request(6, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityClient || id.Key != "ses_opencode_1" {
+			t.Fatalf("an opencode session id should name the client, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/mcpx-name-wins-over-the-host-key", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = "agent-7"
+		meta[mcpserver.MetaSessionOpenCode] = "ses_opencode_1"
+		postMCP(t, s, "", mcpserver.Request(7, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityClient || id.Key != "agent-7" {
+			t.Fatalf("the first configured key should win, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/empty-session-name-is-not-an-identity", func(t *testing.T) {
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = ""
+		postMCP(t, s, "", mcpserver.Request(8, "tools/call", echoCallParams(meta)))
+		if id := b.last(t); id.Source != mcpserver.IdentityNone || id.Key != "" {
+			t.Fatalf("an empty name should fall through, got %+v", id)
+		}
+	})
+
+	t.Run("2026-07-28/transport/configured-keys-replace-the-default-list", func(t *testing.T) {
+		b2 := &identityBackend{fakeBackend: newBackend()}
+		s2 := mcpserver.New(b2, "mcpx", "test")
+		s2.SessionMetaKeys = func() []string { return []string{mcpserver.MetaSessionOpenCode} }
+		meta := modernParams(nil)["_meta"].(map[string]any)
+		meta[mcpserver.MetaSession] = "ignored"
+		meta[mcpserver.MetaSessionOpenCode] = "ses_only"
+		postMCP(t, s2, "", mcpserver.Request(9, "tools/call", echoCallParams(meta)))
+		if id := b2.last(t); id.Source != mcpserver.IdentityClient || id.Key != "ses_only" {
+			t.Fatalf("the configured list should decide, got %+v", id)
+		}
+	})
+
 	t.Run("2025-11-25/transport/stdio-connection-is-the-process", func(t *testing.T) {
 		s.Handle(context.Background(), mcpserver.Request(5, "tools/call", echoCallParams(nil)))
 		if id := b.last(t); id.Source != mcpserver.IdentityProcess {

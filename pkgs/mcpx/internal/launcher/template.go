@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dezren39/mcpx/internal/nearmiss"
 )
 
 // Placeholder is a name that may appear in a launcher template as @name.
@@ -145,7 +147,10 @@ func expand(text string, fill Fill, opt Options, counts map[Placeholder]int, dep
 		// outer one for the parameter names, so @console(header, prefix)
 		// reaches exactly those fragments and nothing leaks back out.
 		inner := fill
-		if ref.HasArgs {
+		if ref.HasArgs || defHasDefaults(opt.Defs, ref.Name) {
+			// A bare use of a placeholder whose declaration carries
+			// defaults still binds them (#1852): omitting the
+			// parentheses omits every argument.
 			inner = withArgs(fill, ref, opt.Defs)
 		}
 		sub, err := expand(body, inner, opt, counts, depth+1)
@@ -156,6 +161,17 @@ func expand(text string, fill Fill, opt Options, counts map[Placeholder]int, dep
 		i = j + ref.Width
 	}
 	return b.String(), nil
+}
+
+// defHasDefaults reports whether the named definition declares any
+// parameter default (#1852).
+func defHasDefaults(defs []Definition, name Placeholder) bool {
+	for _, d := range defs {
+		if d.Name == name {
+			return len(d.Defaults) > 0
+		}
+	}
+	return false
 }
 
 // withArgs layers a definition's parameters over the outer fill.
@@ -169,9 +185,11 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		inner[k] = v
 	}
 	var params []string
+	var defaults map[string]string
 	for _, d := range defs {
 		if d.Name == ref.Name {
 			params = d.Params
+			defaults = d.Defaults
 			break
 		}
 	}
@@ -188,6 +206,37 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		}
 		inner[Placeholder(fmt.Sprint(i+1))] = value
 	}
+	// Defaults (#1852): a parameter the use did not supply binds its
+	// declared default, resolved exactly like an argument — a default
+	// naming another placeholder expands to it, anything else is used
+	// verbatim (quotes included, as an explicit quoted argument is).
+	for i, name := range params {
+		if i < len(ref.Args) {
+			continue // an explicit argument always wins
+		}
+		def, ok := defaults[name]
+		if !ok {
+			continue
+		}
+		value := def
+		if refName, isRef := strings.CutPrefix(def, "@"); isRef && validName(refName) {
+			// A default spelled @name is a placeholder reference, not
+			// literal text: explicit arguments arrive with the @
+			// already stripped by readRef, so normalise the default
+			// the same way before resolving it against the outer fill
+			// (Codex review, PR #2442). Without this, wrap(entry =
+			// @entry) binds the parameter to its own spelling and the
+			// body refers to itself until the depth bound stops it.
+			value = refName
+			if body, ok := outer[Placeholder(refName)]; ok {
+				value = body
+			}
+		} else if body, ok := outer[Placeholder(def)]; ok {
+			value = body
+		}
+		inner[Placeholder(name)] = value
+		inner[Placeholder(fmt.Sprint(i+1))] = value
+	}
 	joined := make([]string, 0, len(ref.Args))
 	for _, a := range ref.Args {
 		if body, ok := outer[Placeholder(a)]; ok {
@@ -196,7 +245,11 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		}
 		joined = append(joined, a)
 	}
-	inner["args"] = strings.Join(joined, "\n")
+	if ref.HasArgs {
+		// @args is the arguments the use actually passed; a bare use
+		// (defaults only) leaves the outer @args alone.
+		inner["args"] = strings.Join(joined, "\n")
+	}
 	return inner
 }
 
@@ -340,71 +393,19 @@ func checkUnknown(t Template, fill Fill) error {
 
 // looksLikePlaceholder is a near-miss test against the known names. It is
 // deliberately narrow: the cost of a false positive is refusing a valid
-// launcher, which is worse than letting an odd @word through.
+// launcher, which is worse than letting an odd @word through. The test
+// itself is the shared one in internal/nearmiss (#1904): equality after
+// normalisation, the prefix rule, or Damerau-Levenshtein distance at most
+// one -- the transposition case ("entyr" for "entry") is one edit there,
+// where this file used to keep its own pair of helpers to say the same
+// thing.
 func looksLikePlaceholder(name string) bool {
-	lower := strings.ToLower(name)
 	for _, p := range All {
-		known := strings.ToLower(string(p))
-		if lower == known {
-			return true
-		}
-		if len(lower) > 2 && (strings.HasPrefix(known, lower) || strings.HasPrefix(lower, known)) {
-			return true
-		}
-		if editDistanceAtMostOne(lower, known) || isTransposition(lower, known) {
+		if nearmiss.Near(name, string(p)) {
 			return true
 		}
 	}
 	return false
-}
-
-// isTransposition catches a swapped pair, which plain edit distance scores as
-// two changes. Swaps are among the most common typos -- "entyr" for "entry" --
-// so treating them as one is what makes the check useful.
-func isTransposition(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var diff []int
-	for i := range a {
-		if a[i] != b[i] {
-			diff = append(diff, i)
-			if len(diff) > 2 {
-				return false
-			}
-		}
-	}
-	return len(diff) == 2 && diff[1] == diff[0]+1 &&
-		a[diff[0]] == b[diff[1]] && a[diff[1]] == b[diff[0]]
-}
-
-func editDistanceAtMostOne(a, b string) bool {
-	if a == b {
-		return true
-	}
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	if len(b)-len(a) > 1 {
-		return false
-	}
-	i, j, edits := 0, 0, 0
-	for i < len(a) && j < len(b) {
-		if a[i] == b[j] {
-			i++
-			j++
-			continue
-		}
-		edits++
-		if edits > 1 {
-			return false
-		}
-		if len(a) == len(b) {
-			i++
-		}
-		j++
-	}
-	return true
 }
 
 func max(a, b int) int {

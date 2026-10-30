@@ -53,6 +53,17 @@ Lowest to highest:
 what it displaced. "Why is this not what my config says" is the most common
 configuration question there is, and the answer is always in that list.
 
+The search path itself is decided before any of those layers exist, in two
+passes. The discovery pass walks the default locations, seeded by
+`MCPX_PATHS_CONFIG` / `--paths-config`, and reads only `paths.config`. The
+load pass resolves that list and loads everything on it, nearest last: a
+file's `paths.config` governs the rest of the chain from that point, a null
+entry stands for the locations the default walk provided, and a list with
+no null replaces the farther remainder. A `paths.config` found only in the
+load pass is reported by `mcpx config --sources`, not applied, and a cycle
+is refused naming the path that closed it. `MCPX_CONFIG` bypasses both
+passes and loads exactly one file.
+
 Two spellings of one setting at the same level is an error rather than a race:
 `--log-level` and `--logging-level` together, or two variables that mean the
 same thing with different values. The environment has no order, so there is
@@ -307,6 +318,10 @@ and a switch to turn the report off would have kept it quiet.
 | `daemon.saveInterval` | duration | `5m` | daemon | no | `--daemon-save-interval` | `MCPX_DAEMON_SAVE_INTERVAL` | *(plumbing)* how often daemon state is written to disk |
 | `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
 | `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
+| `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name |
+| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate |
+| `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard |
+| `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard |
 | `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup |
 | `daemon.warmTimeout` | duration | `3m0s` | daemon | no | `--daemon-warm-timeout` | `MCPX_DAEMON_WARM_TIMEOUT` | *(plumbing)* how long the background schema fetch may take |
 | `daemon.watchConfig` | bool | `true` | daemon | yes | `--daemon-watch-config` | `MCPX_DAEMON_WATCH_CONFIG` | re-read the configuration files when they change on disk |
@@ -332,7 +347,9 @@ and a switch to turn the report off would have kept it quiet.
 | `elicit.confirmDestructive` | bool | `false` | daemon | no | `--elicit-confirm-destructive` | `MCPX_ELICIT_CONFIRM_DESTRUCTIVE` | ask before a call to a tool that may be destructive |
 | `elicit.disambiguate` | enum | `never` | daemon | no | `--elicit-disambiguate` | `MCPX_ELICIT_DISAMBIGUATE` | ask which instance of a stateful server to use when several are live and the script did not choose |
 | `elicit.disambiguateDefault` | enum | `new` | daemon | no | `--elicit-disambiguate-default` | `MCPX_ELICIT_DISAMBIGUATE_DEFAULT` | which instance is used when nobody answers in time: the one the scope would have chosen, or the most recently used |
+| `elicit.maxAge` | duration | `30m` | daemon | no | `--elicit-max-age` | `MCPX_ELICIT_MAX_AGE` | the absolute ceiling on a question's life, however often it is read |
 | `elicit.pendingLimit` | int | `100` | daemon | yes | `--elicit-pending-limit` | `MCPX_ELICIT_PENDING_LIMIT` | *(plumbing)* how many unanswered questions one listing returns |
+| `elicit.ttl` | duration | `120s` | daemon | no | `--elicit-ttl` | `MCPX_ELICIT_TTL` | how long a question waits for an answer, renewed by use |
 
 ### embeddings
 
@@ -363,7 +380,9 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `hooks` | string | *(empty)* | daemon | no | `--hooks` | `MCPX_HOOKS` | config-declared hooks over the event bus: a JSON array of hook objects |
 | `hooks.autonomy` | enum | `run` | call | yes | `--hooks-autonomy` | `MCPX_HOOKS_AUTONOMY` | whether configured script hooks (before, onSuccess, onError) run |
+| `hooks.timeout` | duration | `2s` | daemon | no | `--hooks-timeout` | `MCPX_HOOKS_TIMEOUT` | the hard timeout for a declared hook that does not set its own |
 
 ### http
 
@@ -430,6 +449,7 @@ and a switch to turn the report off would have kept it quiet.
 | `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for |
 | `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching |
 | `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders |
+| `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins |
 | `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for |
 | `paths.state` | string | *(empty)* | client | no | `--paths-state` | `MCPX_PATHS_STATE`, `MCPX_STATE_DIR` | where the daemon socket, logs and index live |
 
@@ -621,7 +641,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp |
-| `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | no | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | _meta keys, in order, a client may name its own session with |
+| `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins |
 | `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line |
 | `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes |
 
@@ -634,3 +654,29 @@ and a switch to turn the report off would have kept it quiet.
 | `upstream.protocol` | enum | `prefer-discover` | daemon | no | `--upstream-protocol` | `MCPX_UPSTREAM_PROTOCOL` | which request to send first to a server that names no protocol of its own; one of prefer-discover (also modern, prefer-modern, prefer-stateless, prefer-newest), prefer-initialize (also legacy, prefer-legacy, prefer-session, prefer-oldest), force-discover (also force-modern, force-stateless), force-initialize (also force-legacy, force-session), follow |
 
 <!-- END GENERATED -->
+
+## Adapter declarations
+
+An entry in a `paths.adapters` file names a program and the subcommands worth
+exposing. `command` is normally a binary on `PATH`; `runtime` makes it a
+script instead, and resolves the interpreter for you:
+
+```jsonc
+{ "adapters": [{
+  "name": "reports", "command": "./tools/report.py", "runtime": "py",
+  "tools": [{ "name": "daily", "params": [{ "name": "day", "required": true }] }]
+}] }
+```
+
+`runtime` is `bash`, `js`, `ts` or `py`. bash resolves `bash` (then `sh`), py
+resolves `python3` (then `python`), and js/ts use the same deno/bun/node order
+`script.runtimeOrder` chooses for `mcpx exec`. This is a separate resolver on
+purpose: `script.runtime` names the runtime mcpx itself executes generated
+scripts on, not the one a declaration asks for. A relative `command` resolves
+against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
+changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
+check` reports a missing interpreter or script.
+
+`mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
+exposed against the recipe budget, and which recipes were kept out by a name
+collision or the cap.

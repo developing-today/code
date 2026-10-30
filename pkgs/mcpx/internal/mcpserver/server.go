@@ -216,15 +216,15 @@ type Server struct {
 	// value here -- "immediately stale" -- so it is not a sentinel.
 	Cache Cache
 
-	// SessionMetaKeys is the configured list of _meta keys, in order,
-	// that a client may name its own session with
-	// (transport.sessionMetaKeys). Nil uses DefaultSessionMetaKeys.
-	SessionMetaKeys func() []string
-
 	// MaxCompletions caps a completion/complete reply, read on every
 	// request because the setting behind it is hot. Nil, or a value <= 0,
 	// uses the built-in default.
 	MaxCompletions func() int
+
+	// SessionMetaKeys is the _meta keys a request may name its session
+	// with, in precedence order, read on every request because the setting
+	// behind it is hot. Nil or empty means DefaultSessionMetaKeys.
+	SessionMetaKeys func() []string
 
 	// Timing is the ask loop's policy. A zero field means the built-in
 	// default; the whole struct zero is what a test that does not care
@@ -1041,8 +1041,17 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 			// error. The distinction matters: a protocol error means the
 			// client did something wrong, and a client that retries the
 			// wrong thing on a tool failure never converges.
+			//
+			// Text the tool returned alongside the error stays in the
+			// result: for a recipe that is its stdout/stderr, which is
+			// the diagnostics the caller needs. Dropping it left only
+			// "recipe exited with code N" to debug from.
+			errText := err.Error()
+			if text != "" && text != errText {
+				errText = text + "\n\n" + errText
+			}
 			return reply(map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": err.Error()}},
+				"content": []any{map[string]any{"type": "text", "text": errText}},
 				"isError": true,
 			})
 		}
