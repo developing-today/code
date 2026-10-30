@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/launcher"
+	"github.com/developing-today/code/pkgs/mcpx/internal/launcher"
 )
 
 func write(t *testing.T, dir, name, body string) string {

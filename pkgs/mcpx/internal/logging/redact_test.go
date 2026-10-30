@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 func TestRedactElidesByNameAndByValue(t *testing.T) {

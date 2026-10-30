@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // orphanUpstream is a legacy streamable HTTP server that issues a session id

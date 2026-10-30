@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
 )
 
 func opts(dir string) source.Options {

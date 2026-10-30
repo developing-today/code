@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // #1602: the client surfaces upstream ttlMs/cacheScope hints instead of

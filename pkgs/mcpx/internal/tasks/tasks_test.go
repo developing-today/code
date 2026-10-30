@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 func TestAResultIsWaitedForRatherThanPolledFor(t *testing.T) {

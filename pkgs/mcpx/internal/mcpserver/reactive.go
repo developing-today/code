@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 )
 
 // reactiveSurface builds the dynamic tool surface for Mode 2 reactive discovery.

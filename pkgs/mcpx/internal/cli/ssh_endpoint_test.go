@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // The ssh transport runs the system ssh binary. These tests put a fake

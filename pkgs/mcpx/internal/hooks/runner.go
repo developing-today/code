@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // queueDepth bounds one hook's backlog. A hook that falls behind loses

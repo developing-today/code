@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/eventstore"
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/eventstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 func openStore(t *testing.T) *eventstore.Store {

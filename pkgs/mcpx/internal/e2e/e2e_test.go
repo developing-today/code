@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/cli"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 
 	_ "modernc.org/sqlite"
 )

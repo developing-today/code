@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 func render(t *testing.T, f logging.Format, r logging.Record) string {

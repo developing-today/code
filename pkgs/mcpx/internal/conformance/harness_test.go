@@ -40,10 +40,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/conformance"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/mcpspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpspec"
 )
 
 const (
