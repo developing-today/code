@@ -53,13 +53,13 @@ bullet). Verified against `pkgs/id` (wave 1, 2026-10-29; re-verified
   (`src/event_store/ingest.rs`). A player who rewrites a signed chain
   manufactures their own cheating evidence.
 - **Missing prerequisite — player-signed move capture (found in review,
-  2026-10-30):** the world/game path does *not* produce player-signed
+  2026-10-30):** the world/game path does _not_ produce player-signed
   move chains today. `WorldEvent` (`src/world/mod.rs`) carries only a
   host sequence, a server-assigned participant ID, and a payload — no
   signature, no chain link — and the actor persists game inputs as
   `JournalEntry::Committed` (`src/world/actor.rs`) without signing
   through `chain.rs`. The tic-tac-toe example uses this path. So the
-  move-evidence guarantees below (witness replay over *signed* logs,
+  move-evidence guarantees below (witness replay over _signed_ logs,
   fork-proofs voiding a rewritten move history) hold only once game
   inputs are captured as player-signed chained events and integrated
   with the event store. That capture layer is a buildable prerequisite
@@ -74,16 +74,16 @@ bullet). Verified against `pkgs/id` (wave 1, 2026-10-29; re-verified
 
 ## The objects (all ordinary signed events in the graph)
 
-1. **Match agreement (genesis)** — signed by *both* players before play:
+1. **Match agreement (genesis)** — signed by _both_ players before play:
    game/program identity **including the rules/logic hash**, the two
    player IDs, start conditions, the **named witness** (and fallback),
    the objection-window length, and the log-submission rule (below).
    Pre-committing the witness and the logic hash at genesis is the single
    most important design decision in this document: everything after the
-   match is mechanical *because* the trust choices were made before
+   match is mechanical _because_ the trust choices were made before
    anyone knew who would lose.
 2. **Result claim** (per player, at match end) — `{match, outcome as the
-   author asserts it, final-state hash, frontier hashes of both chains}`
+author asserts it, final-state hash, frontier hashes of both chains}`
    signed by the author. Each player files one; neither player's claim
    alone is a result.
 3. **Witness decision** — `{match, logic hash, outcome, evidence}`
@@ -93,20 +93,20 @@ bullet). Verified against `pkgs/id` (wave 1, 2026-10-29; re-verified
      case: issued after running the agreed logic over both submitted
      logs; or
    - `partial {received: [the claim/log hashes actually submitted],
-     missing_from: <player>, basis: <the genesis agreement's
-     non-submission clause + the submission deadline + the witness's
-     signed non-receipt statement>}` — the non-submission case (below):
+missing_from: <player>, basis: <the genesis agreement's
+non-submission clause + the submission deadline + the witness's
+signed non-receipt statement>}` — the non-submission case (below):
      the decision rests on the submitted evidence plus the recorded
      absence of the rest.
-   A decision whose `evidence` is `partial` is only valid if its
-   `basis` checks out against the genesis agreement; that is what keeps
-   silence from blocking adjudication without letting a witness invent
-   a no-evidence decision (review fix, 2026-10-30: as first written,
-   the decision required both claims and both logs, so the
-   non-submission rule could never actually be exercised).
+     A decision whose `evidence` is `partial` is only valid if its
+     `basis` checks out against the genesis agreement; that is what keeps
+     silence from blocking adjudication without letting a witness invent
+     a no-evidence decision (review fix, 2026-10-30: as first written,
+     the decision required both claims and both logs, so the
+     non-submission rule could never actually be exercised).
 4. **Objection** — `{target: claim or decision, grounds, author's
-   frontier}` signed by either player within the window. An objection
-   never edits anything; it moves the result to *disputed*.
+frontier}` signed by either player within the window. An objection
+   never edits anything; it moves the result to _disputed_.
 5. **Receipt/frontier evidence** — no new object: objections and claims
    cite chain frontiers, so "when could this author first have seen the
    decision?" is answerable from the chains themselves (used by the
@@ -115,7 +115,7 @@ bullet). Verified against `pkgs/id` (wave 1, 2026-10-29; re-verified
 ## Result states (computed by any viewer from the objects — no server decides)
 
 `proposed` (one claim) → **`agreed`** (both claims concur — the chess
-concession case: the loser's signed claim naming the winner *is* the
+concession case: the loser's signed claim naming the winner _is_ the
 concession, no separate object needed) → **`final`** (agreed results are
 final immediately; witnessed results become final when the window closes
 unobjected) · `witnessed` (decision issued, window open) · **`disputed`**
@@ -125,11 +125,11 @@ validity rule below for why this is an attestation-layer computation,
 not a store behavior).
 
 **Validity rule (attestation layer, required — not a store
-guarantee):** the store's fork rule voids the *forked author's own*
+guarantee):** the store's fork rule voids the _forked author's own_
 events and reaches no other author's events
 (`src/event_store/resolve.rs`: "it reaches no other author's events";
 content naming a voided event can remain applied). A witness decision
-or a counterparty claim that *references* a forked move chain therefore
+or a counterparty claim that _references_ a forked move chain therefore
 does **not** collapse on its own. So before a counting view assigns any
 state beyond `proposed`, it must verify the whole evidence set: every
 object the state depends on (agreement, claims, decision) is itself
@@ -157,13 +157,13 @@ stateDiagram-v2
 A result "counts" only relative to a counting view (the #2030 model): a
 casual tracker may count `agreed`; a tournament registry counts only
 `final`, and only for matches whose agreement names an acceptable
-witness/logic hash. Attestation proves *agreement and process*, never
+witness/logic hash. Attestation proves _agreement and process_, never
 metaphysical truth — registries set their own bar on top.
 
 ## Witness selection and trust
 
 - **Ex ante or never:** the witness is named in the genesis agreement by
-  both players. A witness proposed *after* a dispute is witness-shopping
+  both players. A witness proposed _after_ a dispute is witness-shopping
   and the protocol gives it no standing.
 - **The witness judges data, not testimony:** they run the agreed logic
   (hash pinned at genesis) over both players' submitted move logs.
@@ -193,9 +193,9 @@ metaphysical truth — registries set their own bar on top.
   in-window if (a) signed within the window after the decision, **or**
   (b) the objector's chain frontier shows the objection was among their
   first actions after first syncing the decision — i.e. they objected
-  promptly *once they could have seen it*.
+  promptly _once they could have seen it_.
 - **Honesty limit on (b) (found in review, 2026-10-30):** a frontier
-  proves the causal order of what its author *chose to include*, not
+  proves the causal order of what its author _chose to include_, not
   when the author first saw an object. Frontiers are self-authored: a
   player who received the decision on day 1 can omit it from every
   subsequent frontier and first reference it in an objection on day 20,
@@ -243,7 +243,7 @@ at genesis; objection window 48h with the 30-day outer cap.
    witness W, window 48h, non-submission rule on.
 2. They play; B's last move completes A's line — A wins on the board.
 3. B files a result claim: "A won", final-state hash, both chain
-   frontiers. *This signed claim is the concession* — no separate
+   frontiers. _This signed claim is the concession_ — no separate
    concession object exists or is needed.
 4. A files a concurring claim. Two concurring claims ⇒ state `agreed`
    ⇒ `final` immediately. No witness involvement, no window wait.
@@ -267,7 +267,7 @@ at genesis; objection window 48h with the 30-day outer cap.
 ### 3. An objected result
 
 1. As in example 2, W issues a decision — but this time the decision is
-   wrong (W ran a stale build whose logic hash does *not* match the
+   wrong (W ran a stale build whose logic hash does _not_ match the
    agreement; or W colludes with A).
 2. B objects within the window: objection cites the decision, grounds
    ("logic hash mismatch" / "replay contradicts outcome"), and B's
@@ -278,7 +278,7 @@ at genesis; objection window 48h with the 30-day outer cap.
    replay outcome is the result a counting view uses.
 4. W's signed, replay-contradicted decision remains in the graph
    permanently: signed evidence against W, computable into W's public
-   track record by any view. The *remedy* for the match itself (beyond
+   track record by any view. The _remedy_ for the match itself (beyond
    counting the replay outcome) is registry policy — flagged for #2039.
 
 ### 4. An offline game synced later
@@ -316,7 +316,7 @@ at genesis; objection window 48h with the 30-day outer cap.
 4. **Witness colludes with one player** → decision is signed; objection
    triggers audit replay (#2038) over the same logs + logic hash; a
    decision contradicted by replay is permanent signed evidence against
-   the witness. ⚠️ Detection is strong; *remedy* (what a registry does
+   the witness. ⚠️ Detection is strong; _remedy_ (what a registry does
    about the match) is registry policy — flagged for #2039.
 5. **Witness-shopping after a loss** → no standing: only the
    genesis-named witness (or fallback, on recorded non-response) can
@@ -350,7 +350,7 @@ ungated from this side. Open decisions it inherits from here:
   is enforceable (see the honesty limit on the frontier rule, above).
 - Witness non-response/fallback timing.
 - How registries express "acceptable witness/logic" policy (likely a
-  #2030 writer-set cousin — a *witness set* on the registry's view).
+  #2030 writer-set cousin — a _witness set_ on the registry's view).
 - Dispute-remedy policy (abuse case 4).
 
 ## Follow-on routing
