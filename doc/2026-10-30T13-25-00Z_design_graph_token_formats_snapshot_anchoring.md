@@ -155,6 +155,7 @@ for graph-native swaps, countersigned as part of the swap agreement, #2037 patte
 | key | type | notes |
 |---|---|---|
 | `offer` | hash | the offer **event ID** — a specific version, never "the current offer" |
+| `taker` | pubkey | the party debited `from_amount` and credited `to_amount` in the fold (§2 conversion fold); the offerer is the cited offer's author |
 | `offerer_frontier` | hash | the offerer's chain head the executor verified at execution time (§5) |
 | `from_amount` | u128 | debited from the taker |
 | `to_amount` | u128 | credited to the taker, after rounding (§5) |
@@ -212,8 +213,16 @@ chain). Cross-author ordering matters exactly where one object's validity
 depends on another author's object: a transfer's funding can include credits
 issued or sent by other authors, and a conversion depends on the offer. The
 fold therefore proceeds in **causal order**: an object is folded only after
-every object in its causal ancestry (the transitive closure of its header
-`after` frontier) has been folded. Within that constraint, author chains fold
+every object in its causal ancestry has been folded. **Causal ancestry** is
+the transitive closure over **both** kinds of parent link: the header
+`after` frontier *and* backlink parents (an author's own chain predecessors).
+Ordinary authoring excludes the author's own head from `after` because it is
+already the backlink (`pkgs/id/src/local_events.rs`), so an `after`-only
+closure would omit the author's own prior objects — the existing graph
+traversal already walks both link kinds (`pkgs/id/src/event_store/claims.rs`),
+and the fold uses the same definition everywhere: ordering, the credit
+frontier, and the §2 cap check all mean this closure when they say
+"ancestry". Within that constraint, author chains fold
 in sequence order and no other global order is needed — matching how the rest
 of the graph already folds.
 
@@ -267,7 +276,11 @@ cap. Burns outside the ancestry do not free capacity for it, exactly as
 credits outside a spend's frontier do not fund it (§2 credit frontier) — a
 concurrent independent burn therefore cannot make an issuance's validity
 depend on fold order. Two issuances racing past the cap are both on the
-issuer's own chain, so they are causally ordered by it: the earlier counts,
+issuer's own chain, so they are causally ordered by it — and because
+ancestry traverses backlinks (above), the later issuance's ancestry
+**always** includes the earlier one even when its `after` is empty: two
+consecutive issuances of 60 against a cap of 100 do not each check only
+their own 60; the second checks the cumulative 120 and is void. The earlier counts,
 the later is void, deterministically. Supply at any snapshot frontier is the
 same per-object rule evaluated over the frontier's event set, so honest
 folders with identical events always agree on supply and balances. A counting view (#2030) that serves
@@ -301,13 +314,56 @@ Without this rule a single refused payment would permanently freeze the
 refused amount in the graph fold while the ledger still shows it spendable —
 the two layers would contradict each other on every later payment.
 
+**Conversion fold (how conversions move folded balances).** Graph-native
+conversions need no extra rule: both legs are `token.transfer` objects and
+fold as transfers. Anchored conversions have no graph transfer objects —
+§1.6/§3 deliberately make the anchored legs ledger transfers referenced by
+stamp — so the **executed conversion receipt itself folds**, with exactly
+these movements, in the two currencies:
+
+- `from` currency: debit the receipt's `taker` by `from_amount`; credit the
+  offerer (the cited offer's author) by `from_amount`.
+- `to` currency: debit the offerer by `to_amount + spread_amount`; credit
+  the `taker` by `to_amount`; credit the spread leg's destination holder
+  by `spread_amount` (the destination the §3 leg set names — normally the
+  offerer as liquidity provider, in which case that credit nets against
+  the debit above).
+
+A receipt folds **only when the conversion is executed**: anchored, when
+its complete leg set validates via the §3 conversion-aware join; a receipt
+whose legs are pending, incomplete, or amount-mismatched folds nothing,
+and a graph-native receipt folds nothing beyond its two transfer legs
+(the receipt is their record, not a third movement). This rule is what
+§3 check 3 means by the fold over *executed* objects: without it, ledger
+balances would move on an anchored conversion while graph balances did
+not, and the executed-object root comparison would reject a correctly
+executed conversion.
+
 ## 3. Snapshot anchoring and the reconciliation join
 
 **Balance-root construction.** Collect `(holder_pubkey, counted_balance)` for
 every holder with a non-zero balance at the snapshot frontier, sort by pubkey
 bytes, and compute a BLAKE3 binary Merkle root over leaves
 `BLAKE3(pubkey ‖ balance_u128_le ‖ currency_id)`. Including the currency ID in
-every leaf means a root can never be replayed across currencies.
+every leaf means a root can never be replayed across currencies. The tree
+construction is fully specified — leaf encoding alone does not determine a
+root, and two implementations that differ on any point below produce
+different roots for identical balances:
+
+- **Leaves:** the leaf hashes above, in the sorted order; a leaf is level 0.
+- **Internal nodes:** pair adjacent nodes left-to-right at each level;
+  a parent is `BLAKE3(0x01 ‖ left ‖ right)` (the `0x01` domain byte keeps
+  internal preimages distinct from leaf preimages, whose first byte is a
+  pubkey byte).
+- **Odd node:** when a level has an odd number of nodes, the last node is
+  **promoted unchanged** to the next level — never duplicated, never
+  hashed with itself.
+- **Single leaf:** the root is that leaf's hash.
+- **Empty tree** (no non-zero holders): the root is `BLAKE3("")` — the
+  BLAKE3 hash of the empty input.
+
+Both roots in this section (`balance_root` and `ledger_accounts_root`)
+use exactly this construction.
 
 **Identity normalization (the two roots must hash the same preimages).**
 `ledger_accounts_root` is **not** computed over raw TigerBeetle account IDs:
@@ -398,7 +454,9 @@ Reconciliation at a snapshot is then a three-way mechanical check, in order:
    An unstamped or unresolvable transfer is value moved with no authorization
    on record — the anchored form of abuse case 1, and the check that exposes
    service collusion.
-3. **Roots:** the fold's `balance_root` over *executed* objects equals
+3. **Roots:** the fold's `balance_root` over *executed* objects — transfers,
+   issuances, and burns as folded in §2, plus executed conversion receipts
+   under the §2 conversion fold — equals
    `ledger_accounts_root`. (The intent fold may legitimately differ by
    unexecuted intents; those are enumerated by check 1, so the equality is
    over the executed subset — the snapshot's `issued`/`burned` are counted
@@ -428,7 +486,7 @@ other app functions); amounts are minor units.
 | `balance` | `(currency, of) → u128` | Counted balance: graph fold (graph binding) or ledger read (anchored). Never the asserted balance. |
 | `supply` | `(currency) → (issued, burned, counted_supply)` | §2 counted figures; anchored: executed figures per §3. |
 | `accept_payment` | `(currency, predicate{min_amount, memo_pattern}) → handler` | Registers the app's acceptance hook. On a matching transfer the host verifies, per binding (below), then fires the app's effect and emits a signed **`token.receipt`** (§1.8) naming the payment object ID and the effect taken — a non-monetary record kind, excluded from the fold and from ledger execution. Refund/revocation of what a payment bought is #2042's subject and is **not** specified here. |
-| `convert` | `(offer_id, amount) → ConversionReceipt` | Executes §5. Errors: `OfferNotFound`, `OfferSuperseded`, `OfferExpired`, `CapExceeded`, `NotEligibleTaker`, `InsufficientLiquidity` (anchored, atomic — no partial state), `CounterpartyLegMissing` (graph binding, after the agreement window — the receipt is replaced by the signed claim, §5). |
+| `convert` | `(offer_id, amount) → ConversionReceipt` | Executes §5. Errors: `OfferNotFound`, `OfferSuperseded`, `OfferExpired`, `CapExceeded`, `NotEligibleTaker`, `ZeroAmount` (the §5 step 3 zero-output rejection), `InsufficientLiquidity` (anchored, atomic — no partial state), `CounterpartyLegMissing` (graph binding, after the agreement window — the receipt is replaced by the signed claim, §5). |
 | `snapshot` | `(currency) → SnapshotObject` | Latest signed snapshot at or before the local frontier; `NoSnapshotYet` if none. Verification of a snapshot is recomputation (§3), never trust in the signer alone. |
 
 **Binding-specific verification inside `accept_payment`** (the steps differ;
@@ -474,6 +532,14 @@ step aborts before any leg is submitted.
    definitions' `scale` values are already inside the rate as quoted, and
    adjusting again would transfer a different amount for the same signed
    offer.
+   **Zero-output rejection:** if the computed `to_amount` is 0 (a positive
+   `from_amount` smaller than the rate's denominator, e.g. `from_amount = 1`
+   at rate `1/2`), the executor MUST reject the conversion here — error
+   `ZeroAmount` (§4) — before any reservation is spent or either party
+   submits a leg. A zero destination leg can never be a valid object
+   (§0/§1.3 require positive amounts), so executing the source leg of an
+   agreement whose destination leg cannot exist would strand the taker's
+   funds against an unfulfillable claim.
 4. **Rounding and spread.** Rounding is always **in the liquidity provider's
    favour** (the floor above; the taker receives the floor, never a rounded-up
    figure). Any spread the provider charges is a **separate leg**: a third
