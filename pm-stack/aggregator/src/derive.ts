@@ -849,7 +849,7 @@ export function buildAttentionFlags(
         flags.push({
           kind: "over-limit",
           label: `${svc.name} — ${m.label}`,
-          detail: `${Math.round(m.percent)}% of limit used`,
+          detail: `${m.lowerBound ? "at least " : ""}${Math.round(m.percent)}% of limit used`,
           href: `/quota/service/${svc.id}`,
           severity: m.percent,
         });
