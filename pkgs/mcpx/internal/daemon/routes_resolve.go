@@ -16,7 +16,7 @@ import (
 // caller that has nothing else: no mcpx binary, possibly not even a
 // filesystem view of the state directory, only a socket it already found.
 func (s *Server) routesResolve(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/resolve", s.handleResolve)
+	s.route(mux, "GET /v1/resolve", s.handleResolve)
 }
 
 // Resolution is the answer to "which daemon serves this directory".
@@ -97,8 +97,13 @@ func resolveDir(base Paths, dir string) Resolution {
 	if err != nil || cfg == nil || len(cfg.Sources) == 0 {
 		// No configuration anywhere above this directory. The unkeyed
 		// default daemon is what mcpx would use, so that is the answer.
-		out.Socket = base.Socket
-		out.Running = listening(base.Socket)
+		// Resolve, not the raw computed path: the record knows where that
+		// daemon actually bound, and MCPX_SOCKET must not leak into an
+		// answer about a daemon (#1886 step 6 — this branch used to hand
+		// back the asking daemon's own override socket as if it were
+		// live here).
+		out.Socket = base.Resolve()
+		out.Running = listening(out.Socket)
 		if info, err := base.ReadInfo(); err == nil {
 			out.Endpoint = info.Endpoint
 		}
@@ -109,14 +114,12 @@ func resolveDir(base Paths, dir string) Resolution {
 	out.ConfigHash = FingerprintConfig(cfg.Sources)
 
 	keyed := base.ForConfig(out.ConfigHash)
-	out.Socket = keyed.Socket
+	// The info file knows where the daemon actually bound, which is not
+	// always where the key says: a state path too long for sun_path
+	// moves the socket to a private runtime directory. Paths.Resolve is
+	// that rule, shared with the client side (#1886).
+	out.Socket = keyed.Resolve()
 	if info, err := keyed.ReadInfo(); err == nil {
-		// The info file knows where the daemon actually bound, which is not
-		// always where the key says: a state path too long for sun_path
-		// moves the socket to a private runtime directory.
-		if info.Socket != "" {
-			out.Socket = info.Socket
-		}
 		out.Endpoint = info.Endpoint
 	}
 	out.Running = listening(out.Socket)

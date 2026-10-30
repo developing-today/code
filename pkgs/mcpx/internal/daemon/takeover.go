@@ -576,6 +576,13 @@ func (in *takeoverIn) close() {
 // serving. Until then the predecessor is unchanged, and a failure leaves it
 // running while this process reports the reason.
 func (s *Server) TakeOver() (*Handover, error) {
+	// Takeover is a bind-side lifecycle too (#1886, Codex on PR
+	// #2561): a successor started with MCPX_SOCKET takes over the
+	// daemon listening on that socket, not the computed default.
+	// Resolve the bind socket first and retain it in s.paths, so the
+	// dial, and publication and cleanup after the handover, all name
+	// the socket actually served.
+	s.paths.Socket = s.paths.BindSocket()
 	timeout := s.set.Duration("daemon.takeoverTimeout")
 	conn, err := net.DialTimeout("unix", s.paths.Socket, timeout)
 	if err != nil {

@@ -577,3 +577,24 @@ func TestPreconditionsGating(t *testing.T) {
 	}
 }
 
+
+// #1923: server tags and per-tool tags survive resolution — the server's
+// list verbatim, and toolTags keyed by tool name.
+func TestResolveCarriesTags(t *testing.T) {
+	c := &config.Config{MCPServers: map[string]*config.Server{
+		"a": {Name: "a", Command: "x", Mcpx: &config.Extras{
+			Tags:     []string{"browser", "page"},
+			ToolTags: map[string][]string{"snap": {"a11y"}},
+		}},
+	}}
+	r, err := c.Resolve("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Tags) != 2 || r.Tags[0] != "browser" || r.Tags[1] != "page" {
+		t.Fatalf("resolved tags = %v", r.Tags)
+	}
+	if got := r.ToolTags["snap"]; len(got) != 1 || got[0] != "a11y" {
+		t.Fatalf("resolved toolTags = %v", r.ToolTags)
+	}
+}

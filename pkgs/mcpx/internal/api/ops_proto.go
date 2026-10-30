@@ -12,7 +12,8 @@ func protoOps() []Op {
 	return []Op{
 		{
 			Name: "ask_begin", Method: "POST", Path: "/v1/ask",
-			Summary: "Start a call that a server may interrupt with a question",
+			Permission: PermissionRun,
+			Summary:    "Start a call that a server may interrupt with a question",
 			Description: "Runs tools/call, prompts/get or resources/read as a task and " +
 				"returns its handle at once. Questions the upstream server asks are " +
 				"correlated to this call, so whoever started it can answer them -- " +
@@ -37,7 +38,8 @@ func protoOps() []Op {
 		},
 		{
 			Name: "ask_poll", Method: "GET", Path: "/v1/ask/{id}",
-			Summary: "What a call is waiting on, or its result",
+			Permission: PermissionRead,
+			Summary:    "What a call is waiting on, or its result",
 			Description: "Long-polls: it returns as soon as a question appears or the " +
 				"call finishes, rather than on a fixed interval. The thing being " +
 				"waited for is a person answering, so a poll loop would be either a " +
@@ -52,7 +54,8 @@ func protoOps() []Op {
 		},
 		{
 			Name: "ask_answers", Method: "POST", Path: "/v1/ask/{id}/answers",
-			Summary: "Answer the questions a call is waiting on",
+			Permission: PermissionAdmin,
+			Summary:    "Answer the questions a call is waiting on",
 			Description: "The body maps question id to the MCP result -- an ElicitResult " +
 				"or a CreateMessageResult -- exactly as a client would have produced " +
 				"it on the wire. Answering a question this call did not ask is " +
@@ -69,6 +72,7 @@ func protoOps() []Op {
 		},
 		{
 			Name: "ask_abandon", Method: "POST", Path: "/v1/ask/{id}/abandon",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Summary:    "Give up on a call nobody is going to answer",
 			Description: "Cancels the task. The questions it raised stay in the broker " +
@@ -81,7 +85,8 @@ func protoOps() []Op {
 		},
 		{
 			Name: "tool_invoke", Method: "POST", Path: "/v1/tools/{tool}",
-			Summary: "Run one of mcpx's own MCP tools as a plain POST",
+			Permission: PermissionRun,
+			Summary:    "Run one of mcpx's own MCP tools as a plain POST",
 			Description: "Most of these have a /v1 route of their own, because the tools " +
 				"are generated from this table. The ones that do not are the reason " +
 				"this exists: an adapted command-line program, an operation from a " +
@@ -97,8 +102,9 @@ func protoOps() []Op {
 		},
 		{
 			Name: "call_path", Method: "POST", Path: "/v1/call/{server}/{tool}",
-			Command: "call",
-			Summary: "Call one tool, with the pair in the URL",
+			Permission: PermissionRun,
+			Command:    "call",
+			Summary:    "Call one tool, with the pair in the URL",
 			Description: "The same call as POST /v1/call, spelled the way a shell script " +
 				"wants to spell it: one path per tool, arguments as the whole body, " +
 				"nothing to assemble. It is also what the generated OpenAPI document " +
@@ -115,7 +121,8 @@ func protoOps() []Op {
 		},
 		{
 			Name: "protocol", Method: "GET", Path: "/v1/protocol",
-			Summary: "Which MCP revisions mcpx speaks, in both directions",
+			Permission: PermissionRead,
+			Summary:    "Which MCP revisions mcpx speaks, in both directions",
 			Description: "The revisions mcpx serves and the feature each one defines, " +
 				"plus the era and capabilities every configured server actually " +
 				"settled on. Read from the same table the code consults, so a claim " +

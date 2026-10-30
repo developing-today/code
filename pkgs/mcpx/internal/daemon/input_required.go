@@ -100,7 +100,13 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	t := s.taskStore().Start(s.set.Duration("proto.askTTL").Milliseconds(),
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
-			res, err := s.reg.CallReporting(withRun(ctx, run), id, req.Server, req.Tool, cc, args)
+			callCtx := withRun(ctx, run)
+			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
+			// This path returns before handleCall's own reporting, so
+			// report the completed call here: an exec run whose calls
+			// ask questions is still a run whose calls belong in its
+			// stream.
+			s.reportCallFrame(callCtx, req.Server, req.Tool, args, start, res, err)
 			done <- outcome{res, err}
 			if err != nil {
 				return nil, &tasks.Fault{Code: failureStatus(err), Message: err.Error()}

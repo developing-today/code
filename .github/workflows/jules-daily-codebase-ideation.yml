@@ -1,7 +1,8 @@
-name: Jules Daily Codebase Innovation & Maintenance
+name: Daily Codebase Innovation & Maintenance
 
 # Daily automated codebase review, ideation, gap analysis, issue triage/refinement,
-# and opportunistic improvements across developing-today/code using Google Jules.
+# and opportunistic improvements across developing-today/code using an OpenCode
+# session launched via pm-dispatch (the pm-dispatch-start reusable action).
 
 on:
   schedule:
@@ -20,7 +21,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
   queue: max
 
 permissions:
@@ -32,17 +33,22 @@ jobs:
   codebase-ideation-and-maintenance:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Run Jules Codebase Innovation & Review Agent
-        uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+      - name: Run Codebase Innovation & Review Agent via pm-dispatch
+        id: dispatch
+        uses: developing-today/code/.github/actions/pm-dispatch-start@main
         with:
-          jules_api_key: ${{ secrets.JULES_API_KEY }}
-          include_commit_log: true
+          title: "Daily codebase innovation & maintenance"
           prompt: >-
             Perform a comprehensive daily codebase review, innovation scan, and issue/PR maintenance pass across developing-today/code.
 

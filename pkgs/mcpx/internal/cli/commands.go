@@ -310,6 +310,8 @@ func (a *App) setOutputFormat(f logging.Format) {
 func (a *App) CmdSearch(ctx context.Context, args []string) error {
 	fs := newFlagSet("search")
 	semantic := fs.Bool("semantic", false, "rank tools with local semantic vector search")
+	explain := fs.Bool("explain", false, "print the per-term, per-field score breakdown for each hit")
+	tag := fs.String("tag", "", "restrict to tools carrying this tag (exact match)")
 	// -n, --limit and --search-limit are one setting, declared once. The
 	// value is sent only when somebody actually chose it: a client's
 	// inherited default must not override what the daemon is configured
@@ -337,7 +339,14 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 		return err
 	}
 	useSemantic := *semantic || a.Settings().Bool("search.semantic")
-	hits, err := c.Search(ctx, strings.Join(fs.Args(), " "), limit, useSemantic)
+	var hits []daemon.ToolInfo
+	if *tag != "" || *explain {
+		// --explain describes the keyword ranker, so it (and the tag
+		// filter it composes with) takes the keyword path.
+		hits, err = c.SearchOpts(ctx, strings.Join(fs.Args(), " "), limit, false, *tag, *explain)
+	} else {
+		hits, err = c.Search(ctx, strings.Join(fs.Args(), " "), limit, useSemantic)
+	}
 	if err != nil {
 		return err
 	}
@@ -360,6 +369,15 @@ func (a *App) CmdSearch(ctx context.Context, args []string) error {
 			native = strings.Replace(h.Function, ".", "_", 1)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", call, native, truncate(oneLine(h.Description), 90))
+		if *explain {
+			for _, ts := range h.Explain {
+				field := ts.Field
+				if field == "" {
+					field = "no match"
+				}
+				fmt.Fprintf(tw, "  \t%s\t%s +%d\n", ts.Term, field, ts.Points)
+			}
+		}
 	}
 	tw.Flush()
 	return nil
@@ -991,6 +1009,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		},
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.Imports = shape.imports
+	opts.ImportsOnDynamic = shape.importsOnDynamic
 	opts.Launcher, opts.LauncherName = shape.launcher, shape.launcherName
 	opts.PlaceholderFiles = PlaceholderFiles()
 	opts.AllowRepeat = shape.allowRepeat
@@ -1591,7 +1611,11 @@ func (a *App) stopAll(ctx context.Context) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		if !c.Ping(ctx) {
 			continue
 		}
@@ -1650,7 +1674,11 @@ func (a *App) CmdDaemons(ctx context.Context, args []string) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		rows = append(rows, row{
 			PID: info.PID, Config: info.ConfigPath,
 			Running: c.Ping(ctx), Started: info.StartedAt,
@@ -2217,6 +2245,7 @@ type scriptShape struct {
 	hooks                      *hookGate
 	env                        map[string]string
 	typecheck                  string
+	imports, importsOnDynamic  string
 	launcher, launcherName     string
 	allowRepeat                []string
 	captureConsole             bool
@@ -2248,7 +2277,14 @@ func (sh scriptShape) phases() runner.Phases {
 }
 
 func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape, error) {
-	sh := scriptShape{captureConsole: !f.noConsole, env: map[string]string{}}
+	// script.captureConsole is the durable form of --no-capture-console:
+	// either one turning capture off turns it off. The daemon's exec
+	// service already read the resolved setting (routes_exec.go); the
+	// local shape read only the flag, so the variable and the config
+	// key were inert for a local run - the #1971 effect guard's probe
+	// is what caught the gap.
+	sh := scriptShape{captureConsole: !f.noConsole && a.Settings().Bool("script.captureConsole"),
+		env: map[string]string{}}
 	// hooks.autonomy, lowered to autonomy.max, governs phases that came from a
 	// configuration file or the environment: they are code this command did not
 	// send. Phases given as flags are the caller's own and are never gated.
@@ -2303,6 +2339,11 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 	// short --typecheck spelling, the generated --script-typecheck, a
 	// variable, or the config file.
 	sh.typecheck = firstNonEmpty(f.typecheck, a.Settings().String("script.typecheck"))
+
+	// No short flag spelling: the registry value is the whole story, from
+	// the generated --script-imports flag, a variable, or the config file.
+	sh.imports = a.Settings().String("script.imports")
+	sh.importsOnDynamic = a.Settings().String("script.importsOnDynamic")
 
 	if f.noLauncher && f.launcher != "" {
 		return sh, errors.New("--launcher and --no-launcher contradict each other; " +

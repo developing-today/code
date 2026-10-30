@@ -10,8 +10,9 @@ func execOps() []Op {
 	return []Op{
 		{
 			Name: "exec", Method: "POST", Path: "/v1/exec",
-			Command: "exec",
-			Summary: "Run TypeScript on the daemon",
+			Permission: PermissionAdmin,
+			Command:    "exec",
+			Summary:    "Run TypeScript on the daemon",
 			Description: "The same execution `mcpx exec` performs, hosted by the daemon " +
 				"instead of by the CLI. That is what lets a caller with no mcpx " +
 				"binary run a script, and what makes a daemon on another machine " +
@@ -35,7 +36,8 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_put", Method: "POST", Path: "/v1/artifacts",
-			Summary: "Store a file a script produced",
+			Permission: PermissionAdmin,
+			Summary:    "Store a file a script produced",
 			Description: "What artifact() in a generated client calls. The body is the " +
 				"bytes; a caller on the daemon's own filesystem may instead send " +
 				"X-Mcpx-Path and have the file hardlinked, which is why handing back " +
@@ -55,6 +57,7 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifacts_list", Method: "GET", Path: "/v1/artifacts",
+			Permission:  PermissionRead,
 			CLI:         "artifact list",
 			Summary:     "Files scripts produced, newest first",
 			Description: "Filter by run to collect one execution's output, or by session.",
@@ -66,7 +69,8 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_get", Method: "GET", Path: "/v1/artifacts/{id}",
-			Summary: "Fetch one artifact's bytes",
+			Permission: PermissionRead,
+			Summary:    "Fetch one artifact's bytes",
 			Description: "Range requests are supported, so reading the tail of a large " +
 				"artifact is cheap. The response carries the recorded content type " +
 				"and a Content-Disposition naming the sanitised filename.",
@@ -77,6 +81,7 @@ func execOps() []Op {
 		},
 		{
 			Name: "artifact_delete", Method: "DELETE", Path: "/v1/artifacts/{id}",
+			Permission: PermissionAdmin,
 			Idempotent: true,
 			Summary:    "Forget one artifact",
 			Description: "The registration goes, and the body with it once no other " +

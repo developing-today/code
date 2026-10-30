@@ -30,7 +30,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | CAP-08 | client `elicitation.form`; `{}` means form only | `2025-11-25 has` `mcpx missing` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v2 ✓ (applyDefaults)` | partial — form gate ignores a url-only declaration (#210) | + low | S | low |
 | CAP-09 | client `elicitation.url` | `2025-11-25 has` `mcpx missing` `opencode v2 has` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 ✓ · opencode v1 — v2 ✓` | partial — host gate correct; never declared upstream (#200) | + med | M | med |
 | CAP-10 | client `tasks` (client-hosted tasks), 2025-11-25 only | `2025-11-25 has` `2026-07-28 removes` `has better replacement` | `24-11 — · 25-03 — · 25-06 — · 25-11 ✓ · 26-07 rem · opencode — · lootbox —` | ✓ — never declared | − one-revision | S | low |
-| CAP-11 | client `extensions` map | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only` | ✗ — never declared, so no upstream extension is reachable (#200) | + med | S | low |
+| CAP-11 | client `extensions` map | `2026-07-28 has` | `26-07 ✓ only` | ✓ — declared upstream as an empty map on modern connections only; no extension named until one is implemented (#1918) | + med | S | low |
 | CAP-12 | server `logging`; deprecated, not removed, in 2026 | `2024-11-05 has` `2026-07-28 deprecates` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 dep` | ✓ — never declared; `docs/protocol.md` says otherwise | + low | S | low |
 | CAP-13 | server `completions` | `2025-03-26 has` | `24-11 — (method ungated) · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✓ — declared in every era mcpx serves | + low | S | low |
 | CAP-14 | server `prompts` | `2024-11-05 has` `opencode v1 has` `opencode v2 has` | `all five ✓ · opencode v1 ✓ v2 ✓ (slash commands)` | ✓ — always declared | + low | S | low |
@@ -264,9 +264,12 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Map of extension identifier to settings object; keys follow the `_meta` key-naming rules with a mandatory
   prefix; `{}` means supported with no settings.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** Never declared upstream (`internal/mcpclient/modern.go:46-58`). In particular mcpx never declares
-  `io.modelcontextprotocol/tasks`, so a 2026 upstream will never hand it a task, and `CallTool` sends only
-  `{name, arguments}` (`internal/mcpclient/client.go:845-858`).
+- **mcpx.** Declared upstream on modern connections since #1918: `capabilities()` (`internal/mcpclient/modern.go`)
+  adds `extensions: {}` in the modern branch only, so it rides the per-request `_meta` clientCapabilities; a legacy
+  initialize carries no `extensions` key. The map names nothing -- an identifier is added only with its
+  implementation. In particular mcpx still never declares `io.modelcontextprotocol/tasks` (CAP-26), so a 2026
+  upstream will never hand it a task. Covered by `TestExtensionsDeclaredOnModernOnly` in
+  `internal/mcpclient/modern_test.go`.
 - **Value to mcpx.** + the only way to opt into tasks, apps and auth extensions from 2026 servers.
 - **Effort.** S to declare; each extension then costs its own implementation.
 - **Risk.** None for declaring nothing; declaring an extension mcpx cannot handle would be the #177 class.

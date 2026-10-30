@@ -49,13 +49,20 @@ type Spec struct {
 	Dir string `json:"dir,omitempty"`
 	// Description is shown beside the namespace.
 	Description string `json:"description,omitempty"`
+	// Bare exposes the binary as a single passthrough tool instead of
+	// declared subcommands: one tool taking argv plus optional stdin,
+	// executed with no shell anywhere. A bare declaration must say what
+	// the program is for (Description is required), because nothing else
+	// constrains what a caller can reach (#1962).
+	Bare bool `json:"bare,omitempty"`
 	// Instructions explain conventions the schemas cannot, exactly as a real
 	// server's initialize does.
 	Instructions string `json:"instructions,omitempty"`
 	// Timeout bounds every invocation. Empty or zero means 60s.
 	Timeout string `json:"timeout,omitempty"`
-	// Tools are the subcommands worth exposing.
-	Tools []ToolSpec `json:"tools"`
+	// Tools are the subcommands worth exposing. Empty for a bare
+	// declaration, which exposes its single passthrough tool instead.
+	Tools []ToolSpec `json:"tools,omitempty"`
 }
 
 // ToolSpec is one subcommand.
@@ -96,6 +103,32 @@ type Param struct {
 	Enum []string `json:"enum,omitempty"`
 }
 
+// bareToolName is the single tool a bare declaration exposes: calling
+// <name>.run runs the binary with the given argv, no shell anywhere.
+const bareToolName = "run"
+
+// ExposedTools is what a declaration presents: the declared tools, or,
+// for a bare declaration, the single passthrough tool. Every listing,
+// calling and serving path uses this, so a bare spec shows one tool
+// everywhere or nowhere.
+func (s Spec) ExposedTools() []ToolSpec {
+	if !s.Bare {
+		return s.Tools
+	}
+	return []ToolSpec{{
+		Name: bareToolName,
+		Description: "Pass arguments straight through to the wrapped binary. " +
+			"No per-subcommand validation is applied: the binary's whole argv surface is exposed.",
+		Params: []Param{
+			{Name: "args", Type: "array",
+				Description: "Arguments passed straight through to the binary, in order."},
+			{Name: "stdin",
+				Description: "Written to the binary's stdin instead of appearing on the command line."},
+		},
+		Stdin: "stdin",
+	}}
+}
+
 // Validate checks a declaration before anything runs it.
 //
 // The failures here are all of the kind that would otherwise surface as a
@@ -103,6 +136,14 @@ type Param struct {
 // and also has a default, a stdin parameter that does not exist.
 func (s Spec) Validate() error {
 	var problems []string
+	if s.Bare {
+		if strings.TrimSpace(s.Description) == "" {
+			problems = append(problems, s.Name+": a description is required for a bare declaration: nothing else constrains what a caller can reach")
+		}
+		if len(s.Tools) > 0 {
+			problems = append(problems, s.Name+": bare exposes exactly one tool; declared tools would be silently ignored")
+		}
+	}
 	if strings.TrimSpace(s.Name) == "" {
 		problems = append(problems, "the server needs a name")
 	}
@@ -232,16 +273,17 @@ type Result struct {
 
 // Call runs one tool.
 func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Result, error) {
+	tools := s.ExposedTools()
 	var spec *ToolSpec
-	for i := range s.Tools {
-		if s.Tools[i].Name == tool {
-			spec = &s.Tools[i]
+	for i := range tools {
+		if tools[i].Name == tool {
+			spec = &tools[i]
 			break
 		}
 	}
 	if spec == nil {
-		names := make([]string, 0, len(s.Tools))
-		for _, t := range s.Tools {
+		names := make([]string, 0, len(tools))
+		for _, t := range tools {
 			names = append(names, t.Name)
 		}
 		sort.Strings(names)

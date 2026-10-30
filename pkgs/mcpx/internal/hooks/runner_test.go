@@ -37,9 +37,14 @@ func TestDeclaredHookFiresOnMatchingKindsOnly(t *testing.T) {
 
 	bus.Publish(events.Event{Kind: events.ServerStarted, Server: "x"})
 	bus.Publish(events.Event{Kind: events.ServerStopped, Server: "chrome"})
-	waitFor(t, "hook to fire", func() bool {
-		_, err := os.Stat(marker)
-		return err == nil
+	// Wait for the payload itself, not the marker file's existence:
+	// `cat > marker` creates the file before it writes the payload, so
+	// existence alone races the write and can read back an empty file
+	// under load (the #2609 flake). Poll the real postcondition.
+	waitFor(t, "hook payload to land", func() bool {
+		body, err := os.ReadFile(marker)
+		return err == nil &&
+			strings.Contains(string(body), `"kind":"server.stopped"`)
 	})
 	body, err := os.ReadFile(marker)
 	if err != nil {
@@ -51,10 +56,14 @@ func TestDeclaredHookFiresOnMatchingKindsOnly(t *testing.T) {
 		!strings.Contains(string(body), `"hook":"rec"`) {
 		t.Fatalf("hook stdin payload wrong: %s", body)
 	}
-	st := r.Stats()
-	if len(st) != 1 || st[0].Fired != 1 || st[0].Failed != 0 {
-		t.Fatalf("stats wrong: %+v", st)
-	}
+	// The stats counter is recorded asynchronously after the hook
+	// process finishes; asserting it immediately races the recording
+	// under load (the second #2609 flake, seen in the full-system
+	// build). Poll the real postcondition.
+	waitFor(t, "hook stats to record the firing", func() bool {
+		st := r.Stats()
+		return len(st) == 1 && st[0].Fired == 1 && st[0].Failed == 0
+	})
 }
 
 func TestPythonModuleHookRuns(t *testing.T) {
