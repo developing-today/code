@@ -56,16 +56,20 @@ func (a *App) CmdStdioProxy(ctx context.Context, args []string) error {
 	}
 	defer conn.Close()
 
-	// Requests flow one way down stdin and replies up stdout. When the
-	// far end of the socket closes, stdout is done and so is this process;
-	// waiting for stdin as well would hang on a terminal that never sends
-	// EOF.
+	return pipeConn(conn, os.Stdin, os.Stdout)
+}
+
+// pipeConn copies in to conn and conn to out until the far end closes.
+func pipeConn(conn io.ReadWriteCloser, in io.Reader, out io.Writer) error {
+	// Requests flow one way down in and replies up out. When the far end
+	// of the socket closes, out is done and so is this process; waiting
+	// for in as well would hang on a terminal that never sends EOF.
 	go func() {
-		_, _ = io.Copy(conn, os.Stdin)
+		_, _ = io.Copy(conn, in)
 		if cw, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
 	}()
-	_, _ = io.Copy(os.Stdout, conn)
-	return nil
+	_, err := io.Copy(out, conn)
+	return err
 }
