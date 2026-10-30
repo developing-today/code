@@ -5,8 +5,45 @@ use std::sync::Arc;
 
 use anyhow::{Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+
+impl WorldCommand {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Issue { .. } => "Issue",
+            Self::Attenuate { .. } => "Attenuate",
+            Self::DelegateToFriend { .. } => "DelegateToFriend",
+            Self::Directory { .. } => "Directory",
+            Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::Revoke { .. } => "Revoke",
+            Self::ParticipantId { .. } => "ParticipantId",
+            Self::Chat { .. } => "Chat",
+            Self::Input { .. } => "Input",
+            Self::Snapshot { .. } => "Snapshot",
+            Self::EventsAfter { .. } => "EventsAfter",
+            Self::ProjectEvent { .. } => "ProjectEvent",
+            Self::View { .. } => "View",
+            Self::ViewAt { .. } => "ViewAt",
+            Self::InstallProgram { .. } => "InstallProgram",
+            Self::Presence { .. } => "Presence",
+            Self::UpdateCaps { .. } => "UpdateCaps",
+            Self::SetCapsCeiling { .. } => "SetCapsCeiling",
+            Self::SetExecutionProfile { .. } => "SetExecutionProfile",
+            Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::CapsInfo { .. } => "CapsInfo",
+            Self::SetIsolation { .. } => "SetIsolation",
+            Self::IsolationInfo { .. } => "IsolationInfo",
+            Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
+            Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
+            Self::SetFileScope { .. } => "SetFileScope",
+            Self::PolicyInfo { .. } => "PolicyInfo",
+            Self::Metrics { .. } => "Metrics",
+            Self::Shutdown { .. } => "Shutdown",
+        }
+    }
+}
 
 pub(crate) enum WorldCommand {
     Issue {
@@ -272,7 +309,12 @@ impl WorldActor {
             }
             self.metrics.record_queue_depth(receiver.len() as u64);
             let started = std::time::Instant::now();
-            self.handle(command).await;
+            let name = command.name();
+            async {
+                self.handle(command).await;
+            }
+            .instrument(tracing::info_span!("command", name))
+            .await;
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
