@@ -90,17 +90,19 @@ type dispatch struct {
 	bin    string
 	args   []string
 	env    []string // VAR=value assignments an env shebang carried
+	unset  []string // names an env shebang removed from the environment (-u)
+	clear  bool     // an env shebang asked for an empty environment (-i)
 	name   string   // interpreter name reported as the run's runtime
 	source string   // "shebang" or "interpreter"
 }
 
 // ParseShebang splits a #! line into the interpreter command it names.
 // The /usr/bin/env form is unwrapped the way the kernel cannot: env's
-// own flags (-S, -i) are consumed, and what remains is the command. ok
-// is false when the line is not a shebang.
+// own options are consumed, and what remains is the command. ok is
+// false when the line is not a shebang.
 func ParseShebang(line string) (tokens []string, ok bool) {
-	tokens, _, ok = ParseShebangEnv(line)
-	return tokens, ok
+	sp, ok := parseShebang(line)
+	return sp.tokens, ok
 }
 
 // ParseShebangEnv is ParseShebang that also returns the VAR=value
@@ -110,31 +112,98 @@ func ParseShebang(line string) (tokens []string, ok bool) {
 // specifies, silently, so the dispatch carries them into the child
 // environment instead.
 func ParseShebangEnv(line string) (tokens []string, env []string, ok bool) {
+	sp, ok := parseShebang(line)
+	return sp.tokens, sp.set, ok
+}
+
+// shebangEnv is a parsed shebang: the command it names, plus the
+// environment changes an env(1) shebang asked for and the kernel never
+// got to apply.
+type shebangEnv struct {
+	tokens []string
+	set    []string // VAR=value assignments
+	unset  []string // names removed from the inherited environment (-u)
+	clear  bool     // start from an empty environment (-i)
+}
+
+// parseShebang reads a #! line. Options of an env(1) shebang are
+// consumed as env itself would consume them, including the operand of
+// -u NAME and -C DIR, so that what remains is the command: without
+// that, "#!/usr/bin/env -S -u SECRET sh" would try to run SECRET.
+func parseShebang(line string) (shebangEnv, bool) {
 	line = strings.TrimRight(line, "\r\n")
 	if !strings.HasPrefix(line, "#!") {
-		return nil, nil, false
+		return shebangEnv{}, false
 	}
 	fields := strings.Fields(strings.TrimSpace(line[2:]))
 	if len(fields) == 0 {
-		return nil, nil, true
+		return shebangEnv{}, true
 	}
+	var sp shebangEnv
 	if filepath.Base(fields[0]) == "env" {
 		fields = fields[1:]
+	options:
 		for len(fields) > 0 {
 			f := fields[0]
-			if strings.HasPrefix(f, "-") {
+			switch {
+			case f == "-i" || f == "--ignore-environment" || f == "-":
+				sp.clear = true
 				fields = fields[1:]
-				continue
-			}
-			if strings.Contains(f, "=") && !strings.Contains(f, "/") {
-				env = append(env, f)
+			case f == "--":
 				fields = fields[1:]
-				continue
+				break options
+			case f == "-u" || f == "--unset" || f == "-C" || f == "--chdir":
+				if len(fields) < 2 {
+					fields = nil
+					break options
+				}
+				if f == "-u" || f == "--unset" {
+					sp.unset = append(sp.unset, fields[1])
+				}
+				fields = fields[2:]
+			case strings.HasPrefix(f, "--unset="):
+				sp.unset = append(sp.unset, strings.TrimPrefix(f, "--unset="))
+				fields = fields[1:]
+			case strings.HasPrefix(f, "-u") && len(f) > 2:
+				sp.unset = append(sp.unset, f[2:])
+				fields = fields[1:]
+			case strings.HasPrefix(f, "-C") && len(f) > 2, strings.HasPrefix(f, "--chdir="):
+				fields = fields[1:]
+			case strings.HasPrefix(f, "-"):
+				// -S and the other operand-free options. The words
+				// arrive already split, which is what -S would have
+				// done to them.
+				fields = fields[1:]
+			case strings.Contains(f, "=") && !strings.Contains(f, "/"):
+				sp.set = append(sp.set, f)
+				fields = fields[1:]
+			default:
+				break options
 			}
-			break
 		}
 	}
-	return fields, env, true
+	sp.tokens = fields
+	return sp, true
+}
+
+// filterEnv drops the named variables from env, leaving everything else
+// in order. The result is a fresh slice; env is not modified.
+func filterEnv(env []string, unset []string) []string {
+	if len(unset) == 0 {
+		return env
+	}
+	drop := make(map[string]bool, len(unset))
+	for _, name := range unset {
+		drop[name] = true
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if !drop[name] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // isJSRuntimeName reports whether a shebang's command names a
@@ -249,18 +318,18 @@ func decideDispatch(opts Options) (*dispatch, string, error) {
 			first = l
 		}
 	}
-	if tokens, env, ok := ParseShebangEnv(first); ok {
-		if len(tokens) == 0 {
+	if sp, ok := parseShebang(first); ok {
+		if len(sp.tokens) == 0 {
 			return nil, "", errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
-		if len(tokens) == 1 && isJSRuntimeName(opts.Setup, tokens[0]) {
-			return nil, tokens[0], nil
+		if len(sp.tokens) == 1 && isJSRuntimeName(opts.Setup, sp.tokens[0]) {
+			return nil, sp.tokens[0], nil
 		}
-		d, err := dispatchFromTokens("shebang", tokens)
+		d, err := dispatchFromTokens("shebang", sp.tokens)
 		if err != nil {
 			return nil, "", err
 		}
-		d.env = env
+		d.env, d.unset, d.clear = sp.set, sp.unset, sp.clear
 		return d, "", nil
 	}
 	if strings.TrimSpace(opts.Interpreter) != "" {
@@ -359,10 +428,17 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	args = append(args, opts.Args...)
 	cmd := exec.Command(d.bin, args...)
 	cmd.Dir = dir
-	// The shebang's own VAR=value assignments come first of the
-	// additions: env(1) would have set them, and the MCPX_* variables
-	// after them win any collision, as the run's own contract should.
-	cmd.Env = append(os.Environ(), d.env...)
+	// The shebang's own environment comes first of the additions: env(1)
+	// would have started from the inherited environment (or an empty one,
+	// with -i) minus the names it was told to unset, set its assignments,
+	// and then the MCPX_* variables win any collision, as the run's own
+	// contract should.
+	if d.clear {
+		cmd.Env = nil
+	} else {
+		cmd.Env = filterEnv(os.Environ(), d.unset)
+	}
+	cmd.Env = append(cmd.Env, d.env...)
 	cmd.Env = append(cmd.Env, "MCPX_RUNTIME="+d.name, "MCPX_ENTRY="+scriptPath, "MCPX_DISPATCH="+d.source)
 	for k, v := range opts.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)

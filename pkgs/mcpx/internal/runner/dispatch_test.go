@@ -51,6 +51,73 @@ func TestParseShebangEnvAssignments(t *testing.T) {
 	}
 }
 
+func TestParseShebangEnvOptions(t *testing.T) {
+	for _, tc := range []struct {
+		line  string
+		want  string
+		set   string
+		unset string
+		clear bool
+	}{
+		{"#!/usr/bin/env -S -u SECRET sh", "sh", "", "SECRET", false},
+		{"#!/usr/bin/env --unset=HOME sh", "sh", "", "HOME", false},
+		{"#!/usr/bin/env -uSECRET sh", "sh", "", "SECRET", false},
+		{"#!/usr/bin/env -C /tmp sh", "sh", "", "", false},
+		{"#!/usr/bin/env --chdir=/tmp sh", "sh", "", "", false},
+		{"#!/usr/bin/env -i sh", "sh", "", "", true},
+		{"#!/usr/bin/env --ignore-environment sh", "sh", "", "", true},
+		{"#!/usr/bin/env -S MODE=prod -u SECRET sh", "sh", "MODE=prod", "SECRET", false},
+		{"#!/usr/bin/env -- sh", "sh", "", "", false},
+	} {
+		sp, ok := parseShebang(tc.line)
+		if !ok ||
+			strings.Join(sp.tokens, " ") != tc.want ||
+			strings.Join(sp.set, " ") != tc.set ||
+			strings.Join(sp.unset, " ") != tc.unset ||
+			sp.clear != tc.clear {
+			t.Errorf("parseShebang(%q) = %v set=%v unset=%v clear=%v; want tokens=%q set=%q unset=%q clear=%v",
+				tc.line, sp.tokens, sp.set, sp.unset, sp.clear, tc.want, tc.set, tc.unset, tc.clear)
+		}
+	}
+}
+
+func TestFilterEnv(t *testing.T) {
+	got := filterEnv([]string{"A=1", "B=2", "A=3"}, []string{"A"})
+	if strings.Join(got, " ") != "B=2" {
+		t.Errorf("filterEnv = %v, want [B=2]", got)
+	}
+	// With nothing to drop the caller's slice is passed through as is.
+	in := []string{"A=1"}
+	if got := filterEnv(in, nil); &got[0] != &in[0] {
+		t.Errorf("filterEnv with no unset names copied the environment")
+	}
+}
+
+func TestRunEnvShebangUnsetAndIgnore(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MCPX_TEST_DROP", "inherited")
+
+	dropped := writeScript(t, dir, "dropped.sh",
+		"#!/usr/bin/env -S -u MCPX_TEST_DROP sh\necho \"drop=${MCPX_TEST_DROP-unset}\"\n")
+	var stdout, stderr bytes.Buffer
+	if _, err := Run(context.Background(), Options{File: dropped, Stdout: &stdout, Stderr: &stderr}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "drop=unset" {
+		t.Errorf("stdout = %q, want drop=unset", got)
+	}
+
+	ignored := writeScript(t, dir, "ignored.sh",
+		"#!/usr/bin/env -i sh\necho \"drop=${MCPX_TEST_DROP-unset} runtime=$MCPX_RUNTIME\"\n")
+	stdout.Reset()
+	if _, err := Run(context.Background(), Options{File: ignored, Stdout: &stdout, Stderr: &stderr}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "drop=unset runtime=sh" {
+		t.Errorf("stdout = %q, want drop=unset runtime=sh", got)
+	}
+}
+
 func TestRunEnvShebangAssignmentsReachTheScript(t *testing.T) {
 	dir := t.TempDir()
 	f := writeScript(t, dir, "mode.sh",
