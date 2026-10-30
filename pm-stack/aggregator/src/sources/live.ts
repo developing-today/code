@@ -20,7 +20,13 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { applyCloudflareExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import {
+  applyCloudflareExport,
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+} from "../saas-extract.ts";
 import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";

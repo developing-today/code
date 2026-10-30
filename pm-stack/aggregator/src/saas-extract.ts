@@ -710,15 +710,16 @@ export function applyCloudflareExport(
     return {
       ...m,
       used: live.used,
-      percent:
-        m.limit != null && m.limit > 0 ? Math.round((live.used / m.limit) * 1000) / 10 : m.percent,
+      percent: m.limit != null && m.limit > 0 ? Math.round((live.used / m.limit) * 1000) / 10 : m.percent,
       note: `Live via ${live.source ?? doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}.${live.detail ? ` ${live.detail}` : ""}`,
     };
   });
   cf.measuredAt = doc.measuredAt.slice(0, 10);
   cf.sourceClass = "api";
   cf.sourceNote = `Cloudflare live collector (#1048): ${doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}; limits + plan from quota-view.md Part (b)${
-    doc.billing?.status === "invoice-only" ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)" : ""
+    doc.billing?.status === "invoice-only"
+      ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)"
+      : ""
   }`;
   return services;
 }
