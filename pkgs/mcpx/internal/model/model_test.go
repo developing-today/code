@@ -134,15 +134,26 @@ func TestResolveAuto(t *testing.T) {
 	if p != nil || err != nil {
 		t.Errorf("bare auto = (%v, %v), want (nil, nil)", p, err)
 	}
-	// A sampler wins over a configured key.
+	// A configured key wins over a sampler: broker presence is not
+	// evidence of a live sampling path, so auto must not park the
+	// request on sampling ahead of an explicitly configured endpoint.
 	p, err = Resolve(Config{
 		Provider:  "auto",
 		APIKeyEnv: "K",
 		LookupEnv: func(string) string { return "v" },
 		Sampler:   func(ctx context.Context, req Request) (Response, error) { return Response{}, nil },
 	})
+	if err != nil || p.Name() != "openai" {
+		t.Errorf("auto with sampler+key = (%v, %v), want the configured openai backend", p, err)
+	}
+	// A sampler alone is auto's fallback.
+	p, err = Resolve(Config{
+		Provider:  "auto",
+		LookupEnv: func(string) string { return "" },
+		Sampler:   func(ctx context.Context, req Request) (Response, error) { return Response{}, nil },
+	})
 	if err != nil || p.Name() != "sampling" {
-		t.Errorf("auto with sampler = (%v, %v), want the sampling backend", p, err)
+		t.Errorf("auto with sampler only = (%v, %v), want the sampling backend", p, err)
 	}
 	// No sampler, but a named key that is set: the configured backend.
 	p, err = Resolve(Config{

@@ -698,7 +698,13 @@ func (s *Server) resolveProviderFor(provider, model string) scripting.Provider {
 		callerProviderConfig(s.providerConfig(), provider, model), nil)
 }
 
-func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string) (string, string, error) {
+// model is the caller's EXPLICIT model only; the daemon's own defaults
+// are applied per-path below (model.default for the model layer,
+// repair.model for the legacy provider's label), never by the caller
+// pre-filling one path's default into the other (Codex review, PR #2592).
+// session is the intent session, propagated to sampling questions so an
+// answerer polling /v1/elicit?session=<session> can see them.
+func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string, session string) (string, string, error) {
 	nss, err := s.reg.CodegenNamespaces(nil, config.Profile{All: true})
 	if err != nil {
 		return "", "", err
@@ -720,7 +726,21 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 	// plus the note that no model answered -- which is the scope guard's
 	// required shape. With model.provider at its default (none) this
 	// whole branch is skipped and generation behaves as it always has.
-	if mp := s.modelLayer(ctx); mp != nil {
+	mp, merr := s.modelLayer(ctx, session)
+	if merr != nil {
+		// Finding (Codex, PR #2592): a model layer that was configured
+		// but cannot resolve (model.provider=plugin, sampling with no
+		// path) must NOT fall through to the legacy repair provider --
+		// that would silently spend a different provider (an auto-
+		// discovered CLI, an env key) the user did not select, possibly
+		// against prompt.sample=never. Resolution failure is the
+		// deterministic no-model outcome, exactly like a provider error.
+		if s.logger != nil {
+			s.logger.Printf("model layer: %v; generation falls back to the deterministic answer", merr)
+		}
+		return "", "", errNoModel
+	}
+	if mp != nil {
 		return s.generateViaModel(ctx, mp, system, prompt, model)
 	}
 
@@ -737,6 +757,11 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		return "", "", errNoModel
 	}
 	used := "provider:" + prov.Name()
+	if model == "" {
+		// The legacy path's own default: the daemon's repair.model.
+		// (The model layer never sees this value; see generateViaModel.)
+		model = s.providerConfig().Model
+	}
 	if model != "" {
 		used += "/" + model
 	}
@@ -749,28 +774,25 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 var errNoModel = fmt.Errorf("no model provider answered")
 
 // modelLayer resolves the #1925 provider layer for this request from the
-// request's own policy. It returns nil when no layer is configured --
-// model.provider none or unset, auto with nothing configured, or a named
-// provider that cannot be built -- so the caller keeps the behaviour it
-// had before the layer existed.
-func (s *Server) modelLayer(ctx context.Context) model.Provider {
+// request's own policy. (nil, nil) means no layer applies -- model.provider
+// none or unset, or auto with nothing configured -- and the caller keeps
+// the behaviour it had before the layer existed. A non-nil error means a
+// provider WAS configured but cannot be built (plugin, sampling with no
+// path): the caller must surface that as no-model, never silently invoke
+// a different provider in its place (Codex review, PR #2592).
+func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
 	pol := s.policyFor(ctx)
 	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
-		return nil
+		return nil, nil
 	}
-	prov, err := model.Resolve(model.Config{
+	return model.Resolve(model.Config{
 		Provider:     pol.ModelProvider,
 		BaseURL:      pol.ModelBaseURL,
 		APIKeyEnv:    pol.ModelAPIKeyEnv,
 		DefaultModel: pol.ModelDefault,
 		Timeout:      pol.ModelTimeout,
-		Sampler:      s.brokerSampler(),
+		Sampler:      s.brokerSampler(session),
 	})
-	if err != nil {
-		s.logger.Printf("model layer: %v; generation falls back to the repair provider", err)
-		return nil
-	}
-	return prov
 }
 
 // generateViaModel is generate's model-layer path: the same system prompt
@@ -811,7 +833,7 @@ func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, syst
 // (elicit.SampleAsk). Nobody answering within the deadline is an
 // unavailable provider, not a hang: the broker's expiry answer lands as
 // an error here and the caller falls back deterministically.
-func (s *Server) brokerSampler() model.SampleFunc {
+func (s *Server) brokerSampler(session string) model.SampleFunc {
 	if s.reg == nil || s.reg.broker == nil {
 		return nil
 	}
@@ -825,15 +847,27 @@ func (s *Server) brokerSampler() model.SampleFunc {
 		if ttl <= 0 {
 			ttl = defaults.PromptSampleTimeout
 		}
+		// Session is the intent session, so Broker.Pending's exact
+		// session filter can show this question to the answerer polling
+		// /v1/elicit?session=<session> for it (Codex, PR #2592).
 		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
 			Server:  "mcpx",
+			Session: session,
 			Message: "mcpx asks for a model completion (model.provider=sampling)",
 			TTL:     ttl,
 		}, params))
 		if err != nil {
 			return model.Response{}, err
 		}
-		ans, err := broker.Await(ctx, question.ID)
+		// model.timeout must bound the WAIT, not only the question's
+		// initial TTL: an answerer reading the question via
+		// /v1/elicit/{id} renews its expiry (Broker.Get touches), so a
+		// TTL alone can be extended toward elicit.maxAge by repeated
+		// reads. Await honours ctx, so the deadline goes on the ctx
+		// (Codex review, PR #2592).
+		awaitCtx, cancel := context.WithTimeout(ctx, ttl)
+		defer cancel()
+		ans, err := broker.Await(awaitCtx, question.ID)
 		if err != nil {
 			return model.Response{}, err
 		}

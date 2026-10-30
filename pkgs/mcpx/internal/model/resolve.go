@@ -87,20 +87,29 @@ func Resolve(cfg Config) (Provider, error) {
 }
 
 func resolveAuto(cfg Config, lookup func(string) string) (Provider, error) {
-	// auto prefers a live sampling-capable client, then a configured
-	// provider, then fails cleanly (#1925's table). "Configured" here
-	// means the user actually configured something -- an apiKeyEnv that
-	// names a set variable, or an explicit baseURL. auto never invents
-	// a key by scanning for known names.
-	if cfg.Sampler != nil {
-		return NewSamplingProvider(cfg.Sampler), nil
-	}
+	// auto prefers a configured provider, then sampling, then fails
+	// cleanly (#1925's table). "Configured" here means the user actually
+	// configured something -- an apiKeyEnv that names a set variable, or
+	// an explicit baseURL. auto never invents a key by scanning for
+	// known names.
+	//
+	// Sampling is NOT first here, whatever #1925's table hoped: the
+	// daemon cannot tell a live sampling path from a merely installed
+	// broker (the broker exists whether or not any sampling-capable
+	// client or answerer is attached), so preferring sampling would
+	// park every auto request on a question nobody may ever answer,
+	// until expiry, ahead of an explicitly configured endpoint.
+	// Sampling is therefore the fallback for auto, and the first choice
+	// only when the user names model.provider=sampling outright.
 	if cfg.BaseURL != "" || (cfg.APIKeyEnv != "" && lookup(cfg.APIKeyEnv) != "") {
 		name, _ := SplitModelID(cfg.DefaultModel)
 		if _, ok := defaultBaseURLs[name]; !ok {
 			name = "openai"
 		}
 		return configured(cfg, name, lookup), nil
+	}
+	if cfg.Sampler != nil {
+		return NewSamplingProvider(cfg.Sampler), nil
 	}
 	return nil, nil
 }

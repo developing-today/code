@@ -52,7 +52,7 @@ func intentCtx() context.Context {
 // all, and the old code path would have opened one on it).
 func TestGenerateNoProvider(t *testing.T) {
 	s := intentTestServer()
-	_, _, err := s.generate(intentCtx(), "get chicago weather", nil, "")
+	_, _, err := s.generate(intentCtx(), "get chicago weather", nil, "", "")
 	if !errors.Is(err, errNoModel) {
 		t.Fatalf("err = %v, want errNoModel", err)
 	}
@@ -66,7 +66,7 @@ func TestGenerateProviderAnswers(t *testing.T) {
 		}
 		return "const data = await tools.weather.forecast({city: 'Chicago'});\nreturn data;", nil
 	})
-	source, used, err := s.generate(intentCtx(), "get chicago weather", prov, "mock-model")
+	source, used, err := s.generate(intentCtx(), "get chicago weather", prov, "mock-model", "")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestGenerateProviderFailureIsNoModel(t *testing.T) {
 	prov := scripting.NewCallbackProvider("down", func(ctx context.Context, req scripting.CompletionRequest) (string, error) {
 		return "", errors.New("connection refused")
 	})
-	_, _, err := s.generate(intentCtx(), "get chicago weather", prov, "")
+	_, _, err := s.generate(intentCtx(), "get chicago weather", prov, "", "")
 	if !errors.Is(err, errNoModel) {
 		t.Fatalf("err = %v, want errNoModel", err)
 	}

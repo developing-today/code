@@ -408,12 +408,14 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prov := s.resolveProviderFor(req.Provider, req.Model)
-	// The model actually used, for the Resolution: the caller's model
-	// when supplied, the daemon's configured one otherwise.
+	// The model handed to generation is the caller's EXPLICIT model
+	// only. Filling it from repair.model here (the old code) leaked the
+	// legacy repair default into the model layer, where it overrode
+	// model.default and could name a model the configured endpoint does
+	// not serve (Codex review, PR #2592). Each generation path applies
+	// its own default: generateViaModel uses model.default, the legacy
+	// path labels with repair.model.
 	model := req.Model
-	if model == "" {
-		model = s.providerConfig().Model
-	}
 	// prompt.sample is whether mcpx may ask a model at all. A CLI found on
 	// this machine is not permission to ask one, so only "ask" lifts the
 	// default; without it a host with opencode installed paid for a model
@@ -421,7 +423,15 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	// on this request has asked, for this request.
 	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != "" ||
 		(pol.ModelProvider != "" && pol.ModelProvider != "none")
-	if !asked || prov == nil {
+	// The legacy guard must not gate the model layer: a request whose
+	// only provider is model.provider (#1925) has prov == nil here
+	// whenever no legacy repair provider, recognised env credential, or
+	// harness CLI exists, and returning now would mean the configured
+	// model-layer backend is never called (Codex P1, PR #2592). The
+	// layer's availability is judged by its own settings; if it was
+	// configured but cannot resolve, generate answers errNoModel.
+	layerSet := pol.ModelProvider != "" && pol.ModelProvider != "none"
+	if !asked || (prov == nil && !layerSet) {
 		out.Model = "none"
 		if !asked {
 			out.Message = "no recipe matched, and generating one is off " +
@@ -438,7 +448,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source, used, err := s.generate(r.Context(), req.Prompt, prov, model)
+	source, used, err := s.generate(r.Context(), req.Prompt, prov, model, req.Session)
 	if err != nil {
 		out.Model = "none"
 		out.Message = "no recipe matched, and no model answered. " +
