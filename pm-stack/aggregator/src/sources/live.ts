@@ -25,6 +25,7 @@ import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
+import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
@@ -105,7 +106,7 @@ const KANEO_PROJECT_REPOS: Record<string, string> = {
 async function kaneoProjects(
   cfg: Config,
   cookie: string,
-): Promise<{ id: string; slug: string; name: string; repo: string }[]> {
+): Promise<{ id: string; slug: string; name: string; repo: string; workspaceId: string }[]> {
   const ws = await getJson(`${cfg.kaneo.baseUrl}/api/workspace`, { Cookie: cookie });
   if (!ws.ok) throw new Error("kaneo workspace read failed");
   const workspaces = ws.json as { id: string }[];
@@ -118,6 +119,7 @@ async function kaneoProjects(
     slug: p.slug,
     name: p.name,
     repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    workspaceId,
   }));
 }
 
@@ -157,7 +159,7 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           status: col.id,
           priority: t.priority,
           updatedAt: t.createdAt,
-          kaneoUrl: cfg.kaneo.baseUrl,
+          kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
       }
@@ -196,6 +198,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
       source,
       notes,
       links,
+      gristUrl: gristDocUrl(cfg.grist.docId),
     };
   });
 }
@@ -1081,9 +1084,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         } else if (feedBacked && feedAgeMs !== undefined) {
           out.ageMs = feedAgeMs;
         }
-        if (key === "registry" && lastRegistryMergedCount !== null) {
-          out.count = lastRegistryMergedCount;
-          out.countLabel = "session records";
+        if (key === "registry") {
+          // The registry facet's age is the age of the feed its records
+          // merge from, so it derives from the loaded feed alone —
+          // gating it on lastRegistryMergedCount made the age (and the
+          // #1148 watchdog's registry item, which reads it) depend on
+          // some earlier request having called registry() (Codex P2,
+          // PR #2431). The COUNT still requires a real merge.
+          if (lastRegistryMergedCount !== null) {
+            out.count = lastRegistryMergedCount;
+            out.countLabel = "session records";
+          }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
             if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";

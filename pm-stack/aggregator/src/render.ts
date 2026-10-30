@@ -31,6 +31,7 @@ import {
   type NeedsOrder,
 } from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
+import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
@@ -494,6 +495,14 @@ function layout(
 export const sessionObjectRef = (id: string): string => `session:${id}`;
 export const ghObjectRef = (ref: RefKey): string => `gh:${ref}`;
 export function tierItemObjectRef(item: TierItem): string {
+  // Watchdog items (#1148) all carry the implementation issue as their
+  // display ref, but each watchdog:<input> is an independent object:
+  // keying them all by the shared gh: ref would give every watchdog
+  // card the same DOM id, actions, dismissal state, and comment
+  // thread, so dismissing one input's card would suppress them all
+  // (Codex P1 on PR #2431). Watchdog cards key by their unique id;
+  // the gh: ref still renders as the card's issue link.
+  if (item.source === "watchdog") return `orch:${item.id}`;
   return item.ref ? ghObjectRef(item.ref) : `orch:${item.id}`;
 }
 
@@ -1404,7 +1413,8 @@ export function renderBoardBody(
               statusCtl = `${actionBadgesHtml(act.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, pooled.ref, pooled.status ?? null, { identities: act.identities })}`;
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}${statusCtl}</div>`;
+          const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -1473,7 +1483,8 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
     .map(itemBadge)
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}</div>`;
+  const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}</div>`;
 }
 
 function timelineTable(
@@ -1553,6 +1564,8 @@ export interface ItemExtras {
   actions?: DashAction[];
   /** Set when one of the item's refs is in the Project pool (#1154). */
   statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
+  /** Outbound links to the live services this item lives in (#1136). */
+  serviceLinks?: ItemServiceLink[];
 }
 
 export function renderItem(
@@ -1596,9 +1609,12 @@ export function renderItem(
     extras?.statusRequest && extras.formOpts
       ? `<h2>Request status change</h2>${actionBadgesHtml(extras.actions)}${statusRequestHtml(extras.statusRequest.objectRef, extras.statusRequest.targetRef, extras.statusRequest.currentStatus, { identities: extras.formOpts.identities })}`
       : "";
+  const svcLinks = extras?.serviceLinks?.length
+    ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
+    : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
@@ -2229,10 +2245,16 @@ export function attentionSections(
       : undefined;
   const tierAct = (item: TierItem) => {
     const objectRef = tierItemObjectRef(item);
+    // #1148 watchdog cards describe the aggregator's CURRENT diagnosis,
+    // not the publisher's possibly-obsolete section, so the #1152 gate
+    // must not disable them: the orchestration-outage card is exactly
+    // the one that has to stay actionable while the tier source is
+    // absent/invalid/stale (Codex P2, PR #2431).
+    const disabledReason = item.source === "watchdog" ? undefined : sectionDisabledReason;
     return {
       actions: act?.actionsByObject?.get(objectRef),
       identities: act?.identities,
-      ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+      ...(disabledReason ? { disabledReason } : {}),
       comments: act?.commentsByObject?.get(objectRef),
       commentOpts: act?.commentOpts,
     };
@@ -4561,7 +4583,7 @@ export function renderProjects(
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>`,
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`,
       provenance,
       "/projects",
     );
@@ -4594,6 +4616,7 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+<p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
     "Projects",

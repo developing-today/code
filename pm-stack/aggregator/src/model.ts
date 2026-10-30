@@ -153,6 +153,8 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Grist UI link for this row's document (#1136), when known. */
+  gristUrl?: string;
 }
 
 /** Where each facet's data came from, shown in the UI footer. */
@@ -436,7 +438,10 @@ export type OrchestrationSource =
   | "claude"
   | "backlog"
   | "tracked"
-  | "github";
+  | "github"
+  /** Aggregator-synthesized watchdog items (#1148): derived live from
+   *  health/probe diagnoses, never published by the orchestrator. */
+  | "watchdog";
 
 /** A prerequisite: "blocked by X; X is being worked by session S". */
 export interface DependencyRef {
