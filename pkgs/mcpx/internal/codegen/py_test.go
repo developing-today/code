@@ -303,3 +303,42 @@ func TestPythonClientEdgeCases(t *testing.T) {
 		t.Fatalf("empty-selection module must import: %v\n%s", err, out2)
 	}
 }
+
+// TestPythonCodexRound2 covers the four Codex round-2 findings on the
+// Python emitter: runtime bindings reserved in class allocation,
+// parameters that would shadow runtime helpers, the call(server, tool)
+// overload with omitted args, and literal keys in result TypedDicts.
+func TestPythonCodexRound2(t *testing.T) {
+	l := pythonLang(t)
+	ns := codegen.Namespace{
+		Name:   "tool_error",
+		Server: "err-server",
+		Tools: []codegen.Tool{{
+			Name:         "probe",
+			InputSchema:  json.RawMessage(`{"type":"object","properties":{"_MISSING":{"type":"string"},"_unwrap":{"type":"string"}}}`),
+			OutputSchema: json.RawMessage(`{"type":"object","properties":{"class":{"type":"string"},"next-page":{"type":"string"},"plain":{"type":"integer"}}}`),
+		}},
+	}
+	out := l.EmitModule([]codegen.Namespace{ns}, "http://127.0.0.1:1234", "sess-2")
+	for _, want := range []string{
+		// The namespace class must not replace the runtime ToolError.
+		"class ToolError2:",
+		// Parameters are renamed around the runtime helpers; the
+		// request keys keep the original property names.
+		"_MISSING_: Optional[str] = _MISSING",
+		"if _MISSING_ is not _MISSING:",
+		`payload["_MISSING"] = _MISSING_`,
+		"_unwrap_: Optional[str] = _MISSING",
+		// call("files", "read") keeps the tool name.
+		"isinstance(tool_or_args, str)",
+		// Result TypedDict keeps the server's literal keys.
+		`TypedDict("ToolError2ProbeResult", {"class": str, "next-page": str, "plain": int}, total=False)`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "class ToolError:\n") && !strings.Contains(out, "class ToolError(RuntimeError)") {
+		t.Errorf("namespace class replaced runtime ToolError:\n%s", out)
+	}
+}

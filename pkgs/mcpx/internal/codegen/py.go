@@ -288,6 +288,10 @@ def call(server_or_tool: str, tool_or_args: Any = None, args: Optional[Dict[str,
     """
     if args is not None:
         return _unwrap(server_or_tool, str(tool_or_args), _call_raw(server_or_tool, str(tool_or_args), args))
+    if isinstance(tool_or_args, str):
+        # call("files", "read") with the argument dictionary omitted:
+        # the second string is the tool, not an argument payload.
+        return _unwrap(server_or_tool, tool_or_args, _call_raw(server_or_tool, tool_or_args, {}))
     if isinstance(tool_or_args, dict) or tool_or_args is None:
         name, payload = server_or_tool, tool_or_args or {}
     else:
@@ -379,12 +383,17 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	for _, r := range required {
 		req[r] = true
 	}
+	argNames := map[string]string{}
+	taken := map[string]bool{}
+	for _, p := range params {
+		argNames[p] = pyArgName(p, taken)
+	}
 	var sig []string
 	for _, p := range params {
 		if !req[p] {
 			continue
 		}
-		sig = append(sig, pyParam(p)+": "+pyTypeFor(propSchema(t.InputSchema, p), "        "))
+		sig = append(sig, argNames[p]+": "+pyTypeFor(propSchema(t.InputSchema, p), "        "))
 	}
 	var opt []string
 	for _, p := range params {
@@ -395,7 +404,7 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 		if typ != "Any" {
 			typ = "Optional[" + typ + "]"
 		}
-		opt = append(opt, pyParam(p)+": "+typ+" = _MISSING")
+		opt = append(opt, argNames[p]+": "+typ+" = _MISSING")
 	}
 	resType := pyResultType(nsClass, t)
 	fn := pyMethodName(t.Name)
@@ -417,7 +426,7 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	local := "payload"
 	used := map[string]bool{}
 	for _, p := range params {
-		used[pyParam(p)] = true
+		used[argNames[p]] = true
 	}
 	for used[local] {
 		local = "_" + local
@@ -427,12 +436,12 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 		if req[p] {
 			// Required arguments are sent exactly as supplied — including
 			// an explicit None for a nullable argument.
-			fmt.Fprintf(&b, "        %s[%s] = %s\n", local, pyQuote(p), pyParam(p))
+			fmt.Fprintf(&b, "        %s[%s] = %s\n", local, pyQuote(p), argNames[p])
 		} else {
 			// Optional arguments are omitted only when not supplied at
 			// all (the _MISSING sentinel); an explicit None is sent.
 			fmt.Fprintf(&b, "        if %s is not _MISSING:\n            %s[%s] = %s\n",
-				pyParam(p), local, pyQuote(p), pyParam(p))
+				argNames[p], local, pyQuote(p), argNames[p])
 		}
 	}
 	fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, %s))\n",
@@ -481,17 +490,38 @@ func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 	if rawResult := t.OutputSchema; len(rawResult) > 0 {
 		var s schema
 		if json.Unmarshal(rawResult, &s) == nil {
-			if fields, ok := pyObjectFields(&s); ok && len(fields) > 0 {
+			if pairs, ok := pyObjectFieldPairs(&s); ok && len(pairs) > 0 {
 				name := nsClass + pyClassName(t.Name) + "Result"
-				fmt.Fprintf(b, "class %s(TypedDict, total=False):\n", name)
-				b.WriteString(strings.Join(fields, "\n") + "\n\n\n")
+				if pyLiteralKeys(pairs) {
+					// Some property names cannot be written as class
+					// attributes ("class", "next-page"): the class form
+					// would rename them (class_, next_page) while
+					// _unwrap returns the server's keys unchanged, so
+					// the advertised keys would raise KeyError. The
+					// functional form keeps the literal JSON names.
+					parts := make([]string, 0, len(pairs))
+					for _, kv := range pairs {
+						parts = append(parts, pyQuote(kv[0])+": "+kv[1])
+					}
+					fmt.Fprintf(b, "%s = TypedDict(%s, {%s}, total=False)\n\n\n",
+						name, pyQuote(name), strings.Join(parts, ", "))
+				} else {
+					fields := make([]string, 0, len(pairs))
+					for _, kv := range pairs {
+						fields = append(fields, "    "+kv[0]+": "+kv[1])
+					}
+					fmt.Fprintf(b, "class %s(TypedDict, total=False):\n", name)
+					b.WriteString(strings.Join(fields, "\n") + "\n\n\n")
+				}
 			}
 		}
 	}
 }
 
-// pyObjectFields renders a schema's top-level properties as TypedDict lines.
-func pyObjectFields(s *schema) ([]string, bool) {
+// pyObjectFieldPairs returns a schema's top-level properties as
+// (name, annotation) pairs in sorted order: the name is the pyParam
+// rendering used by the class form of a TypedDict.
+func pyObjectFieldPairs(s *schema) ([][2]string, bool) {
 	if s == nil || len(s.Properties) == 0 {
 		return nil, false
 	}
@@ -500,11 +530,37 @@ func pyObjectFields(s *schema) ([]string, bool) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fields := make([]string, 0, len(keys))
+	pairs := make([][2]string, 0, len(keys))
 	for _, k := range keys {
-		fields = append(fields, "    "+pyParam(k)+": "+pyTypeForSchema(s.Properties[k], "    "))
+		pairs = append(pairs, [2]string{k, pyTypeForSchema(s.Properties[k], "    ")})
+	}
+	return pairs, true
+}
+
+// pyObjectFields renders a schema's top-level properties as TypedDict lines.
+func pyObjectFields(s *schema) ([]string, bool) {
+	pairs, ok := pyObjectFieldPairs(s)
+	if !ok {
+		return nil, false
+	}
+	fields := make([]string, 0, len(pairs))
+	for _, kv := range pairs {
+		fields = append(fields, "    "+pyParam(kv[0])+": "+kv[1])
 	}
 	return fields, true
+}
+
+// pyLiteralKeys reports whether any property name would be renamed by
+// the class form of a TypedDict (not a plain identifier, a reserved
+// word, or changed by pyParam), in which case only the functional form
+// preserves the server's literal keys.
+func pyLiteralKeys(pairs [][2]string) bool {
+	for _, kv := range pairs {
+		if pyParam(kv[0]) != kv[0] {
+			return true
+		}
+	}
+	return false
 }
 
 // pyResultType names the generated result TypedDict when there is one, and
@@ -670,6 +726,14 @@ func pyCollisions(tools []Tool) map[string][]string {
 // a numeric suffix (FooBar2, ...).
 func pyClassNames(nss []Namespace) []string {
 	used := map[string]bool{}
+	// Runtime and imported typing bindings are taken before any
+	// namespace is allocated: a namespace named "tool_error" must not
+	// emit `class ToolError` and replace the runtime's exception
+	// class, and likewise for the typing names the header imports.
+	for _, name := range []string{"ToolError", "TypedDict", "Literal",
+		"Any", "Dict", "List", "Optional", "Union"} {
+		used[name] = true
+	}
 	out := make([]string, 0, len(nss))
 	for _, ns := range nss {
 		base := pyClassName(ns.Name)
@@ -737,6 +801,27 @@ func pyClassName(name string) string {
 		return "Ns"
 	}
 	return b.String()
+}
+
+// pyRuntimeNames are the module-level helpers a generated method body
+// references by bare name. A parameter carrying one of these names would
+// shadow the helper for the whole method (a property named _MISSING made
+// the sentinel guard `if _MISSING is not _MISSING`, silently dropping the
+// argument), so method parameters are allocated around them.
+var pyRuntimeNames = map[string]bool{"_MISSING": true, "_call_raw": true, "_unwrap": true}
+
+// pyArgName allocates the parameter name for one property inside a
+// generated method or declaration, avoiding the runtime helpers and the
+// names already taken by earlier parameters of the same callable. The
+// request dictionary keeps the original property name as its key; only
+// the local variable is renamed.
+func pyArgName(prop string, taken map[string]bool) string {
+	name := pyParam(prop)
+	for pyRuntimeNames[name] || taken[name] {
+		name += "_"
+	}
+	taken[name] = true
+	return name
 }
 
 // pyParam renders a property name as a Python keyword argument, renaming the
@@ -829,12 +914,13 @@ func PythonDeclarations(nss []Namespace) string {
 			}
 			params, _ := schemaFields(t.InputSchema)
 			fmt.Fprintf(&b, "    def %s(self", fn)
+			taken := map[string]bool{}
 			for i, p := range params {
 				sep := ", "
 				if i == 0 {
 					sep = ", "
 				}
-				fmt.Fprintf(&b, "%s%s: %s = ...", sep, pyParam(p), pyTypeFor(propSchema(t.InputSchema, p), "        "))
+				fmt.Fprintf(&b, "%s%s: %s = ...", sep, pyArgName(p, taken), pyTypeFor(propSchema(t.InputSchema, p), "        "))
 			}
 			fmt.Fprintf(&b, ") -> %s: ...\n", pyResultType(classNames[i], t))
 		}
