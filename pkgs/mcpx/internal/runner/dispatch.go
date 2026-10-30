@@ -336,6 +336,7 @@ type jsChoice struct {
 	set     []string
 	unset   []string
 	clear   bool
+	chdir   string
 }
 
 // decideDispatch applies ranks 1 and 2 of the dispatch order. A nil
@@ -372,9 +373,9 @@ func decideDispatch(opts Options) (*dispatch, jsChoice, error) {
 			return nil, jsChoice{}, errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
 		if len(sp.tokens) == 1 && isJSRuntimeName(opts.Setup, sp.tokens[0]) {
-			return nil, jsChoice{runtime: sp.tokens[0], set: sp.set, unset: sp.unset, clear: sp.clear}, nil
+			return nil, jsChoice{runtime: sp.tokens[0], set: sp.set, unset: sp.unset, clear: sp.clear, chdir: sp.chdir}, nil
 		}
-		d, err := dispatchFromTokens("shebang", sp.tokens)
+		d, err := dispatchFromTokens("shebang", sp.tokens, &sp)
 		if err != nil {
 			return nil, jsChoice{}, err
 		}
@@ -389,13 +390,31 @@ func decideDispatch(opts Options) (*dispatch, jsChoice, error) {
 		if len(tokens) == 0 {
 			return nil, jsChoice{}, errors.New("runner: script.interpreter is set but names no command")
 		}
-		d, err := dispatchFromTokens("interpreter", tokens)
+		d, err := dispatchFromTokens("interpreter", tokens, nil)
 		if err != nil {
 			return nil, jsChoice{}, err
 		}
 		return d, jsChoice{}, nil
 	}
 	return nil, jsChoice{}, nil
+}
+
+// applyChdir applies an env shebang's -C/--chdir directory to the
+// policy directory a run resolved. A shebang's -C is the program's own
+// directory choice, so like its interpreter choice it beats
+// configuration: the rank-1 rationale in decideDispatch applies to the
+// directory too. A relative -C resolves against the policy directory,
+// the way env(1) resolves it against the directory in force. Both
+// dispatch paths (raw and the JavaScript harness) apply it through
+// here, so neither can silently drop what the shebang asked for.
+func applyChdir(dir, chdir string) string {
+	if chdir == "" {
+		return dir
+	}
+	if filepath.IsAbs(chdir) {
+		return chdir
+	}
+	return filepath.Join(dir, chdir)
 }
 
 // ownedEnvNames are the MCPX_* variables a run sets itself. A child
@@ -419,11 +438,66 @@ func childBaseEnv(set, unset []string, clear bool) []string {
 	return append(base, set...)
 }
 
-func dispatchFromTokens(source string, tokens []string) (*dispatch, error) {
+// shebangPath is the PATH env(1) would run the command with: the
+// inherited one, emptied by -i or by unsetting PATH, with the shebang's
+// own PATH assignment (the last one) replacing it. Resolving the
+// interpreter against anything else runs a different interpreter than
+// the one the script's first line names -- or none, when the executable
+// exists only in the assigned PATH (#2611 review).
+func shebangPath(sp *shebangEnv) string {
+	path := os.Getenv("PATH")
+	if sp.clear {
+		path = ""
+	}
+	for _, u := range sp.unset {
+		if u == "PATH" {
+			path = ""
+		}
+	}
+	for _, kv := range sp.set {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == "PATH" {
+			path = v
+		}
+	}
+	if path == "" {
+		// env(1) runs the command through execvp, which falls back to
+		// a default path (confstr _CS_PATH: /bin:/usr/bin) when PATH is
+		// absent from the environment it builds -- the -i case. An
+		// empty effective PATH therefore means that default, not
+		// "nothing is findable".
+		path = "/bin:/usr/bin"
+	}
+	return path
+}
+
+// lookPathIn is exec.LookPath against one explicit PATH value.
+func lookPathIn(bin, path string) (string, error) {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		p := filepath.Join(dir, bin)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return p, nil
+		}
+	}
+	return "", exec.ErrNotFound
+}
+
+func dispatchFromTokens(source string, tokens []string, sp *shebangEnv) (*dispatch, error) {
 	bin := tokens[0]
 	resolved := bin
 	if !strings.Contains(bin, "/") {
-		p, err := exec.LookPath(bin)
+		var p string
+		var err error
+		if sp != nil {
+			// A shebang's command is resolved against the environment
+			// the shebang itself establishes, the way env(1) resolves
+			// it after applying its assignments.
+			p, err = lookPathIn(bin, shebangPath(sp))
+		} else {
+			p, err = exec.LookPath(bin)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("runner: %s interpreter %q not found on PATH: %w", source, bin, err)
 		}
@@ -481,19 +555,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 	if err != nil {
 		return nil, err
 	}
-	if d.chdir != "" {
-		// A shebang's -C/--chdir is the program's own directory
-		// choice, so like its interpreter choice it beats
-		// configuration: the rank-1 rationale in decideDispatch
-		// applies to the directory too. A relative -C resolves
-		// against the policy directory, the way env(1) resolves it
-		// against the directory in force.
-		if filepath.IsAbs(d.chdir) {
-			dir = d.chdir
-		} else {
-			dir = filepath.Join(dir, d.chdir)
-		}
-	}
+	dir = applyChdir(dir, d.chdir)
 
 	notice := fmt.Sprintf("mcpx: running under %s (%s dispatch): no generated mcpx client is "+
 		"available to a non-JavaScript script, and script.permissions profiles are not enforced "+

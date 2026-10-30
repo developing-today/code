@@ -471,3 +471,44 @@ func TestRunCwdPolicyScript(t *testing.T) {
 		t.Errorf("script.cwd=caller: pwd = %q, want %q", got, wantBase)
 	}
 }
+
+// A JavaScript shebang's -C directory rides into the harness choice:
+// dropping it would run the script in the policy directory while the
+// raw path honours it (#2611 review).
+func TestDecideDispatchJSCarriesChdir(t *testing.T) {
+	d, js, err := decideDispatch(Options{Source: "#!/usr/bin/env -S -C /tmp node\nexport default () => 1\n"})
+	if err != nil {
+		t.Fatalf("decideDispatch: %v", err)
+	}
+	if d != nil {
+		t.Fatalf("decideDispatch(JS shebang with -C) dispatch = %v; want nil (harness path)", d)
+	}
+	if js.runtime != "node" || js.chdir != "/tmp" {
+		t.Errorf("jsChoice = %+v; want runtime node with chdir /tmp carried", js)
+	}
+}
+
+// The interpreter a shebang names is resolved against the PATH the
+// shebang itself assigns, not the parent process's: an executable that
+// exists only in the assigned PATH must be found (#2611 review).
+func TestDecideDispatchResolvesAgainstShebangPath(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "myinterp-probe")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "#!/usr/bin/env -S PATH=" + dir + " myinterp-probe\necho hi\n"
+	d, _, err := decideDispatch(Options{Source: src})
+	if err != nil {
+		t.Fatalf("decideDispatch(shebang PATH assignment): %v", err)
+	}
+	if d == nil || d.bin != bin {
+		t.Errorf("dispatch = %+v; want bin %q resolved via the shebang's PATH", d, bin)
+	}
+	// And without the assignment the same name is not found on the
+	// process PATH (it exists nowhere else), proving the assignment --
+	// not luck -- did the resolving.
+	if _, _, err := decideDispatch(Options{Source: "#!/usr/bin/env myinterp-probe\necho hi\n"}); err == nil {
+		t.Error("decideDispatch without the PATH assignment: want a not-found error")
+	}
+}

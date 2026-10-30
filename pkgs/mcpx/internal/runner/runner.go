@@ -333,7 +333,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if derr != nil {
 		return nil, derr
 	}
-	cmd.Dir = dir
+	cmd.Dir = applyChdir(dir, jsEnv.chdir)
 	// The kind, not the configured name: a script branching on its runtime
 	// cares whether it is under Deno, not what somebody called the binary.
 	// A JavaScript shebang's env(1) changes apply here too, and names the
