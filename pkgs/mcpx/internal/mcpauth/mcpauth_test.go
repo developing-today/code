@@ -115,6 +115,23 @@ func TestDescribeNeverRevealsALiteral(t *testing.T) {
 	}
 }
 
+func TestDescribeRedactsANumericSpecialReferenceWithLiteralSuffix(t *testing.T) {
+	// os.Expand reads $1 as a complete one-character reference and
+	// leaves the rest of the string literal, so the scanner must too:
+	// $1privateSecret is a reference PLUS a secret suffix, and showing
+	// it whole would print the suffix (Codex finding on PR #2593).
+	a := &mcpauth.Auth{Type: "bearer", Token: "$1privateSecret"}
+	if got := a.Describe(); strings.Contains(got, "privateSecret") {
+		t.Errorf("Describe() = %q, which leaks the literal suffix of $1privateSecret", got)
+	}
+	// A reference composed with a special-variable reference, and
+	// nothing else, is still a pure reference and is shown.
+	b := &mcpauth.Auth{Type: "bearer", Token: "$TOKEN$1"}
+	if got := b.Describe(); got != "bearer $TOKEN$1" {
+		t.Errorf("Describe() = %q, want the pure reference shown", got)
+	}
+}
+
 func TestDescribeRedactsAMixedReferenceAndLiteral(t *testing.T) {
 	// Codex finding on PR #2593: a credential that MIXES a reference with a
 	// literal suffix used to be printed whole, because redactRef trusted

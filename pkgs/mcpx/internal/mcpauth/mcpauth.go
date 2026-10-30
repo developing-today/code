@@ -241,6 +241,14 @@ func redactRef(v string) string {
 
 // isPureRef reports whether v consists solely of $VAR / ${VAR} references
 // (the two forms os.Expand resolves), with no literal characters.
+//
+// The name scan mirrors os.Expand's own (getShellName), because the two
+// must agree about where a reference ends: an unbraced name that starts
+// with a shell special variable character -- a digit or one of * # $ @
+// ! ? - -- is exactly ONE character long there, so $1privateSecret
+// expands $1 and leaves privateSecret as literal text. A scan that let
+// the name run on would call the whole value a reference and print a
+// secret suffix.
 func isPureRef(v string) bool {
 	for i := 0; i < len(v); {
 		if v[i] != '$' {
@@ -252,8 +260,12 @@ func isPureRef(v string) bool {
 			i++
 		}
 		start := i
-		for i < len(v) && (v[i] == '_' || '0' <= v[i] && v[i] <= '9' || 'a' <= v[i] && v[i] <= 'z' || 'A' <= v[i] && v[i] <= 'Z') {
+		if !braced && i < len(v) && isShellSpecialVar(v[i]) {
 			i++
+		} else {
+			for i < len(v) && (v[i] == '_' || '0' <= v[i] && v[i] <= '9' || 'a' <= v[i] && v[i] <= 'z' || 'A' <= v[i] && v[i] <= 'Z') {
+				i++
+			}
 		}
 		if i == start {
 			return false
@@ -266,4 +278,14 @@ func isPureRef(v string) bool {
 		}
 	}
 	return len(v) > 0
+}
+
+// isShellSpecialVar is os.Expand's set: the characters that, directly
+// after $, form a complete one-character variable reference.
+func isShellSpecialVar(c byte) bool {
+	switch c {
+	case '*', '#', '$', '@', '!', '?', '-':
+		return true
+	}
+	return '0' <= c && c <= '9'
 }
