@@ -652,6 +652,55 @@ const warmHost = {
   }
 };
 
+// Quota state learned from the provider's own errors. When a turn reports
+// the subscription quota exhausted, the error names the reset; until then
+// every further attempt — warm or exec — is guaranteed to fail the same
+// way, and each costs a full CLI turn (seconds, plus a CLI spawn on the
+// exec path). Requests in the window fail fast with the provider's own
+// message instead, a quota failure on the warm path no longer falls back
+// to exec, and the state clears on its own at the stated reset.
+let quotaExhaustedUntil = 0;
+let quotaExhaustedMessage = '';
+const QUOTA_FALLBACK_HOLD_MS = 60_000;
+const QUOTA_MAX_HOLD_MS = 6 * 3_600_000;
+const noteQuotaError = (message) => {
+  if (typeof message !== 'string' || !/quota exhausted/i.test(message)) return false;
+  const reset = /resets at ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z)/.exec(message);
+  const parsed = reset ? Date.parse(reset[1]) : NaN;
+  const until = Number.isNaN(parsed)
+    ? Date.now() + QUOTA_FALLBACK_HOLD_MS
+    : Math.min(parsed, Date.now() + QUOTA_MAX_HOLD_MS);
+  if (until > quotaExhaustedUntil) {
+    quotaExhaustedUntil = until;
+    quotaExhaustedMessage = message;
+  }
+  return true;
+};
+const quotaBlocked = () => Date.now() < quotaExhaustedUntil;
+// The failure shape the exec path already produces (#670): a bare 500 for
+// non-stream clients, an SSE error frame for stream clients.
+const sendQuotaError = (res, stream) => {
+  const errorBody = { error: { message: `Muse execution failed: ${quotaExhaustedMessage || 'Subscription quota exhausted'}` } };
+  if (stream) {
+    if (!res.headersSent) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+    }
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+      res.write('data: [DONE]\n\n');
+    }
+    res.end();
+    return;
+  }
+  if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(errorBody));
+};
+
 // Per-conversation serialization: turns on one session must not interleave,
 // and the delta decision must be made against the latest committed state.
 const warmChains = new Map();
@@ -762,7 +811,16 @@ const tryWarmChat = async ({ messages, baseModel, effort, fullName, stream, res,
   try {
     result = await enqueueWarm(key, job);
   } catch (err) {
-    console.warn(`[muse-proxy warm] warm path failed (${err.message}); ${headed ? 'stream already committed, terminating in place' : 'falling back to exec'}`);
+    const quota = noteQuotaError(err.message);
+    console.warn(`[muse-proxy warm] warm path failed (${err.message}); ${headed ? 'stream already committed, terminating in place' : quota ? 'quota exhausted, not falling back to exec' : 'falling back to exec'}`);
+    if (!headed && quota) {
+      // A quota failure is one the exec path cannot fix — it would pay a
+      // full CLI spawn to be told the same thing. Answer with the
+      // provider's error now; quotaBlocked() fails later requests fast
+      // until the stated reset.
+      sendQuotaError(res, stream);
+      return true;
+    }
     if (!headed) return false;
     if (!res.writableEnded) {
       res.write(`data: ${JSON.stringify({ error: { message: `Muse execution failed: ${err.message}` } })}\n\n`);
@@ -938,6 +996,14 @@ const server = http.createServer((req, res) => {
       if (!prompt || prompt.trim().length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: 'Messages cannot be empty' } }));
+        return;
+      }
+
+      // Fail fast while a learned quota exhaustion is in force (see
+      // noteQuotaError): no warm turn, no CLI spawn — the provider's own
+      // stated reset governs when normal service resumes.
+      if (quotaBlocked()) {
+        sendQuotaError(res, stream);
         return;
       }
 
@@ -1133,6 +1199,7 @@ const server = http.createServer((req, res) => {
               ? `muse exec terminated by signal ${signal}`
               : `muse exec exited with code ${code}`;
           const detail = (stderrLine || fallback).trim();
+          noteQuotaError(detail);
           const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
           if (stream) {
             // The 200 + text/event-stream headers are already on the wire,

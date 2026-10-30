@@ -80,6 +80,10 @@ if (args[0] === 'serve') {
         const sid = msg.params.sessionId;
         const turnId = msg.params.commandId;
         reply({ commandId: msg.params.commandId, turnId, disposition: 'started', startedNewTurn: true, status: 'accepted' });
+        if (text.includes('QUOTAWARM')) {
+          notify('turn/completed', { sessionId: sid, turnId, terminal: 'failed', reason: 'API error 429 [request_id=stub]: Subscription quota exhausted. Your usage window resets at 2999-01-01T00:00:00Z. (rate_limit_error)' });
+          return;
+        }
         notify('item/started', { sessionId: sid, item: { itemId: 'a1', kind: 'agentMessage' } });
         notify('item/delta', { sessionId: sid, itemId: 'a1', delta: 'RE:' + text });
         notify('item/completed', { sessionId: sid, item: { itemId: 'a1', kind: 'agentMessage', messagePhase: 'finalAnswer', text: 'RE:' + text } });
@@ -97,6 +101,7 @@ if (args[0] === 'serve') {
   try { prompt = fs.readFileSync(promptFile, 'utf-8'); } catch {}
   const line = (o) => console.log(JSON.stringify(o));
   if (prompt.includes('FAILME')) { console.error('stub muse: auth expired'); process.exit(3); }
+  if (prompt.includes('QUOTAME')) { console.error('run ended with Failed: API error 429 [request_id=stub]: Subscription quota exhausted. Your usage window resets at 2999-01-01T00:00:00Z. (rate_limit_error)'); process.exit(3); }
   if (prompt.includes('FAILPARTIAL')) {
     line({ payload_type: 'run.output.delta', payload: { text: 'partial answer' } });
     line({ payload_type: 'run.terminal.failed', payload: { terminal: 'failed', text: 'partial answer' } });
@@ -138,6 +143,12 @@ const startProxy = async (extraEnv = {}) => {
   fs.mkdirSync(stubDir);
   fs.mkdirSync(path.join(tmp, 'home'));
   fs.writeFileSync(path.join(stubDir, 'muse'), STUB, { mode: 0o755 });
+  // The proxy resolves the CLI at $HOME/.local/bin/muse before PATH (and
+  // before the NixOS system path), so the stub must live there too — with
+  // only the PATH stub, a machine that has a real system muse (a NixOS
+  // laptop) runs the real CLI in these tests.
+  fs.mkdirSync(path.join(tmp, 'home', '.local', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'home', '.local', 'bin', 'muse'), STUB, { mode: 0o755 });
   const port = await freePort();
   const logFile = path.join(tmp, 'stub.log');
   const child = spawn(process.execPath, [path.join(binDir, 'muse-proxy.mjs')], {
@@ -447,4 +458,51 @@ test('flag probe: 1.4.13-shaped help — warm serve spawn passes --disable-reque
   const serveArgv = argvLines(logFile, 'serve');
   assert.equal(serveArgv.length, 1);
   assert.ok(serveArgv[0].includes('--disable-request-user-input'), 'advertised flag must be passed');
+});
+
+
+// --- Quota exhaustion: fail fast until the provider's stated reset --------
+// A quota-exhausted window used to cost every request a full CLI turn —
+// the warm path failed after seconds and then paid a CLI spawn for the
+// exec path to be told the same 429. Once any path reports the quota
+// exhausted, the proxy answers later requests itself until the reset.
+const chatRaw = async (port, body) => {
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return { status: res.status, text: await res.text() };
+};
+
+test('quota exhausted on the exec path: later requests fail fast without a spawn', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+
+  const first = await chatRaw(port, { messages: [{ role: 'user', content: 'QUOTAME please' }] });
+  assert.equal(first.status, 500);
+  assert.match(first.text, /Subscription quota exhausted/);
+  assert.equal(argvLines(logFile, 'exec').length, 1, 'the first request paid the real exec attempt');
+
+  const second = await chatRaw(port, { messages: [{ role: 'user', content: 'hello again' }] });
+  assert.equal(second.status, 500);
+  assert.match(second.text, /Subscription quota exhausted/);
+  assert.equal(argvLines(logFile, 'exec').length, 1, 'the second request must not spawn the CLI again');
+});
+
+test('quota exhausted on the warm path: no exec fallback, later requests fail fast', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+
+  const first = await chatRaw(port, { messages: [{ role: 'user', content: 'QUOTAWARM please' }] });
+  assert.equal(first.status, 500);
+  assert.match(first.text, /Subscription quota exhausted/);
+  assert.equal(argvLines(logFile, 'exec').length, 0, 'a warm quota failure must not fall back to exec');
+
+  const second = await chatRaw(port, { messages: [{ role: 'user', content: 'hello again' }] });
+  assert.equal(second.status, 500);
+  assert.match(second.text, /Subscription quota exhausted/);
+  const turns = fs.readFileSync(logFile, 'utf-8').split('\n').filter(l => l.startsWith('TURN'));
+  assert.equal(turns.length, 1, 'the second request must not reach the serve host');
+  assert.equal(argvLines(logFile, 'exec').length, 0);
 });
