@@ -85,7 +85,7 @@ func TestQuarantineSkipsAndFails(t *testing.T) {
 // literal pattern fails here too, so the audit cannot be dodged by
 // passing a variable.
 func TestQuarantineGuard(t *testing.T) {
-	call := regexp.MustCompile(`Quarantine\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)`)
+	call := regexp.MustCompile(`Quarantine\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,?\s*\)`)
 	moduleRoot := filepath.Join("..", "..")
 	now := time.Now().UTC()
 	err := filepath.WalkDir(moduleRoot, func(path string, d os.DirEntry, err error) error {
