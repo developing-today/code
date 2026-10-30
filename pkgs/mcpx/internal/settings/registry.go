@@ -390,6 +390,21 @@ func pathSettings() []Setting {
 				"and it changes when the service does. " + spliceLong,
 		},
 		{
+			Path: "paths.plugins", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient,
+			Name:  "Plugin search path",
+			Short: "directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins",
+			Long: "A plugin is an MCP server (#1870, Approach C). A directory " +
+				"holding mcpx-plugin.json is a plugin -- the manifest names it, " +
+				"gives its spawn recipe or remote url, and may state the mcpx API " +
+				"it requires and the hooks it subscribes to. Any other executable " +
+				"in a named directory, and any mcpx-plugin-<name> executable on " +
+				"PATH, is a plugin with default manifest values. Discovered " +
+				"plugins are added as servers of their own, so they are pooled " +
+				"and appear in mcpx ls, the catalog and the generated client " +
+				"like any configured server. " + spliceLong,
+		},
+		{
 			Path: "paths.state", Kind: KindString, Default: "",
 			Scope:      ScopeClient,
 			EnvAliases: []string{"MCPX_STATE_DIR"},

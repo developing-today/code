@@ -34,6 +34,11 @@ const (
 	// SetByPlugin is the opencode plugin, into the environment of every
 	// shell command the editor runs.
 	SetByPlugin Setter = "plugin"
+	// SetByPluginLoader is the plugin loader (#1870), into the environment
+	// of every plugin process it hands the pool: the back-channel a plugin
+	// uses to call /v1. Not SetByPlugin -- that is the opencode plugin, a
+	// consumer of mcpx, where this is mcpx loading a plugin of its own.
+	SetByPluginLoader Setter = "plugin-loader"
 )
 
 // Describe is the setter as a reader of the documentation knows it.
@@ -49,6 +54,8 @@ func (s Setter) Describe() string {
 		return "the runner, for every script"
 	case SetByPlugin:
 		return "the opencode plugin"
+	case SetByPluginLoader:
+		return "the plugin loader, for a discovered plugin"
 	}
 	return string(s)
 }
@@ -87,7 +94,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_SESSION_ID",
-			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer, SetByPlugin},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer, SetByPlugin, SetByPluginLoader},
 			When: "the CLI passes through the value it was given, which may be " +
 				"empty; the plugin sets it at every plugin.env level",
 			Meaning: "the session the host assigned. Unlike MCPX_SESSION it " +
@@ -131,7 +138,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_SOCKET",
-			SetBy: []Setter{SetByCLI, SetByExec},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByPluginLoader},
 			When:  "empty when the daemon is remote, since its socket is not reachable from here",
 			Meaning: "the daemon's unix socket, which is faster than the endpoint. " +
 				"Also where a daemon binds and a client dials, for anyone who sets it by hand",

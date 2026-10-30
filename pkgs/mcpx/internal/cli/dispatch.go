@@ -55,6 +55,7 @@ func (a *App) handWritten() map[string]Handler {
 		"serve":        a.CmdServe,
 		"openapi":      a.CmdOpenAPI,
 		"adapter":      a.CmdAdapter,
+		"plugin":       a.CmdPlugin,
 		"registry":     a.CmdRegistry,
 		"api":          a.CmdAPI,
 		"prompts":      a.CmdPrompts,

@@ -442,6 +442,7 @@ and a switch to turn the report off would have kept it quiet.
 | `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for |
 | `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching |
 | `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders |
+| `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins |
 | `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for |
 | `paths.state` | string | *(empty)* | client | no | `--paths-state` | `MCPX_PATHS_STATE`, `MCPX_STATE_DIR` | where the daemon socket, logs and index live |
 

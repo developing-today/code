@@ -246,7 +246,7 @@ func (a *App) inlineDaemon(ctx context.Context) (*Client, error) {
 		Config: cfg, Paths: paths, Version: a.Version,
 		Logger:   log.New(io.Discard, "", 0),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		_ = os.RemoveAll(dir)

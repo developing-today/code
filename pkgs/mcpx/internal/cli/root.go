@@ -335,7 +335,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		Logger:   logger,
 		IdleExit: a.Settings().Duration("daemon.idleExit"),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		return err
