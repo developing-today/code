@@ -59,8 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The Renovate branch itself, so a fixed hash can be pushed back.
-          ref: ${{ github.head_ref || github.ref }}
+          # Fork-safe: on a pull_request run, check out the PR head SHA
+          # (a bare head_ref names a branch in THIS repository, which a
+          # fork's branch is not — the checkout would fail, or worse,
+          # validate a coincidentally same-named branch). On push runs
+          # this falls back to the pushed ref. The vendorhash-repair
+          # job keeps its own writable-branch checkout below.
+          ref: ${{ github.event.pull_request.head.sha || github.head_ref || github.ref }}
           fetch-depth: 0
 
       # The repo dogfoods the plugin: .opencode/plugin is a copy of

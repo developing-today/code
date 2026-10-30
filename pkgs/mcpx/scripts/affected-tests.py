@@ -218,6 +218,52 @@ def e2e_tests_mentioning(mcpx, names):
     return [name for name, _ in selected]
 
 
+
+def changed_test_names(mcpx, e2e_rel_paths, root, base):
+    """Test functions a diff actually changes, per edited e2e file:
+    parse each test's line span in the current file (brace counting
+    over noise-stripped source, as in e2e_tests_mentioning) and keep
+    the tests whose span intersects a changed line range from a
+    zero-context diff. Hunk-header function context is NOT enough:
+    git names the function PRECEDING the hunk, so an edit at the top
+    of a test is attributed to the previous test."""
+    names = []
+    for p in sorted(e2e_rel_paths):
+        full = os.path.join(mcpx, p)
+        if not os.path.exists(full):
+            continue
+        diff = run(["git", "diff", "--unified=0", base, "--",
+                    f"pkgs/mcpx/{p}"], root, check=False)
+        ranges = []
+        for line in diff.splitlines():
+            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+            if m:
+                s = int(m.group(1))
+                c = int(m.group(2)) if m.group(2) is not None else 1
+                # A zero-count range is a pure deletion: the change
+                # sits between new-file lines s and s+1; attribute it
+                # to the test spanning line s.
+                ranges.append((s, s + c - 1) if c else (s, s))
+        if not ranges:
+            continue
+        text = open(full, encoding="utf-8", errors="replace").read()
+        syntax = strip_go_noise(text)
+        for m in re.finditer(r"^func (Test\w+)\(t \*testing\.T\) \{", syntax, re.M):
+            start_line = syntax.count("\n", 0, m.start()) + 1
+            depth, i = 1, m.end()
+            while i < len(syntax) and depth:
+                if syntax[i] == "{":
+                    depth += 1
+                elif syntax[i] == "}":
+                    depth -= 1
+                i += 1
+            end_line = syntax.count("\n", 0, i) + 1
+            if any(s <= end_line and e >= start_line for s, e in ranges):
+                if m.group(1) not in names:
+                    names.append(m.group(1))
+    return names
+
+
 def embedded_owners(mcpx, rel):
     """Map changed non-.go files to the packages that embed them.
 
@@ -311,6 +357,12 @@ def main():
 
     # Diff text for T1b / registry analysis (registry + non-test sources).
     src = [p for p in all_go_files if not p.endswith("_test.go")]
+    # defaults.json is a registry source too: it holds the program's
+    # actual defaults (embedded by internal/defaults), so a
+    # defaults-only change must feed registry-name extraction below,
+    # not just the area detection that already maps it to settings.
+    src += [p for p in rel if p.startswith("internal/defaults/")
+            and not p.endswith(".go")]
     diff_text = ""
     if src:
         diff_text = run(["git", "diff", args.base, "--"] +
@@ -364,11 +416,13 @@ def main():
     harness = any(p.startswith("internal/testsupport/") for p in rel)
     edited_e2e = {p for p in go_files if p.startswith("internal/e2e/")}
     edited_e2e_all = {p for p in all_go_files if p.startswith("internal/e2e/")}
+    changed_e2e_tests = []
     if edited_e2e_all:
         e2e_diff = run(["git", "diff", args.base, "--"] +
                        [f"pkgs/mcpx/{p}" for p in edited_e2e_all], root, check=False)
         if "newEnv" in e2e_diff:
             harness = True
+        changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base)
     sample = []
     if harness:
         # The rule-4 sample is reserved its slots before the budget is
@@ -393,8 +447,15 @@ def main():
             if g not in guards:
                 guards.append(g)
     reserved = sample + [g for g in guards if g not in sample]
-    ordered = reserved + [t for t in ranked if t not in reserved]
-    ordered += [t for t in sorted(e2e_selected) if t not in reserved and t not in ranked]
+    # Tests the diff actually edits come before ranked name matches and
+    # before the alphabetical fill from edited files: when a large e2e
+    # file changes, the budget must not be spent on unrelated tests
+    # from that file while the changed regression test is truncated
+    # away (and T1 never runs e2e, so nothing else would run it).
+    prioritized = [t for t in changed_e2e_tests if t not in reserved]
+    ordered = reserved + prioritized
+    ordered += [t for t in ranked if t not in ordered]
+    ordered += [t for t in sorted(e2e_selected) if t not in ordered]
     truncated = len(ordered) > T2_BUDGET
     e2e_selected = ordered[:T2_BUDGET]
     if e2e_selected:
