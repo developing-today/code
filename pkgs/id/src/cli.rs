@@ -1749,10 +1749,9 @@ pub enum WorldCommand {
     },
     /// Reconcile a live world to a `world.toml` (idempotent; journaled).
     ///
-    /// Prints the plan and applies it. `--dry-run` prints the plan only. The
-    /// grants, ceiling and profile are reconciled through the existing admin
-    /// operations; a module hash or source in the manifest is reported but
-    /// installed by `id world install`/`compile` until the apply path is wired.
+    /// Prints the plan and applies it. `--dry-run` prints the plan only.
+    /// Every step — module install, grants, ceiling, profile, schedules —
+    /// is applied through the admin operations and journaled by the host.
     Apply {
         /// The host's node ID (64 hex characters).
         node: String,

@@ -544,6 +544,44 @@ func TestClientFeaturesClient(t *testing.T) {
 		}
 	})
 
+	// The -1 half of this requirement (Phase 1 of #1834, issue #1835): a
+	// sampling refusal reaches the upstream as code -1 naming the action,
+	// not flattened to -32603. The -32602 content half (tool result
+	// missing / mixed with other content) stays an open gap for Phase 2
+	// (#1836) -- see the reworded gap in coverage_clientfeatures.go.
+	cli("sampling-client-errors-user-rejected-and-tool-shape", func(t *testing.T, rev string) {
+		o := clientOpts()
+		o.OnServerRequest = func(context.Context, string, json.RawMessage) (any, error) {
+			return nil, mcpclient.UserRejectedError("the sampling request was decline")
+		}
+		if isModern(rev) {
+			p := newPeer(t, rev)
+			n := 0
+			p.on("tools/call", func(pm map[string]any) (any, *rpcError) {
+				if n++; n == 1 {
+					var sp any
+					_ = json.Unmarshal([]byte(sampleParams), &sp)
+					return map[string]any{"resultType": "input_required", "requestState": "s",
+						"inputRequests": map[string]any{"q": map[string]any{"method": "sampling/createMessage", "params": sp}}}, nil
+				}
+				return map[string]any{"resultType": "complete", "content": []any{}}, nil
+			})
+			c := dialClient(t, p, o)
+			_, err := c.CallTool(ctxT(t), "echo", map[string]any{})
+			if err == nil || !strings.Contains(err.Error(), "mcp error -1") {
+				t.Errorf("a sampling refusal was not relayed as -1: %v", err)
+			}
+			return
+		}
+		p := newPeer(t, rev)
+		dialClient(t, p, o)
+		r := p.ask(t, "sampling/createMessage", json.RawMessage(sampleParams))
+		e := asMap(r["error"])
+		if e == nil || e["code"] != float64(-1) {
+			t.Errorf("a sampling refusal was not relayed as -1: %v", r)
+		}
+	})
+
 	// https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 	for _, id := range []string{"elicitation-client-declare-capability-at-initialize", "elicitation-client-declare-capability-per-request-meta",
 		"elicitation-client-support-at-least-one-mode", "elicitation-empty-capability-means-form-only"} {

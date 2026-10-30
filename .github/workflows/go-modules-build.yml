@@ -75,7 +75,7 @@ concurrency:
 
 jobs:
   build:
-    name: go build (${{ matrix.module }})
+    name: "basic: go build (${{ matrix.module }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

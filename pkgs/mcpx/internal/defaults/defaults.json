@@ -26,7 +26,8 @@
   },
   "daemon": {
     "reapInterval": "30s",
-    "saveInterval": "5m"
+    "saveInterval": "5m",
+    "tsnetUpTimeout": "30s"
   },
   "secrets": {
     "requestRetention": "10m"
@@ -144,6 +145,11 @@
     "output": "text",
     "remoteOutput": "structured",
     "delivery": "reference"
+  },
+  "cache": {
+    "maxBytes": "1GiB",
+    "maxAge": "720h",
+    "leaseStaleAge": "1h"
   },
   "artifacts": {
     "ttl": "24h",
