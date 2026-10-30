@@ -5,12 +5,12 @@
   ([epic #2056](https://github.com/developing-today/code/issues/2056)), a spec is not a build
   order: nothing here is implementable on top of the unreviewed
   [#2030](https://github.com/developing-today/code/issues/2030) investigation until the review
-  round accepts it. Implementation slices are named in §7 and must be filed as their own issues.
+  round accepts it. Implementation slices are named in §9 and must be filed as their own issues.
 - **Issue:** [#2238](https://github.com/developing-today/code/issues/2238). **Parent
   investigation:** [#2030](https://github.com/developing-today/code/issues/2030) (result posted
   on that issue 2026-10-29, queue task 3346).
 - **Consumers / cross-refs:** [#2028](https://github.com/developing-today/code/issues/2028) (ID
-  core design v1 — holds the questions this spec cannot settle, §6),
+  core design v1 — holds the questions this spec cannot settle, §8),
   [#2031](https://github.com/developing-today/code/issues/2031) (did-it tracker, the motivating
   app), [#2032](https://github.com/developing-today/code/issues/2032) (abuse-control budgets —
   owns every number this spec deliberately leaves out), [#2029](https://github.com/developing-today/code/issues/2029)
@@ -20,8 +20,10 @@
   proposals for the review round, not settled API.
 
 `pkgs/id/doc` and `pkgs/id/docs` are both symlinks to the repo-root `doc/` (`pkgs/id/doc ->
-../../doc`), so this file lives at `doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection.md`
-and is reachable as `pkgs/id/doc/…` exactly as the issue asks.
+../../doc`), so this file lives at
+`doc/2026-10-30T13-15-00Z_design_id_writer_set_view_projection/2026-10-30T13-15-00Z_design_id_writer_set_view_projection.md`
+and is reachable as `pkgs/id/doc/…` exactly as the issue asks. It is in a folder rather than flat so
+its `../../pkgs/id/...` evidence links resolve.
 
 ---
 
@@ -249,14 +251,17 @@ set object is content-addressed and dedupes like any other body.
 
 **Decision:** `version` is the `seq_num` of the publishing event in the owner's own chain
 (`Header.seq_num`, `p2panda-core/src/operation/header.rs:63`), and `set_id` is a stable derived
-ID (BLAKE3 over `(owner, purpose)`), so successive versions of the *same* set form a contiguous
-prefix of one author's chain.
+ID (BLAKE3 over `(owner, purpose)`), so successive versions of the *same* set are a **subsequence**
+of one author's chain — ordered, not necessarily contiguous, because one owner may publish several
+sets (§4.1's set filter, OQ-2).
 
 Reasons: an owner-invented counter can fork or repeat; the chain already enforces "seq 0 has no
 backlink, seq > 0 has one" ([`chain.rs:290-294`](../../pkgs/id/src/chain.rs)) and the store
 already keeps `chains: author → next seq, head, frozen` (`event_store/mod.rs:90-91`). A view can
 therefore name a set version as `(set_id, seq, head_hash)` and anyone can verify it is an
-ancestor of the head they hold — no new versioning machinery.
+ancestor of the head they hold — no new versioning machinery. Two sets interleaving in one chain
+costs nothing here: `set_id` is in the body, so which versions belong to which set is decided by
+the signed body, not by adjacency.
 
 **Rejected:** a mutable "current set" row. There is no mutation path in the substrate
 (`event_store/mod.rs:1-30`, append-only) and a mutable set would make §D2's "which set version
@@ -325,7 +330,7 @@ earlier "the frontier is immutable, so the expansion is permanent" reasoning.
 *join a group*; `Entry::Public` governs who may *count in a view*. They are different questions
 with different blast radii, and the spec forbids reusing one for the other. In particular, a
 `Public` writer set is never a default for a metric: the #2030 investigation flagged that a
-public *metric* is an invitation to game it, and left that question to #2028 (§6, OQ-1).
+public *metric* is an invitation to game it, and left that question to #2028 (§8, OQ-1).
 
 ### D6 — Exclusions are entries too, and they win
 
@@ -422,6 +427,8 @@ Because §4.1 clause 3 is a term in the predicate, its meaning has to be as prec
 ```
 rescinded(S, c)  ⇔  ∃ r ∈ versions(S):                                   // r is a rescind version
                       r.kind = idset.rescind
+                    ∧ r.body.set_id = S.set_id         // §4.1's set filter: a rescind of another
+                                                       // set never erases this set's claims
                     ∧ author(c) ∈ expand({ entries: [r.target], excludes: [] })
                                                                          // target is entry-shaped,
                                                                          // so target: Public erases
@@ -494,7 +501,7 @@ people who trust different sets.
 
 **Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
 Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
-It is stated once, in full, because five review rounds showed that patching clauses one at a time
+It is stated once, in full, because eight review rounds showed that patching clauses one at a time
 keeps opening a hole somewhere else.
 
 ```
@@ -506,16 +513,28 @@ keeps opening a hole somewhere else.
 
 past(F, c)      ⇔  c ∈ causal_past(F)
 
-// versions(S) is NOT "every idset.writer event the store holds". It is the owner's
-// APPLIED PREFIX as of R: a linear sequence, because `chains` stores the applied
-// prefix and `forks` holds the conflicting headers outside it
-// (event_store/mod.rs:90-91). A forked set version is therefore not a version at all,
-// and `max` is a function rather than a set of ties.
-versions(S)     ⇔  the applied prefix of set_id's chain, truncated at S.set_seq, under R
-                    // if S.set_seq is NOT in that prefix, project() is undefined for this view:
-                    // the view's own set version is forked, so there is nothing to project.
-                    // Refusing is the answer; silently projecting the surviving branch would
-                    // attribute a total to an input the owner did not select.
+// versions(S) is NOT "every idset.writer event the store holds". It is TWO restrictions,
+// and both are load-bearing:
+//   (a) the owner's APPLIED PREFIX as of R, truncated at S.set_seq — a linear sequence,
+//       because `chains` stores the applied prefix and `forks` holds the conflicting
+//       headers outside it (event_store/mod.rs:90-91), and
+//   (b) a FILTER ON `set_id`: only versions whose body says set_id = S.set_id.
+// (b) is not cosmetic. OQ-2 explicitly permits one owner to publish several purpose-
+// specific sets, so the owner's applied prefix interleaves the dog set, the chat set and
+// the dog set again. Without the filter, seq 2 of the *chat* set would be an admission
+// version of the *dog* set: a stranger's dog claim that saw seq 2 but not the dog set's
+// seq 3 would resolve `seen_by` to the chat set's Public and count. A set version is a
+// position in an owner's chain, but a *version of S* only if S is the set it publishes.
+versions(S)     ⇔  { v : v ∈ applied prefix of S.owner's chain under R, v.seq ≤ S.set_seq,
+                        body(v).set_id = S.set_id }
+                    // `applied prefix ... under R` is the same linearity guarantee as before;
+                    // the set_id filter makes it linear *and about one set*. Both kinds
+                    // (idset.writer and idset.rescind) carry a set_id, so one filter serves
+                    // both — a rescind of the chat set can never erase a dog claim.
+                    // if S.set_seq is NOT in this sequence, project() is undefined for this
+                    // view: the view's own set version is forked, so there is nothing to
+                    // project. Refusing is the answer; silently projecting the surviving
+                    // branch would attribute a total to an input the owner did not select.
 adm_versions(S) ⇔  { v ∈ versions(S) : v.kind = idset.writer }
                     // admission-bearing versions only. A rescind is a version but carries no
                     // entries (§3.3), so counting it in `seen_by` would make the newest thing an
@@ -591,7 +610,13 @@ Each clause exists because a review round proved its absence broke something:
      being a function of *(C, S, F, R)* at all — a forked, never-applied set version could admit an
      author or satisfy `retro`. This is the same discipline clause 1 applies to claims, applied to
      the set's own history.
-   - **If `S.set_seq` itself is not in the applied prefix under `R`, `project` is undefined.** The
+   - **…and only from versions *of this set*.** The applied prefix is the *owner's*, not the
+     set's: OQ-2 lets one owner publish several purpose-specific sets, so the prefix interleaves
+     them. Filtering by `body(v).set_id = S.set_id` (round-8 finding 26) is what keeps a second
+     set's admission from governing the first — without it, a chat set admitting `Public` at seq 2
+     would admit the world into the dog view, and a chat `rescind` would erase dog claims. Both
+     kinds carry `set_id`, so one filter covers admissions and rescinds alike.
+   - **If `S.set_seq` itself is not in `versions(S)` under `R`, `project` is undefined.** The
      owner selected a set version that a fork proof has since invalidated, so the view's own input is
      gone; refusing is correct and silently substituting the surviving branch would report a total
      against an input nobody chose. §4.6's `validity_now` is what tells the owner *why* — the same
@@ -683,10 +708,11 @@ predicate's reach.** §4.1 can count a claim through current admission (a subset
 historical admission, retrospective admission and a named exception:
 
 1. **Author ranges of every author *historically* admitted up to the selected version** — the union
-   of `expand(v)` over `v.seq ≤ S.set_seq`, not the current expansion alone. A removed author's
-   earlier claims stay counted (§3.2, clause 4's `admitted_at`), so their ranges must still be
-   scanned or the predicate can never preserve them. This is the correction for round-4 finding 13,
-   and it is strictly larger than the set in force today.
+   of `expand(v)` over `v ∈ versions(S)` (so bounded by `S.set_seq` **and** by `v.set_id = S.set_id`,
+   §4.1), not the current expansion alone. A removed author's earlier claims stay counted (§3.2,
+   clause 4's `admitted_at`), so their ranges must still be scanned or the predicate can never
+   preserve them. This is the correction for round-4 finding 13, and it is strictly larger than the
+   set in force today.
 2. **Past claims of a retro-admitting version** (`include_history: true`, §3.1). Those claims are by
    definition older than the version that admits them and may be authored by someone no version
    *prospectively* admitted, so they are reachable only through source 1's historical ranges — plus,
@@ -951,14 +977,17 @@ delivery mechanism spam actually wants. Discovery is a place you go.
 
 ## 6. Storage tiering interface
 
-### D7 — Counted is hot/permanent; uncounted is cold with published expiry, unless pinned or counted
+### D7 — Counted is hot/permanent; uncounted is cold with published expiry, unless pinned, counted, or a served view's input
 
 **Decision:** the interface is a `Tier` decision per object, evaluated by any server:
 
 ```rust
 enum Tier { Hot, Cold { expires_at: RetentionWindow } }
 // Hot  if counted by any view this server serves, or pinned by its owner,
-//      or named by a view exception.
+//      or named by a view exception,
+//      or it is a view-configuration input of a view this server serves
+//      (the view config itself, and every writer-set or rescind version that
+//       view's projection reads) — see the second constraint below.
 // Cold otherwise.
 ```
 
@@ -977,6 +1006,20 @@ because the numbers are not this spec's to set. Two constraints from the code:
   expired while it is referenced by a hot object's `after`, `backlink`, or `removes`; the
   reference holds it hot. This is the one place tiering needs real care and is called out as a
   review question (OQ-3).
+- **A view's own inputs are retention roots, and counting alone does not make them one** (round-8
+  finding 27). The obvious rule — "hot iff counted by some served view" — protects the wrong side
+  of the projection. A tracker view with `kind_scope = didit.record` counts *records*; its
+  `idset.writer` version is not a `didit.record`, so it is not counted by that view and, absent an
+  owner pin, falls to `Cold`. The counted records stay hot and their policy input expires, which is
+  worse than either alone: the store keeps a total it can no longer re-derive, and §4.1 declares
+  the projection **undefined** once `S.set_seq` is gone. The reference-holding rule above does not
+  rescue it either, because the record's `after`/`backlink` point backwards to earlier events and
+  cannot causally reference an admission published later — `prune_behind_cut` protects explicit
+  roots and their ancestors, not later policy inputs. So: **the configuration of every view this
+  server serves, and every writer-set/rescind version its projection reads** (the applied prefix
+  up to `S.set_seq` for `S.set_id`, plus any group events the pinned frontier needs, §4.5), **are
+  retention roots in their own right, independent of whether they count.** They are `protected`
+  roots passed to the same `prune_behind_cut` contract, not a new mechanism.
 
 **There is already a worked precedent for exactly that rule, and it is unwired.**
 `EventStore::prune_behind_cut(cut, protected)` prunes events behind a causal cut while keeping
@@ -1139,7 +1182,15 @@ Each is independently reviewable and small enough to land alone.
      neither `AuthorRemoved` nor "predates every version";
    - a **forked set version** is not a version: a set chain forked at `set_seq` does not make
      `seen_by` ambiguous, and a never-applied `idset.writer` cannot admit an author (finding 17 —
-     the set-side counterpart of the fork test above).
+     the set-side counterpart of the fork test above);
+   - **two purpose-specific sets on one owner chain do not leak into each other** (finding 26): dog
+     set seq 1 admits Alice, chat set seq 2 admits `Public`, dog set seq 3 removes Alice. A
+     stranger's dog claim written after seeing seq 2 but not seq 3 stays **uncounted** in the dog
+     view — the chat version is not a version *of the dog set*, so `seen_by` skips it and the
+     in-force version is the dog set's seq 1, which never admitted the stranger. The negative
+     control is the same fixture with the `set_id` filter removed: `seen_by` resolves to seq 2, the
+     claim counts, and the test fails — so the filter is exercised rather than assumed. A chat-set
+     `rescind` erases **no** dog claim.
 5. **`discover()` bounded and cursor-paginated, grouped by author, with viewer-local petname
    labels** (§5). Two flood tests, because they differ: 10k claims from one key → one cluster;
    **10k distinct keys → 10k clusters, one bounded page, honest `total_authors`** (the one that
@@ -1148,7 +1199,14 @@ Each is independently reviewable and small enough to land alone.
    `prune_behind_cut`'s existing "protect dependencies and active backlinks" contract
    ([`event_store/mod.rs:527-545`](../../pkgs/id/src/event_store/mod.rs)) — give it a
    counted/uncounted policy and a caller, rather than writing new pruning — and wired to *no*
-   scheduler: the scheduler and all window values come from #2032/#2033.
+   scheduler: the scheduler and all window values come from #2032/#2033. Tests:
+   - a counted record is `Hot`; an uncounted stranger's claim is `Cold`;
+   - **a view's policy inputs outlive its records' coldness** (finding 27): with
+     `kind_scope = didit.record`, the view's `idset.writer` version is not counted by that view and
+     has no owner pin, yet is `Hot` because it is a configuration input; pruning with a cut that
+     would drop it either keeps it or refuses, and `project(view, R)` stays defined afterwards. The
+     negative control is the same fixture with the root rule removed — `project` becomes undefined
+     and the test fails on that, so the rule is exercised rather than assumed.
 7. **The did-it tracker's first view** as the first real consumer, in
    [#2031](https://github.com/developing-today/code/issues/2031)'s PoC — the proof that one
    identity's view excludes a third party's claims while keeping them retrievable.
@@ -1260,19 +1318,34 @@ Round 7 is why the variants are named by cause rather than by instance: `History
 two distinct histories that a reviewer will construct separately, and naming it after either one
 leaves the other unrepresentable.
 
+**Round 8** (Codex, on the round-7 fix commit) found two more P2s, and again both live in seams the
+earlier rounds left open. Accepted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 26 | `versions(S)` was "the owner's `idset.writer` applied prefix" with **no `set_id` filter**, and `adm_versions` narrowed only by kind. OQ-2 explicitly permits several purpose-specific sets on one owner chain, so the prefix interleaves them: dog set seq 1 admits Alice, chat set seq 2 admits `Public`, dog set seq 3 — a stranger's dog claim observing seq 2 but not seq 3 resolved `seen_by` to the *chat* version and wrongly counted. The same hole let a chat `rescind` erase dog claims. | **Fixed at the definition, not at a call site.** `versions(S)` is now *"applied prefix under `R` **and** `body(v).set_id = S.set_id`"* (§4.1), so both `adm_versions` and the `rescind` quantifier in §3.3 inherit the filter. §D2's "contiguous prefix" became "subsequence", which is what it always was once one owner can publish two sets. Slice 4 gained the two-set leak test with its negative control. |
+| 27 | §D7's `Hot` rule kept only what is *counted*, pinned, or named by an exception. A view's `idset.writer` event is not counted under its own `kind_scope` (a `didit.record` view does not count an `idset.writer`), so absent an owner pin it goes cold while its counted records stay hot — and the record cannot causally reference a *later* admission, so the "referenced by a hot object" rule does not save it. Expiry could delete a served view's own input and make its projection undefined. | **Fixed.** §D7 now makes **every served view's configuration and the writer-set/rescind versions its projection reads** retention roots independent of whether they count, expressed as extra `protected` roots on `prune_behind_cut` rather than a new mechanism. Slice 6 gained the fixture whose negative control is the projection going undefined. |
+
+Round 8 is why "counted" cannot be the only definition of hot: countedness is a property *of the
+view*, and a view's inputs are not claims it counts. The retention model needs `roots = counted ∪
+pinned ∪ excepted ∪ config inputs`, and the fourth term is the one that only appears when you try
+to re-derive a served number after pruning.
+
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what seven rounds actually shows.** Every round found a real defect, and rounds 2–7 each
+**A note on what eight rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
-resolution state. That is the argument for the shape this document settled on — one statement over a
-fully-named input tuple, with retrieval specified to match it — rather than for confidence that the
-current text is defect-free. A reviewer should treat §4.1 as a claim to attack, not as settled.
+resolution state, a version history that was the owner's rather than the set's, and a hot-set rule
+that excluded the view's own inputs. That is the argument for the shape this document settled on —
+one statement over a fully-named input tuple, with retrieval specified to match it — rather than for
+confidence that the current text is defect-free. A reviewer should treat §4.1 as a claim to attack,
+not as settled.
 
-Four places are the most likely to still be wrong, and naming them is more useful than a claim of
+Five places are the most likely to still be wrong, and naming them is more useful than a claim of
 completeness:
 
 1. **`retro` against a set that later revokes the flag** (§3.1). The import is monotone by design and
@@ -1292,6 +1365,11 @@ completeness:
    input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6 each
    found a place it had not reached. Any remaining input evaluated without `R` is a reproducibility
    bug of the same shape as findings 16 and 23.
+5. **The retention root set** (§D7, §6). Counting is a property of *this view*, so "hot iff counted"
+   can never protect the inputs a view is defined over; round 8 found that and the fix is stated as
+   an open shape (`counted ∪ pinned ∪ excepted ∪ config inputs`) rather than as an implemented
+   predicate. Where the root set is computed — per server, per served view, or from a durable index
+   of served views — is not specified, and a server that loses that index loses the guarantee.
 
 ---
 
