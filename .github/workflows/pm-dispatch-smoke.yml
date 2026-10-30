@@ -1,0 +1,47 @@
+# pm-dispatch-smoke.yml -- standing proof for pm-dispatch-task's
+# ci-fix mode. SMOKE TEST ONLY: the ci-fix context below is entirely
+# fabricated (a workflow that does not exist, run-id "0", and an
+# example.invalid run URL) -- no real CI run failed.
+#
+# Expected behaviour when dispatched manually:
+#   - First run: creates the tracking issue
+#     `ci-fix: ci-fix smoke failing on main`, plus a claimed task and
+#     a session via the starter path (branch `main` is the default
+#     branch).
+#   - A repeat run: attaches a second task to the SAME issue
+#     (dedupe on the conventional ci-fix title) instead of creating
+#     a new issue.
+# Results (issue / tasks / session) are cleaned up manually after
+# proof runs. Do not schedule this workflow.
+
+name: pm-dispatch smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  issues: read
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      issues: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Dispatch ci-fix smoke via pm-dispatch-task
+        uses: developing-today/code/.github/actions/pm-dispatch-task@main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          task: ci-fix
+          workflow: "ci-fix smoke"
+          run-id: "0"
+          run-url: "https://example.invalid/ci-fix-smoke"
+          branch: main
+          sha: "${{ github.sha }}"
