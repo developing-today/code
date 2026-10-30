@@ -78,9 +78,23 @@ func TestHandleDashboardDir(t *testing.T) {
 		"daemon.uiDir": dir,
 	}, "test")}
 
-	// The page itself replaces the embedded one.
+	// The slashless page URL redirects to the trailing-slash form, so
+	// the index's relative assets resolve under /dashboard/ where the
+	// asset routes live.
 	w := httptest.NewRecorder()
 	s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+	if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/dashboard/" {
+		t.Fatalf("expected a redirect to /dashboard/, got %d (Location %q)", w.Code, w.Header().Get("Location"))
+	}
+	w = httptest.NewRecorder()
+	s.handleDashboard(w, httptest.NewRequest(http.MethodGet, "/v1/dashboard", nil))
+	if w.Code != http.StatusMovedPermanently || w.Header().Get("Location") != "/v1/dashboard/" {
+		t.Fatalf("expected a redirect to /v1/dashboard/, got %d (Location %q)", w.Code, w.Header().Get("Location"))
+	}
+
+	// At the slash form the page itself replaces the embedded one.
+	w = httptest.NewRecorder()
+	s.handleDashboardAsset(w, httptest.NewRequest(http.MethodGet, "/dashboard/", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "external ui") {
 		t.Fatalf("expected the override index.html, got %d: %q", w.Code, w.Body.String())
 	}
@@ -178,5 +192,26 @@ func TestHandleMetricsTools(t *testing.T) {
 	}
 	if resp.Calls == nil || resp.Errors == nil || resp.Correlations == nil || resp.Timeline == nil {
 		t.Errorf("expected non-nil slices in response")
+	}
+}
+
+// The dashboard handlers read daemon.ui and daemon.uiDir per request, so
+// both declarations must be hot: without Hot the settings API reports
+// restartRequired and discards a runtime change the handlers would have
+// honoured immediately.
+func TestDashboardSettingsAreHot(t *testing.T) {
+	for _, path := range []string{"daemon.ui", "daemon.uiDir"} {
+		found := false
+		for _, decl := range settings.Registry() {
+			if decl.Path == path {
+				found = true
+				if !decl.Hot {
+					t.Errorf("%s is not marked Hot; a runtime change would be discarded", path)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no setting declared for %s", path)
+		}
 	}
 }

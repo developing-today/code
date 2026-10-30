@@ -483,7 +483,7 @@ func daemonSettings() []Setting {
 		},
 		{
 			Path: "daemon.ui", Kind: KindBool, Default: "true",
-			Scope: ScopeDaemon, FlagAliases: []string{"ui"},
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui"},
 			Name:  "Web dashboard",
 			Short: "serve the dashboard page at /dashboard",
 			Long: "The embedded page is served on the loopback bind the daemon " +
@@ -497,7 +497,7 @@ func daemonSettings() []Setting {
 		},
 		{
 			Path: "daemon.uiDir", Kind: KindString, Default: "",
-			Scope: ScopeDaemon, FlagAliases: []string{"ui-dir"},
+			Scope: ScopeDaemon, Hot: true, FlagAliases: []string{"ui-dir"},
 			Name:  "Dashboard directory",
 			Short: "serve your own pages instead of the embedded dashboard",
 			Long: "When set, /dashboard serves index.html and everything beside it " +

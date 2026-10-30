@@ -17,6 +17,21 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if dir := s.dashboardDir(); dir != "" {
+		// An external page's relative assets resolve against the URL it
+		// was loaded from: at /dashboard, app.css means /app.css, which
+		// is not a route. Send the browser to the trailing-slash form
+		// first, where the asset routes live. Only when the index is
+		// really there -- a missing directory keeps its plain 404.
+		if !strings.HasSuffix(r.URL.Path, "/") {
+			if _, err := os.Stat(filepath.Join(dir, "index.html")); err == nil {
+				target := r.URL.Path + "/"
+				if r.URL.RawQuery != "" {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+				return
+			}
+		}
 		s.serveDashboardFile(w, r, dir, "index.html")
 		return
 	}
