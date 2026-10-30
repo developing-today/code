@@ -643,6 +643,18 @@ func (s *Service) scriptEnv(runID, session string, opts Options) map[string]stri
 		"MCPX_ARTIFACTS_LOCAL": boolEnv(s.Local),
 		"MCPX_SESSION_ID":      session,
 		"MCPX_PID":             strconv.Itoa(os.Getpid()),
+		// PM-12 (#1942): whether this run's session is ephemeral -- it
+		// has exactly one user and its session-scoped instances may be
+		// released the moment the run ends. The CLI path sets this in
+		// its runner env (which wins over this map in RunWith); the
+		// /v1/exec path never set it anywhere, so the generated client
+		// never sent x-mcpx-ephemeral, ReleaseCaller never saw an
+		// ephemeral caller, and browsers waited for idle reaping.
+		// The rule is the CLI's: ephemeral unless the caller NAMED a
+		// session -- a named session may be shared with a sibling run
+		// and must outlive this one. A session execsvc minted for this
+		// run (exec-<runID>, or one the CLI minted) is not named here.
+		"MCPX_EPHEMERAL": boolEnv(opts.Session == ""),
 	}
 	if opts.Cwd != "" {
 		env["MCPX_CWD"] = opts.Cwd
