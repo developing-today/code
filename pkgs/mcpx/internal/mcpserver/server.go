@@ -221,6 +221,11 @@ type Server struct {
 	// uses the built-in default.
 	MaxCompletions func() int
 
+	// SessionMetaKeys is the _meta keys a request may name its session
+	// with, in precedence order, read on every request because the setting
+	// behind it is hot. Nil or empty means DefaultSessionMetaKeys.
+	SessionMetaKeys func() []string
+
 	// Timing is the ask loop's policy. A zero field means the built-in
 	// default; the whole struct zero is what a test that does not care
 	// should be able to leave alone.
@@ -329,6 +334,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		backend: s.backend, name: s.name, version: s.version,
 		PageSize: s.PageSize, MaxCompletions: s.MaxCompletions, Cache: s.Cache,
 		Timing: s.Timing, OnCancel: s.OnCancel, Origins: s.Origins, Passthrough: s.Passthrough,
+		SessionMetaKeys: s.SessionMetaKeys,
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.
