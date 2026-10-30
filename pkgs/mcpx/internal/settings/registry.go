@@ -18,6 +18,7 @@ func Registry() []Setting {
 	s = append(s, loggingSettings()...)
 	s = append(s, scriptSettings()...)
 	s = append(s, execSettings()...)
+	s = append(s, depsSettings()...)
 	s = append(s, pathSettings()...)
 	s = append(s, daemonSettings()...)
 	s = append(s, hookSettings()...)
@@ -381,6 +382,66 @@ func hookSettings() []Setting {
 	}
 }
 
+// depsSettings are where a script's packages come from (#1913). The chain is
+// the script's own pinned specifiers, then an explicit request, then the
+// nearest project manifest on paths.deps, then the configuration directory's
+// own packages, then whatever the host already provides.
+func depsSettings() []Setting {
+	return []Setting{
+		{
+			Path: "deps.source", Kind: KindEnum, Default: "host",
+			Scope: ScopeClient,
+			Enum:  []string{"host", "config", "cwd", "explicit", "none"},
+			Name:  "Dependency source",
+			Short: "where a script's packages come from when nothing more specific says",
+			Long: "host uses whatever the machine already provides, the way running " +
+				"the script by hand would. config uses only the packages declared " +
+				"in mcpx's own configuration directory. cwd uses the project the " +
+				"script sits in. explicit uses only what the caller asked for. " +
+				"none provides nothing and lets the runtime fail, which is what you " +
+				"want when a missing package should be loud. A script's own pinned " +
+				"specifiers and the nearest project manifest still win over this.",
+		},
+		{
+			Path: "deps.manifest", Kind: KindSource, Default: "",
+			Scope: ScopeClient,
+			Name:  "Dependency manifest",
+			Short: "the package.json or package.jsonc naming a script's packages",
+			Long: "An explicit manifest replaces project discovery: the named file " +
+				"is the project for every script mcpx runs. A package.jsonc is " +
+				"accepted and its comments are stripped before any runtime sees it. " +
+				"Without this, the nearest manifest found from the script's " +
+				"directory along paths.deps is used.",
+		},
+		{
+			Path: "deps.packages", Kind: KindList, Default: "", Repeatable: true,
+			Scope:       ScopeClient,
+			FlagAliases: []string{"package"},
+			Name:        "Dependency packages",
+			Short:       "packages a script may import, as name or name@version",
+			Long: "Repeatable. Each entry is a package the script should be able to " +
+				"import: a bare name asks for whatever the project or host already " +
+				"has, and name@version pins one. A pin that contradicts the " +
+				"project's manifest is reported as a conflict rather than silently " +
+				"replacing it, because the manifest is what the person reading the " +
+				"project believes.",
+		},
+		{
+			Path: "deps.autoInstall", Kind: KindEnum, Default: "off",
+			Scope: ScopeClient,
+			Enum:  []string{"off", "fallback", "always"},
+			Name:  "Dependency auto-install",
+			Short: "whether the runtime may fetch a missing package on its own",
+			Long: "off means a missing package fails the run, which is the default " +
+				"because fetching whatever a script asks for is how a pinned project " +
+				"quietly stops being pinned. fallback lets the runtime install only " +
+				"when nothing else satisfied the specifier. always leaves the " +
+				"runtime's own resolution alone. mcpx never runs an installer into " +
+				"a user's project directory regardless of this setting.",
+		},
+	}
+}
+
 func pathSettings() []Setting {
 	spliceLong := "A list. A null entry stands for whatever the layer below provided, " +
 		"so [\"./mine\", null] searches yours first and then the usual places. " +
@@ -393,6 +454,17 @@ func pathSettings() []Setting {
 			Scope: ScopeClient,
 			Name:  "Config search path", Short: "where configuration files are looked for",
 			Long: spliceLong,
+		},
+		{
+			Path: "paths.deps", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient,
+			Name:  "Dependency manifest search path",
+			Short: "where a script's package.json / package.jsonc is looked for",
+			Long: "A script's packages normally come from the project it sits in, and " +
+				"the project is found by walking up from the script to its nearest " +
+				"manifest. This path says where to look instead, or first: the " +
+				"nearest entry naming a directory holding a manifest wins, exactly " +
+				"as the script search path resolves. " + spliceLong,
 		},
 		{
 			Path: "paths.scripts", Kind: KindPathList, Default: "", Repeatable: true,
