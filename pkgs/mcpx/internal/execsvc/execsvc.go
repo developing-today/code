@@ -145,6 +145,11 @@ type Options struct {
 	CaptureConsole *bool `json:"captureConsole,omitempty"`
 	// Phases are lines run around the script, as runner.Phases.
 	Phases *Phases `json:"phases,omitempty"`
+
+	// Hooks are scripts run at the edges of this run, in declaration order
+	// within a phase. They append to the daemon's config-declared hooks
+	// rather than replacing them, the way ScriptConfig.Prefix layers.
+	Hooks []Hook `json:"hooks,omitempty"`
 }
 
 // Phases is runner.Phases on the wire.
@@ -187,6 +192,9 @@ type Frame struct {
 
 	Artifact *Artifact `json:"artifact,omitempty"`
 
+	// Hook carries what one hook did, under type "hook".
+	Hook *HookFrame `json:"hook,omitempty"`
+
 	// ID, Seq and Data carry a body chunk under delivery "stream".
 	ID   string `json:"id,omitempty"`
 	Seq  int    `json:"seq,omitempty"`
@@ -208,6 +216,7 @@ const (
 	FrameResult       = "result"
 	FrameError        = "error"
 	FrameEnd          = "end"
+	FrameHook         = "hook"
 	FrameArtifactData = "artifact.chunk"
 	FrameArtifactEnd  = "artifact.end"
 )
@@ -318,6 +327,9 @@ type Service struct {
 	WorkRoot string
 	// Release frees the pooled instances a finished run created.
 	Release func(ctx context.Context, session string) error
+	// Hooks run at the edges of every run this service performs. They are the
+	// config-declared list; a caller's Options.Hooks append to them.
+	Hooks []Hook
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
@@ -489,6 +501,15 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 		return len(p), nil
 	})
+
+	// Hooks are resolved, and refused, before anything runs: a caller that
+	// named a phase mcpx does not have should hear it now rather than after
+	// paying for the script.
+	hooks := s.hooksFor(opts.Hooks)
+	if err := validateHooks(hooks, "hooks"); err != nil {
+		return nil, err
+	}
+	hookCtx := hookContext{RunID: runID, Point: HookPointScript, Artifacts: []Artifact{}}
 	var stderr *tailBuffer
 	if ropts.Log == nil {
 		// Records arrive on the script's stderr behind a sentinel; without a
@@ -532,6 +553,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			priorResult(v)
 		}
 	}
+	// `before` hooks run once the run's own writers are in place, so a hook
+	// that logs or emits reaches the same stream the script would.
+	if before := phaseHooks(hooks, HookBefore); len(before) > 0 {
+		hookCtx.Phase = HookBefore
+		s.runHooks(runCtx, HookBefore, before, hookCtx, ropts, res, emitFrame)
+	}
 	priorArtifact := ropts.OnArtifact
 	ropts.OnArtifact = func(a logging.Artifacted) {
 		// Re-read from the store so the frame carries what the daemon
@@ -546,15 +573,24 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
-	rres, rerr := runner.Run(runCtx, ropts)
-	if s.Release != nil && session != "" {
-		relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
-		_ = s.Release(relCtx, session)
-		relCancel()
+	// Session release happens after every hook has run, not here: the
+	// daemon wires Release to stopping the session's caller-private
+	// instances, and an onSuccess/onError/suffix hook may still need the
+	// servers the script used -- or start ones that this release must also
+	// stop. One closure, called on every exit path below.
+	release := func() {
+		if s.Release != nil && session != "" {
+			relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), defaults.ShutdownGrace)
+			_ = s.Release(relCtx, session)
+			relCancel()
+		}
 	}
+
+	rres, rerr := runner.Run(runCtx, ropts)
 	if sinkErr != nil {
 		// The consumer left. Nothing more can be delivered, and the script
 		// has already been killed by the cancelled context.
+		release()
 		return res, sinkErr
 	}
 	if rres == nil {
@@ -569,6 +605,17 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		res.Error = msg
 		res.ExitCode = 1
 		emitFrame(Frame{Type: FrameError, Error: msg})
+		// Suffix is documented as running on both paths: a `before` hook
+		// that allocated something is owed its cleanup even when the main
+		// script never started (a type error, an unreadable launcher).
+		if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
+			hookCtx.Phase = HookSuffix
+			hookCtx.Error = res.Error
+			hookCtx.Diagnostic = hookDiagnostic(res.Error)
+			hookCtx.ExitCode = res.ExitCode
+			s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
+		}
+		release()
 		code := res.ExitCode
 		emitFrame(Frame{Type: FrameEnd, ExitCode: &code})
 		if rerr == nil {
@@ -588,9 +635,21 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// explained it, the script's own message is the explanation.
 	if res.Error == "" && res.ExitCode != 0 && stderr != nil {
 		if msg := strings.TrimSpace(stripANSI(stderr.String())); msg != "" {
+			// Recorded, not emitted: an onError hook below may replace
+			// this error with a result, and a consumer must never see
+			// an error frame for an outcome that was replaced. The one
+			// error frame is emitted after the hooks, with the final
+			// error text.
 			res.Error = msg
-			emitFrame(Frame{Type: FrameError, Error: msg})
 		}
+	}
+
+	if res.Error == "" && res.ExitCode != 0 {
+		// A script that exits nonzero without writing anything -- the
+		// plain `process.exit(1)` -- has still failed: without an error
+		// here it would be classified onSuccess and its onError hooks
+		// would never run. The exit status itself is the context.
+		res.Error = fmt.Sprintf("script exited with code %d", res.ExitCode)
 	}
 
 	// A script whose stdout is JSON almost always means it as its answer, so
@@ -603,10 +662,31 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 		}
 	}
 
-	// Anything the script registered that did not reach the stderr channel
-	// -- a crash after the upload, a runtime that buffered the last line --
-	// is still in the index. Reconciled here so the result is the store's
-	// account rather than the script's.
+	// `onSuccess` and `onError` finish before the result or error frame, so
+	// the answer a consumer reads is the final one (0001 rule 1). Advice a
+	// hook gives on the failing path is attached to the error it saw.
+	hookCtx.Result, hookCtx.Error = res.Result, res.Error
+	hookCtx.Diagnostic = hookDiagnostic(res.Error)
+	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
+	hookCtx.Artifacts = res.Artifacts
+	phase := HookOnSuccess
+	if res.Error != "" {
+		phase = HookOnError
+	}
+	if hs := phaseHooks(hooks, phase); len(hs) > 0 {
+		hookCtx.Phase = phase
+		for _, run := range s.runHooks(runCtx, phase, hs, hookCtx, ropts, res, emitFrame) {
+			if phase == HookOnError && !run.Failed && run.Out.Advise != "" && res.Error != "" {
+				res.Error = strings.TrimSpace(res.Error + "\n" + run.Out.Advise)
+			}
+		}
+	}
+
+	// Anything the script -- or a post-execution hook -- registered that
+	// did not reach the stderr channel (a crash after the upload, a runtime
+	// that buffered the last line) is still in the index. Reconciled only
+	// now, after the outcome hooks, so artifacts a hook produced are in
+	// the result and delivered like the script's own.
 	s.reconcile(res, runID)
 
 	if s.Limits.InterceptImages && opts.WantsArtifacts() {
@@ -615,6 +695,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 
 	if err := s.deliver(res, opts); err != nil {
 		res.Error = strings.TrimSpace(res.Error + "\n" + err.Error())
+		hookCtx.Error = res.Error
 	}
 
 	if res.Error != "" {
@@ -625,6 +706,18 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			emitFrame(Frame{Type: FrameResult, Value: b})
 		}
 	}
+
+	// `suffix` runs either way, after the outcome and before the end frame.
+	// It cannot change the outcome; an `apply` from one is reported as
+	// dropped rather than honoured.
+	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
+		hookCtx.Phase = HookSuffix
+		hookCtx.Result, hookCtx.Error = res.Result, res.Error
+		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
+	}
+
+	release()
+
 	code := res.ExitCode
 	emitFrame(Frame{Type: FrameEnd, ExitCode: &code, DurationMs: res.DurationMs})
 
