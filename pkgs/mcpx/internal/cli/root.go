@@ -208,25 +208,24 @@ func (a *App) adoptSettings() {
 	a.warnPathsConfigFile(set)
 }
 
-// warnPathsConfigFile warns when a paths.config entry names a file.
+// warnPathsConfigFile warns when a paths.config entry names nothing
+// that exists.
 //
-// The entries are directories that are searched for configuration files,
-// so pointing one at a file -- a natural reading of --paths-config -- is
-// silently ignored and the default configuration loads instead (#278).
-// Naming the file directly is what MCPX_CONFIG and --config are for, so
-// say so rather than leaving the user to debug a configuration that was
-// never read.
+// Entries govern the config chain (issue #1842): a directory is
+// searched with the usual spellings, and a file means exactly that
+// file. An entry naming neither is the one case that silently does
+// nothing, so say so rather than leaving the user to debug a
+// configuration that was never read.
 func (a *App) warnPathsConfigFile(set *settings.Set) {
 	if a.warnedPathsConfig {
 		return
 	}
 	for _, entry := range set.List("paths.config") {
-		if st, err := os.Stat(entry); err == nil && !st.IsDir() {
+		if _, err := os.Stat(entry); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"mcpx: warning: paths.config entry %q is a file; entries are "+
-					"directories searched for config files, so it is ignored. "+
-					"To use that file directly, pass --config %s or set MCPX_CONFIG.\n",
-				entry, entry)
+				"mcpx: warning: paths.config entry %q does not exist; "+
+					"it contributes nothing to the config chain.\n",
+				entry)
 			a.warnedPathsConfig = true
 			return
 		}
@@ -580,10 +579,18 @@ func (a *App) configSources(cfg *config.Config) error {
 		From    string `json:"from"`
 	}
 	out := struct {
-		Sources []string    `json:"sources"`
-		Servers []row       `json:"servers"`
-		Presets []presetRow `json:"presets,omitempty"`
+		Sources   []string    `json:"sources"`
+		Discovery []string    `json:"discovery,omitempty"`
+		Load      []string    `json:"load,omitempty"`
+		Divergent []string    `json:"divergent,omitempty"`
+		Servers   []row       `json:"servers"`
+		Presets   []presetRow `json:"presets,omitempty"`
 	}{Sources: cfg.Sources}
+	if cfg.Chain != nil {
+		out.Discovery = cfg.Chain.Discovery
+		out.Load = cfg.Chain.Load
+		out.Divergent = cfg.Chain.Divergent
+	}
 	// A value a preset supplied is a source too, and the one least likely to
 	// be remembered: it came from a name on the command line, not a file.
 	for _, v := range a.Settings().All() {
@@ -610,6 +617,20 @@ func (a *App) configSources(cfg *config.Config) error {
 			fmt.Println("  " + p)
 		}
 		return nil
+	}
+	if cfg.Chain != nil && !cfg.Chain.Bypass {
+		fmt.Println("Discovery pass (searched for paths.config), nearest first:")
+		for _, p := range out.Discovery {
+			fmt.Println("   " + p)
+		}
+		fmt.Println("Load pass (files the chain resolved to), nearest first:")
+		for _, p := range out.Load {
+			fmt.Println("   " + p)
+		}
+		for _, d := range out.Divergent {
+			fmt.Println("  ! " + d)
+		}
+		fmt.Println()
 	}
 	fmt.Println("Files, nearest first:")
 	for i, p := range out.Sources {

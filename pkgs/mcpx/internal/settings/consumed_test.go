@@ -75,8 +75,9 @@ var unreadAllowed = map[string]string{
 	// paths.config used to be listed here as circular by construction
 	// (#5): the search path produces the settings, so the settings cannot
 	// decide it. It is read now -- cli.adoptSettings warns when an entry
-	// names a file instead of a directory (#278) -- so it no longer
-	// belongs on this list. Deciding the search path itself remains #5's.
+	// names nothing that exists, and config.ResolveChainFrom consumes
+	// the file-layer values to govern the chain itself in two passes
+	// (issue #1842) -- so it no longer belongs on this list.
 	"paths.configFile": "a bootstrap setting: it names the file the settings are " +
 		"read from, so config.SearchPathFrom reads MCPX_CONFIG before any Set " +
 		"exists, and the global --config reaches App.ConfigPath the same way.",
