@@ -245,6 +245,121 @@ const HTML_BLOCK_TAGS: &[&str] = &[
     "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
 ];
 
+/// Whether `trimmed` (a whole line, both ends trimmed) is exactly
+/// one complete HTML open or closing tag -- CommonMark type 7: a
+/// tag name (a letter, then letters/digits/`-`), then for an open
+/// tag any number of whitespace-separated attributes (a name, with
+/// an optional `=` and an unquoted, single-quoted, or
+/// double-quoted value), optional whitespace, an optional `/`,
+/// and the final `>`. A closing tag is `</name`, optional
+/// whitespace, `>`. Anything else angle-delimited is NOT a tag:
+/// an autolink like `<https://example.com>` (the `:` after the
+/// name is not whitespace, `/`, or `>`), or a tag-shaped line with
+/// junk where an attribute should be. Treating every
+/// angle-delimited string as an HTML block opened a
+/// blank-line-ended block on the autolink line and swallowed the
+/// heading and the valid orphan definition after it (Codex P2 on
+/// #1565's seventeenth cut).
+fn is_complete_html_tag(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 3 || bytes[0] != b'<' || bytes[bytes.len() - 1] != b'>' {
+        return false;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let b = inner.as_bytes();
+    let (closing, mut pos) = if b.first() == Some(&b'/') {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
+    if !b.get(pos).is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let name_start = pos;
+    pos += 1;
+    while b.get(pos).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') {
+        pos += 1;
+    }
+    // Type 1 names never open a type 7 block (they are handled as
+    // marker-ended blocks above); a line naming one that reaches
+    // here did not match the type-1 boundary rule either.
+    if ["script", "pre", "style", "textarea"]
+        .contains(&inner[name_start..pos].to_ascii_lowercase().as_str())
+    {
+        return false;
+    }
+    if closing {
+        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
+            pos += 1;
+        }
+        return pos == inner.len();
+    }
+    loop {
+        let ws_start = pos;
+        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
+            pos += 1;
+        }
+        let had_ws = pos > ws_start;
+        match b.get(pos) {
+            None => return true,
+            Some(b'/') => return pos + 1 == inner.len(),
+            Some(_) if had_ws => {
+                // Attribute name, then an optional `= value`.
+                if !b
+                    .get(pos)
+                    .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b':')
+                {
+                    return false;
+                }
+                pos += 1;
+                while b.get(pos).is_some_and(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b':')
+                }) {
+                    pos += 1;
+                }
+                let mut p2 = pos;
+                while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
+                    p2 += 1;
+                }
+                if b.get(p2) == Some(&b'=') {
+                    p2 += 1;
+                    while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
+                        p2 += 1;
+                    }
+                    match b.get(p2) {
+                        Some(q @ (b'"' | b'\'')) => {
+                            let q = *q;
+                            p2 += 1;
+                            while b.get(p2).is_some_and(|c| *c != q) {
+                                p2 += 1;
+                            }
+                            if b.get(p2).is_none() {
+                                return false;
+                            }
+                            p2 += 1;
+                        }
+                        Some(_) => {
+                            let vstart = p2;
+                            while b.get(p2).is_some_and(|c| {
+                                !c.is_ascii_whitespace()
+                                    && !matches!(c, b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
+                            }) {
+                                p2 += 1;
+                            }
+                            if p2 == vstart {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                    pos = p2;
+                }
+            }
+            Some(_) => return false,
+        }
+    }
+}
+
 impl HtmlBlockTracker {
     fn in_html(&self) -> bool {
         self.end.is_some()
@@ -350,7 +465,7 @@ impl HtmlBlockTracker {
             return true;
         }
         let trimmed = stripped.trim_end();
-        if trimmed.ends_with('>') && !trimmed[1..].contains('<') {
+        if is_complete_html_tag(trimmed) {
             self.end = Some(HtmlBlockEnd::BlankLine);
             return true;
         }
@@ -830,6 +945,27 @@ fn link_reference_definition_title_text(after: &str) -> Option<&str> {
     Some(rest.trim_start())
 }
 
+/// Whether `s` contains `closer` outside a backslash escape: a
+/// `\x` pair makes `x` literal text, and a `\\` pair is a
+/// literal backslash, so the character after it counts again.
+fn contains_unescaped(s: &str, closer: char) -> bool {
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == closer {
+            return true;
+        }
+    }
+    false
+}
+
 /// Whether a link reference definition needs more lines: its
 /// destination has not arrived yet, or a title that was started
 /// (double quote, single quote, or open paren) has not closed
@@ -849,7 +985,13 @@ fn link_reference_definition_needs_more(after: &str) -> bool {
         b'(' => ')',
         _ => return false,
     };
-    !title[1..].contains(closer)
+    // An ESCAPED delimiter is title text, not the closer: in
+    // `"first \"quoted` the title is still open, and treating it
+    // as complete stopped collection before the closing line, so
+    // the probe received an unterminated definition and the
+    // recovered footnote lost its link (Codex P2 on #1565's
+    // seventeenth cut).
+    !contains_unescaped(&title[1..], closer)
 }
 
 /// Whether anything follows the destination in the accumulated
@@ -1161,11 +1303,16 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     // Still waiting for the destination or an
                     // unclosed title. A definition-shaped line while
                     // the destination is missing starts its own
-                    // block instead of serving as a destination.
+                    // block instead of serving as a destination. A
+                    // `#fragment` line is NOT definition-shaped: it
+                    // is a valid destination token (an ATX heading
+                    // needs whitespace or end-of-line after the
+                    // hashes), so it is collected below (Codex P2
+                    // on #1565's seventeenth cut).
                     if after.trim().is_empty()
                         && (footnote_definition_label(next_stripped).is_some()
                             || is_link_reference_definition_start(next_stripped)
-                            || next_stripped.starts_with('#')
+                            || is_atx_heading(next_stripped)
                             || next_stripped.starts_with('>')
                             || next_stripped.starts_with('`'))
                     {
@@ -5489,6 +5636,73 @@ mod tests {
         assert!(
             orphan.to_string().contains("Target title"),
             "continuation-line title is kept on the orphan link: {orphan}"
+        );
+    }
+
+
+    #[test]
+    fn test_autolink_line_does_not_suppress_footnote() {
+        // #1565 seventeenth cut (Codex P2): `<https://example.com>`
+        // is an autolink, not a type-7 HTML block -- the generic
+        // tag check must validate complete tag syntax (a tag name
+        // cannot be followed by `:`), or the line opens a
+        // blank-line-ended HTML block that swallows the heading
+        // and the valid orphan definition after it.
+        let original = "<https://example.com>\n# Heading\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after an autolink line is recovered");
+    }
+
+    #[test]
+    fn test_escaped_quote_in_multiline_reference_title() {
+        // #1565 seventeenth cut (Codex P2): an escaped quote inside
+        // a multiline reference title is title text, not its closing
+        // delimiter; treating the title as complete stopped
+        // collection before the closing line, the probe received an
+        // unterminated definition, and the recovered orphan lost
+        // its hyperlink.
+        let original =
+            "[url]: https://example.com \"first \\\"quoted\nsecond\"\n\n[^a]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "escaped-quote title resolves the orphan link: {orphan}"
+        );
+        assert!(
+            orphan.to_string().contains("second"),
+            "title closing line is collected: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_fragment_destination_on_continuation_line() {
+        // #1565 seventeenth cut (Codex P2): `#section` on the line
+        // after `[url]:` is a valid fragment destination, not an
+        // ATX heading (a heading needs whitespace or end-of-line
+        // after the hashes); treating every `#` line as a block
+        // boundary discarded the incomplete definition.
+        let original = "[url]:\n#section\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("#section"),
+            "fragment destination resolves the orphan link: {orphan}"
         );
     }
 
