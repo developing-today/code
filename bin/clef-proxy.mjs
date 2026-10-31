@@ -6,6 +6,10 @@ import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
+// Test seam (#692): point the gateway base at a stub upstream via
+// CLEF_PROXY_GATEWAY_BASE; the Cloudflare gateway stays the default
+// and the URL shape after the base is unchanged.
+const GATEWAY_BASE = (process.env.CLEF_PROXY_GATEWAY_BASE || 'https://gateway.ai.cloudflare.com/v1').replace(/\/+$/, '');
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
 // Warm connections (#480): upstream calls go through fetch, whose bundled
@@ -224,7 +228,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         const model = resolveModel(body.model);
-        const cfUrl = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/workers-ai/run/${model}`;
+        const cfUrl = `${GATEWAY_BASE}/${accountId}/${gatewayId}/workers-ai/run/${model}`;
 
         const payload = {
           state: body.state || {},
