@@ -64,6 +64,14 @@ fn chat_event(sequence: u64, text: &str) -> WorldEvent {
     }
 }
 
+fn input_event(sequence: u64, text: &str) -> WorldEvent {
+    WorldEvent {
+        sequence,
+        participant_id: 1,
+        kind: WorldEventKind::Input(text.as_bytes().to_vec()),
+    }
+}
+
 fn median(mut samples: Vec<f64>) -> f64 {
     samples.sort_by(|a, b| a.total_cmp(b));
     samples[samples.len() / 2]
@@ -123,7 +131,10 @@ fn bench_compaction(dir: &PathBuf, entries: u64, reps: usize) -> Result<Vec<f64>
 
 fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     // Build the journal once: world created, one participant issued, then
-    // N committed chat events — the shape restore() replays after a restart.
+    // N committed input events — the committed kind restore() actually
+    // puts in the replay list after a restart. (Committed chat is applied
+    // to core state directly and never replayed, which is how the slice-2
+    // baseline came to measure an empty guest pass; #1403.)
     let mut core = WorldCore::new("bench-replay", WorldLimits::default())?;
     let (participant, _token) = core.issue_capability(
         "bench",
@@ -156,7 +167,7 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     });
     for seq in 1..=events {
         journal.push(JournalEntry::Committed {
-            event: chat_event(seq, "replay me"),
+            event: input_event(seq, "replay me"),
         });
     }
 
@@ -169,9 +180,14 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
         for event in &restored.replay {
             guest.update(event)?;
         }
-        // Committed chat events also land in the core's retained history;
-        // count the guest pass over the full journal's events as the replay
-        // workload when restore() consumed them into core state directly.
+        // The guest must have seen every committed event: an empty or
+        // short replay is a harness bug (#1403 shipped a baseline whose
+        // guest saw zero events), never a timing to record.
+        anyhow::ensure!(
+            guest.seen == events,
+            "guest replay saw {} of {events} committed events",
+            guest.seen
+        );
         samples.push(start.elapsed().as_secs_f64() * 1e6 / events as f64);
         black_box(guest.seen);
         black_box(restored.replay.len());

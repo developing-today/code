@@ -107,8 +107,10 @@ Two behaviours consult it today:
 | progress `message` relayed to a 2024-11-05 client (whose schema has no such field) | **sent** | stripped only when 2024-11-05 is first *and* strict: `--mcp-spec 2024-11-05` |
 | a request from a 2026-07-28 upstream server (that revision has none; its stdio page says the client MUST NOT answer) | **dropped** | answered when `spec.lenient` includes `2026-07-28` |
 
-The other conflicts in [`spec/revision-conflicts.md`](spec/revision-conflicts.md)
-are still decided in code, not by these settings.
+Each other conflict in [`spec/revision-conflicts.md`](spec/revision-conflicts.md)
+carries a disposition there — peer-settled, precedence-governed, a recorded
+reading, or undisposed with its open question named. Only the
+precedence-governed ones are decided by these settings.
 
 `internal/mcpserver/revisions.go` holds the floors, ceilings and removals as
 data, and `GET /v1/protocol` serves them. A matrix in a document and a matrix

@@ -12,28 +12,19 @@
 // (DISPATCH_HOSTS); public reachability arrives later via the pm-stack
 // Cloudflare tunnel, not from here.
 import { APP_INSTALLED_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig, type Config } from "./config.ts";
-import {
-  AuthError,
-  assertCallerRepo,
-  authenticate,
-  type CallerIdentity,
-} from "./auth.ts";
+import { AuthError, assertCallerRepo, authenticate, type CallerIdentity } from "./auth.ts";
 import {
   ValidationError,
   parseSessionRequest,
   parseTaskRequest,
+  resolveSessionDirectory,
   titleFromPrompt,
   type SessionRequest,
   type TaskRequest,
 } from "./validate.ts";
-import {
-  buildPacket,
-  canonicalDedupeKey,
-  describeCaller,
-  dispatchDedupeKey,
-  validatePayload,
-} from "./packet.ts";
+import { buildPacket, canonicalDedupeKey, describeCaller, dispatchDedupeKey, validatePayload } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
+import { handleLaunchFailure } from "./launch_failure.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
 
@@ -89,9 +80,7 @@ async function maybeCreateIssue(
   warnings: string[],
 ): Promise<IssueRef | null> {
   if (!APP_INSTALLED_REPOS.has(repo)) {
-    warnings.push(
-      `github app is not installed on ${repo}; issue creation skipped (task is the tracking record)`,
-    );
+    warnings.push(`github app is not installed on ${repo}; issue creation skipped (task is the tracking record)`);
     return null;
   }
   try {
@@ -118,8 +107,7 @@ async function launchSession(
     title: req.title ?? titleFromPrompt(req.prompt),
     model: req.model,
   });
-  const prefix =
-    `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
+  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
   await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
   // Assign immediately: PATCH the exact row the enqueue created (the
@@ -158,12 +146,27 @@ async function launchSession(
   }
 
   if (issue) {
-    await github.comment(
-      req.repo,
-      issue.number,
-      `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-    );
-    await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    // Post-launch annotations are best-effort: the session is already
+    // running and the task already claimed, so a GitHub failure here
+    // must not reject the launch — callers cancel the task on a
+    // rejected launch (#2901), which would orphan a live session.
+    // Noted on the task instead, like the lane-ledger failure above.
+    try {
+      await github.comment(
+        req.repo,
+        issue.number,
+        `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
+      );
+      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    } catch (e) {
+      try {
+        await requireQueue().patchTask(task.id, {
+          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
+        });
+      } catch {
+        /* nothing more to do — the claim stands */
+      }
+    }
   }
   return session.id;
 }
@@ -172,22 +175,22 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   const body = parseSessionRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
-  const directory = body.directory ?? REPO_DIRS[body.repo]!;
+  // Directory scoping (issue #2903) runs before ANY side effect: the
+  // tracking issue, queue task and session below are all created after
+  // this line, so a rejected directory leaves nothing behind.
+  const directory = resolveSessionDirectory(caller.type, body.repo, body.directory, REPO_DIRS);
   const title = body.title ?? titleFromPrompt(body.prompt);
 
   // 1. Tracking issue (default on).
   let issue: IssueRef | null = null;
   if (body.issue) {
-    const footer =
-      `\n\n---\nLaunched by pm-dispatch for ${body.repo}. Queue task and OpenCode session ids follow in a comment below.`;
+    const footer = `\n\n---\nLaunched by pm-dispatch for ${body.repo}. Queue task and OpenCode session ids follow in a comment below.`;
     issue = await maybeCreateIssue(body.repo, title, body.prompt + footer, ["source/dispatch"], warnings);
   }
 
   // 2. Enqueue the queue task.
   const kind = issue ? "small_fix" : "triage";
-  const dedupeKey = issue
-    ? canonicalDedupeKey(kind, body.repo, issue.number)!
-    : dispatchDedupeKey(body.repo);
+  const dedupeKey = issue ? canonicalDedupeKey(kind, body.repo, issue.number)! : dispatchDedupeKey(body.repo);
   const packet = buildPacket(
     {
       repo: body.repo,
@@ -224,13 +227,10 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       try {
         await launchSession(caller, body, task, issue, directory);
       } catch (e) {
-        try {
-          await requireQueue().patchTask(task.id, {
-            last_error: `dispatch launch failed: ${e instanceof Error ? e.message : String(e)}`,
-          });
-        } catch {
-          /* task row update failed too — nothing more we can do async */
-        }
+        // Mirror the wait:true failure path exactly (#2901): cancel the
+        // task and note the failure on the issue — never leave a queued
+        // task behind for a session that did not launch.
+        await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
       }
     })();
     return json(202, {
@@ -247,24 +247,9 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
     sessionId = await launchSession(caller, body, task, issue, directory);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
-    // not launch: cancel it and note the failure on the issue.
-    const msg = e instanceof Error ? e.message : String(e);
-    try {
-      await requireQueue().cancelTask(task.id, `dispatch launch failed: ${msg}`);
-    } catch {
-      /* cancellation failed too — report the launch error regardless */
-    }
-    if (issue) {
-      try {
-        await github.comment(
-          body.repo,
-          issue.number,
-          `Dispatch launch FAILED and queue task #${task.id} was cancelled.\n\nError: ${msg}`,
-        );
-      } catch {
-        /* issue note is best-effort on the failure path */
-      }
-    }
+    // not launch: cancel it and note the failure on the issue (the
+    // shared handler the wait:false path also uses, #2901).
+    const msg = await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
     return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
@@ -298,18 +283,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       url: `https://github.com/${body.repo}/issues/${body.issueNumber}`,
     };
     if (!APP_INSTALLED_REPOS.has(body.repo)) {
-      warnings.push(
-        `github app is not installed on ${body.repo}; issue attach skipped (task is the tracking record)`,
-      );
+      warnings.push(`github app is not installed on ${body.repo}; issue attach skipped (task is the tracking record)`);
     }
   } else if (body.issue) {
-    issue = await maybeCreateIssue(
-      body.repo,
-      body.title,
-      body.prompt,
-      ["queue/queued", "source/dispatch"],
-      warnings,
-    );
+    issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
   }
 
   const dedupeKey =
@@ -350,8 +327,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     // Attach is skipped where the GitHub App is not installed (warning
     // already recorded above); the create path needs no skip — its issue
     // exists precisely because the app route worked there.
-    const attachSkipped =
-      body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
+    const attachSkipped = body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
     if (!attachSkipped) {
       try {
         await github.comment(
@@ -385,7 +361,9 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
 // Routing
 // ---------------------------------------------------------------------------
 
-async function handler(req: Request): Promise<Response> {
+// Exported for the HTTP-level tests (test/server.test.ts) — the only
+// import side effect below is Bun.serve, guarded by import.meta.main.
+export async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   try {
@@ -398,7 +376,7 @@ async function handler(req: Request): Promise<Response> {
         oidcAudience: cfg.oidcAudience,
         allowlist: cfg.repoAllowlist,
       });
-      return path === "/v1/sessions" ? handleSessions(req, caller) : handleTasks(req, caller);
+      return path === "/v1/sessions" ? await handleSessions(req, caller) : await handleTasks(req, caller);
     }
     return json(404, { error: "not found" });
   } catch (e) {
@@ -409,9 +387,9 @@ async function handler(req: Request): Promise<Response> {
   }
 }
 
-const servers = cfg.hosts.map((hostname) =>
-  Bun.serve({ hostname, port: cfg.port, fetch: handler }),
-);
-for (const server of servers) {
-  console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+if (import.meta.main) {
+  const servers = cfg.hosts.map((hostname) => Bun.serve({ hostname, port: cfg.port, fetch: handler }));
+  for (const server of servers) {
+    console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+  }
 }

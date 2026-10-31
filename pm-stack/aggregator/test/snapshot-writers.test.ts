@@ -252,6 +252,61 @@ describe("DeepSeek CNY balance (#1052)", () => {
   });
 });
 
+describe("unreadable records are rejected (#1540)", () => {
+  const base = {
+    serviceId: "cloudflare",
+    metricId: "gateway-accrual-est",
+    unit: "usd-est",
+    source: "estimate",
+    observedBy: "stewardship-cycle",
+    ts: "2026-10-26T12:00:00Z",
+  } as const;
+
+  test("non-finite and inverted pairs never validate", () => {
+    expect(isSnapshotRecord({ ...base, value: { low: NaN, high: 10 } })).toBe(false);
+    expect(isSnapshotRecord({ ...base, value: { low: Number.POSITIVE_INFINITY, high: 10 } })).toBe(false);
+    expect(isSnapshotRecord({ ...base, value: { low: 1, high: Number.NEGATIVE_INFINITY } })).toBe(false);
+    expect(isSnapshotRecord({ ...base, value: { low: 50, high: 10 } })).toBe(false);
+  });
+
+  test("a ts outside the usage-YYYY-MM routing never validates", () => {
+    // Date.parse accepts it, but snapshotFileFor routes it to
+    // usage-October.jsonl, which readAll never reads.
+    expect(isSnapshotRecord({ ...base, ts: "October 20, 2026", value: { low: 1, high: 2 } })).toBe(false);
+  });
+
+  test("unreadable records append nothing and write no files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-unreadable-"));
+    try {
+      const store = new SnapshotStore(dir);
+      const bad = [
+        { ...base, value: { low: NaN, high: 10 } },
+        { ...base, value: { low: Number.POSITIVE_INFINITY, high: 10 } },
+        { ...base, value: { low: 50, high: 10 } },
+        { ...base, ts: "October 20, 2026", value: { low: 1, high: 2 } },
+      ];
+      expect(await store.append(bad as never)).toBe(0);
+      expect(await store.readAll()).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the finite-pair ISO control still appends once and dedupes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-pair-control-"));
+    try {
+      const store = new SnapshotStore(dir);
+      const rec = { ...base, value: { low: 29.6, high: 45.1 } };
+      expect(isSnapshotRecord(rec)).toBe(true);
+      expect(await store.append([rec] as never)).toBe(1);
+      expect(await store.append([rec] as never)).toBe(0);
+      expect(await store.readAll()).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("writer dedupe invariant", () => {
   test("re-appending a derived batch appends nothing the second time", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-writers-"));
