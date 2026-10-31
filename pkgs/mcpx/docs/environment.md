@@ -44,12 +44,12 @@ The table below is generated from `settings.ScriptEnv()` in
 
 ## This table is what mcpx adds, not all a child gets
 
-Every one of these is *added to* the environment mcpx itself was started with.
+Every one of these is _added to_ the environment mcpx itself was started with.
 A child gets the parent's environment entire, and then these on top — unless its
 shebang replaces part of it: `env -i` starts the child from an empty
 environment, and `env -u NAME` removes just that name (both then get these on
 top). Both the dispatched path and the JavaScript path apply what the shebang
-asked for.
+asked for:
 
 - `internal/runner/runner.go:359` — `cmd.Env = append(os.Environ(), …)`, every
   script the runner starts
@@ -109,6 +109,7 @@ and read by name for that reason.
 | `MCPX_HOOK_EVENT_URI` | the declared-hook runner, for a hook it runs | empty when the event names no resource | the resource URI the event is about | the hook itself |
 | `MCPX_ENDPOINT` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`); an event consumer | always | the daemon's HTTP endpoint | the generated client; the plugin as a fallback for MCPX_DAEMON_ENDPOINT |
 | `MCPX_SOCKET` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`); the plugin loader, for a discovered plugin | empty when the daemon is remote, since its socket is not reachable from here | the daemon's unix socket, which is faster than the endpoint. Also where a daemon binds and a client dials, for anyone who sets it by hand | the generated client, `mcpx` run inside the script or shell, the plugin |
+| `MCPX_TRANSPORT_BEARER_TOKEN` | `mcpx exec` / `mcpx run` | only when transport.bearerToken is configured | the daemon's bearer token, handed to the script so the generated client can authenticate to a daemon that requires it (#1975); the token itself stays out of the generated code | the generated client, `mcpx` run inside the script or shell, the plugin; also the setting `transport.bearerToken` |
 | `MCPX_ARTIFACTS_LOCAL` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`) | always | 1 when the daemon shares this filesystem, so artifact({path}) may hand over a path instead of the bytes | the generated client |
 | `MCPX_CWD` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`) | the exec service only when the caller sent its working directory | the directory the caller ran mcpx from, which a remote run cannot discover | the generated client (paths.cwd, and cwd scoping) |
 | `MCPX_PID` | `mcpx exec` / `mcpx run`; the exec service (`/v1/exec`, `mcpx_exec`) | always | the pid of the mcpx process that started the script | the generated client, for pid scoping |

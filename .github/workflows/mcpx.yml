@@ -1,3 +1,34 @@
+# ── Over-budget runbook (#1995) ──────────────────────────────────────
+# The final `budget` job in this file reports wall / longest-leg /
+# queue timings every run and gates on the longest leg against
+# BUDGET_SECONDS (default 420: p90 361s + ~15%, measured 2026-10-30
+# over the 7 then-successful main runs; ratchet it as the shape
+# changes, #1985/#1998). When a run goes over budget, read it here:
+#   1. Read the budget table in the run's job summary first.
+#   2. Queue branch (run-created -> job start large): runners are
+#      saturated or the branch sat queued behind main pushes — check
+#      the Actions queue depth, not the code.
+#   3. Fixed-cost branch (setup steps dominate): cache misses
+#      (setup-go module cache, runtime installers) — fix caching
+#      before touching tests.
+#   4. Test-leg branch (go test / bun plugin suite dominate): find
+#      the slowest tests (`go test -json` timings in the log),
+#      make them faster, and only then split the leg (#1994).
+#   5. Raise the budget only as a reviewed change to this file with
+#      a fresh baseline in the commit message — never to silence
+#      one red run, and never via a repository variable (#1995
+#      explicitly rejects variables; the value must stay in review).
+# Sustained main overruns open/update ONE rolling "mcpx CI over
+# budget" issue (median longest leg over the last 5 main runs);
+# never file a per-run issue.
+# Shape note (#1973 landed after the budget design): the budget
+# evaluates the `test` leg on pushes and the `stress-pr` leg on PRs.
+# The nightly `stress-nightly` legs are out of budget scope on
+# schedule runs (gating a 60-minute race/shuffle/repeat suite on a
+# PR-test budget would corrupt the flake signal); on manual
+# workflow_dispatch runs every completed leg is evaluated, so the
+# tiny-budget demo gates whatever the dispatch ran.
+# ────────────────────────────────────────────────────────────────────
 name: mcpx
 
 # Builds mcpx on every change to it, and repairs the one thing a dependency
@@ -30,10 +61,12 @@ on:
       # also marks its commits [skip ci] — both addendum fixes).
       - "!pkgs/mcpx/testdata/seeds/**"
       - ".opencode/plugin/**"
-  # Added for the flake-policy jobs below (#1973): the PR stress job
-  # runs on pull requests, the full-suite stress job nightly. The
-  # original jobs keep their original event coverage via their own
-  # `if:` conditions, so these triggers change nothing for them.
+  # Pull requests run the same test job, so the full-suite check
+  # TESTING.md rule 3 tells agents to read before merging actually
+  # exists (#1966); the trigger also carries the flake-policy jobs
+  # (#1973): the PR stress job runs on pull requests, the full-suite
+  # stress job nightly. The original jobs keep their original event
+  # coverage via their own `if:` conditions.
   pull_request:
     paths:
       - "pkgs/mcpx/**"
@@ -44,6 +77,11 @@ on:
     # Nightly full-suite stress (#1973). Odd minute, off the hour.
     - cron: "23 3 * * *"
   workflow_dispatch:
+    inputs:
+      budget_seconds:
+        description: "Time-budget override in seconds (demo the warn/fail gates with a tiny value)"
+        required: false
+        default: "420"
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
@@ -72,8 +110,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The Renovate branch itself, so a fixed hash can be pushed back.
-          ref: ${{ github.head_ref || github.ref }}
+          # Fork-safe: on a pull_request run, check out the PR head SHA
+          # (a bare head_ref names a branch in THIS repository, which a
+          # fork's branch is not — the checkout would fail, or worse,
+          # validate a coincidentally same-named branch). On push runs
+          # this falls back to the pushed ref. The vendorhash-repair
+          # job keeps its own writable-branch checkout below.
+          ref: ${{ github.event.pull_request.head.sha || github.head_ref || github.ref }}
           fetch-depth: 0
 
       # The repo dogfoods the plugin: .opencode/plugin is a copy of
@@ -128,15 +171,27 @@ jobs:
         run: |
           rc=0
           go test ./... -count=1 -json >"$RUNNER_TEMP/gotest.json" || rc=$?
-          # Readable output for the log, from the same run.
+          # Readable output for the log, from the same run. Package-level
+          # output first, then the full output of every failing test, so a
+          # package failure (e.g. internal/hooks in #2573) names its test
+          # in the log instead of only in the JSON artifact.
           python3 - "$RUNNER_TEMP/gotest.json" <<'EOF'
           import json, sys
+          failed = set()
+          lines = []
           for line in open(sys.argv[1], errors="replace"):
               try:
                   e = json.loads(line)
               except ValueError:
                   continue
+              lines.append(e)
+              if e.get("Action") == "fail" and e.get("Test"):
+                  failed.add((e.get("Package", ""), e.get("Test", "")))
+          for e in lines:
               if e.get("Action") == "output" and not e.get("Test"):
+                  print(e.get("Output", ""), end="")
+          for e in lines:
+              if e.get("Action") == "output" and (e.get("Package", ""), e.get("Test", "")) in failed:
                   print(e.get("Output", ""), end="")
           EOF
           # Skipped tests are held to a record kept in the repository variable
@@ -163,6 +218,96 @@ jobs:
       # it); this step runs the plugin suite itself, so a broken plugin
       # test fails CI instead of never running (#1978).
       - name: Plugin tests (bun)
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
+
+  lint:
+    name: "basic: lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Approach C (#1996): the linters are the dev shell's, so their
+      # versions are pinned by flake.lock and this workflow passes no
+      # per-action version input of its own. The shell is the flake's
+      # minimal `mcpx-lint` shell, not the default: realising the full
+      # monorepo dev shell on a cold runner exceeded this job's timeout
+      # and the leg was cancelled before any linter ran (PR #2718).
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+            # The default dev shell's closure needs the cgroups
+            # feature at build time. That gate is enforced by the nix
+            # daemon, whose config is written here — a client-side
+            # --extra-experimental-features flag alone does not lift
+            # it (verified on this PR: the flag was accepted and the
+            # build still died). Drew's NixOS machines never see this
+            # because the flake's nixConfig is fed into their system
+            # nix.settings; a stock runner's is not (#1996).
+            experimental-features = nix-command flakes cgroups
+
+      # shellcheck reads the repository's .shellcheckrc, which enables every
+      # optional check; --severity=warning keeps this leg to findings that
+      # are wrong rather than merely unidiomatic (the style class is
+      # treefmt's shfmt job). actionlint checks these workflow files.
+      - name: go vet, gofmt, shellcheck, actionlint
+        run: |
+          # The cgroups feature is enabled in the installer step's
+          # extra-conf above (the daemon enforces it); the flag here
+          # covers the client side of `nix develop` itself. Without
+          # both, this step dies with "experimental Nix feature
+          # 'cgroups' is disabled" before any linter runs (#1996).
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            go vet ./...
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "gofmt would rewrite:"
+              echo "$unformatted"
+              exit 1
+            fi
+            cd ../..
+            shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
+            # actionlint is scoped to the mcpx workflows: #1996 assigns it
+            # the mcpx workflow set, not the whole repo (repo-wide findings
+            # are tracked separately). -S warning matches the shellcheck
+            # severity above, so info/style notes inside run: blocks do
+            # not fail this leg.
+            actionlint -shellcheck "shellcheck -S warning" .github/workflows/mcpx*.yml
+          '
+
+      # golangci-lint runs, but is NOT blocking yet — explicitly, per
+      # #1996's acceptance fallback. Its first full run (PR #2718, run
+      # 41131293079) reported 119 pre-existing findings across the
+      # module (errcheck 50, staticcheck 50, unused 17, ineffassign 2),
+      # far beyond this slice's baseline. They are filed as #2836;
+      # when #2836 lands, this step loses `continue-on-error` and the
+      # leg becomes fully blocking. Until then the findings print on
+      # every run, visible but not gating.
+      - name: golangci-lint (non-blocking until #2836)
+        continue-on-error: true
+        run: |
+          nix develop .#mcpx-lint --extra-experimental-features cgroups --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            golangci-lint run
+          '
+
+  plugin:
+    name: "basic: plugin tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Every test file the plugin has, not the single daemon.test.ts #1996
+      # was written against. Ops tests skip unless OPS_LIVE_SOCKET is set:
+      # they need a running daemon, and this leg deliberately does not
+      # provide one (the Go test job is where the daemon itself is tested).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: bun test
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
 
@@ -338,4 +483,262 @@ jobs:
             gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
           else
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  budget:
+    name: "final: CI time budget"
+    # Always runs, even when tests fail: a red run still gets its
+    # timing table and the gate still evaluates (#1995). A passing
+    # budget never masks a failing job — the run conclusion still
+    # reflects the worst job.
+    # Waits for every leg that can run on this event (skipped jobs
+    # resolve immediately): on pushes the test leg, on PRs the
+    # stress-pr leg, on schedule/dispatch the stress-nightly matrix.
+    # Which legs are EVALUATED is decided in the measure step, not
+    # here — needs only orders the timing table after the work.
+    needs: [test, stress-pr, stress-nightly]
+    if: always()
+    outputs:
+      sustained: ${{ steps.measure.outputs.sustained }}
+      median_5: ${{ steps.measure.outputs.median_5 }}
+      median_n: ${{ steps.measure.outputs.median_n }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+    env:
+      BUDGET_SECONDS: ${{ inputs.budget_seconds || '420' }}
+    steps:
+      - name: Measure legs, gate inputs, check sustained overrun
+        id: measure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          python3 - <<'EOF'
+          import datetime
+          import json
+          import os
+          import statistics
+          import subprocess
+
+          repo = os.environ["REPO"]
+          run_id = os.environ["RUN_ID"]
+          budget = int(os.environ.get("BUDGET_SECONDS") or 420)
+          is_main = os.environ.get("EVENT") == "push" and os.environ.get("REF") == "refs/heads/main"
+
+          # Legs the budget owns: the push test leg and the PR
+          # stress leg (#1995, #1973 shape). The nightly
+          # stress-nightly legs are out of scope on schedule runs:
+          # gating a 60-minute race/shuffle/repeat suite on a
+          # PR-test budget would corrupt the flake signal. A manual
+          # workflow_dispatch evaluates every completed leg, so the
+          # tiny-budget demo gates whatever the dispatch ran.
+          OWNED_LEGS = {
+              "basic: test",
+              "stress: PR changed tests (race/shuffle/repeat)",
+          }
+
+          def api(path):
+              # Single-page fetches with an explicit per_page: the Jobs
+              # API has no created_at, so every page would need merging
+              # by hand — per_page=100 covers any plausible leg count
+              # in one document.
+              out = subprocess.run(
+                  ["gh", "api", path],
+                  capture_output=True, text=True, check=True,
+              ).stdout
+              return json.loads(out)
+
+          def ts(s):
+              return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+
+          run = api(f"repos/{repo}/actions/runs/{run_id}")
+          jobs = api(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
+          run_started = ts(run["run_started_at"])
+          run_created = ts(run["created_at"])
+
+          def completed_legs(job_list):
+              out = []
+              for j in job_list:
+                  if (j.get("conclusion") or "") == "skipped":
+                      continue
+                  s, e = ts(j.get("started_at")), ts(j.get("completed_at"))
+                  if s and e:
+                      out.append((j["name"], (e - s).total_seconds(), s))
+              out.sort(key=lambda x: x[1])
+              return out
+
+          legs = completed_legs(jobs)
+          if not legs:
+              # "Re-run failed jobs" starts a new attempt holding only
+              # the failed jobs (here: this budget job), and the jobs
+              # endpoint defaults to filter=latest, so the completed
+              # test leg would be invisible and legs[-1] would raise.
+              # Fall back to all attempts, keeping each job's most
+              # recently completed entry -- the retained result.
+              all_jobs = api(f"repos/{repo}/actions/runs/{run_id}/jobs?filter=all&per_page=100").get("jobs", [])
+              by_name = {}
+              for j in all_jobs:
+                  e = ts(j.get("completed_at"))
+                  if e and (j["name"] not in by_name or e > ts(by_name[j["name"]]["completed_at"])):
+                      by_name[j["name"]] = j
+              jobs = list(by_name.values())
+              legs = completed_legs(jobs)
+          if os.environ.get("EVENT") != "workflow_dispatch":
+              legs = [l for l in legs if l[0] in OWNED_LEGS]
+          if legs:
+              longest_name, longest, _ = legs[-1]
+              queue = max((s - run_created).total_seconds() for _, _, s in legs)
+          else:
+              # No owned leg completed (a schedule run, or a budget
+              # running standalone): report n/a figures instead of
+              # crashing, and gate nothing.
+              longest_name, longest, queue = "none completed", 0.0, 0.0
+          ends = [ts(j["completed_at"]) for j in jobs if ts(j.get("completed_at"))]
+          wall = (max(ends) - run_started).total_seconds() if ends else 0.0
+
+          over = longest > budget
+          gross = longest > 2 * budget
+
+          # Sustained-overrun signal, main only: median longest owned
+          # leg over the last 5 completed main runs of THIS workflow
+          # (this run excluded). The workflow-scoped runs endpoint
+          # keeps unrelated workflows (auto-format,
+          # go-modules-build) from crowding mcpx history out of the
+          # sample, and pagination collects five samples even when
+          # earlier pages hold few mcpx runs (Codex P2s on #2708).
+          # Every measurement is tagged with its run attempt; re-run
+          # attempts reuse run_started_at (the current attempt), so a
+          # re-run never inherits the first attempt's timings.
+          def owned_durations(job_list):
+              out = []
+              for j in job_list:
+                  if (j.get("conclusion") or "") == "skipped":
+                      continue
+                  if j.get("name") not in OWNED_LEGS:
+                      continue
+                  s, e = ts(j.get("started_at")), ts(j.get("completed_at"))
+                  if s and e:
+                      out.append((e - s).total_seconds())
+              return out
+
+          median5, sample = None, []
+          if is_main:
+              page = 1
+              while len(sample) < 5 and page <= 5:
+                  runs = api(
+                      f"repos/{repo}/actions/workflows/{run['workflow_id']}/runs"
+                      f"?branch=main&event=push&status=completed"
+                      f"&per_page=20&page={page}"
+                  ).get("workflow_runs", [])
+                  if not runs:
+                      break
+                  for r in runs:
+                      if str(r["id"]) == str(run_id):
+                          continue
+                      jr = api(f"repos/{repo}/actions/runs/{r['id']}/jobs?per_page=100").get("jobs", [])
+                      ds = owned_durations(jr)
+                      if not ds:
+                          # Same retained-result trap as the current
+                          # run above: a budget-only re-run ("Re-run
+                          # failed jobs" after the budget job failed)
+                          # leaves the latest attempt holding no owned
+                          # leg, while the retained test result sits in
+                          # an earlier attempt — filter=latest would
+                          # drop that run from the median entirely.
+                          # Fall back to all attempts, keeping each
+                          # job's most recently completed entry
+                          # (Codex P2 on #2708).
+                          all_jr = api(f"repos/{repo}/actions/runs/{r['id']}/jobs?filter=all&per_page=100").get("jobs", [])
+                          by_name = {}
+                          for j in all_jr:
+                              e = ts(j.get("completed_at"))
+                              if e and (j["name"] not in by_name or e > ts(by_name[j["name"]]["completed_at"])):
+                                  by_name[j["name"]] = j
+                          ds = owned_durations(list(by_name.values()))
+                      if ds:
+                          sample.append(max(ds))
+                      if len(sample) == 5:
+                          break
+                  page += 1
+              if sample:
+                  median5 = statistics.median(sample)
+          sustained = bool(median5 is not None and median5 > budget)
+
+          if over:
+              print(f"::warning::Longest leg {longest_name} took {longest:.0f}s, over the {budget}s budget (attempt {os.environ['ATTEMPT']}).")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## mcpx CI time budget (run attempt %s)\n\n" % os.environ["ATTEMPT"])
+              f.write("| measure | value |\n|---|---|\n")
+              f.write(f"| wall (run start -> last job end) | {wall:.0f}s |\n")
+              f.write(f"| longest leg | {longest_name} — {longest:.0f}s |\n")
+              f.write(f"| queue (run created -> job start, max) | {queue:.0f}s |\n")
+              f.write("| matrix span | n/a — single-leg shape (see #1985) |\n")
+              f.write("| per-leg fixed cost | n/a — single-leg shape (see #1985) |\n")
+              f.write(f"| budget | {budget}s — {'OVER' if over else 'within'} |\n")
+              if is_main:
+                  f.write(f"| sustained (median longest, last {len(sample)} main runs) | "
+                          f"{median5:.0f}s — {'OVER — rolling issue updated' if sustained else 'within'} |\n"
+                          if median5 is not None else "| sustained | n/a — no prior completed main runs |\n")
+              else:
+                  f.write("| sustained | main-only check, skipped on this event |\n")
+              f.write("\nOver-budget runbook: see the comment block at the top of "
+                      "`.github/workflows/mcpx.yml` (#1995).\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"longest_seconds={longest:.0f}\n")
+              f.write(f"over_budget={'true' if over else 'false'}\n")
+              f.write(f"gross_over={'true' if gross else 'false'}\n")
+              f.write(f"sustained={'true' if sustained else 'false'}\n")
+              f.write(f"median_5={median5:.0f}\n" if median5 is not None else "median_5=\n")
+              f.write(f"median_n={len(sample)}\n")
+          EOF
+
+      - name: Gate — fail only on gross (>2x) overruns
+        if: steps.measure.outputs.gross_over == 'true'
+        run: |
+          echo "::error::Longest leg ${{ steps.measure.outputs.longest_seconds }}s exceeds 2x the ${{ env.BUDGET_SECONDS }}s budget."
+          exit 1
+
+  rolling-issue:
+    name: "final: rolling over-budget issue"
+    # Serialized independently of the test/budget jobs: main-push runs
+    # overlap by design (their concurrency groups are keyed by run_id),
+    # so two runs can detect a sustained overrun at the same moment.
+    # This shared group (no run_id, no cancel) runs the
+    # search-then-create below one at a time, so there is exactly one
+    # rolling issue.
+    concurrency:
+      group: mcpx-ci-budget-rolling-issue
+      cancel-in-progress: false
+    needs: [budget]
+    # !cancelled() (not the default success()): when the budget gate
+    # fails on a gross overrun with a sustained median, the rolling
+    # issue must still be filed — gross overruns are exactly when it
+    # matters most (Codex P2 on #2708). Cancelled runs stay skipped.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.budget.outputs.sustained == 'true' && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Comment on or create the rolling issue
+        run: |
+          set -euo pipefail
+          title="mcpx CI over budget (rolling)"
+          body="Median longest leg ${{ needs.budget.outputs.median_5 }}s over the last ${{ needs.budget.outputs.median_n }} completed main runs exceeds the ${{ inputs.budget_seconds || '420' }}s budget (triggered by run $GITHUB_RUN_ID, attempt $GITHUB_RUN_ATTEMPT). Latest run table is in that run's budget-job summary. Work the over-budget runbook at the top of .github/workflows/mcpx.yml (#1995); do not file per-run issues."
+          num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" --label "app/mcpx,kind/test"
           fi

@@ -20,20 +20,20 @@ const (
 
 // InteractionRecord represents an input/output turn or tool execution with its trace ID and feedback.
 type InteractionRecord struct {
-	TraceID          string     `json:"traceId"`
-	Timestamp        time.Time  `json:"timestamp"`
-	SessionID        string     `json:"sessionId,omitempty"`
-	Source           string     `json:"source"` // "proxy", "call", "task", etc.
-	Input            string     `json:"input"`
-	Output           string     `json:"output,omitempty"`
-	ToolsUsed        []string   `json:"toolsUsed,omitempty"`
-	Score            *float64   `json:"score,omitempty"`            // primary score (e.g. 1.0 = good, 0.0 = bad)
-	Target           string     `json:"target,omitempty"`           // "retrieval" vs "execution"
-	RetrievalScore   *float64   `json:"retrievalScore,omitempty"`   // score for search / tool match relevance
-	ExecutionScore   *float64   `json:"executionScore,omitempty"`   // score for tool runtime behavior
-	ScoresJSON       string     `json:"scoresJson,omitempty"`       // multi-dimension representation (e.g. {"relevance": 1.0, "latency": 0.8})
-	FeedbackNotes    string     `json:"feedbackNotes,omitempty"`
-	FeedbackAt       *time.Time `json:"feedbackAt,omitempty"`
+	TraceID        string     `json:"traceId"`
+	Timestamp      time.Time  `json:"timestamp"`
+	SessionID      string     `json:"sessionId,omitempty"`
+	Source         string     `json:"source"` // "proxy", "call", "task", etc.
+	Input          string     `json:"input"`
+	Output         string     `json:"output,omitempty"`
+	ToolsUsed      []string   `json:"toolsUsed,omitempty"`
+	Score          *float64   `json:"score,omitempty"`          // primary score (e.g. 1.0 = good, 0.0 = bad)
+	Target         string     `json:"target,omitempty"`         // "retrieval" vs "execution"
+	RetrievalScore *float64   `json:"retrievalScore,omitempty"` // score for search / tool match relevance
+	ExecutionScore *float64   `json:"executionScore,omitempty"` // score for tool runtime behavior
+	ScoresJSON     string     `json:"scoresJson,omitempty"`     // multi-dimension representation (e.g. {"relevance": 1.0, "latency": 0.8})
+	FeedbackNotes  string     `json:"feedbackNotes,omitempty"`
+	FeedbackAt     *time.Time `json:"feedbackAt,omitempty"`
 }
 
 // InteractionFilter defines parameters for filtering interaction history.

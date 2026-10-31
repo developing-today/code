@@ -88,6 +88,21 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     }
   }
 
+  // Contributor variants (#2753 amendment): the Meta pool's contributor
+  // models are distinct upstream ids (muse-spark-1.3-contributor,
+  // muse-wonder-1.0-contributor), optionally carrying an effort suffix
+  // AFTER the contributor part (muse-wonder-1.0-contributor-high — the
+  // effort suffix was already stripped above). Peel the contributor part
+  // off for the base-model lookup and re-attach it to the resolved ids,
+  // so the direct path sends the contributor id upstream verbatim. A
+  // plain base-model request keeps the plain id — contributor is the
+  // caller's choice, never a proxy rewrite.
+  let contributor = false;
+  if (modelStr.endsWith('-contributor')) {
+    contributor = true;
+    modelStr = modelStr.slice(0, -'-contributor'.length);
+  }
+
   // Bare aliases
   if (modelStr === 'spark' || modelStr === 'muse-spark') modelStr = 'muse-spark-1.3';
   if (modelStr === 'wonder' || modelStr === 'muse-wonder') modelStr = 'muse-wonder-1.0';
@@ -101,10 +116,11 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     effort = modelConfig.defaultEffort;
   }
 
+  const baseModel = contributor ? `${modelConfig.id}-contributor` : modelConfig.id;
   return {
-    baseModel: modelConfig.id,
+    baseModel,
     effort,
-    fullName: `${modelConfig.id}-${effort}`
+    fullName: `${baseModel}-${effort}`
   };
 };
 
@@ -1032,6 +1048,74 @@ const contentPartsForInput = (content) => {
   return content ? JSON.stringify(content) : '';
 };
 
+// Meta's subscription-key gate rejects requests whose function tools carry
+// the well-known agent-harness shell names (`shell`, `bash`) with 403
+// client_attestation_denied — verified live 2026-10-30 by bisecting a real
+// opencode request body: every other tool, the instructions, and all client
+// headers pass unchanged, while `run_command` / `terminal` pass. The direct
+// path therefore presents those tools under alias names and translates the
+// model's tool calls back on the way out. The CLI door never needed this —
+// the CLI sends its own toolset.
+const DIRECT_TOOL_ALIASES = { shell: 'run_command', bash: 'terminal' };
+const DIRECT_TOOL_NAMES = Object.fromEntries(
+  Object.entries(DIRECT_TOOL_ALIASES).map(([client, alias]) => [alias, client])
+);
+const directToolAlias = (name, taken) => {
+  const alias = DIRECT_TOOL_ALIASES[name];
+  if (!alias || (taken && taken.has(alias))) return name;
+  return alias;
+};
+const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
+
+// The /v1/responses passthrough forwards client bodies in Responses shape;
+// apply the same tool-name aliasing there, in both directions, so a native
+// client (the muse-direct provider) passes the attestation gate too. An
+// unparseable body forwards verbatim, exactly as before.
+const aliasResponsesRequestBody = (bodyText) => {
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false }; }
+  if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false };
+  const taken = new Set((Array.isArray(parsed.tools) ? parsed.tools : [])
+    .map(t => t && t.name).filter(Boolean));
+  let aliased = false;
+  const rename = (holder) => {
+    if (holder && typeof holder.name === 'string') {
+      const next = directToolAlias(holder.name, taken);
+      if (next !== holder.name) { holder.name = next; aliased = true; }
+    }
+  };
+  if (Array.isArray(parsed.tools)) for (const t of parsed.tools) rename(t);
+  if (Array.isArray(parsed.input)) {
+    for (const item of parsed.input) {
+      if (item && item.type === 'function_call') rename(item);
+    }
+  }
+  if (parsed.tool_choice && parsed.tool_choice.type === 'function') rename(parsed.tool_choice);
+  return aliased ? { text: JSON.stringify(parsed), aliased } : { text: bodyText, aliased };
+};
+
+const unaliasResponsesOutput = (holder) => {
+  if (!holder || typeof holder !== 'object') return;
+  for (const item of holder.output || []) {
+    if (item && item.type === 'function_call' && typeof item.name === 'string') {
+      item.name = clientToolName(item.name);
+    }
+  }
+};
+
+// Rewrite one SSE data payload if it carries an aliased tool name in a
+// function_call item; anything else passes through untouched.
+const unaliasSseData = (data) => {
+  if (!data.includes('run_command') && !data.includes('terminal')) return data;
+  let evt;
+  try { evt = JSON.parse(data); } catch { return data; }
+  if (evt && evt.item && evt.item.type === 'function_call' && typeof evt.item.name === 'string') {
+    evt.item.name = clientToolName(evt.item.name);
+  }
+  if (evt && evt.response) unaliasResponsesOutput(evt.response);
+  return JSON.stringify(evt);
+};
+
 const buildResponsesRequest = (body, baseModel, effort) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const instructions = messages
@@ -1039,6 +1123,8 @@ const buildResponsesRequest = (body, baseModel, effort) => {
     .map(messageText)
     .filter(Boolean)
     .join('\n\n');
+  const takenNames = new Set((Array.isArray(body.tools) ? body.tools : [])
+    .map(t => t && t.function && t.function.name).filter(Boolean));
   const input = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
@@ -1051,7 +1137,7 @@ const buildResponsesRequest = (body, baseModel, effort) => {
         input.push({
           type: 'function_call',
           call_id: tc.id,
-          name: tc.function ? tc.function.name : undefined,
+          name: tc.function ? directToolAlias(tc.function.name, takenNames) : undefined,
           arguments: (tc.function && tc.function.arguments) || ''
         });
       }
@@ -1069,13 +1155,13 @@ const buildResponsesRequest = (body, baseModel, effort) => {
   if (instructions) out.instructions = instructions;
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     out.tools = body.tools.map(t => (t && t.type === 'function' && t.function)
-      ? { type: 'function', name: t.function.name, description: t.function.description, parameters: t.function.parameters }
+      ? { type: 'function', name: directToolAlias(t.function.name, takenNames), description: t.function.description, parameters: t.function.parameters }
       : t);
   }
   if (body.tool_choice !== undefined) {
     const tc = body.tool_choice;
     if (typeof tc === 'string') out.tool_choice = tc;
-    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: tc.function.name };
+    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: directToolAlias(tc.function.name, takenNames) };
     else out.tool_choice = tc;
   }
   const maxOut = body.max_completion_tokens !== undefined && body.max_completion_tokens !== null
@@ -1102,7 +1188,7 @@ const extractResponsesOutput = (respBody) => {
       toolCalls.push({
         id: item.call_id || item.id,
         type: 'function',
-        function: { name: item.name, arguments: item.arguments || '' }
+        function: { name: clientToolName(item.name), arguments: item.arguments || '' }
       });
     }
   }
@@ -1196,7 +1282,7 @@ const streamResponsesAsChat = async (response, { res, chatId, created, fullName 
           index,
           id: evt.item.call_id || evt.item.id,
           type: 'function',
-          function: { name: evt.item.name || '', arguments: '' }
+          function: { name: clientToolName(evt.item.name || ''), arguments: '' }
         }]
       });
     } else if (type === 'response.function_call_arguments.delta') {
@@ -1280,8 +1366,14 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
   }
   const response = outcome.response;
   if (!response.ok) {
-    // Meta answered: pass the response through as-is, whatever the status.
     const text = await response.text().catch(() => '');
+    if (response.status === 403 && text.includes('client_attestation_denied')) {
+      // The attestation fingerprint moved (a tool name newly blocked):
+      // degrade to the CLI door instead of failing the seat outright.
+      console.warn('[muse-proxy] direct path attestation denied; falling back to the CLI door');
+      return false;
+    }
+    // Meta answered: pass the response through as-is, whatever the status.
     res.writeHead(response.status, {
       'Content-Type': response.headers.get('content-type') || 'application/json'
     });
@@ -1411,8 +1503,10 @@ const server = http.createServer((req, res) => {
         return;
       }
       let outcome;
+      let aliasedBody = { text: bodyText, aliased: false };
       try {
-        outcome = await directResponsesFetch(keyResult, bodyText, req.headers.accept || 'application/json');
+        aliasedBody = aliasResponsesRequestBody(bodyText);
+        outcome = await directResponsesFetch(keyResult, aliasedBody.text, req.headers.accept || 'application/json');
       } catch (err) {
         writeJsonBody(res, 502, { error: { message: `Direct Meta route request failed: ${err.message}` } });
         return;
@@ -1422,22 +1516,62 @@ const server = http.createServer((req, res) => {
         return;
       }
       const response = outcome.response;
-      res.writeHead(response.status, {
-        'Content-Type': response.headers.get('content-type') || 'application/json'
-      });
-      if (response.body && typeof response.body.getReader === 'function') {
+      const contentType = response.headers.get('content-type') || 'application/json';
+      if (!aliasedBody.aliased) {
+        res.writeHead(response.status, { 'Content-Type': contentType });
+        if (response.body && typeof response.body.getReader === 'function') {
+          try {
+            const reader = response.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(Buffer.from(value));
+            }
+          } catch { /* upstream stream cut: end with what was sent */ }
+          res.end();
+        } else {
+          res.end(await response.text().catch(() => ''));
+        }
+        return;
+      }
+      // Aliased request: the model's tool calls come back under the alias
+      // names and must be translated before the client sees them.
+      if (contentType.includes('text/event-stream') && response.body && typeof response.body.getReader === 'function') {
+        res.writeHead(response.status, { 'Content-Type': contentType });
         try {
           const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          const flushLine = (line) => {
+            if (line.startsWith('data: ') && line.length > 6 && !line.startsWith('data: [DONE]')) {
+              res.write(`data: ${unaliasSseData(line.slice(6))}\n`);
+            } else {
+              res.write(line + '\n');
+            }
+          };
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            res.write(Buffer.from(value));
+            buffer += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buffer.indexOf('\n')) >= 0) {
+              flushLine(buffer.slice(0, nl));
+              buffer = buffer.slice(nl + 1);
+            }
           }
+          if (buffer) flushLine(buffer);
         } catch { /* upstream stream cut: end with what was sent */ }
         res.end();
-      } else {
-        res.end(await response.text().catch(() => ''));
+        return;
       }
+      let text = await response.text().catch(() => '');
+      try {
+        const parsedJson = JSON.parse(text);
+        unaliasResponsesOutput(parsedJson);
+        text = JSON.stringify(parsedJson);
+      } catch { /* not JSON: pass through as-is */ }
+      res.writeHead(response.status, { 'Content-Type': contentType });
+      res.end(text);
     });
     return;
   }

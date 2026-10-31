@@ -37,10 +37,10 @@ func (s *SubwordEmbedder) Backend() string {
 
 // RemoteEmbedder queries an OpenAI/Ollama/Neon-compatible POST /v1/embeddings endpoint.
 type RemoteEmbedder struct {
-	client  *http.Client
-	url     string
-	apiKey  string
-	model   string
+	client *http.Client
+	url    string
+	apiKey string
+	model  string
 }
 
 // NewRemoteEmbedder creates a remote embedding client.

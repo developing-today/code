@@ -111,7 +111,11 @@ function openGotoLine(view: EditorView): void {
           // Invalid input keeps the dialog open with the text selected so
           // the user can correct it; the cursor does not move.
           const raw = (dialogInput?.value ?? "").trim();
-          const line = Number(raw);
+          // Only a run of decimal digits counts (#2776): Number() alone
+          // also reinterprets hex/binary/scientific spellings the field
+          // never showed as that line ("0x10" -> 16, "1e2" -> 100,
+          // "2.0" -> 2) — the parseWorldSeed rule (#832).
+          const line = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
           // ⚡ Bolt optimization: compute line starts once instead of traversing doc twice
           const lineStarts = activeView ? getLineStarts(activeView) : [];
           const lineCount = Math.max(1, lineStarts.length);

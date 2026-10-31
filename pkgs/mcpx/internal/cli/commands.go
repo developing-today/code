@@ -1020,6 +1020,15 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			"MCPX_INPUT": inputReport(a.stdoutOverride == nil),
 		},
 	}
+	// #1975: propagate the resolved daemon Bearer [REDACTED] to scripts, so the
+	// generated client's TRANSPORT wrapper can authenticate. Resolved from
+	// the CLI's own settings rather than the environment alone, so a
+	// config-file token reaches scripts too. Unset, no variable is set:
+	// os.Environ() inheritance in the runner already covers an env-sourced
+	// token, and scripts stay byte-for-byte as before.
+	if tok := daemon.BearerToken(a.Settings()); tok != "" {
+		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
+	}
 	opts.TypeCheck = shape.typecheck
 	opts.Imports = shape.imports
 	opts.ImportsOnDynamic = shape.importsOnDynamic

@@ -26,6 +26,7 @@ func Registry() []Setting {
 	s = append(s, transportSettings()...)
 	s = append(s, plumbingSettings()...)
 	s = append(s, consumerSettings()...)
+	s = append(s, modelSettings()...)
 	s = append(s, wireSettings()...)
 	s = append(s, pluginSettings()...)
 	s = append(s, protoMessagesSettings()...)

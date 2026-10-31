@@ -539,6 +539,7 @@ func (c *Client) streamOp(ctx context.Context, method, path string, body []byte,
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	c.authorize(req)
 	resp, err := (&http.Client{Transport: c.hc.Transport}).Do(req)
 	if err != nil {
 		if isDialErr(err) {

@@ -450,6 +450,12 @@ type Service struct {
 	// decides whether artifact({path}) can be registered by link rather than
 	// by transfer, and it is a fact only the caller knows.
 	Local bool
+	// BearerToken is the daemon's resolved transport.bearerToken (#1975).
+	// scriptEnv hands it to the script as MCPX_TRANSPORT_BEARER_TOKEN so
+	// the generated client can authenticate its calls back to the daemon
+	// when the token was configured by file or flag rather than exported
+	// in the daemon's own environment. Empty means auth is off.
+	BearerToken string
 	// Limits are the resolved settings.
 	Limits Limits
 	// ConfigDir is the directory holding the configuration in force,
@@ -919,6 +925,9 @@ func (s *Service) scriptEnv(runID, session string, opts Options) map[string]stri
 		// and must outlive this one. A session execsvc minted for this
 		// run (exec-<runID>, or one the CLI minted) is not named here.
 		"MCPX_EPHEMERAL": boolEnv(opts.Session == ""),
+	}
+	if s.BearerToken != "" {
+		env["MCPX_TRANSPORT_BEARER_TOKEN"] = s.BearerToken
 	}
 	if opts.Cwd != "" {
 		env["MCPX_CWD"] = opts.Cwd

@@ -153,7 +153,20 @@ export class QueueClient {
         const text = await res.text();
         throw new QueueError(`worker registration failed (HTTP ${res.status}): ${text.slice(0, 200)}`, res.status);
       }
-    })();
+    })().catch((err: unknown) => {
+      // A rejected registration must not be cached (#2902):
+      // registration failures are overwhelmingly transient (a
+      // PostgREST 5xx, a network blip), and memoizing the rejection
+      // wedges every later launch for the life of the process.
+      // Reset the memo so the next call retries the upsert; a
+      // successful registration stays cached. The reset runs before
+      // the rejection reaches any caller awaiting this promise, and
+      // no newer attempt can have replaced the memo in between --
+      // a new attempt is only assigned while the memo is null, and
+      // this catch is the only place that nulls it.
+      this.workerEnsured = null;
+      throw err;
+    });
     return this.workerEnsured;
   }
 }

@@ -43,25 +43,56 @@ pub struct GroupLog {
 impl GroupLog {
     /// Opens the log at `path`. A file that does not exist is an empty log.
     ///
+    /// A torn final line, left by a crash mid-append, is dropped and
+    /// truncated away: that event was never acknowledged, and keeping it
+    /// would glue it onto the next append. A newline-terminated line that
+    /// does not parse was fully written, so it is corruption and stays
+    /// fatal, mirroring `Outbox::open` and the world journal.
+    ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, or a line is not an event.
+    /// Fails if the file cannot be read, or a complete line is not an event.
     pub fn open(path: &Path) -> Result<Self> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
-        let events = text
-            .lines()
-            .enumerate()
-            .filter(|(_, line)| !line.trim().is_empty())
-            .map(|(number, line)| {
-                serde_json::from_str(line).with_context(|| {
-                    format!("{}: line {} is not an event", path.display(), number + 1)
-                })
-            })
-            .collect::<Result<Vec<Event>>>()?;
+        let mut events = Vec::new();
+        let mut kept = 0;
+        for (number, line) in text.split_inclusive('\n').enumerate() {
+            if line.trim().is_empty() {
+                kept += line.len();
+                continue;
+            }
+            let complete = line.ends_with('\n');
+            match serde_json::from_str::<Event>(line.trim_end()) {
+                Ok(event) => {
+                    events.push(event);
+                    kept += line.len();
+                }
+                Err(_) if !complete => {
+                    tracing::warn!(
+                        "group log {}: dropping torn final entry at byte {kept}",
+                        path.display()
+                    );
+                    break;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("{}: line {} is not an event", path.display(), number + 1)
+                    });
+                }
+            }
+        }
+        if kept < text.len() {
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .with_context(|| format!("open {} to truncate its torn tail", path.display()))?
+                .set_len(kept as u64)
+                .with_context(|| format!("truncate torn tail of {}", path.display()))?;
+        }
         Ok(Self {
             path: path.to_path_buf(),
             events,
@@ -388,5 +419,39 @@ mod tests {
         let path = dir.path().join(FILE_NAME);
         std::fs::write(&path, "not json\n").unwrap();
         assert!(GroupLog::open(&path).is_err());
+    }
+
+    #[test]
+    fn test_a_torn_final_fragment_is_dropped_and_truncated() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        // A log whose only content is a fragment: the writer crashed
+        // mid-append, before the event was ever acknowledged.
+        std::fs::write(&path, "{\"id\":\"abc").unwrap();
+        let log = GroupLog::open(&path).unwrap();
+        assert!(log.events().is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn test_a_torn_fragment_after_valid_events_keeps_them_and_folds() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let created = log.record(OWNER, None, create_body()).unwrap();
+        drop(log);
+        let good = std::fs::read_to_string(&path).unwrap();
+        // A crash mid-append leaves a partial event, no trailing newline.
+        let mut torn = good.clone();
+        torn.push_str("{\"id\":\"f00");
+        std::fs::write(&path, torn).unwrap();
+
+        let reopened = GroupLog::open(&path).unwrap();
+        assert_eq!(reopened.events().len(), 1);
+        let projection = reopened.projection().unwrap();
+        assert!(projection.group(&created.event).is_some());
+        // The torn bytes are truncated, so the next append is not glued
+        // onto them and replays cleanly on the next open.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
     }
 }

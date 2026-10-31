@@ -74,6 +74,7 @@ func (a *App) CmdFeedback(ctx context.Context, args []string) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	c.authorize(httpReq)
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return err
@@ -138,6 +139,7 @@ func (a *App) CmdInteractions(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		c.authorize(httpReq)
 		resp, err := http.DefaultClient.Do(httpReq)
 		if err != nil {
 			return err
@@ -229,6 +231,7 @@ func (a *App) CmdInteractions(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	c.authorize(httpReq)
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
 		return err

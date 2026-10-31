@@ -1,13 +1,21 @@
 # opencode v2 Code Mode vs mcpx
 
 > **Corrections, 2026-09-29.** Checked against the pinned sources. Three
-> claims here are wrong: code mode is *not* v2-only (v1 ships it behind
+> claims here are wrong: code mode is _not_ v2-only (v1 ships it behind
 > `OPENCODE_EXPERIMENTAL_CODE_MODE`), both versions accept TypeScript in it,
 > and the pinned v2 reports `2.0.3` rather than `2.0.18`. The conclusion
 > about one MCP connection per server per location, and what that does to
 > Chrome sharing, still holds. See
 > [`docs/opencode-plugin.md`](./docs/opencode-plugin.md).
-
+>
+> **Corrections, 2026-10-30.** Two more. The comparison table's
+> "no dependencies" for mcpx is wrong: it carries nine direct Go
+> dependencies (see [`docs/dependencies.md`](./docs/dependencies.md)).
+> And the claim below that staying on opencode v1 makes "none of v2's
+> Code Mode available" contradicts the 2026-09-29 correction above:
+> v1 ships code mode behind `OPENCODE_EXPERIMENTAL_CODE_MODE`, so a
+> v1 user can turn it on; what v1 does not give them is v2's Code
+> Mode as the default MCP path.
 
 Reviewed against `anomalyco/opencode` branch `v2` at `37049a5` (2026-09-26), and
 the build pinned in `~/.config/nix` (`d0a9028`, which reports `2.0.3`). That
@@ -30,17 +38,17 @@ packages/codemode/src/openapi/       OpenAPI 3.x spec -> tools
 packages/core/src/codemode/          catalog, instructions, execute tool, fetch
 ```
 
-The framing from their README: *"Rather than trying to sandbox arbitrary
-JavaScript, CodeMode only runs the language features we implement."* That is a
+The framing from their README: _"Rather than trying to sandbox arbitrary
+JavaScript, CodeMode only runs the language features we implement."_ That is a
 genuinely different security posture from Deno permissions or an isolate — the
 attack surface is the interpreter, not a runtime with holes plugged.
 
 It is wired in as a first-class feature, not an experiment:
 
 - **MCP servers default to code mode.** `codemode: Schema.Boolean ... "Defaults
-  to true"` on both `LocalConfig` and `RemoteConfig`. MCP tools are no longer in
+to true"` on both `LocalConfig` and `RemoteConfig`. MCP tools are no longer in
   the model's tool list at all.
-- Built-in tools opt *out* individually (`edit`, `grep`, `glob`, `patch`,
+- Built-in tools opt _out_ individually (`edit`, `grep`, `glob`, `patch`,
   `question` carry `codemode: false`), so the model still calls those directly.
 - The model sees one `execute` tool plus a **budgeted catalog** rendered into
   instructions — `INLINE_BUDGET = 2_000` estimated tokens, counted at four
@@ -53,13 +61,13 @@ It is wired in as a first-class feature, not an experiment:
   1,320 against 902), and when the catalog is partial any change to a shown
   entry resends the whole catalog rather than a diff (`instructions.ts:249`).
 - When the catalog is partial, a synchronous `search(...)` built-in is available
-  *inside* the interpreter for the model to find the rest.
+  _inside_ the interpreter for the model to find the rest.
 - Catalog changes are delivered as **diffs** (`instructions.ts` computes
   added/changed/removed and emits whichever is shorter).
 - `fetch` is provided as an extension. Timers, imports, filesystem and process
   access are absent.
 - There is a plugin (`mcp-codemode-defaults.ts`) that turns opencode's code mode
-  *off* for servers that are themselves code mode, so they don't nest.
+  _off_ for servers that are themselves code mode, so they don't nest.
 
 This is a better-engineered context story than what I built. The budgeted
 catalog with diff updates is genuinely clever, and `search()` inside the
@@ -98,7 +106,7 @@ one place:
 ```
 
 An advisory `_meta` hint under a vendor-specific key, passed to the server so a
-*server that chooses to* can partition its own state. `chrome-devtools-mcp` does
+_server that chooses to_ can partition its own state. `chrome-devtools-mcp` does
 not. Two opencode sessions in one workspace driving Chrome still share one
 browser and one selected page — the same failure lootbox has.
 
@@ -120,7 +128,7 @@ TDZ semantics, `var` hoisting. Absent:
 - `ArrayBuffer`, `DataView`, typed arrays other than `Uint8Array`
 - `Request`, `Response`, `Blob`
 - BigInt, arbitrary Symbols
-- Program functions passed *into* extension code (so no callback into `fetch`)
+- Program functions passed _into_ extension code (so no callback into `fetch`)
 - Array methods on array-likes (`Array.prototype.slice.call(arguments, 1)`)
 
 For scripting tool calls this is close to irrelevant. It matters if you wanted
@@ -135,34 +143,34 @@ templates, most typed arrays. `this`/`call`/`apply`/`bind`, `WeakMap`/`WeakSet` 
 
 ## Side by side
 
-| | opencode v2 Code Mode | mcpx |
-| --- | --- | --- |
-| Shape | feature inside opencode's agent loop | standalone CLI + daemon |
-| Invoked by | the model, via an `execute` tool | the shell: any agent, script, human, CI |
-| Runtime | purpose-built JS interpreter | real deno / bun / node |
-| Language | JS subset, no classes or constructors | full TypeScript |
-| Confinement | strong: only implemented features exist | none (you said you didn't want it) |
-| Discovery | budgeted catalog in instructions + in-program `search()` | budgeted catalog, in-program `search()`/`describe()`, plus CLI outside context entirely |
-| Always-on context cost | one `execute` tool + ~2 KB catalog | zero |
-| MCP processes | one per server per workspace, shared by all sessions | `shared` / `pooled` / `session` pools |
-| Stateful server isolation | `_meta` sessionID hint; server must opt in | real, one process per run; verified |
-| Remote MCP | Streamable HTTP + OAuth + elicitation | Streamable HTTP, no OAuth |
-| OpenAPI specs as tools | yes (`OpenAPI.fromSpec`) | yes (`mcpx api`, `paths.apis`) |
-| Portable to other agents | no | yes |
-| Implementation | ~10.8 k LOC interpreter + ~2.7 k glue, TypeScript/Effect | ~4.2 k LOC, Go, no dependencies |
-| Tests | 34 files / 20 k lines, incl. test262 | 84 tests |
+|                           | opencode v2 Code Mode                                    | mcpx                                                                                    |
+| ------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Shape                     | feature inside opencode's agent loop                     | standalone CLI + daemon                                                                 |
+| Invoked by                | the model, via an `execute` tool                         | the shell: any agent, script, human, CI                                                 |
+| Runtime                   | purpose-built JS interpreter                             | real deno / bun / node                                                                  |
+| Language                  | JS subset, no classes or constructors                    | full TypeScript                                                                         |
+| Confinement               | strong: only implemented features exist                  | none (you said you didn't want it)                                                      |
+| Discovery                 | budgeted catalog in instructions + in-program `search()` | budgeted catalog, in-program `search()`/`describe()`, plus CLI outside context entirely |
+| Always-on context cost    | one `execute` tool + ~2 KB catalog                       | zero                                                                                    |
+| MCP processes             | one per server per workspace, shared by all sessions     | `shared` / `pooled` / `session` pools                                                   |
+| Stateful server isolation | `_meta` sessionID hint; server must opt in               | real, one process per run; verified                                                     |
+| Remote MCP                | Streamable HTTP + OAuth + elicitation                    | Streamable HTTP, no OAuth                                                               |
+| OpenAPI specs as tools    | yes (`OpenAPI.fromSpec`)                                 | yes (`mcpx api`, `paths.apis`)                                                          |
+| Portable to other agents  | no                                                       | yes                                                                                     |
+| Implementation            | ~10.8 k LOC interpreter + ~2.7 k glue, TypeScript/Effect | ~4.2 k LOC, Go, nine direct dependencies                                                |
+| Tests                     | 34 files / 20 k lines, incl. test262                     | 84 tests                                                                                |
 
 ## How to read this
 
 They are not really competitors. They answer different questions.
 
-**opencode v2 asks:** how should *opencode's own model* call MCP tools without
+**opencode v2 asks:** how should _opencode's own model_ call MCP tools without
 drowning in schemas? Its answer is better than mine — the budgeted catalog, diff
 updates and in-program `search()` are a more refined context story than "run
 `mcpx ls` first", and the interpreter is a real piece of engineering with
 conformance tests behind it.
 
-**mcpx asks:** how do *I*, from a shell, script against MCP servers, with real
+**mcpx asks:** how do _I_, from a shell, script against MCP servers, with real
 process isolation for stateful ones? opencode v2 has no answer, because nothing
 outside a model turn can reach its interpreter.
 
@@ -182,7 +190,7 @@ Two things this had to get right that are easy to get wrong. A relative server
 URL -- the Swagger petstore declares `/api/v3` -- resolves against wherever
 the document was fetched; unresolved it produces a request with no scheme,
 which fails looking like a network problem. And only read methods are exposed
-by default: a specification describes what a service *can* do, not what you
+by default: a specification describes what a service _can_ do, not what you
 meant to allow, and the difference between listing orders and cancelling them
 should be a deliberate keystroke.
 

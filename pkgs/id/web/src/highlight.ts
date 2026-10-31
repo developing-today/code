@@ -145,7 +145,10 @@ export function detectLanguage(filename: string): string | undefined {
   // A known extension wins over a special-name stem:
   // "makefile.md" is Markdown documentation, not a Makefile.
   const ext = basename.includes(".") ? basename.split(".").pop()?.toLowerCase() : undefined;
-  if (ext && EXT_TO_LANG[ext]) {
+  // Own-key check (#2787): a plain lookup also matches inherited
+  // Object.prototype members, so "notes.constructor" / "notes.__proto__"
+  // returned the Object constructor / prototype object as a "language".
+  if (ext && Object.hasOwn(EXT_TO_LANG, ext)) {
     return EXT_TO_LANG[ext];
   }
 
@@ -156,11 +159,11 @@ export function detectLanguage(filename: string): string | undefined {
     ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
     : basenameLower;
 
-  if (FILENAME_TO_LANG[nameWithoutExt]) {
+  if (Object.hasOwn(FILENAME_TO_LANG, nameWithoutExt)) {
     return FILENAME_TO_LANG[nameWithoutExt];
   }
   // Full basename (e.g., "Dockerfile" with no ext)
-  if (FILENAME_TO_LANG[basenameLower]) {
+  if (Object.hasOwn(FILENAME_TO_LANG, basenameLower)) {
     return FILENAME_TO_LANG[basenameLower];
   }
 
@@ -277,7 +280,10 @@ async function getHighlighter(): Promise<ShikiHighlighter> {
 async function ensureLanguage(highlighter: ShikiHighlighter, lang: string): Promise<void> {
   if (loadedLangs.has(lang)) return;
 
-  const importFn = LANG_IMPORTS[lang];
+  // Own-key check (#2787): `lang` can be an authored code-block language
+  // attribute; a plain lookup returns Object.prototype members for
+  // "constructor"/"__proto__", which were then called as import functions.
+  const importFn = Object.hasOwn(LANG_IMPORTS, lang) ? LANG_IMPORTS[lang] : undefined;
   if (!importFn) {
     // Language not in our static registry — mark as loaded to avoid retries
     loadedLangs.add(lang);

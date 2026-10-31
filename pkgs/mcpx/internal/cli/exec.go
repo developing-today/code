@@ -468,6 +468,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 	// the work does. The client's own timeout would cut it off mid-run.
 	hc := *c.hc
 	hc.Timeout = 0
+	c.authorize(req)
 	resp, err := hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {

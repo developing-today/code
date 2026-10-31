@@ -189,6 +189,18 @@ impl Mirror<'_> {
     /// Drops every held event that is due at `now`, with its row. Returns how many were
     /// dropped.
     pub fn expire(&mut self, now: u64) -> Result<usize, StoreError> {
+        self.flush_expired(now)
+    }
+
+    /// Deletes the rows of the events the pool has expired into its buffer, and returns
+    /// how many. `pool.arrived` expires due events as a side effect of a release, into
+    /// the buffer only `pool.expire` drains; a caller that releases without expiring
+    /// first would commit with the pool and the rows disagreeing -- the expired events
+    /// gone from the pool, their rows still on disk, and their expiry left for a later,
+    /// unrelated `expire` to report (or, across a restart, for the reload to drop
+    /// silently). Flushing here, the way [`expire`](Self::expire) does, makes the
+    /// releasing call itself the one that effects the expiry, in its own transaction.
+    fn flush_expired(&mut self, now: u64) -> Result<usize, StoreError> {
         let expired = self.pool.expire(now);
         for (_author, event) in &expired {
             delete(self.txn, &event.id)?;
@@ -260,6 +272,9 @@ impl Mirror<'_> {
     /// caller decides each one.
     pub fn release(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
         let released = self.pool.arrived(*id, now);
+        // `arrived` expired every event due at `now` into the pool's buffer; their
+        // rows go in this transaction too, not a later one's.
+        self.flush_expired(now)?;
         delete(self.txn, id)?;
         self.drop_dep(id)?;
         Ok(released)
@@ -272,6 +287,10 @@ impl Mirror<'_> {
     pub fn present_proof(&mut self, id: &Hash, now: u64) -> Result<Vec<Event>, StoreError> {
         let held = get(self.txn, id)?;
         let released = self.pool.arrived(*id, now);
+        // As in `release`: the events `arrived` expired lose their rows here. The
+        // flush runs before the park below, so a held proof that was itself due is
+        // re-held for good by the park rather than deleted by the flush.
+        self.flush_expired(now)?;
         self.drop_dep(id)?;
         if let Some(row) = held {
             self.park(row)?;

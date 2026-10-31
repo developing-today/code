@@ -14,7 +14,7 @@ what was deliberately not built.
 
 The most valuable thing here needs no model at all, and that was the central
 finding of the issue. mcpx already knows every tool's input schema. What it
-did not know was what those schemas *used to be* — `internal/codegen` could
+did not know was what those schemas _used to be_ — `internal/codegen` could
 fingerprint a catalog and diff two of them, but nothing ever stored one, so
 every diff was against nothing and the question "when did this change" had no
 answer anywhere in the program.
@@ -68,10 +68,7 @@ to every surface. The server's error stays first and whole; the rendered
 diagnostic follows it, and `/v1/call` carries the same finding as data:
 
 ```json
-{"error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })",
- "diagnostics": [{"kind": "invalid-params", "tool": "demo.create_issue", "field": "repo",
-   "changed": {"when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required"},
-   "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true}]}
+{ "error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })", "diagnostics": [{ "kind": "invalid-params", "tool": "demo.create_issue", "field": "repo", "changed": { "when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required" }, "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true }] }
 ```
 
 So `mcpx call` prints it, `mcpx --json call` puts the document on stdout, a
@@ -107,7 +104,7 @@ resolving an instance and using it.
 the answer is genuinely open: the server is exclusive, so its instances are
 distinct things rather than copies; several are live; and the caller's own
 scope key names none of them. When the caller already has an instance, the
-scope key *is* the answer and a question would be theatre. The form is an enum
+scope key _is_ the answer and a question would be theatre. The form is an enum
 of the live keys plus "new", each with what it is doing — holders, calls,
 idle time, pid — because a choice without that is not a choice.
 
@@ -236,11 +233,24 @@ through it. It is one function, marked, for exactly that reason.
 
 **Scope — "anything that makes mcpx call a model has to justify that it isn't
 rebuilding the harness."** Three of the four things built here never call one.
-The fourth has no model of its own and never will: option 3 from the issue, a
-configured provider with an API key, was not built and should not be. It is
-the one that makes mcpx an agent. Sampling through the caller is the opposite
-— it is mcpx asking the harness it already sits under, which is what the
-specification is for.
+The fourth originally stopped there: option 3 from the issue, a configured
+provider with an API key, was not built, on the grounds that it is the one
+that makes mcpx an agent. That conclusion has since been reversed by the
+facts #1925 records: the 2026-07-28 MCP revision deprecates sampling
+(SEP-2577) and names integrating directly with provider APIs as the
+migration, and no opencode — the primary consumer — declares sampling at
+all. So a configured provider now exists, as one backend of the thin
+provider layer in `internal/model`: a `Provider` interface with a single
+`Generate`, reached only through the `model.*` settings, with
+`model.provider` defaulting to `none` — a user who configures nothing gets
+exactly the behaviour described above. Sampling through the caller survives
+as another backend of the same layer: it is mcpx asking the harness it
+already sits under, which remains right where a client declares it. What
+has not changed is the guard that made the original refusal coherent: no
+operation calls a model on a path where a deterministic answer exists, and
+a provider error returns the deterministic result plus a note that the
+model was unavailable. A `Generate` function is not an agent; the harness
+mcpx sits under still owns the loop, the tools and the session.
 
 **Trust — "generated code runs with the user's credentials."** Return the
 script by default (`prompt.autonomy: propose`, one level of the dial in

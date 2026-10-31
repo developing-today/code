@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 )
 
 // StdioTransport runs an MCP server as a child process and speaks
@@ -72,6 +73,11 @@ type StdioOptions struct {
 	// StdinGrace and TermGrace are Close's waits after closing stdin and
 	// after SIGTERM. Zero means defaults.StdioStdinGrace / StdioTermGrace.
 	StdinGrace, TermGrace time.Duration
+	// Context, when set, bounds a nix: program-spec resolution at spawn:
+	// the caller's startup budget cancels the build instead of the build
+	// outliving the budget on its own timeout and launching a child whose
+	// handshake context has already expired. Nil means context.Background.
+	Context context.Context
 }
 
 // maxLine bounds a single JSON-RPC frame. MCP servers such as
@@ -83,7 +89,24 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	if opts.Command == "" {
 		return nil, errors.New("stdio transport: empty command")
 	}
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, to the store
+	// path that actually runs (progspec, #1921): the child is the built
+	// program, never a nix process. A plain command passes through
+	// untouched, exactly as before. A resolution failure names the spec
+	// and refuses the launch rather than falling back to PATH.
+	command := opts.Command
+	if progspec.IsNix(command) {
+		ctx := opts.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		resolved, err := progspec.ResolvePathInDir(ctx, command, opts.Cwd)
+		if err != nil {
+			return nil, fmt.Errorf("stdio transport: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 
 	env := []string{}

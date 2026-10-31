@@ -514,6 +514,11 @@ const startMetaStub = async (mode) => {
         return;
       }
       if (req.url === '/v1/responses') {
+        if (mode === 'attest') {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 'client_attestation_denied', message: 'This API key is billed to a Muse Code subscription. Muse Code subscriptions cover requests from the Muse Code client only.', type: 'permission_error' } }));
+          return;
+        }
         if (mode === '429') {
           res.writeHead(429, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'Subscription quota exhausted', type: 'rate_limit_error' } }));
@@ -528,11 +533,13 @@ const startMetaStub = async (mode) => {
         try { parsed = JSON.parse(body || '{}'); } catch { /* keep empty */ }
         if (parsed.stream) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-          res.end(RESPONSES_SSE_FIXTURE);
+          res.end(mode === 'shell' ? RESPONSES_SSE_FIXTURE.replaceAll('get_weather', 'run_command') : RESPONSES_SSE_FIXTURE);
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(RESPONSES_FIXTURE));
+        res.end(mode === 'shell'
+          ? JSON.stringify(RESPONSES_FIXTURE).replaceAll('get_weather', 'run_command')
+          : JSON.stringify(RESPONSES_FIXTURE));
         return;
       }
       res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -698,6 +705,42 @@ test('direct mode: upstream 429 passes through and never falls back to exec (#27
   assert.ok(!stubLog.includes('--prompt-file'), 'no muse exec invocation after Meta answered');
 });
 
+test('direct mode: the shell tool is aliased upstream and its calls translate back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, {
+    messages: [
+      { role: 'user', content: 'run echo hi' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_0', type: 'function', function: { name: 'shell', arguments: '{"command":"echo hi"}' } }] },
+      { role: 'tool', tool_call_id: 'call_0', content: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', function: { name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } } }]
+  }));
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.deepEqual(upstream.tools.map(x => x.name), ['run_command'], 'the shell tool is presented upstream under its alias');
+  const historyCall = upstream.input.find(i => i.type === 'function_call');
+  assert.equal(historyCall.name, 'run_command', 'history tool calls are aliased too');
+  assert.equal(plain.choices[0].message.tool_calls[0].function.name, 'shell', 'the model call is translated back to the client name');
+});
+
+test('direct mode: an attestation denial falls back to the CLI door', async (t) => {
+  const meta = await startMetaStub('attest');
+  t.after(() => meta.close());
+  const { port, stop, home, logFile } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the CLI fallback ran');
+  const stubLog = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf-8') : '';
+  assert.ok(stubLog.includes('--prompt-file'), 'the CLI door took over after the denial');
+});
+
 test('direct mode: /v1/responses passes the body through verbatim, swapping only Authorization (#2753)', async (t) => {
   const meta = await startMetaStub('echo');
   t.after(() => meta.close());
@@ -723,6 +766,60 @@ test('direct mode: /v1/responses passes the body through verbatim, swapping only
   const upstream = meta.requests.filter(r => r.url === '/v1/responses');
   assert.equal(upstream.length, 1);
   assert.equal(upstream[0].body, JSON.stringify(clientBody), 'byte-for-byte passthrough on the wire');
+});
+
+test('direct mode: /v1/responses aliases the shell tool and translates calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const clientBody = {
+    model: 'muse-spark-1.3',
+    stream: false,
+    input: [
+      { type: 'function_call', call_id: 'call_0', name: 'shell', arguments: '{"command":"echo hi"}' },
+      { type: 'function_call_output', call_id: 'call_0', output: 'hi' },
+      { role: 'user', content: 'what did it print?' }
+    ],
+    tools: [{ type: 'function', name: 'shell', description: 'Run a shell command', parameters: { type: 'object', properties: { command: { type: 'string' } } } }]
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.equal(upstream.tools[0].name, 'run_command', 'the tool definition is aliased upstream');
+  assert.equal(upstream.input[0].name, 'run_command', 'history function calls are aliased upstream');
+  const respBody = JSON.parse(await res.text());
+  const call = respBody.output.find(i => i.type === 'function_call');
+  assert.equal(call.name, 'shell', 'the returned call is translated back to the client name');
+});
+
+test('direct mode: /v1/responses streaming translates aliased tool calls back', async (t) => {
+  const meta = await startMetaStub('shell');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer <redacted>' },
+    body: JSON.stringify({
+      model: 'muse-spark-1.3',
+      stream: true,
+      input: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', name: 'shell', description: 'Run', parameters: { type: 'object' } }]
+    })
+  });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.ok(sse.includes('"name":"shell"'), 'the streamed function_call carries the client name');
+  assert.ok(!sse.includes('run_command'), 'the alias never leaks to the client');
 });
 
 test('direct mode: MUSE_PROXY_DIRECT=0 leaves the exec path in charge (#2753)', async (t) => {
@@ -755,4 +852,38 @@ test('direct mode: missing auth.json leaves the exec path in charge (#2753)', as
   assert.equal(health.direct.enabled, true);
   assert.equal(health.direct.credentialFound, false);
   assert.equal(health.direct.mintedKeyCached, false);
+});
+
+test('direct mode: contributor ids reach upstream verbatim, effort suffix parses after contributor (#2753)', async (t) => {
+  const meta = await startMetaStub('chat');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const wonder = JSON.parse(await chat(port, {
+    model: 'muse-wonder-1.0-contributor-high',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(wonder.model, 'muse-wonder-1.0-contributor-high');
+
+  const spark = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3-contributor',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(spark.model, 'muse-spark-1.3-contributor-high', 'no explicit effort means the default effort, contributor intact');
+
+  const plainBase = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'hi' }]
+  }));
+  assert.equal(plainBase.model, 'muse-spark-1.3-high', 'a plain request is NOT rewritten to contributor');
+
+  const sent = meta.requests.filter(r => r.url === '/v1/responses').map(r => JSON.parse(r.body));
+  assert.equal(sent.length, 3);
+  assert.equal(sent[0].model, 'muse-wonder-1.0-contributor', 'contributor id goes upstream verbatim');
+  assert.deepEqual(sent[0].reasoning, { effort: 'high' }, 'the effort suffix after -contributor is the effort');
+  assert.equal(sent[1].model, 'muse-spark-1.3-contributor');
+  assert.deepEqual(sent[1].reasoning, { effort: 'high' });
+  assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
 });

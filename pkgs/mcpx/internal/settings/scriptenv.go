@@ -209,6 +209,16 @@ func ScriptEnv() []EnvVar {
 			ReadBy: client + ", " + nested + ", the plugin",
 		},
 		{
+			Name:  "MCPX_TRANSPORT_BEARER_TOKEN",
+			SetBy: []Setter{SetByCLI},
+			When:  "only when transport.bearerToken is configured",
+			Meaning: "the daemon's bearer token, handed to the script so the " +
+				"generated client can authenticate to a daemon that requires " +
+				"it (#1975); the token itself stays out of the generated code",
+			Setting: "transport.bearerToken",
+			ReadBy:  client + ", " + nested + ", the plugin",
+		},
+		{
 			Name:    "MCPX_ARTIFACTS_LOCAL",
 			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the daemon shares this filesystem, so artifact({path}) may hand over a path instead of the bytes",
