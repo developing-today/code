@@ -66,8 +66,24 @@ func TestMaterialiseDepsManifestWinsAndLockfileVerbatim(t *testing.T) {
 	if deps["lodash"] != "4.17.21" {
 		t.Fatalf("manifest version lost to explicit pin: %v", deps)
 	}
-	if deps["extra"] != "1.0.0" {
-		t.Fatalf("explicit package not merged: %v", deps)
+	// The set is frozen (bun.lockb) and extra is an addition the
+	// manifest does not declare: it stays OUT of the install-phase
+	// manifest -- bun's frozen install would reject a manifest its
+	// lockfile does not cover -- and travels in the additions
+	// sidecar instead, to be installed separately after the frozen
+	// tree (Codex review, PR #2589).
+	if _, present := deps["extra"]; present {
+		t.Fatalf("addition folded into the frozen manifest: %v", deps)
+	}
+	am, ok, err := readAddons(dir)
+	if err != nil || !ok {
+		t.Fatalf("additions sidecar missing: ok=%v err=%v", ok, err)
+	}
+	if am.Packages["extra"] != "1.0.0" {
+		t.Fatalf("sidecar additions = %v, want extra@1.0.0", am.Packages)
+	}
+	if !strings.Contains(am.Manifest, `"extra": "1.0.0"`) {
+		t.Fatalf("sidecar full manifest does not carry the addition: %s", am.Manifest)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "bun.lockb"))
 	if err != nil {
@@ -1088,5 +1104,154 @@ func TestInstallersReceiveExecutionEnv(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(bunSeen); string(b) != "sentinel-3191" {
 		t.Fatalf("bun install saw MCPX_TEST_MARKER = %q, want the execution env value", b)
+	}
+}
+
+// TestWorkDirKeySeparatesInstallEnvironments is the Codex finding on
+// PR #2589 (runner/deps.go): identical dependency payloads installed
+// under different installation environments are different trees --
+// npm under NODE_ENV=production omits dev dependencies -- so the
+// workdir key must separate them, or the second run reuses the first
+// run's incomplete installation.
+func TestWorkDirKeySeparatesInstallEnvironments(t *testing.T) {
+	mk := func(env map[string]string) Options {
+		return Options{
+			ClientSource: "client",
+			Deps:         &Deps{Packages: []string{"foo@1.0.0"}},
+			Env:          env,
+		}
+	}
+	prod := workDirKeyMaterial(KindNode, mk(map[string]string{"NODE_ENV": "production"}))
+	dev := workDirKeyMaterial(KindNode, mk(map[string]string{"NODE_ENV": "development"}))
+	if prod == dev {
+		t.Fatal("workdir key does not separate NODE_ENV=production from development")
+	}
+	if again := workDirKeyMaterial(KindNode, mk(map[string]string{"NODE_ENV": "production"})); again != prod {
+		t.Fatal("workdir key is not stable for the same installation environment")
+	}
+	other := workDirKeyMaterial(KindNode, mk(map[string]string{"UNRELATED": "x"}))
+	none := workDirKeyMaterial(KindNode, mk(nil))
+	if other != none {
+		t.Fatal("workdir key separates on an environment variable no installer reads")
+	}
+}
+
+// TestMaterialiseDepsSameSpellingDifferentOrigins is the Codex
+// finding on PR #2589 (runner/deps.go): a project package and a
+// config package spelling the same relative file: path from
+// different origins must land in distinct destinations, each
+// requirement naming its own artifact -- not both copied onto one
+// path with the winner decided by map order.
+func TestMaterialiseDepsSameSpellingDifferentOrigins(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	config := filepath.Join(root, "cfg")
+	workdir := filepath.Join(root, "work")
+	for _, d := range []string{filepath.Join(project, "pkg"), filepath.Join(config, "pkg"), workdir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "pkg", "package.json"),
+		[]byte(`{"name":"project-pkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "pkg", "package.json"),
+		[]byte(`{"name":"config-pkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := &Deps{
+		Manifest:    `{"name":"proj","version":"1.0.0","dependencies":{"project-pkg":"file:./pkg"}}`,
+		ManifestDir: project,
+		Packages:    []string{"config-pkg@file:./pkg"},
+		PackageDirs: map[string]string{"config-pkg": config},
+	}
+	if _, err := materialiseDeps(workdir, KindNode, d, false, project); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(workdir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	depsMap, _ := manifest["dependencies"].(map[string]any)
+	readPkg := func(spec string) string {
+		rel := strings.TrimPrefix(spec, "file:")
+		b, err := os.ReadFile(filepath.Join(workdir, filepath.FromSlash(rel), "package.json"))
+		if err != nil {
+			t.Fatalf("requirement %q does not resolve inside the workdir: %v", spec, err)
+		}
+		return string(b)
+	}
+	if got := readPkg(depsMap["config-pkg"].(string)); !strings.Contains(got, `"name":"config-pkg"`) {
+		t.Fatalf("config-pkg resolves to %s, want the config artifact", got)
+	}
+	if got := readPkg(depsMap["project-pkg"].(string)); !strings.Contains(got, `"name":"project-pkg"`) {
+		t.Fatalf("project-pkg resolves to %s, want the project artifact", got)
+	}
+}
+
+// TestFrozenAdditionsInstallSeparately is the Codex finding on
+// PR #2589 (deps/chain.go): a config addition on a project with a
+// lockfile must not be folded into the manifest npm ci validates
+// against that lockfile ("Missing: helper@1.0.0 from lock file").
+// The materialised manifest excludes the addition, the sidecar
+// carries it, and the frozen install installs it separately and
+// restores the full manifest.
+func TestFrozenAdditionsInstallSeparately(t *testing.T) {
+	dir := t.TempDir()
+	d := &Deps{
+		Manifest:  `{"name":"proj","version":"1.0.0","dependencies":{"projpkg":"1.0.0"}}`,
+		Lockfiles: []Lockfile{{Name: "package-lock.json", Content: []byte(`{"name":"proj","lockfileVersion":3}`)}},
+		Packages:  []string{"helper@1.0.0"},
+	}
+	if _, err := materialiseDeps(dir, KindNode, d, false, ""); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "helper") {
+		t.Fatalf("install-phase manifest names the addition: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, addonsManifestName)); err != nil {
+		t.Fatalf("additions sidecar missing: %v", err)
+	}
+
+	binDir := t.TempDir()
+	stub := "#!/bin/sh\n" +
+		"prefix=\n" +
+		"prev=\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--prefix\" ]; then prefix=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n" +
+		"if [ \"$1\" = \"ci\" ]; then mkdir -p \"$prefix/node_modules/projpkg\"; fi\n" +
+		"if [ \"$1\" = \"install\" ]; then mkdir -p \"$prefix/node_modules/helper\"; fi\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := installFrozenNPM(context.Background(), dir, d, nil); err != nil {
+		t.Fatalf("installFrozenNPM: %v", err)
+	}
+	for _, pkg := range []string{"projpkg", "helper"} {
+		if _, err := os.Stat(filepath.Join(dir, "node_modules", pkg)); err != nil {
+			t.Fatalf("node_modules/%s missing after install: %v", pkg, err)
+		}
+	}
+	raw, err = os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "helper") {
+		t.Fatalf("full manifest not restored after install: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(dir, addonsManifestName)); !os.IsNotExist(err) {
+		t.Fatalf("sidecar not consumed: %v", err)
 	}
 }

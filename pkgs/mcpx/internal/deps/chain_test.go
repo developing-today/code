@@ -684,3 +684,35 @@ func TestConfigPackageDirsPreservedWhenProjectManifestExists(t *testing.T) {
 		t.Fatal("proj-pkg is supplied by the project manifest; it must not claim a config origin")
 	}
 }
+
+// TestConflictsSpacedComparatorsAndHyphenRanges is the Codex finding
+// on PR #2589 (deps/config.go): a manifest range written ">= 1.0.0"
+// or as a hyphen range "1.0.0 - 2.0.0" is valid npm syntax, and a pin
+// inside it is not a conflict. Tokenising on raw whitespace treated
+// ">=" as a comparator with an empty operand and rejected both forms.
+func TestConflictsSpacedComparatorsAndHyphenRanges(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		manifest string
+		explicit string
+		conflict bool
+	}{
+		{"spaced >= satisfied", ">= 1.0.0", "foo@1.5.0", false},
+		{"spaced >= violated", ">= 1.0.0", "foo@0.9.0", true},
+		{"spaced <= satisfied", "<= 2.0.0", "foo@1.5.0", false},
+		{"hyphen range inside", "1.0.0 - 2.0.0", "foo@1.5.0", false},
+		{"hyphen range above", "1.0.0 - 2.0.0", "foo@2.5.0", true},
+		{"hyphen range below", "1.0.0 - 2.0.0", "foo@0.5.0", true},
+		{"conjunction spaced", ">= 1.0.0 < 2.0.0", "foo@1.5.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deps.Conflicts([]string{tc.explicit}, map[string]string{"foo": tc.manifest})
+			if tc.conflict && len(got) != 1 {
+				t.Fatalf("Conflicts(%q against %q) = %v, want one conflict", tc.explicit, tc.manifest, got)
+			}
+			if !tc.conflict && len(got) != 0 {
+				t.Fatalf("Conflicts(%q against %q) = %v, want none", tc.explicit, tc.manifest, got)
+			}
+		})
+	}
+}

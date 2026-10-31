@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 
 	"github.com/dezren39/mcpx/internal/cache"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -187,8 +188,38 @@ func warnSink(opts Options) io.Writer {
 // fingerprint does not cover, so its identity joins the key -- two
 // projects with identical payloads would otherwise share one workdir
 // and overwrite each other's config (Codex review, PR #2589).
+// installEnvIdentity identifies the parts of a run's environment that
+// change what an installer puts on disk: NODE_ENV (npm omits dev
+// dependencies under production) and the NPM_CONFIG_* family (omit,
+// include, registry and friends). Two runs whose dependency payloads
+// are identical but whose installation environments differ produce
+// different installed trees, so the identity joins the workdir key
+// and the install markers: sharing one tree made a development run
+// reuse a production install that had never laid its dev dependencies
+// down (Codex review, PR #2589).
+func installEnvIdentity(env map[string]string) string {
+	var keys []string
+	for k := range env {
+		if k == "NODE_ENV" || strings.HasPrefix(k, "NPM_CONFIG_") {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k + "=" + env[k] + "\x00")
+	}
+	return b.String()
+}
+
 func workDirKeyMaterial(kind string, opts Options) string {
 	material := kind + "\x00" + opts.ClientSource + "\x00" + opts.Deps.fingerprint()
+	if id := installEnvIdentity(opts.Env); id != "" {
+		material += "\x00env:" + id
+	}
 	if kind == KindDeno && opts.Deps != nil {
 		material += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
 	}

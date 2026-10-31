@@ -253,6 +253,38 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	}
 	deps := d.effectiveDeps(manifest)
 
+	// frozenAdditions names the packages the set adds on top of the
+	// selected manifest -- explicit and configuration-layer packages
+	// the manifest does not declare. When a lockfile freezes the
+	// manifest's tree, folding an addition into the materialised
+	// manifest makes the frozen install reject the whole set: npm ci
+	// fails with "Missing: helper@1.0.0 from lock file" before the
+	// script runs (Codex review, PR #2589). The additions therefore
+	// stay out of the manifest the frozen install sees; the installer
+	// installs them separately afterwards and merges them into the
+	// workdir's node_modules, and the full manifest is restored.
+	var frozenAdditions map[string]bool
+	frozen := (kind == KindNode && d.frozenNPM(kind)) || (kind == KindBun && d.frozenBun(kind))
+	if manifest != nil && frozen {
+		declared := map[string]bool{}
+		for _, section := range []string{"dependencies", "devDependencies", "optionalDependencies"} {
+			if sec, ok := manifest[section].(map[string]any); ok {
+				for name := range sec {
+					declared[name] = true
+				}
+			}
+		}
+		for _, spec := range d.Packages {
+			pkgName, _ := splitSpecifier(spec)
+			if !declared[pkgName] {
+				if frozenAdditions == nil {
+					frozenAdditions = map[string]bool{}
+				}
+				frozenAdditions[pkgName] = true
+			}
+		}
+	}
+
 	// lockRebases records path spellings to rewrite in a transported
 	// lockfile when a local artifact had to be rebased into the
 	// workdir (see the transport loop below): pairs of
@@ -281,7 +313,20 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if d.ManifestDir != "" {
 			defBase = d.ManifestDir
 		}
-		for name, spec := range deps {
+		// Iteration is in name order and every verbatim destination
+		// is claimed as it is taken, so when two packages from
+		// different origins spell the same relative path the winner
+		// is deterministic: the first name keeps the verbatim
+		// destination and the rest are rebased below (Codex review,
+		// PR #2589).
+		transportNames := make([]string, 0, len(deps))
+		for name := range deps {
+			transportNames = append(transportNames, name)
+		}
+		sort.Strings(transportNames)
+		claimedDst := map[string]string{}
+		for _, name := range transportNames {
+			spec := deps[name]
 			rel, ok := localFileRef(spec)
 			if !ok {
 				continue
@@ -297,7 +342,14 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 			}
 			src := filepath.Join(base, rel)
 			dst := filepath.Join(dir, rel)
-			if withinDir(dir, dst) {
+			if prev, taken := claimedDst[dst]; taken && prev != src {
+				// Another origin's artifact already occupies the
+				// verbatim destination: copying this one there too
+				// would leave both requirements naming one
+				// artifact, the winner decided by map order. Fall
+				// through to the rebase below, which gives this
+				// origin its own destination.
+			} else if withinDir(dir, dst) {
 				// The verbatim spelling resolves inside the
 				// workdir at the same relative path. The
 				// source need not sit inside the manifest's
@@ -312,6 +364,7 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 				if err := copyLocalArtifact(src, dst); err != nil {
 					return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
 				}
+				claimedDst[dst] = src
 				continue
 			}
 			// The verbatim spelling would land OUTSIDE the
@@ -435,7 +488,41 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if err != nil {
 			return nil, fmt.Errorf("deps: render manifest: %w", err)
 		}
-		if err := writeIfChanged(filepath.Join(dir, name), string(text)+"\n"); err != nil {
+		writeText := string(text) + "\n"
+		if len(frozenAdditions) > 0 {
+			// The manifest the frozen install sees must be the
+			// manifest the lockfile was generated against: the
+			// full render minus the additions. The additions and
+			// the full render travel in the sidecar; the install
+			// step consumes it (installAddons) and restores the
+			// full manifest once the additions are in place.
+			var installManifest map[string]any
+			if err := json.Unmarshal(text, &installManifest); err != nil {
+				return nil, fmt.Errorf("deps: render install manifest: %w", err)
+			}
+			if sec, ok := installManifest["dependencies"].(map[string]any); ok {
+				for pkgName := range frozenAdditions {
+					delete(sec, pkgName)
+				}
+			}
+			installText, err := json.MarshalIndent(installManifest, "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("deps: render install manifest: %w", err)
+			}
+			additions := make(map[string]string, len(frozenAdditions))
+			for pkgName := range frozenAdditions {
+				additions[pkgName] = deps[pkgName]
+			}
+			sidecar, err := json.Marshal(addonsManifest{Packages: additions, Manifest: writeText})
+			if err != nil {
+				return nil, fmt.Errorf("deps: render additions manifest: %w", err)
+			}
+			if err := writeIfChanged(filepath.Join(dir, addonsManifestName), string(sidecar)+"\n"); err != nil {
+				return nil, fmt.Errorf("deps: write additions manifest: %w", err)
+			}
+			writeText = string(installText) + "\n"
+		}
+		if err := writeIfChanged(filepath.Join(dir, name), writeText); err != nil {
 			return nil, fmt.Errorf("deps: write manifest: %w", err)
 		}
 	}
@@ -681,10 +768,10 @@ func installFrozenNPM(ctx context.Context, dir string, d *Deps, env map[string]s
 	defer unlock()
 
 	marker := filepath.Join(dir, ".mcpx-deps-installed")
-	want := d.fingerprint()
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env)
 	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
 		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
-			return nil
+			return finaliseAddonsIfPresent(dir)
 		}
 	}
 	ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", dir, "--no-audit", "--no-fund")
@@ -694,8 +781,196 @@ func installFrozenNPM(ctx context.Context, dir string, d *Deps, env map[string]s
 		return fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
 			cerr, strings.TrimSpace(string(out)))
 	}
+	if err := installAddons(ctx, dir, KindNode, "", env); err != nil {
+		return err
+	}
 	_ = os.WriteFile(marker, []byte(want), 0o600)
 	return nil
+}
+
+// addonsManifestName is the sidecar materialiseDeps writes when a
+// frozen set carries additions the selected manifest does not declare
+// (see frozenAdditions there): the additions and the full manifest
+// render, consumed by installAddons once the frozen tree is in place.
+const addonsManifestName = ".mcpx-addons.json"
+
+// addonsDirName is the scratch directory the additions are installed
+// into before their packages are merged into the workdir's
+// node_modules.
+const addonsDirName = ".mcpx-addons"
+
+// addonsManifest is the sidecar's content.
+type addonsManifest struct {
+	Packages map[string]string `json:"packages"`
+	Manifest string            `json:"manifest"`
+}
+
+// readAddons loads the additions sidecar, reporting whether one is
+// present at all.
+func readAddons(dir string) (addonsManifest, bool, error) {
+	var am addonsManifest
+	raw, err := os.ReadFile(filepath.Join(dir, addonsManifestName))
+	if os.IsNotExist(err) {
+		return am, false, nil
+	}
+	if err != nil {
+		return am, false, err
+	}
+	if err := json.Unmarshal(raw, &am); err != nil {
+		return am, false, fmt.Errorf("deps: parse additions manifest: %w", err)
+	}
+	return am, true, nil
+}
+
+// finaliseAddons restores the full manifest render and removes the
+// sidecar: the workdir's recorded state once the additions are
+// installed (or were installed by the run that wrote the marker).
+func finaliseAddons(dir string, am addonsManifest) error {
+	if am.Manifest != "" {
+		if err := writeIfChanged(filepath.Join(dir, "package.json"), am.Manifest); err != nil {
+			return fmt.Errorf("deps: restore full manifest: %w", err)
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, addonsManifestName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// finaliseAddonsIfPresent finalises a pending sidecar without
+// installing anything, for the marker-hit path: the additions were
+// installed by the run that wrote the marker, but materialiseDeps
+// has re-split the manifest for this run, so the full render must be
+// restored before the run proceeds.
+func finaliseAddonsIfPresent(dir string) error {
+	am, ok, err := readAddons(dir)
+	if err != nil || !ok {
+		return err
+	}
+	return finaliseAddons(dir, am)
+}
+
+// rebaseAddonSpec rewrites a local file:/link: addition specifier for
+// the additions manifest, which lives one directory below the
+// workdir: the artifact was transported into the workdir, so a
+// workdir-relative spelling gains one "../".
+func rebaseAddonSpec(spec string) string {
+	rel, ok := localFileRef(spec)
+	if !ok || filepath.IsAbs(rel) {
+		return spec
+	}
+	prefix := "file:"
+	if strings.HasPrefix(spec, "link:") {
+		prefix = "link:"
+	}
+	return prefix + "../" + strings.TrimPrefix(rel, "./")
+}
+
+// mergeNodeModules moves the packages installed under src into dst,
+// skipping any the destination already carries: the frozen project
+// tree wins a name both trees provide, matching the chain's
+// precedence (project over configuration layer).
+func mergeNodeModules(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	move := func(from, to string) error {
+		if _, err := os.Stat(to); err == nil {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		if err := os.Rename(from, to); err != nil {
+			return copyLocalArtifact(from, to)
+		}
+		return nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "@") {
+			inner, err := os.ReadDir(filepath.Join(src, e.Name()))
+			if err != nil {
+				return err
+			}
+			for _, ie := range inner {
+				if err := move(filepath.Join(src, e.Name(), ie.Name()), filepath.Join(dst, e.Name(), ie.Name())); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := move(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// installAddons installs a frozen set's additions (see
+// frozenAdditions) separately from the frozen tree: the additions
+// manifest lives in a scratch subdirectory, the installer resolves
+// exactly the additions there, and the resulting packages are merged
+// into the workdir's node_modules without disturbing the locked
+// resolutions the frozen install just laid down (Codex review,
+// PR #2589). The user's project is never touched: the scratch
+// directory and every install live inside mcpx's own workdir.
+func installAddons(ctx context.Context, dir, kind, bunBin string, env map[string]string) error {
+	am, ok, err := readAddons(dir)
+	if err != nil || !ok {
+		return err
+	}
+	if len(am.Packages) == 0 {
+		return finaliseAddons(dir, am)
+	}
+	addonsDir := filepath.Join(dir, addonsDirName)
+	if err := os.MkdirAll(addonsDir, 0o700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(addonsDir)
+	addDeps := make(map[string]string, len(am.Packages))
+	for name, spec := range am.Packages {
+		addDeps[name] = rebaseAddonSpec(spec)
+	}
+	manifest := map[string]any{
+		"name":         "mcpx-addons",
+		"version":      "0.0.0",
+		"private":      true,
+		"dependencies": addDeps,
+	}
+	text, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("deps: render additions manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(addonsDir, "package.json"), append(text, '\n'), 0o600); err != nil {
+		return fmt.Errorf("deps: write additions manifest: %w", err)
+	}
+	var cmd *exec.Cmd
+	switch kind {
+	case KindBun:
+		if bunBin == "" {
+			bunBin = "bun"
+		}
+		cmd = exec.CommandContext(ctx, bunBin, "install", "--cwd", addonsDir)
+	default:
+		cmd = exec.CommandContext(ctx, "npm", "install", "--prefix", addonsDir, "--no-audit", "--no-fund")
+	}
+	cmd.Env = installEnv(env)
+	out, cerr := cmd.CombinedOutput()
+	if cerr != nil {
+		return fmt.Errorf("deps: install dependency additions: %w: %s",
+			cerr, strings.TrimSpace(string(out)))
+	}
+	if err := mergeNodeModules(filepath.Join(addonsDir, "node_modules"), filepath.Join(dir, "node_modules")); err != nil {
+		return fmt.Errorf("deps: merge dependency additions: %w", err)
+	}
+	return finaliseAddons(dir, am)
 }
 
 // frozenBun reports whether this run must install a frozen Bun set
@@ -740,9 +1015,12 @@ func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool
 	defer unlock()
 
 	marker := filepath.Join(dir, ".mcpx-deps-installed-bun")
-	want := d.fingerprint()
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env)
 	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
 		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
+			if frozen {
+				return finaliseAddonsIfPresent(dir)
+			}
 			return nil
 		}
 	}
@@ -762,6 +1040,11 @@ func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool
 			op = "bun install --frozen-lockfile"
 		}
 		return fmt.Errorf("deps: %s: %w: %s", op, cerr, strings.TrimSpace(string(out)))
+	}
+	if frozen {
+		if err := installAddons(ctx, dir, KindBun, bunBin, env); err != nil {
+			return err
+		}
 	}
 	_ = os.WriteFile(marker, []byte(want), 0o600)
 	return nil

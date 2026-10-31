@@ -218,10 +218,49 @@ func satisfiesRange(requirement, version string) bool {
 	return false
 }
 
+// rangeTokens tokenises one comparator set the way npm writes ranges:
+// an operator may be separated from its operand by spaces
+// (">= 1.0.0"), and a hyphen range ("1.0.0 - 2.0.0") is sugar for
+// ">=1.0.0 <=2.0.0". Splitting the raw text on whitespace treated ">="
+// as a complete comparator with an empty operand and "-" as a token of
+// its own, so both valid forms parsed as unsatisfiable and compatible
+// pins were reported as conflicts (Codex review, PR #2589).
+func rangeTokens(set string) []string {
+	fields := strings.Fields(set)
+	out := make([]string, 0, len(fields))
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if f == "-" && len(out) > 0 && i+1 < len(fields) {
+			lo := out[len(out)-1]
+			out = out[:len(out)-1]
+			out = append(out, ">="+lo, "<="+fields[i+1])
+			i++
+			continue
+		}
+		if isRangeOperator(f) && i+1 < len(fields) {
+			out = append(out, f+fields[i+1])
+			i++
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// isRangeOperator reports whether s is a bare comparator operator, the
+// shape that appears when a range separates it from its operand.
+func isRangeOperator(s string) bool {
+	switch s {
+	case ">=", "<=", ">", "<", "=", "~", "^":
+		return true
+	}
+	return false
+}
+
 // satisfiesSet reports whether want satisfies one comparator set: a
 // space-separated conjunction of range tokens.
 func satisfiesSet(set string, want semver) bool {
-	tokens := strings.Fields(set)
+	tokens := rangeTokens(set)
 	if len(tokens) == 0 {
 		return false
 	}
