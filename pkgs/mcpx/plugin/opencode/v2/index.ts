@@ -4,13 +4,18 @@
  * Setup wires the whole core: the remembered-daemon read (ctx.storage),
  * the idempotent system-prompt paragraph (session context hook), the
  * once-per-session full-environment send, execute.after timing records,
- * and tool registration (tools.ts: tool.transform under the mcpx
+ * the permission gate (permission.ts: evaluate hook + daemon_select
+ * assert), and tool registration (tools.ts: tool.transform under the mcpx
  * namespace, so the model sees the v1 names — mcpx_exec and friends).
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
 import { targetKey, type Target } from "../mcpx/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
+import {
+  evaluateMcpxPermission,
+  type PermissionDomainLike,
+} from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
 import {
@@ -37,6 +42,13 @@ export type McpxV2Context = {
   tool: ToolDomainLike & {
     hook(name: "execute.after", fn: (input: ExecuteAfterInput) => void): void;
   };
+  /**
+   * The v2 permission domain (permission.ts): setup registers the
+   * evaluate hook and wires assert into daemon_select. Optional in the
+   * type because stub hosts omit it; a host without it gets a
+   * daemon_select that refuses to apply unconfirmed choices.
+   */
+  permission?: PermissionDomainLike;
 };
 
 export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Promise<void> {
@@ -130,12 +142,24 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // during load loses the session bridge and the environment send too,
   // which are worth more than the tool surface. Registration does its
   // own boot discovery for the daemon-tools default (tools.ts).
+  // The permission gate (#1858 item (2)): the evaluate hook keeps
+  // mcpx's confirmation action at "ask", and daemon_select asserts
+  // through the same domain before applying a choice. Registration is
+  // best-effort like everything else in setup — a failed hook leaves
+  // daemon_select refusing, never silently applying.
+  if (ctx.permission) {
+    void ctx.permission.hook("evaluate", evaluateMcpxPermission).catch(() => undefined);
+  }
+
   runtime = createToolRuntime({
     directory,
     env: process.env,
     options,
     storage: ctx.storage,
     onTarget: noteTarget,
+    assertPermission: ctx.permission
+      ? (input) => ctx.permission!.assert(input)
+      : undefined,
   });
   await registerTools(ctx.tool, runtime, {
     toolsEnabled: options.tools ?? false,
