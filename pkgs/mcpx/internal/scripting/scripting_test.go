@@ -117,6 +117,12 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"regex as call argument", "const ok = test(/}/, s);\n"},
 		{"division chain", "const q = a / b / c;\n"},
 		{"division assign", "let x = 10;\nx /= 2;\n"},
+		{"regex empty class", "const re = /[]/;\nconst ok = re.test(\"x\");\n"},
+		{"regex negated empty class", "const re = /[^]/;\nconst ok = re.test(\"x\");\n"},
+		{"division after postfix increment", "let n = 4;\nconst ratio = n++ / 2;\n"},
+		{"division after postfix decrement", "let n = 4;\nconst ratio = n-- / 2;\n"},
+		{"division after trailing-dot number", "const ratio = 4. / 2;\n"},
+		{"division after leading-dot number", "const ratio = .5 / 2;\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

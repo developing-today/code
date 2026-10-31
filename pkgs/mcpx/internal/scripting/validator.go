@@ -117,8 +117,6 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	inRegex := false
 	inCharClass := false
 	regexEscaped := false
-	classChars := 0
-	classFirst := rune(0)
 	// prevSig classifies the previous significant (non-whitespace,
 	// non-comment) token for the regex-vs-division ruling in the '/'
 	// handling below: 0 = none yet, 'o' = operator or opening delimiter
@@ -126,6 +124,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// identifier, number, string, regex, or closing delimiter (a '/'
 	// there is division).
 	prevSig := rune(0)
+	// signAfterOperand records that the previous significant
+	// character was a '+' or '-' seen while prevSig was 'x', so an
+	// immediately adjacent identical sign completes a postfix
+	// ++/-- — an operand — rather than two operators (Codex P2 on
+	// #1659: n++ / 2 divides, but the second '+' flipped prevSig
+	// to expression position and the slash opened a phantom
+	// regex).
+	signAfterOperand := false
 
 	chars := []rune(src)
 	n := len(chars)
@@ -193,12 +199,6 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if inRegex {
 			if regexEscaped {
 				regexEscaped = false
-				if inCharClass {
-					if classChars == 0 {
-						classFirst = ch
-					}
-					classChars++
-				}
 				continue
 			}
 			if ch == '\\' {
@@ -208,22 +208,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			if inCharClass {
 				// Inside a character class everything is opaque —
 				// delimiters, quotes, comment shapes — except the
-				// closing ']'. A ']' as the first class character
-				// (or right after '^') is a literal, not the close.
-				if ch == ']' && classChars > 0 && !(classChars == 1 && classFirst == '^') {
+				// closing ']'. JavaScript closes the class at the
+				// first unescaped ']', even immediately after '['
+				// or '[^': /[]/ is an empty class and /[^]/ a
+				// negated-empty one, not classes whose first
+				// character is a literal ']' (Codex P2 on #1659).
+				if ch == ']' {
 					inCharClass = false
-					continue
 				}
-				if classChars == 0 {
-					classFirst = ch
-				}
-				classChars++
 				continue
 			}
 			if ch == '[' {
 				inCharClass = true
-				classChars = 0
-				classFirst = rune(0)
 				continue
 			}
 			if ch == '/' {
@@ -308,6 +304,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		}
 
 		// Track the previous significant token for the regex ruling.
+		wasOperand := prevSig == 'x'
 		switch {
 		case ch == ')' || ch == '}' || ch == ']':
 			prevSig = 'x'
@@ -315,10 +312,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// Whitespace does not change the ruling.
 		case unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$':
 			prevSig = 'x'
+		case (ch == '+' || ch == '-') && i > 0 && chars[i-1] == ch && signAfterOperand:
+			// Postfix increment/decrement: the adjacent sign pair
+			// completes an operand, so a following '/' divides.
+			prevSig = 'x'
+		case ch == '.' && ((i > 0 && unicode.IsDigit(chars[i-1])) || (i+1 < n && unicode.IsDigit(chars[i+1]))):
+			// A decimal point within a numeric token (4. / 2,
+			// .5 / 2): the number is an operand, so a following
+			// '/' divides.
+			prevSig = 'x'
 		default:
 			// Operators and opening delimiters: expression position.
 			prevSig = 'o'
 		}
+		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
 	}
 
 	if inMultiLineComment {
