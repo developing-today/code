@@ -61,7 +61,8 @@ const FIELD_TYPES = new Set<string>(["string", "hex", "bool", "u16", "u32", "u64
 const INTEGER_MAX: Partial<Record<FieldType, number>> = {
   u16: 0xffff,
   u32: 0xffff_ffff,
-  u64: Number.MAX_SAFE_INTEGER,
+  // No u64 entry: its ceiling is u64::MAX, which no JS number can
+  // represent, so checkValue handles u64 on its own below.
 };
 const encoder = new TextEncoder();
 const byteLength = (text: string): number => encoder.encode(text).length;
@@ -110,6 +111,28 @@ function lookup(
 }
 
 function checkValue(field: Field, value: unknown): string | null {
+  if (field.kind === "u64") {
+    if (!isInteger(value) || value < 0) return "must be a non-negative integer";
+    // u64::MAX itself (2^64 - 1) rounds to 2^64 in a JS number, so 2^64 is
+    // the rounded wire form of an in-range value and is accepted -- but
+    // anything above it is provably out of range (the next double up is
+    // 2^64 + 2048) and the Rust checker rejects it via value.as_u64().
+    const min = field.min ?? 0;
+    if (value > 2 ** 64) return `must be in ${min}..=18446744073709551615, got ${value}`;
+    // The Rust checker caps u64 at u64::MAX. A JS number cannot hold that
+    // ceiling, and a wire value above 2^53 arrives already rounded, so a
+    // non-negative integer up there cannot be proven out of range and is
+    // accepted -- rejecting it would fail frames the host accepts, on a
+    // bound that appears nowhere in the contract. The bounds JS can still
+    // check exactly are checked: an explicit min, and an explicit max
+    // within the safe range (a rounded value past such a max is past it
+    // truly, because the rounding of a huge value stays huge).
+    if (value < min) return `must be at least ${min}, got ${value}`;
+    if (field.max !== undefined && field.max <= Number.MAX_SAFE_INTEGER && value > field.max) {
+      return `must be in ${min}..=${field.max}, got ${value}`;
+    }
+    return null;
+  }
   const typeMax = INTEGER_MAX[field.kind];
   if (typeMax !== undefined) {
     if (!isInteger(value) || value < 0) return "must be a non-negative integer";
