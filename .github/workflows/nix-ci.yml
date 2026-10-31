@@ -49,6 +49,25 @@ jobs:
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
 
+  # PR tier (#705): evaluate both real NixOS hosts (drvPath only, no
+  # build), so a host-breaking change fails on the PR instead of at
+  # switch time (#699, fixed by #701's quoting, is the failure this
+  # catches). Host evaluation imports from the patched nixpkgs source
+  # (lib/default.nix make-nixos-from-config), i.e. it is
+  # import-from-derivation: both evals share one job so the
+  # patched-source realisation is paid once per runner.
+  host-eval:
+    name: "basic: NixOS host evaluation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - name: Evaluate NixOS host configurations (drvPath only)
+        run: |
+          nix eval .#nixosConfigurations.amd.config.system.build.toplevel.drvPath
+          nix eval .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath
+
   flake-check:
     name: "full (main tier): Nix flake evaluation"
     # Main tier only (Phase 2, #1781): PRs keep the basic proxy-port
