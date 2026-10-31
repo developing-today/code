@@ -250,6 +250,14 @@ impl HtmlBlockTracker {
         self.end.is_some()
     }
 
+    /// Forget any open block: a block opened inside a container
+    /// ends implicitly when the container ends, with no closing
+    /// line (Codex P2 on #1565's eleventh cut, mirroring
+    /// FenceTracker::reset).
+    fn reset(&mut self) {
+        self.end = None;
+    }
+
     /// Feed one line (already stripped of up to three leading
     /// spaces). Returns true when the line belongs to an HTML block
     /// (its opening line, interior, or closing line).
@@ -442,6 +450,51 @@ fn is_atx_heading(stripped: &str) -> bool {
         && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
 }
 
+/// Whether a line opens an HTML block that can INTERRUPT a
+/// paragraph (CommonMark types 1-6): a comment, a CDATA section,
+/// a processing instruction, a declaration, a script/pre/style/
+/// textarea element, or a block-level tag (opening or closing).
+/// A lone inline tag (`<em>`, `<a>`) is type 7, which cannot
+/// interrupt a paragraph: as a footnote definition's next line it
+/// is a lazy continuation of the definition's paragraph, not a
+/// new block (Codex P2 on #1565's eleventh cut).
+fn is_html_block_start(stripped: &str) -> bool {
+    let Some(rest) = stripped.strip_prefix('<') else {
+        return false;
+    };
+    let lower = stripped.to_ascii_lowercase();
+    if lower.starts_with("<!--") || lower.starts_with("<![cdata[") || lower.starts_with("<?") {
+        return true;
+    }
+    if rest.starts_with('!')
+        && rest[1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+    {
+        return true;
+    }
+    // Type 1 elements, with the tracker's name boundary
+    // (whitespace, '>', or end-of-line after the name).
+    for name in ["script", "pre", "style", "textarea"] {
+        if lower[1..].starts_with(name)
+            && matches!(
+                lower.as_bytes().get(1 + name.len()),
+                None | Some(b' ') | Some(b'\t') | Some(b'>')
+            )
+        {
+            return true;
+        }
+    }
+    let tag_body = rest.strip_prefix('/').unwrap_or(rest);
+    let tag_name: String = tag_body
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    HTML_BLOCK_TAGS.contains(&tag_name.as_str())
+}
+
 fn starts_new_block(stripped: &str) -> bool {
     footnote_definition_label(stripped).is_some()
         || is_link_reference_definition_start(stripped)
@@ -451,11 +504,7 @@ fn starts_new_block(stripped: &str) -> bool {
         || stripped.starts_with("~~~")
         || is_thematic_break(stripped)
         || strip_container_prefixes(stripped) != stripped
-        || (stripped.starts_with('<')
-            && stripped[1..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, '!' | '?' | '/')))
+        || is_html_block_start(stripped)
 }
 
 /// Scan `markdown` for top-level footnote definition blocks (#1565).
@@ -498,6 +547,22 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // (The recorded prefix's exact bytes vary -- `> ` vs `>`
         // on a blank quote line -- so relativity is computed by
         // re-stripping this line's own container prefixes.)
+        // An HTML block opened inside a blockquote ends implicitly
+        // when the container ends, exactly like a fence (tenth
+        // cut): a following line carrying no container prefix at
+        // all is outside the quote, so a marker-ended block (a
+        // comment) is over even without its closing marker (Codex
+        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
+        // blank / `[^real]: note` -- the tracker stayed open and
+        // treated the real definition as comment interior).
+        if html.in_html()
+            && html_prefix.contains('>')
+            && !stripped.starts_with(&html_prefix)
+            && strip_container_prefixes(stripped) == stripped
+        {
+            html.reset();
+            html_prefix.clear();
+        }
         let html_line = if html.in_html() && !html_prefix.is_empty() {
             container_stripped
         } else {
@@ -712,6 +777,12 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             // A blank line ENDS a blank-line-terminated HTML block;
             // the tracker must see it or it suppresses every later
             // definition (Codex P2 on #1565's sixth cut).
+            // A fully blank line carries no container prefix, so a
+            // container-scoped HTML block is over (eleventh cut).
+            if html.in_html() && html_prefix.contains('>') {
+                html.reset();
+                html_prefix.clear();
+            }
             html.feed(stripped);
             at_block_start = true;
             i += 1;
@@ -733,6 +804,22 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // (The recorded prefix's exact bytes vary -- `> ` vs `>`
         // on a blank quote line -- so relativity is computed by
         // re-stripping this line's own container prefixes.)
+        // An HTML block opened inside a blockquote ends implicitly
+        // when the container ends, exactly like a fence (tenth
+        // cut): a following line carrying no container prefix at
+        // all is outside the quote, so a marker-ended block (a
+        // comment) is over even without its closing marker (Codex
+        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
+        // blank / `[^real]: note` -- the tracker stayed open and
+        // treated the real definition as comment interior).
+        if html.in_html()
+            && html_prefix.contains('>')
+            && !stripped.starts_with(&html_prefix)
+            && strip_container_prefixes(stripped) == stripped
+        {
+            html.reset();
+            html_prefix.clear();
+        }
         let html_line = if html.in_html() && !html_prefix.is_empty() {
             container_stripped
         } else {
@@ -886,9 +973,26 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // after it is that paragraph's continuation, not a
         // definition (Codex P2 on #1565's ninth cut).
         let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
+        // A blockquote line's eligibility follows its CONTENT
+        // (eleventh cut): `> Body` is paragraph text inside the
+        // quote, so a definition-shaped line continuing it inside
+        // the quote is paragraph text too, not a definition --
+        // promoting it resolved references the document does not
+        // honor. Only quote content that itself ends or starts a
+        // block (blank, heading, break, setext, a new block)
+        // leaves the next line eligible. Non-quote container
+        // lines (list items) keep the older rule.
+        let quote_eligible = stripped.starts_with('>').then(|| {
+            let c = container_stripped;
+            c.trim().is_empty()
+                || is_atx_heading(c)
+                || is_thematic_break(c)
+                || (is_setext_underline(c) && !at_block_start)
+                || starts_new_block(c)
+        });
         at_block_start = is_atx_heading(stripped)
-            || stripped.starts_with('>')
-            || strip_container_prefixes(stripped) != stripped
+            || quote_eligible
+                .unwrap_or_else(|| strip_container_prefixes(stripped) != stripped)
             || is_thematic_break(stripped)
             || setext_ends_paragraph;
         i += 1;
@@ -4572,6 +4676,53 @@ mod tests {
             "definitions-only document keeps its definition: {first:?}"
         );
         assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definition_after_container_scoped_html_comment_survives() {
+        // #1565 eleventh cut (Codex P2): an HTML comment opened
+        // inside a blockquote ends when the quote ends, even
+        // without its --> marker; the top-level definition after
+        // it is a real definition, not comment interior.
+        let original = "> <!--\n> hidden\n\n[^real]: note\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after container-ended comment survives: {first:?}"
+        );
+        assert_eq!(first, second, "container HTML round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_container_paragraph_line_is_not_a_reference_definition() {
+        // #1565 eleventh cut (Codex P2): `> [url]: ...` continuing
+        // a blockquote paragraph is paragraph text, not a link
+        // reference definition, so the orphan footnote's literal
+        // [target][url] must NOT resolve into a hyperlink.
+        let original =
+            "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            !first.contains("](https://example.com)")
+                && first.contains("\\[target\\]"),
+            "unresolved reference stays literal (no link formed): {first:?}"
+        );
+        assert_eq!(first, second, "container paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_inline_html_continuation_of_definition_survives() {
+        // #1565 eleventh cut (Codex P2): a line starting with an
+        // inline tag (<em>) continues the footnote definition's
+        // paragraph (HTML type 7 cannot interrupt a paragraph);
+        // only block-level HTML ends collection.
+        let original = "[^a]: First line.\n<em>second</em>\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("second"),
+            "inline HTML continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "inline HTML round-trip is a fixpoint");
     }
 
     #[test]
