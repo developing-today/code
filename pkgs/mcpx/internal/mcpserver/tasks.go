@@ -103,14 +103,21 @@ func (s *Server) visible(taskID string, c *Conn) bool {
 // runInner is how a request becomes the body of a task: the same dispatch,
 // on the same connection, with the task request removed so it does not ask
 // to become a task again and recurse.
-func (s *Server) runInner(c *Conn, req request) func(ctx context.Context) (any, *rpcError) {
+//
+// The task store runs the body on a fresh background context, so anything
+// the original request carried in its context that the dispatch decides by
+// would be lost. The raw-surface selection (codemode=false) is carried
+// explicitly: without it the inner tools/call is judged against the
+// gateway surface and a validated raw name is refused with -32602.
+func (s *Server) runInner(ctx context.Context, c *Conn, req request) func(ctx context.Context) (any, *rpcError) {
 	inner := req
 	inner.Params = withoutTask(req.Params)
+	raw := rawToolsRequested(ctx)
 	return func(tctx context.Context) (any, *rpcError) {
 		// Answered on the same connection, so a question the call raises
 		// reaches the client that started it rather than whichever one the
 		// server happens to call default.
-		resp := s.HandleOn(withinTask(tctx), c, inner)
+		resp := s.HandleOn(withCodemode(withinTask(tctx), raw), c, inner)
 		if resp == nil {
 			return nil, &rpcError{Code: codeInternal, Message: "no result"}
 		}
@@ -140,15 +147,26 @@ const (
 )
 
 // taskSupportOf is what the tool a tools/call names declared about running
-// as a task: a pass-through upstream's execution.taskSupport, verbatim, or
-// "" for a tool that declared nothing -- every gateway tool, and an upstream
-// tool without the field.
+// as a task: an upstream's execution.taskSupport, verbatim -- a raw
+// (codemode=false) tool's own declaration on a raw request, a pass-through
+// upstream's otherwise -- or "" for a tool that declared nothing -- every
+// gateway tool, and an upstream tool without the field.
 func (s *Server) taskSupportOf(ctx context.Context, params json.RawMessage) string {
 	var call struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(params, &call) != nil || call.Name == "" {
 		return ""
+	}
+	if t, ok := s.rawTool(ctx, call.Name); ok {
+		if len(t.Execution) == 0 {
+			return ""
+		}
+		var ex struct {
+			TaskSupport string `json:"taskSupport"`
+		}
+		_ = json.Unmarshal(t.Execution, &ex)
+		return ex.TaskSupport
 	}
 	t, ok := s.passTool(ctx, call.Name)
 	if !ok || len(t.Execution) == 0 {
@@ -178,6 +196,9 @@ func (s *Server) legacyTaskSupport(ctx context.Context, params json.RawMessage) 
 		return supportForbidden
 	}
 	if _, isPass := s.passTool(ctx, call.Name); isPass {
+		return supportForbidden
+	}
+	if _, isRaw := s.rawTool(ctx, call.Name); isRaw {
 		return supportForbidden
 	}
 	for _, t := range s.Tools() {
@@ -245,7 +266,7 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
 				Message: "this tool does not support task-augmented execution (execution.taskSupport is forbidden)"}}
 		}
-		t := s.startTask(c.id, ttl, s.runInner(c, req))
+		t := s.startTask(c.id, ttl, s.runInner(ctx, c, req))
 		return &response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"task": t}}
 	}
 	support := s.taskSupportOf(ctx, req.Params)
@@ -274,7 +295,7 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if eager {
 		after = tm.TaskEager
 	}
-	t := s.startTask("", tasks.DefaultTTL(), s.runInner(c, req))
+	t := s.startTask("", tasks.DefaultTTL(), s.runInner(ctx, c, req))
 	wait, cancel := context.WithTimeout(ctx, after)
 	defer cancel()
 	result, fault, err := s.tasks().Result(wait, t.TaskID)
