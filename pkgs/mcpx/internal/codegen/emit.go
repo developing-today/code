@@ -764,7 +764,16 @@ export function captureFrames(skip = 0, limit = 32): Frame[] {
         if (typeof line === "number") f.line = line;
         const col = s.getColumnNumber?.();
         if (typeof col === "number") f.column = col;
-        const fn = s.getFunctionName?.();
+        let fn = s.getFunctionName?.() || s.getMethodName?.();
+        if (!fn) {
+            const func = s.getFunction?.();
+            if (func && func.name) fn = func.name;
+        }
+        if (!fn) {
+            const tn = s.getTypeName?.();
+            if (tn === "Object") fn = "";
+            else if (tn && tn !== "undefined") fn = tn;
+        }
         if (fn) f.function = fn;
         const tn = s.getTypeName?.();
         if (tn) f.type = tn;
@@ -772,9 +781,18 @@ export function captureFrames(skip = 0, limit = 32): Frame[] {
         if (s.isNative?.()) f.native = true;
         return f;
       });
-    const holder: any = {};
-    E.captureStackTrace?.(holder, captureFrames);
-    const frames: Frame[] = holder.stack ?? (new Error() as any).stack ?? [];
+    const e = new Error() as any;
+    let frames: Frame[] = e.stack;
+    if (Array.isArray(frames)) {
+      const idx = frames.findIndex((f) => f.function === "captureFrames");
+      if (idx !== -1) {
+         frames = frames.slice(idx + 1);
+      } else {
+         frames = frames.slice(1);
+      }
+    } else {
+      frames = [];
+    }
     return Array.isArray(frames) ? frames.slice(skip, skip + limit) : [];
   } catch {
     return [];
@@ -980,10 +998,10 @@ export function captureConsole(): void {
   const native: ((v: unknown) => string) | undefined =
     env("MCPX_RUNTIME") === "node" && typeof nodeInspect === "function"
       ? (v) => nodeInspect(v)
-      : typeof g.Deno?.inspect === "function"
-      ? (v) => g.Deno.inspect(v, { colors: false, depth: 4 })
       : typeof g.Bun?.inspect === "function"
       ? (v) => g.Bun.inspect(v)
+      : typeof g.Deno?.inspect === "function"
+      ? (v) => g.Deno.inspect(v, { colors: false, depth: 4 })
       : typeof nodeInspect === "function"
       ? (v) => nodeInspect(v)
       : undefined;
@@ -1059,6 +1077,9 @@ export function captureConsole(): void {
     c[name] = fn;
   };
 
+  const isBun = typeof g.Bun !== "undefined";
+  const bunFormat = isBun ? builtin("node:util")?.format : undefined;
+
   // The five that carry a level map onto it directly. console.info really is
   // log.info; there is no separate concept to reconcile.
   const direct: Record<string, LogLevel> = {
@@ -1071,15 +1092,33 @@ export function captureConsole(): void {
     table: "info",
   };
   for (const [name, level] of Object.entries(direct)) {
-    patch(name, (...args: unknown[]) => emitRecord(level, { console: name }, render(args), []));
+    if (isBun) {
+      patch(name, (...args: unknown[]) => {
+        original[name]?.apply(c, args);
+        // By passing true for fileOnly, we don't duplicate to stdout because the runtime's native method just did.
+        const pad = "  ".repeat(depth);
+        const msg = bunFormat ? pad + bunFormat(...args) : render(args);
+        emitRecord(level, { console: name }, msg, [], true);
+      });
+    } else {
+      patch(name, (...args: unknown[]) => emitRecord(level, { console: name }, render(args), []));
+    }
   }
 
   // stdout is the script's result, so console.log keeps going there. The
   // record exists so the durable log has it too, and is file-only so the
   // terminal does not show the same line twice.
   patch("log", (...args: unknown[]) => {
-    original.log?.(...args);
-    emitRecord("debug", { console: "log" }, render(args), [], true);
+    if (isBun) {
+       original.log?.apply(c, args);
+    } else {
+       original.log?.(...args);
+    }
+    let msg = render(args);
+    if (isBun && bunFormat) {
+       msg = "  ".repeat(depth) + bunFormat(...args);
+    }
+    emitRecord("debug", { console: "log" }, msg, [], true);
   });
 
   // console.trace is a stack request; honour it rather than dropping the part
