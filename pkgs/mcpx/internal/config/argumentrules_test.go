@@ -1091,6 +1091,77 @@ func TestEffectiveSchemaPinnedDecidesOneOfBranches(t *testing.T) {
 // carries its siblings as same-instance constraints: returning the
 // target alone dropped a required the projection must keep (with
 // pinned names filtered as usual).
+// Codex P2 on PR #2976: a draft-07 allOf branch carrying a
+// `dependencies` constraint must not be treated as decided by the
+// pins alone. collectConditionNames ignored `dependencies`, and
+// pinnedSchemaVerdict compiled the detached branch without the
+// enclosing $schema (defaulting to 2020-12, where the keyword is
+// ignored), so pinning tailnet discarded a branch enforcement
+// still applies: the advertised schema accepted {"limit":1}
+// while enforcement rejects it because cursor is missing.
+func TestEffectiveSchemaPinnedKeepsDraft07DependenciesBranches(t *testing.T) {
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"number"},"cursor":{"type":"string"},"mode":{"type":"string"}}}`)
+
+	// Property form: the dependency fires on a caller property
+	// (limit), so the branch is not the pins' to decide -- it
+	// survives the projection and keeps its meaning.
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","allOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"],"dependencies":{"limit":["cursor"]}}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	if !strings.Contains(string(eff), `"dependencies"`) {
+		t.Errorf("the dependencies branch must survive the projection: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+		{`{"limit":1,"cursor":"c"}`, true},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+
+	// Schema form with every examined name pinned: the verdict
+	// itself must be reached under draft-07. The pinned mode
+	// violates the dependency's schema, so the branch is decided
+	// INVALID and the projection advertises unsatisfiable --
+	// under a 2020-12 compile the keyword vanishes, the branch
+	// would read valid, and it would be silently discarded.
+	set, err = CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","allOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"],"dependencies":{"tailnet":{"properties":{"mode":{"const":"strict"}},"required":["mode"]}}}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	eff = set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod", "mode": "loose"})
+	compiled, err = schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err == nil {
+		t.Errorf("the pin-decided-invalid dependencies branch must make the projection unsatisfiable: %s", eff)
+	}
+}
+
 func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
 	set, err := CompileArgumentRules([]ArgumentRuleSource{
 		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},

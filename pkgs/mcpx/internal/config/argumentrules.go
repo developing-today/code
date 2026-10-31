@@ -1235,6 +1235,25 @@ func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]
 	if !ok {
 		return false, false
 	}
+	// The detached condition compiles under the enclosing
+	// document's dialect: a branch written for draft-07 uses
+	// keywords later dialects dropped (dependencies is the
+	// concrete case -- Codex P2 on PR #2976), and compiling it
+	// as the default 2020-12 would silently ignore them and
+	// report a verdict enforcement does not reach. A condition
+	// declaring its own $schema keeps it.
+	if im, isMap := inlined.(map[string]any); isMap {
+		if _, declares := im["$schema"]; !declares {
+			if dialect, isStr := root["$schema"].(string); isStr && dialect != "" {
+				withDialect := make(map[string]any, len(im)+1)
+				for k, val := range im {
+					withDialect[k] = val
+				}
+				withDialect["$schema"] = dialect
+				inlined = withDialect
+			}
+		}
+	}
 	condRaw, err := json.Marshal(inlined)
 	if err != nil {
 		return false, false
@@ -1257,7 +1276,8 @@ func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]
 // collectConditionNames gathers the property names a condition schema
 // examines at its own instance scope: the keys of its properties, its
 // required entries, and the triggers and dependencies of its
-// dependent* keywords, followed through the same-instance applicators
+// dependent* keywords (and their draft-07 predecessor, dependencies),
+// followed through the same-instance applicators
 // (allOf/anyOf/oneOf/not/if/then/else, dependentSchemas values, local
 // references). It reports false for shapes whose truth can depend on
 // more than the examined properties' values -- whole-instance
@@ -1310,6 +1330,43 @@ func collectConditionNames(v any, root map[string]any, resolving map[string]bool
 						return false
 					}
 					names[name] = true
+				}
+			}
+		case "dependencies":
+			// The draft-07 predecessor of dependentRequired /
+			// dependentSchemas: under a draft-07 (or earlier)
+			// dialect it constrains the instance exactly the
+			// same way, so a condition using it examines the
+			// trigger, the listed names (property form), or
+			// whatever the schema form examines. Ignoring it
+			// let a branch carrying a live dependency be
+			// treated as decided by the pins alone and
+			// discarded, advertising calls enforcement
+			// rejects (Codex P2 on PR #2976).
+			deps, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, depVal := range deps {
+				names[trigger] = true
+				switch dep := depVal.(type) {
+				case []any:
+					for _, e := range dep {
+						name, ok := e.(string)
+						if !ok {
+							return false
+						}
+						names[name] = true
+					}
+				case map[string]any:
+					if !collectConditionNames(dep, root, resolving, names) {
+						return false
+					}
+				case bool:
+					// A boolean schema dependency examines
+					// nothing beyond the trigger.
+				default:
+					return false
 				}
 			}
 		case "dependentSchemas":
