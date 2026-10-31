@@ -282,8 +282,15 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 				if errors.Is(aerr, ErrNoPush) {
 					// This transport cannot carry a request to the client.
 					// The broker keeps the question; stop trying to ask.
-					if q.Method == "elicitation/create" && q.Mode == "url" {
-						noPushURL = true
+					// URL eligibility comes from the whole pending set,
+					// not just the question that failed first: a form
+					// question queued ahead of a URL one must not mask
+					// the -32042 the URL question is owed.
+					for _, pending := range sendable {
+						if pending.Method == "elicitation/create" && pending.Mode == "url" {
+							noPushURL = true
+							break
+						}
 					}
 					break
 				}

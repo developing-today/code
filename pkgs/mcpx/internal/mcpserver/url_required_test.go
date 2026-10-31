@@ -127,6 +127,31 @@ func TestURLRequiredWhenPushFailsInLoop(t *testing.T) {
 	}
 }
 
+func TestURLRequiredWhenPushFailsBehindFormQuestion(t *testing.T) {
+	// The in-loop trigger must read URL eligibility from the whole
+	// pending set: a form question ahead of the URL question is the
+	// one askClient fails on first, and stopping there would wait
+	// out the timeout instead of answering -32042.
+	form := mcpserver.Question{ID: "f6", Method: "elicitation/create", Mode: "form", Server: "up",
+		Params: json.RawMessage(`{"message":"which repo?","requestedSchema":{"type":"object"}}`)}
+	asker := &scriptedAsker{questions: []mcpserver.Question{form, urlQuestion("u6")}, text: "done"}
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.Ask = asker
+	legacyInit(t, s, map[string]any{"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}}})
+	s.SetPush(func(string, any) {})
+	out := legacyCall(t, s)
+	if out.Error == nil || out.Error.Code != -32042 {
+		t.Fatalf("want -32042 from the ErrNoPush trigger, got %+v", out)
+	}
+	els := out.Error.Data.Elicitations
+	if len(els) != 1 || els[0].ElicitationID != "mcpx-u6" {
+		t.Fatalf("want only the URL question listed, got %v", els)
+	}
+	if asker.abandoned != 0 {
+		t.Errorf("abandoned %d, want 0", asker.abandoned)
+	}
+}
+
 func TestNoURLRequiredForFormOnlyQuestion(t *testing.T) {
 	asker := &scriptedAsker{questions: oneQuestion(), text: "done"}
 	s := mcpserver.New(newBackend(), "mcpx", "test")
