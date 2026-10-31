@@ -378,7 +378,7 @@ const UnboundRequestor = "unbound"
 // (/v1/ask backings, handleAskBegin). It is its own bucket, not
 // UnboundRequestor: on the daemon's embedded MCP surface one logical
 // operation creates two store tasks — the /v1/ask backing here and the
-// MCP wrapper in mcpserver, which counts against UnboundRequestor —
+// MCP wrapper in mcpserver, which counts against its caller identity (UnboundRequestor when anonymous) —
 // and charging both to the one bucket made a per-requestor cap of 1
 // refuse (and abandon) a lone anonymous ask call. Separate ledgers,
 // each capped at the same limit, keep one operation to one slot in

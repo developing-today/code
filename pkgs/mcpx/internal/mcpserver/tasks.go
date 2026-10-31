@@ -368,9 +368,13 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 	}
 
 	// The ask seam holds no connection identity (Peer is capabilities
-	// only), so this task counts against the unbound bucket, capped like
-	// any other requestor.
-	t, terr := s.tasks().Start(tasks.UnboundRequestor, tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	// only), but the request ctx carries the resolved caller identity,
+	// and the per-requestor cap must charge it: hard-coding the unbound
+	// bucket here put every identified ask client in one shared bucket,
+	// so one client's slow calls could refuse another's first call
+	// (Codex on #2869, round 4). An anonymous request's empty key
+	// falls into the store's unbound bucket, capped like any other.
+	t, terr := s.tasks().Start(IdentityFrom(ctx).Key, tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
 	if terr != nil {
