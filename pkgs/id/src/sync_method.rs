@@ -10,12 +10,14 @@
 //!   when the peer is not yet bootstrapped (no sync with it has completed).
 //! - **Range** otherwise.
 //!
-//! The initiator chooses, and sends its choice in a [`Request`]. The responder answers with an
-//! [`Answer`]: it agrees to run that method, or refuses it. It never chooses for the session.
+//! In the topic-scoped handshake, the initiator chooses and sends its choice in a [`Request`].
+//! The responder answers with an [`Answer`]: it agrees to run that method, or refuses it. It never
+//! chooses for the session. This selection is not used by `serve`'s own event sync.
 //!
-//! The rule is written against [`SyncStats`], so range sync's index can supply the numbers when
-//! it merges. [`SyncSupport`] is the same kind of seam for the answer: range sync adds itself when
-//! it merges, and until then a responder refuses range requests.
+//! The rule is written against [`SyncStats`]; a production group-sync initiator and its statistics
+//! source do not exist yet. The future initiator needs a stated difference estimator, or must default
+//! to Log. Local data alone cannot give the exact difference before a session. [`SyncSupport`] is
+//! the seam for the answer: [`LogAndRange`] supports both methods and [`LogSyncOnly`] refuses range.
 
 use std::fmt::Debug;
 
@@ -40,8 +42,9 @@ pub trait SyncStats {
     /// The chains (one per author) the initiator holds for the topic. This is `C`.
     fn chain_count(&self) -> u64;
 
-    /// The estimated number of events the two sides disagree on. This is `D`. It is a lower
-    /// bound: the peer's new events are unknown until the first exchange. A margin is advisable.
+    /// The estimated number of events the two sides disagree on, `D`. The peer's new events are
+    /// unknown before the exchange, so the estimate depends on the caller's stated method and is
+    /// not necessarily exact or a lower bound.
     fn estimated_difference(&self) -> u64;
 
     /// When the last sync with this peer completed, in Unix milliseconds. `None` means the peer is
@@ -97,7 +100,7 @@ pub trait SyncSupport: Debug + Send + Sync {
     fn supports(&self, method: SyncMethod) -> bool;
 }
 
-/// Runs `LogSync` only. Range sync (P3.1) adds itself here when it merges.
+/// Runs `LogSync` only; use [`LogAndRange`] to support both methods.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogSyncOnly;
 
