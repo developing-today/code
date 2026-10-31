@@ -254,7 +254,7 @@ fn expect(reader: &mut impl BufRead, code: u16) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::io::Write as _;
+
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
