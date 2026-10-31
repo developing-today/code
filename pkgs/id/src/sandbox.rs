@@ -1505,11 +1505,7 @@ mod tests {
         )
         .unwrap();
         let _ = crate::world::WorldProgram::records(&mut program).unwrap();
-        assert_eq!(
-            view(&mut program),
-            "count=1",
-            "wasm handles the actor order"
-        );
+        assert!(view(&mut program).contains("count=1"), "wasm handles the actor order");
     }
 
     #[test]

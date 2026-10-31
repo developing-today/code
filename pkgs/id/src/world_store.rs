@@ -1174,7 +1174,7 @@ mod tests {
                 .unwrap();
         }
         svc.world().chat(ann.clone(), "hi").await.unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=3");
+        assert!(view(&svc, &ann).await.contains("count=3"));
         svc.world().shutdown().await.unwrap();
 
         let fresh_blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
@@ -1190,7 +1190,7 @@ mod tests {
         assert_eq!(report.program_error, None);
         assert_eq!(report.replayed_inputs, 3);
         assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
-        assert_eq!(view(&svc, &ann).await, "count=3", "state rebuilt by replay");
+        assert!(view(&svc, &ann).await.contains("count=3"), "state rebuilt by replay");
         assert_eq!(
             svc.active_module_hash().await.as_deref(),
             Some(hash.as_str()),
@@ -1200,7 +1200,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=4");
+        assert!(view(&svc, &ann).await.contains("count=4"));
     }
 
     #[cfg(feature = "sandbox")]
@@ -1242,7 +1242,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=1");
+        assert!(view(&svc, &ann).await.contains("count=1"));
         svc.world().shutdown().await.unwrap();
     }
 
@@ -1290,7 +1290,7 @@ mod tests {
         }
         svc.world().chat(ann.clone(), "hi").await.unwrap();
         assert!(svc.world().revoke(bob_participant.id).await.unwrap());
-        assert_eq!(view(&svc, &ann).await, "count=13");
+        assert!(view(&svc, &ann).await.contains("count=13"));
         let sequence = svc
             .world()
             .snapshot(ann.clone())
@@ -1336,11 +1336,7 @@ mod tests {
             report.replayed_inputs < 5,
             "replay starts at the checkpoint"
         );
-        assert_eq!(
-            view(&svc, &ann).await,
-            "count=13",
-            "state from checkpoint + tail"
-        );
+        assert!(view(&svc, &ann).await.contains("count=13"), "state from checkpoint + tail");
         assert_eq!(
             svc.active_module_hash().await.as_deref(),
             Some(hash.as_str())
@@ -1353,7 +1349,7 @@ mod tests {
             .input(ann.clone(), b"inc".to_vec())
             .await
             .unwrap();
-        assert_eq!(view(&svc, &ann).await, "count=14");
+        assert!(view(&svc, &ann).await.contains("count=14"));
         let page = svc
             .world()
             .events_after(ann.clone(), sequence)

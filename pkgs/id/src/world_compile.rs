@@ -1216,7 +1216,7 @@ restore = |text| match U64.from_str(text) {
                 native: true,
             },
             &compiler,
-            &[],
+            &["Screen".to_owned(), "RocText".to_owned()],
             COMPILE_TIMEOUT,
         )
         .await

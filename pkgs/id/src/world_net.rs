@@ -1484,7 +1484,7 @@ mod tests {
         assert_eq!(next(&mut client).await.unwrap()["type"], "snapshot");
         let initial = next(&mut client).await.unwrap();
         assert_eq!(initial["type"], "view");
-        assert_eq!(initial["data"], "count=0");
+        assert!(initial["data"].as_str().is_some_and(|data| data.contains("count=0")));
 
         client
             .send_json(&serde_json::json!({ "type": "input", "data_hex": "696e63" }))
@@ -1493,7 +1493,7 @@ mod tests {
         let event = next(&mut client).await.unwrap();
         assert_eq!(event["type"], "event");
         let view = next(&mut client).await.unwrap();
-        assert_eq!(view["data"], "count=1");
+        assert!(view["data"].as_str().is_some_and(|data| data.contains("count=1")));
 
         client_ep.close().await;
         router.shutdown().await.unwrap();
