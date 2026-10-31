@@ -5,7 +5,9 @@
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
+import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isIsoDate } from "./validate.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -27,6 +29,10 @@ export interface FleetFeed {
   version: 1;
   /** ISO timestamp of collection on the sandbox. */
   generatedAt: string;
+  /** Collector checkout drift vs origin/main (#1116 item 3), measured
+   *  by the collector in its own checkout at collection time. Absent
+   *  in feeds written before the drift check existed. */
+  checkout?: CheckoutDrift;
   quota: QuotaView;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
@@ -246,8 +252,7 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   const f = v as Partial<FleetFeed>;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" &&
-    Number.isFinite(Date.parse(f.generatedAt)) &&
+    isIsoDate(f.generatedAt) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&

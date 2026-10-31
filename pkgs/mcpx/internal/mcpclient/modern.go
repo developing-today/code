@@ -106,12 +106,16 @@ func (c *Client) capabilities(modern bool) map[string]any {
 	if modern {
 		caps["roots"] = map[string]any{}
 		// The 2026 extensions map (register CAP-11): {} declares support
-		// with no settings. It names nothing yet -- an extension key is
-		// added only when mcpx implements that extension; declaring
-		// io.modelcontextprotocol/tasks before it is implemented would
-		// be the advertised-but-unimplemented failure. The map has no
-		// counterpart in legacy initialize, so it stays in this branch.
-		caps["extensions"] = map[string]any{}
+		// with no settings. An extension key is added only when mcpx
+		// implements that extension: io.modelcontextprotocol/tasks is
+		// declared now that CallTool drives taskSupport-"required"
+		// tools through the extension (tasks.go, #1556); declaring it
+		// before that would have been the advertised-but-unimplemented
+		// failure. The map has no counterpart in legacy initialize, so
+		// it stays in this branch.
+		caps["extensions"] = map[string]any{
+			"io.modelcontextprotocol/tasks": map[string]any{},
+		}
 	}
 	if h != nil {
 		caps["sampling"] = map[string]any{}

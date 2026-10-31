@@ -1371,6 +1371,18 @@ func (p *Pool) Call(ctx context.Context, sessionKey, tool string, args any) (jso
 		Trace("call %s.%s session=%q instance=%s pid=%d", p.cfg.Name, tool, sessionKey, lease.inst.ID, lease.inst.PID())
 	}
 
+	// The serving client may never have listed the catalogue itself --
+	// refreshSchemas lists on the schema lease's instance, which for
+	// session- or call-scoped scopes is a throwaway, and a restarted
+	// global instance starts empty behind the retained cache. Seed its
+	// taskSupport snapshot from the cached catalogue so a "required"
+	// tool is recognised on the client that actually serves the call
+	// (#1556 Codex review).
+	p.schemaMu.RLock()
+	catalogue := p.tools
+	p.schemaMu.RUnlock()
+	lease.Client().SeedToolExec(catalogue)
+
 	cctx, finish := p.upstream(ctx, sessionKey, lease)
 	started := time.Now()
 	res, err := lease.Client().CallTool(cctx, tool, args)

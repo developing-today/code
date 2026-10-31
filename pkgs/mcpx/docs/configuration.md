@@ -184,6 +184,74 @@ Each entry is one of:
 A pattern that cannot compile is a configuration error naming the field, not
 a rule that silently matches nothing.
 
+### Constraining calls by their arguments
+
+Hiding decides by tool name: a tool is callable with any arguments or not at
+all. `argumentRules` decides by the call: a per-server map in the `mcpx`
+block -- also allowed in the top-level `pool` block -- whose keys are tool
+patterns matched exactly as `tools`/`excludeTools` match (exact name, glob,
+or `/regexp/`), and whose values are JSON Schema objects. A call is allowed
+only if its arguments validate against **every** rule whose key matches the
+tool. Pool rules and server rules add up, and so do rules from layered config
+files: rules only tighten, and a nearer file cannot loosen a farther one.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "...",
+      "mcpx": {
+        "argumentRules": {
+          "create_repository": {
+            "required": ["private", "organization"],
+            "properties": {
+              "private": { "const": true },
+              "organization": { "pattern": "^(my-org|my-org-sandbox)$" }
+            }
+          },
+          "/^(push_files|create_or_update_file|delete_file)$/": {
+            "required": ["branch"],
+            "properties": { "branch": { "not": { "enum": ["main", "master"] } } }
+          },
+          "*": {
+            "properties": { "owner": { "pattern": "^(my-org|my-user)$" } }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Per-argument rules are the same mechanism: a `"*"` key whose schema is a
+`properties` object constrains that argument on every tool that carries it,
+and leaves tools without the argument untouched.
+
+A refused call is a 400, as a hidden tool is, before the server is started:
+the message names the argument path, the value sent, the constraint it
+broke, and where the rule came from (config file, server, key). Over the MCP
+pass-through the same refusal arrives as a tool result with `isError: true`.
+Listings advertise the tightened schema: the `inputSchema` shown by
+`mcpx types`, the generated client, search, and the pass-through's
+`tools/list` is the upstream schema `allOf` every matching rule, so an agent
+sees `private: true` before it ever calls.
+
+A rule whose key matches no tool on its server warns at load and on catalog
+changes -- a server that renames a tool must not silently disable the rule
+that guarded it. A value that is not a valid schema, or a `pattern` the
+validator cannot compile (JSON Schema patterns are ECMA-262; lookahead and
+backreferences are unsupported), is a configuration error naming the server
+and key, like a bad tool pattern.
+
+Two cautions, plainly:
+
+- **Server defaults are invisible.** A rule constrains what is *sent*, not
+  what the server fills in. If a constraint matters, list the argument in
+  `required` -- never rely on a server-side default to satisfy it.
+- **Free-form arguments cannot truly be constrained.** A `pattern` over a
+  `query`/`jql`/`sql` string matches text, not meaning. A tool whose danger
+  lives in a free-form argument belongs in `excludeTools`, not in a rule.
+
 `extraIncludeTools` takes the same entries and adds them to the allowlist
 instead of replacing it, so a server can widen a pool-wide `tools` by one tool
 without restating the rest:

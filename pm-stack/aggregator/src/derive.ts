@@ -904,13 +904,19 @@ export function freshness(measuredAt: string | null, cadenceDays: number, now = 
   if (!measuredAt) return { stale: true, ageDays: null };
   // Date-only stamps age by calendar day (a read dated yesterday is
   // 1 day old all day today); datetimes age by elapsed whole days.
+  // The calendar is Chicago's, the timezone every other calendar
+  // helper here uses (#1629): a stamp is a Chicago date, so ageing it
+  // against the UTC day called a read dated today "1d ago" -- and
+  // stale -- from 19:00 Chicago onward, when UTC had rolled over and
+  // Chicago had not.
   if (measuredAt.length <= 10) {
     const t = Date.parse(`${measuredAt}T00:00:00Z`);
     if (Number.isNaN(t)) return { stale: true, ageDays: null };
-    const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-    // A date-only stamp more than the tolerance past today's UTC midnight
-    // is a future stamp, not a fresh one (#1568): without this bound the
-    // clamp below would pin it "today" until its date arrives.
+    const startOfToday = Date.parse(`${chicagoYmd(now)}T00:00:00Z`);
+    // A date-only stamp more than the tolerance past today's Chicago
+    // midnight is a future stamp, not a fresh one (#1568): without
+    // this bound the clamp below would pin it "today" until its
+    // date arrives.
     if (t - startOfToday > FRESHNESS_FUTURE_TOLERANCE_MS) return { stale: true, ageDays: null };
     const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
     return { stale: ageDays > cadenceDays, ageDays };
