@@ -664,22 +664,19 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, p.oauthWaitError(err))
 	}
 	// Self-connection loop guard (#1877): an upstream that identifies
-	// as mcpx is mcpx itself -- this daemon's own MCP endpoint, a
-	// second mcpx, or a proxy of one -- so its catalogue contains
-	// mcpx's own tools, and admitting it would grow tools/list by a
-	// proxy level on every reload, without bound. The identity is
-	// spoofable, but spoofing only makes a server refuse itself
-	// service here; it cannot create the loop. Refuse the instance
-	// before its era is recorded or any schema is read from it, so a
-	// self entry contributes no tools however often it is reloaded.
+	// as mcpx may be mcpx itself -- this daemon's own MCP endpoint, a
+	// second mcpx, or a proxy of one -- whose catalogue contains
+	// mcpx's own tools; admitting it would grow tools/list by a proxy
+	// level on every reload, without bound. The name alone does not
+	// convict: an adapter or OpenAPI declaration may legitimately be
+	// named "mcpx", and such a server (ExtrasOnly in mcpserver) serves
+	// only its declared tools. The aggregate surface is the proof, so
+	// a claimant is refused only when its tools/list carries mcpx's
+	// meta tools; a namesake without them is admitted below.
 	if cl.ServerInfo.Name == ownServerName {
-		lifecycle("server.self_connection_refused", map[string]any{
-			"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
-			"serverInfoVersion": cl.ServerInfo.Version,
-		})
-		_ = cl.Close()
-		_ = tr.Close()
-		return nil, fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, cl.ServerInfo.Name)
+		if err := p.refuseIfAggregate(sctx, cl, tr); err != nil {
+			return nil, err
+		}
 	}
 	if cl.CachedEraWrong {
 		lifecycle("server.era.stale", map[string]any{
@@ -735,6 +732,67 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		"readyMs": float64(time.Since(launched).Microseconds()) / 1000,
 	})
 	return in, nil
+}
+
+// ownMetaTools are the tools mcpx's aggregate MCP surface always
+// carries (mcpserver.Server.Tools, non-ExtrasOnly). Their presence in
+// an upstream's catalogue is what makes that upstream mcpx itself
+// rather than a namesake.
+var ownMetaTools = map[string]bool{
+	"mcpx_namespaces": true, "mcpx_catalog": true, "mcpx_types": true,
+	"mcpx_search": true, "mcpx_call": true, "mcpx_exec": true,
+	"mcpx_log": true, "mcpx_stats": true, "mcpx_registry": true,
+	"mcpx_status": true, "mcpx_batch": true,
+}
+
+// refuseIfAggregate lists a self-claiming upstream's tools once and
+// refuses the instance when the aggregate meta surface is among them
+// (#1877). It also drops any cached catalogue for this server: an
+// installation upgraded with a self entry already in its schema cache
+// would otherwise keep advertising the proxied tools indefinitely.
+// A claimant whose tools cannot be listed is refused too -- the
+// identity check could not clear it, and a catalogue that cannot be
+// listed could not be served either.
+func (p *Pool) refuseIfAggregate(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	tools, lerr := cl.ListTools(ctx)
+	meta := ""
+	if lerr == nil {
+		for _, t := range tools {
+			if ownMetaTools[t.Name] {
+				meta = t.Name
+				break
+			}
+		}
+		if meta == "" {
+			lifecycle("server.namesake_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version,
+			})
+			return nil
+		}
+	}
+	err := fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and serves mcpx's aggregate surface (%s); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, cl.ServerInfo.Name, meta)
+	if lerr != nil {
+		err = fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself) and its tools could not be listed to clear the identity check: %w (#1877)", p.cfg.Name, cl.ServerInfo.Name, lerr)
+	}
+	lifecycle("server.self_connection_refused", map[string]any{
+		"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+		"serverInfoVersion": cl.ServerInfo.Version, "metaTool": meta,
+	})
+	p.dropSchemas(err)
+	_ = cl.Close()
+	_ = tr.Close()
+	return err
+}
+
+// dropSchemas forgets the cached catalogue and records why, so a
+// refused server stops being advertised from cache (#1877).
+func (p *Pool) dropSchemas(err error) {
+	p.schemaMu.Lock()
+	p.tools, p.resources, p.prompts = nil, nil, nil
+	p.instructions, p.schemaAt, p.schemaDeadline = "", time.Time{}, time.Time{}
+	p.schemaErr = err
+	p.schemaMu.Unlock()
 }
 
 // connectSSE closes tr and connects over the HTTP+SSE transport instead,

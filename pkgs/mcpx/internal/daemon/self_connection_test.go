@@ -59,7 +59,8 @@ func (g *growingSelf) serve(w http.ResponseWriter, r *http.Request) {
 		g.lists++
 		n := g.lists
 		g.mu.Unlock()
-		tools := make([]map[string]any, 0, n)
+		tools := []map[string]any{{"name": "mcpx_namespaces",
+			"inputSchema": map[string]any{"type": "object"}}}
 		for i := 0; i < n; i++ {
 			tools = append(tools, map[string]any{"name": fmt.Sprintf("proxied_%d", i),
 				"inputSchema": map[string]any{"type": "object"}})
@@ -116,7 +117,13 @@ func TestReloadWithSelfEntryDoesNotGrowTools(t *testing.T) {
 	}
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if self.lists != 0 {
-		t.Fatalf("self upstream was listed %d times; the guard let a read through", self.lists)
+	// At most one identity-check list per warm cycle (3), and at
+	// least one: the guard reads the surface to convict it, and never
+	// a catalogue beyond that (later cycles may be served the refusal
+	// from the pool's restart cooldown without redialling). While the
+	// fake's own list grew on every call it did get, the registry
+	// catalogue above never did.
+	if self.lists < 1 || self.lists > 3 {
+		t.Fatalf("self upstream was listed %d times, want between 1 and the 3 identity checks", self.lists)
 	}
 }
