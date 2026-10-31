@@ -54,6 +54,13 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 
 	var b strings.Builder
 	b.WriteString(pyHeader)
+	// Annotations are postponed (PEP 563) so a tool method can never
+	// shadow a typing binding for the methods after it: a namespace
+	// with a tool named Dict would otherwise replace typing.Dict in
+	// the class scope, and the next method's Dict[str, Any] annotation
+	// would fail the whole module's import (Codex round on #2591).
+	// Nothing in the generated client resolves annotations at runtime.
+	b.WriteString("from __future__ import annotations\n\n")
 	b.WriteString("import http.client\n")
 	b.WriteString("import json\n")
 	b.WriteString("import os\n")

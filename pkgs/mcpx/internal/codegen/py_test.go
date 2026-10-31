@@ -718,3 +718,64 @@ func TestPythonCodexRound6(t *testing.T) {
 		}
 	}
 }
+
+// TestPythonCodexRound7 covers the seventh Codex review round on the
+// Phase 1 PR: (1) a tool named like a typing binding (Dict) must not
+// break the generated module's import by shadowing that binding for
+// later methods' annotations; (2) a boolean subschema inside a
+// composition (allOf: [true]) must not discard the containing schema's
+// own fields from the generated signature or the TS metadata.
+func TestPythonCodexRound7(t *testing.T) {
+	l := pythonLang(t)
+	demo := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "Dict",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			},
+			{
+				Name:        "store",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"opts":{"type":"object"}},"required":["opts"]}`),
+			},
+			{
+				Name:        "ping",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}},"required":["x"],"additionalProperties":false,"allOf":[true]}`),
+			},
+		},
+	}
+	out := l.EmitModule([]codegen.Namespace{demo}, "http://127.0.0.1:1234", "sess-7")
+	future := strings.Index(out, "from __future__ import annotations")
+	typing := strings.Index(out, "from typing import")
+	if future < 0 || typing < 0 || future > typing {
+		t.Errorf("the module must postpone annotations before importing typing (future at %d, typing at %d)", future, typing)
+	}
+	if !strings.Contains(out, "def ping(self, *, x: str)") {
+		t.Errorf("a boolean allOf branch discarded ping's own fields:\n%s", out)
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"import mcpx_client\n" +
+		"print('import-ok')\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated module with a Dict tool failed to import: %v\n%s\n--- module ---\n%s", err, got, out)
+	}
+	if strings.TrimSpace(string(got)) != "import-ok" {
+		t.Fatalf("driver output = %q, want import-ok", got)
+	}
+}

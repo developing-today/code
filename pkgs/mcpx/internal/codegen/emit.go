@@ -249,6 +249,19 @@ type schemaFieldsDoc struct {
 	OneOf      []*schemaFieldsDoc `json:"oneOf"`
 }
 
+// UnmarshalJSON accepts a boolean schema (true admits anything, false
+// admits nothing): either carries no fields, and one appearing inside
+// a composition must not fail the whole document's unmarshal — that
+// discarded even the containing schema's own properties, so generated
+// signatures lost required arguments entirely (Codex round on #2591).
+func (d *schemaFieldsDoc) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "true" || s == "false" {
+		return nil
+	}
+	type plain schemaFieldsDoc
+	return json.Unmarshal(data, (*plain)(d))
+}
+
 // collectProps adds every property name visible through composition.
 func (d *schemaFieldsDoc) collectProps(into map[string]bool) {
 	if d == nil {

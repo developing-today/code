@@ -61,6 +61,20 @@ type schema struct {
 	Format               string             `json:"format"`
 }
 
+// UnmarshalJSON accepts a boolean schema (true admits anything, false
+// admits nothing) as an empty schema. A boolean subschema — inside a
+// composition, or as a property's own schema — otherwise fails the
+// whole document's unmarshal, and every reader that pulls types or
+// fields out of the schema silently degrades the containing tool's
+// signature to Any / no arguments (Codex round on #2591).
+func (s *schema) UnmarshalJSON(data []byte) error {
+	if txt := strings.TrimSpace(string(data)); txt == "true" || txt == "false" {
+		return nil
+	}
+	type plain schema
+	return json.Unmarshal(data, (*plain)(s))
+}
+
 type renderer struct {
 	root  *schema
 	depth int
