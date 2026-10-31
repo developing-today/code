@@ -238,7 +238,7 @@ in
         description = "Freshness watchdog for the laptop backups (code#1841): names a stopped or failing backup.";
       };
       maxAgeHours = lib.mkOption {
-        type = lib.types.int;
+        type = lib.types.ints.positive;
         default = 26;
         description = "Maximum age (hours) of pm-dashboard-backup's last complete run record and of both backup timers' last triggers before the watchdog fails naming the job.";
       };

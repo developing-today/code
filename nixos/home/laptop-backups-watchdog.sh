@@ -34,6 +34,11 @@ want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
 NOW_EPOCH="$(date +%s)"
 MAX_AGE_SEC=$(( MAX_AGE_HOURS * 3600 ))
+# A timestamp further in the future than this tolerance cannot be a
+# fresh run: after a backward clock correction it would read as a
+# negative age and pass, masking a stopped backup until real time
+# caught up. Small skew (NTP steps, VM resume) is tolerated.
+SKEW_TOLERANCE_SEC=300
 violations=0
 
 complain() { echo "laptop-backups-watchdog: FAIL $*" >&2; violations=$((violations + 1)); }
@@ -43,7 +48,7 @@ if want_job dashboard; then
 if [ ! -f "$RECORD" ]; then
   complain "pm-dashboard-backup: no run record at $RECORD"
 else
-  verdict="$(RECORD="$RECORD" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" \
+  verdict="$(RECORD="$RECORD" NOW_EPOCH="$NOW_EPOCH" MAX_AGE_SEC="$MAX_AGE_SEC" SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
     python3 - <<'PYEOF' 2>/dev/null
 import json, os
 from datetime import datetime, timezone
@@ -56,6 +61,8 @@ except Exception:
 age = int(os.environ["NOW_EPOCH"]) - int(finished.timestamp())
 if rec.get("result") != "complete":
     print(f"failed result={rec.get('result')} failing_step={rec.get('failing_step')} finished_at={rec.get('finished_at')}")
+elif age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future finished_at={rec.get('finished_at')} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
 elif age > int(os.environ["MAX_AGE_SEC"]):
     print(f"stale age_hours={age // 3600} finished_at={rec.get('finished_at')}")
 else:
@@ -87,7 +94,9 @@ for timer in "${timers[@]}"; do
     continue
   fi
   age=$(( NOW_EPOCH - trig_epoch ))
-  if [ "$age" -gt "$MAX_AGE_SEC" ]; then
+  if [ "$age" -lt "$(( -SKEW_TOLERANCE_SEC ))" ]; then
+    complain "$job: timer $timer last trigger is $(( -age ))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+  elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
     complain "$job: timer $timer last triggered $(( age / 3600 ))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done

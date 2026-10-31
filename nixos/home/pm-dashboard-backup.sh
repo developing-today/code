@@ -158,6 +158,13 @@ if ! flock -n 9; then
   exit 0
 fi
 
+# This run owns the instance lock, so it is a real run: remove the
+# previous run record now. A run killed before on_exit can write a
+# record (SIGKILL, OOM, power loss) then leaves NO record, and the
+# watchdog names the missing record instead of accepting the
+# previous complete record as fresh for up to the threshold.
+rm -f "$RECORD"
+
 # --- tools -----------------------------------------------------------------
 # rclone/bws may live outside the service PATH on this host (the
 # repo-archive-backup resolutions, kept): rclone from the newest

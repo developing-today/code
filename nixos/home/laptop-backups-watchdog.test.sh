@@ -116,6 +116,20 @@ RECORD_OUT="$RECORD" write_record complete "1 hour ago"
 set_triggers "1 hour ago" "40 hours ago"
 run_watchdog_jobs repo-archive; expect_named_failure jobs-repo-stale repo-archive-backup
 
+# future record (beyond skew tolerance) -> non-zero naming pm-dashboard-backup:
+# a negative age must not pass as fresh after a backward clock correction
+RECORD_OUT="$RECORD" write_record complete "2 hours"
+set_triggers "1 hour ago" "1 hour ago"
+run_watchdog; expect_named_failure future-record pm-dashboard-backup
+
+# future timer trigger (beyond skew tolerance) -> non-zero naming the job
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+# (8 hours, not 2: trig_ago labels local wall time as UTC, shifting the
+# parsed epoch back by the UTC offset; the spec must clear the tolerance
+# after that shift too)
+set_triggers "1 hour ago" "8 hours"
+run_watchdog; expect_named_failure future-timer repo-archive-backup
+
 if (( failures > 0 )); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2
   exit 1
