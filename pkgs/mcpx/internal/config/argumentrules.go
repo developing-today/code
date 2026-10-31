@@ -267,6 +267,22 @@ func scopedSchemaMember(raw json.RawMessage, prefix string) (member any, defs ma
 	return map[string]any{"$ref": "#/$defs/" + name}, map[string]any{name: scoped}
 }
 
+// literalValueKey reports whether a schema keyword's value is
+// instance data rather than a schema. A const/enum/default/examples
+// payload is a literal argument value: a "$ref" key inside it names
+// data, not a reference. Ref discovery and rewriting must not
+// descend into these values -- merging layers would otherwise
+// rewrite the very values a rule permits into ones it forbids,
+// loosening (and corrupting) the farther rule instead of only
+// tightening it.
+func literalValueKey(k string) bool {
+	switch k {
+	case "const", "enum", "default", "examples", "example":
+		return true
+	}
+	return false
+}
+
 // hasLocalRef reports whether a decoded schema document contains a
 // $ref pointing inside itself.
 func hasLocalRef(v any) bool {
@@ -277,6 +293,9 @@ func hasLocalRef(v any) bool {
 				if ref, ok := val.(string); ok && strings.HasPrefix(ref, "#") {
 					return true
 				}
+			}
+			if literalValueKey(k) {
+				continue
 			}
 			if hasLocalRef(val) {
 				return true
@@ -305,6 +324,10 @@ func rewriteLocalRefs(v any, base string) any {
 					out[k] = base + strings.TrimPrefix(ref, "#")
 					continue
 				}
+			}
+			if literalValueKey(k) {
+				out[k] = val // literal instance data, not a schema
+				continue
 			}
 			out[k] = rewriteLocalRefs(val, base)
 		}

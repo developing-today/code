@@ -325,6 +325,42 @@ func TestMergedLayerRulesWithLocalRefsCompile(t *testing.T) {
 	}
 }
 
+// Literal instance data is not a schema: a rule whose const/enum
+// payload is an object carrying a "$ref" key permits THAT object.
+// Layered merging must not rewrite the literal while re-basing real
+// schema references, or the merged rule would forbid the permitted
+// value and permit a rewritten one nobody wrote.
+func TestMergedRulesPreserveLiteralRefValues(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{"properties": {
+			"payload": {"const": {"$ref": "#/ok"}},
+			"mode": {"enum": [{"$ref": "#/ok"}, "plain"]}
+		}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	good := map[string]any{
+		"payload": map[string]any{"$ref": "#/ok"},
+		"mode":    map[string]any{"$ref": "#/ok"},
+	}
+	if v := set.Check("anything", good); v != nil {
+		t.Errorf("call carrying the literal values the rule permits refused after merge: %v", v)
+	}
+	rewritten := map[string]any{
+		"payload": map[string]any{"$ref": "#/$defs/far$doc/ok"},
+		"mode":    "plain",
+	}
+	if v := set.Check("anything", rewritten); v == nil {
+		t.Error("call carrying the rewritten literal the merge invented was permitted; the literal was treated as a schema reference")
+	}
+}
+
 // A nearer config file that redefines a server without restating its
 // argumentRules must not drop the farther file's server-level rules:
 // rules only tighten, across layers as within one file.
