@@ -191,3 +191,61 @@ func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 		t.Fatalf("the @tool marker is metadata, not an input: placeholders = %+v", r.Placeholders)
 	}
 }
+
+func TestACRLFLineContinuationKeepsTheStringOpen(t *testing.T) {
+	// Codex P2 on PR 2957: in a single- or double-quoted string, a
+	// backslash continuation on a CRLF line escaped only the \r, so
+	// the \n ended the string early and the real closing quote
+	// opened a new one -- the code after it, @who included, was
+	// scanned as string text and never substituted.
+	for _, q := range []string{"\"", "'"} {
+		src := "const note = " + q + "hello\\\r\nworld" + q + "; await demo.echo({ message: @who });"
+		r := recipes.Parse("x", "/tmp/x.ts", src)
+		if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+			t.Fatalf("quote %s: placeholders = %+v", q, r.Placeholders)
+		}
+		out, err := r.Render(map[string]any{"who": "hi"})
+		if err != nil {
+			t.Fatalf("quote %s: render: %v", q, err)
+		}
+		if !strings.Contains(out, `message: "hi"`) {
+			t.Errorf("quote %s: the code reference was not substituted:\n%q", q, out)
+		}
+		if !strings.Contains(out, "hello\\\r\nworld") {
+			t.Errorf("quote %s: the continued string was rewritten:\n%q", q, out)
+		}
+	}
+}
+
+func TestADeclarationLineCannotLexTheBody(t *testing.T) {
+	// Codex P2 on PR 2957: refs and Render skip declaration lines,
+	// but the shared scan lexed their prose as script, so a /* in a
+	// @param description opened a block comment over the body.
+	src := "# @param path:string -- glob such as /tmp/*\nawait demo.echo({ path: @path });"
+	r := recipes.Parse("x", "/tmp/x.ts", src)
+	out, err := r.Render(map[string]any{"path": "/tmp/x"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, `path: "/tmp/x"`) {
+		t.Errorf("the declaration prose swallowed the body reference:\n%s", out)
+	}
+	// The undeclared-reference form: the swallowed name must still
+	// be discovered as a placeholder.
+	src = "# @param note:string -- see /* details\nawait demo.echo({ message: @who });"
+	r = recipes.Parse("x", "/tmp/x.ts", src)
+	names := map[string]bool{}
+	for _, p := range r.Placeholders {
+		names[p.Name] = true
+	}
+	if !names["who"] {
+		t.Fatalf("placeholders = %+v, want who among them", r.Placeholders)
+	}
+	out, err = r.Render(map[string]any{"note": "n", "who": "hi"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, `message: "hi"`) {
+		t.Errorf("the code reference was not substituted:\n%s", out)
+	}
+}

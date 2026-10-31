@@ -276,6 +276,24 @@ func scanCode(src string) []bool {
 	code := make([]bool, len(src))
 	state := stCode
 	for i := 0; i < len(src); i++ {
+		if state == stCode && (i == 0 || src[i-1] == '\n') {
+			// A declaration or marker line is metadata, not script.
+			// refs and Render skip such lines for their own
+			// purposes; the scan must skip them too, or their prose
+			// is lexed as JavaScript and a /* in a @param
+			// description opens a block comment over the body.
+			// Only a line the scanner reaches in code position is
+			// neutralized -- a lookalike line inside a comment or
+			// string is content, and its bytes still count.
+			line := src[i:]
+			if j := strings.IndexByte(line, '\n'); j >= 0 {
+				line = line[:j]
+			}
+			if declLine.MatchString(line) || toolDecl.MatchString(line) {
+				i += len(line) - 1 // the loop step lands on the newline
+				continue
+			}
+		}
 		c := src[i]
 		switch state {
 		case stCode:
@@ -313,6 +331,12 @@ func scanCode(src string) []bool {
 			switch {
 			case c == '\\':
 				i++ // the escaped byte is string text, whatever it is
+				if i < len(src) && src[i] == '\r' && i+1 < len(src) && src[i+1] == '\n' {
+					// A CRLF continuation is one escaped newline:
+					// escaping only the \r would leave the \n to
+					// end the string below and desync the scan.
+					i++
+				}
 			case c == quote:
 				state = stCode
 			case c == '\n':
