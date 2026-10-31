@@ -389,7 +389,9 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
 // Routing
 // ---------------------------------------------------------------------------
 
-async function handler(req: Request): Promise<Response> {
+// Exported for the HTTP-level tests (test/server.test.ts) — the only
+// import side effect below is Bun.serve, guarded by import.meta.main.
+export async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   try {
@@ -402,7 +404,9 @@ async function handler(req: Request): Promise<Response> {
         oidcAudience: cfg.oidcAudience,
         allowlist: cfg.repoAllowlist,
       });
-      return path === "/v1/sessions" ? handleSessions(req, caller) : handleTasks(req, caller);
+      return path === "/v1/sessions"
+        ? await handleSessions(req, caller)
+        : await handleTasks(req, caller);
     }
     return json(404, { error: "not found" });
   } catch (e) {
@@ -413,9 +417,11 @@ async function handler(req: Request): Promise<Response> {
   }
 }
 
-const servers = cfg.hosts.map((hostname) =>
-  Bun.serve({ hostname, port: cfg.port, fetch: handler }),
-);
-for (const server of servers) {
-  console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+if (import.meta.main) {
+  const servers = cfg.hosts.map((hostname) =>
+    Bun.serve({ hostname, port: cfg.port, fetch: handler }),
+  );
+  for (const server of servers) {
+    console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+  }
 }
