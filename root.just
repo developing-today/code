@@ -245,3 +245,12 @@ rebuild:
 id-mail-deploy *args:
     nix run .#id-mail-deploy -- {{args}}
 
+# =============================================================================
+# pkarr Worker
+# =============================================================================
+
+# Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)
+[group('pkarr')]
+deploy-pkarr *args:
+    nix run .#pkarr-deploy -- {{args}}
+
