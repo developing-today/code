@@ -120,8 +120,7 @@ export function summarizeWeights(items: readonly WeightItem[]): WeightSummary {
       out.closedWeight += w;
     }
   }
-  out.weightedPct =
-    out.totalWeight > 0 ? Math.round((out.closedWeight / out.totalWeight) * 1000) / 10 : null;
+  out.weightedPct = out.totalWeight > 0 ? Math.round((out.closedWeight / out.totalWeight) * 1000) / 10 : null;
   return out;
 }
 
@@ -137,7 +136,10 @@ export function weightedLine(s: WeightSummary): string {
 
 /** Hands-queue line: open weight waiting on hands vs online. */
 export function handsLine(s: WeightSummary): string {
-  const bits = [`hands queue: ${s.handsWeight} weight waiting on hands (physical + hybrid)`, `online: ${s.onlineWeight}`];
+  const bits = [
+    `hands queue: ${s.handsWeight} weight waiting on hands (physical + hybrid)`,
+    `online: ${s.onlineWeight}`,
+  ];
   if (s.unmodedOpenWeight) bits.push(`no mode: ${s.unmodedOpenWeight}`);
   if (s.unsizedOpenCount) bits.push(`${s.unsizedOpenCount} open unsized`);
   return bits.join(" · ");

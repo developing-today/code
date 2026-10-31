@@ -80,11 +80,7 @@ describe("summarizeWeights", () => {
   });
 
   test("unsized items are counted separately, never zero-weighted silently", () => {
-    const s = summarizeWeights([
-      item("closed", ["effort/s"]),
-      item("closed", []),
-      item("open", ["kind/task"]),
-    ]);
+    const s = summarizeWeights([item("closed", ["effort/s"]), item("closed", []), item("open", ["kind/task"])]);
     expect(s.totalWeight).toBe(4);
     expect(s.weightedPct).toBe(100);
     expect(s.unsizedCount).toBe(2);
