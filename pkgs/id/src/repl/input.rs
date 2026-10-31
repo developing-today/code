@@ -319,6 +319,25 @@ fn remap_spans(
 ///     ReplInput::NeedMore { delimiter, .. } if delimiter == "EOF"
 /// ));
 /// ```
+/// Whether `cmd` ends with the `-` content placeholder in trailing
+/// position — a lone `-` as the final token. The supported form puts
+/// the placeholder before the stored name (`put - name ...`); a
+/// trailing one was historically "handled" by a literal `" -$"`
+/// replace, which is not an end anchor and never matched, so the
+/// content addressed to it was silently dropped or misrouted
+/// (#2280). All three input forms (here-string, pipe, heredoc)
+/// reject the trailing form with the error below instead.
+fn has_trailing_placeholder(cmd: &str) -> bool {
+    let t = cmd.trim_end();
+    t == "-" || t.ends_with(" -")
+}
+
+fn trailing_placeholder_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "unsupported trailing '-' content placeholder: place '-' before the name (put - name ...)"
+    )
+}
+
 pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     let line = line.trim();
     if line.is_empty() {
@@ -333,6 +352,9 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             let delimiter = after.trim().to_owned();
             if !delimiter.is_empty() {
                 let original_line = line[..heredoc_start].trim().to_owned();
+                if has_trailing_placeholder(&original_line) {
+                    return Err(trailing_placeholder_error());
+                }
                 return Ok(ReplInput::NeedMore {
                     delimiter,
                     lines: Vec::new(),
@@ -374,11 +396,12 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             (after.trim(), "")
         };
 
+        if rest.trim().is_empty() && has_trailing_placeholder(before.trim()) {
+            return Err(trailing_placeholder_error());
+        }
         // Replace - with content marker in the command
         let before_str = before.trim();
-        let new_before = before_str
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"));
+        let new_before = before_str.replace(" - ", &format!(" __STDIN_CONTENT__:{content} "));
         here_contents.push(content.to_owned());
         result = format!("{new_before}{rest}");
         protected = content_spans(&result, &here_contents);
@@ -518,14 +541,15 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let left = result[..pos].trim().to_owned();
         let right = result[pos + 2..].trim().to_owned();
 
+        if has_trailing_placeholder(&right) {
+            return Err(trailing_placeholder_error());
+        }
+
         // Execute left side as shell command
         let output = shell_capture(&left)?;
 
         // Replace - in right side with stdin content marker
-        let mut new_result = right
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{output} "))
-            .replace(" -\n", &format!(" __STDIN_CONTENT__:{output}\n"))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{output}"));
+        let mut new_result = right.replace(" - ", &format!(" __STDIN_CONTENT__:{output} "));
 
         // If no - found, might be at end
         if !new_result.contains("__STDIN_CONTENT__") {
@@ -699,6 +723,63 @@ mod tests {
             ReplInput::Ready(s) => assert!(s.contains("__STDIN_CONTENT__:content")),
             _ => panic!("expected Ready"),
         }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_trailing_dash_rejected() {
+        // #2280: the trailing form was silently dropped by a dead
+        // literal " -$" replace; it is rejected consistently now.
+        let result = preprocess_repl_line("put name - <<< 'payload'");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_trailing_dash_rejected_before_execution() {
+        // The left side would fail if it ran; the placeholder error
+        // must win, proving the rejection precedes pipe execution.
+        let result = preprocess_repl_line("exit 3 |> put name -");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_midline_placeholder_substitutes() {
+        match preprocess_repl_line("echo hi |> put - name").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:hi name"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_pipe_without_placeholder_appends() {
+        match preprocess_repl_line("echo hi |> put name").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put name __STDIN_CONTENT__:hi"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_trailing_dash_rejected() {
+        // Rejected at the start line, before any body is collected.
+        let result = preprocess_repl_line("put name - <<EOF");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
     }
 
     #[test]
