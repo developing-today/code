@@ -150,3 +150,63 @@ func TestExtraIncludeToolsAppendsAcrossFiles(t *testing.T) {
 		}
 	}
 }
+
+// #1631: an entry beginning with / that is not a complete /.../
+// pair silently became an exact name matching nothing, and //
+// compiled the empty regexp and matched everything. All three
+// shapes are compile errors naming the entry.
+func TestCompileToolPatternsRefusesMalformedRegexpEntries(t *testing.T) {
+	for _, entry := range []string{"/delete", "/", "//"} {
+		_, err := config.CompileToolPatterns([]string{entry})
+		if err == nil {
+			t.Errorf("config.CompileToolPatterns([%q]): expected an error, got nil", entry)
+			continue
+		}
+		if !strings.Contains(err.Error(), entry) {
+			t.Errorf("config.CompileToolPatterns([%q]): error must name the entry, got %v", entry, err)
+		}
+	}
+}
+
+// #1631: a glob class whose body begins with ^ keeps the glob
+// meaning -- ^ is a literal member -- instead of inverting the
+// class in RE2. The [!...] negation form is unchanged.
+func TestCompileToolPatternsCaretClassIsLiteral(t *testing.T) {
+	p, err := config.CompileToolPatterns([]string{"[^d]elete_*"})
+	if err != nil {
+		t.Fatalf("CompileToolPatterns: %v", err)
+	}
+	for _, name := range []string{"delete_x", "^elete_x"} {
+		if !p.Match(name) {
+			t.Errorf("[^d]elete_* must match %q (^ and d are class members)", name)
+		}
+	}
+	if p.Match("xelete_x") {
+		t.Errorf("[^d]elete_* must not match xelete_x (the class is not a negation)")
+	}
+	neg, err := config.CompileToolPatterns([]string{"[!d]elete_*"})
+	if err != nil {
+		t.Fatalf("CompileToolPatterns: %v", err)
+	}
+	if neg.Match("delete_x") || !neg.Match("xelete_x") {
+		t.Errorf("[!d]elete_* negation unchanged: delete_x must not match, xelete_x must")
+	}
+}
+
+// Controls around the #1631 shapes: a well-formed regexp entry is
+// unanchored, a malformed regexp body still fails through RE2, an
+// unterminated class still fails, and the empty entry still fails.
+func TestCompileToolPatternsControlsUnchanged(t *testing.T) {
+	p, err := config.CompileToolPatterns([]string{"/delete/"})
+	if err != nil {
+		t.Fatalf("CompileToolPatterns: %v", err)
+	}
+	if !p.Match("undelete_x") {
+		t.Errorf("/delete/ is an unanchored regexp and must match undelete_x")
+	}
+	for _, entry := range []string{"/(/", "delete_[", ""} {
+		if _, err := config.CompileToolPatterns([]string{entry}); err == nil {
+			t.Errorf("config.CompileToolPatterns([%q]): expected an error, got nil", entry)
+		}
+	}
+}
