@@ -237,3 +237,24 @@ func TestUpstreamURLRequiredRelayedOnlyToDeclaredHosts(t *testing.T) {
 		}
 	})
 }
+
+// A host declaring ONLY elicitation.url answers nothing inline, so
+// AnswersInline is false; it must still be admitted, or the -32042
+// path is unreachable for exactly the hosts it exists for (Codex
+// finding on PR #2886).
+func TestURLRequiredForURLOnlyHost(t *testing.T) {
+	asker := &scriptedAsker{questions: []mcpserver.Question{urlQuestion("u9")}, text: "done"}
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.Ask = asker
+	legacyInit(t, s, map[string]any{"elicitation": map[string]any{"url": map[string]any{}}})
+	out := legacyCall(t, s)
+	if out.Error == nil || out.Error.Code != -32042 {
+		t.Fatalf("url-only host: want -32042, got %+v", out)
+	}
+	if len(out.Error.Data.Elicitations) != 1 || out.Error.Data.Elicitations[0].ElicitationID != "mcpx-u9" {
+		t.Fatalf("url-only host: want the one URL question listed, got %v", out.Error.Data.Elicitations)
+	}
+	if asker.abandoned != 0 {
+		t.Errorf("abandoned %d, want 0", asker.abandoned)
+	}
+}

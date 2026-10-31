@@ -78,12 +78,15 @@ type Notification struct {
 
 // canAsk reports whether this request should go through the Asker at all.
 //
-// Only for a client that declared it can answer something. A client that
+// Only for a client that declared it can answer something -- or a
+// 2025-11-25 client that declared elicitation.url alone, which answers
+// nothing inline but is owed -32042 for an undeliverable URL question.
+// A client that
 // declared neither elicitation nor sampling gets the direct path and the
 // broker's own routing, unchanged -- which is the behaviour that works
 // today and must keep working, because most MCP hosts implement neither.
 func (s *Server) canAsk(ctx context.Context, c *Conn, p Peer) bool {
-	if s.Ask == nil || !p.AnswersInline() {
+	if s.Ask == nil || (!p.AnswersInline() && !p.eligibleURLElicitationRequired()) {
 		return false
 	}
 	// A modern client is never sent anything: it is handed the question
