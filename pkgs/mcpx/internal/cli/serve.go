@@ -618,6 +618,21 @@ func (a *App) CmdServe(ctx context.Context, args []string) error {
 		stickyWindow := a.Settings().Duration("retention.stickyWindow")
 		srv.ReactiveWorkingSet = catalog.NewWorkingSet(maxTools, stickyWindow, srv.PinnedTools)
 	}
+	// #1877 (Codex P2 on PR 2975): this stdio server is a shim over its
+	// backing daemon, so the identity it reports must be the DAEMON's,
+	// not this shim process's. Otherwise a daemon configured with this
+	// shim as a stdio upstream sees a "distinct peer" and admits its
+	// own aggregate surface back into itself. Ensuring the connection
+	// here only moves the daemon start to serve start; the shim can
+	// answer nothing without it anyway. A daemon that reports no
+	// instance (older build) leaves the shim's own identity in place.
+	if c, err := a.ensure(ctx); err == nil {
+		if st, err := c.Status(ctx); err == nil {
+			if inst, ok := st["instance"].(string); ok && inst != "" {
+				srv.Instance = inst
+			}
+		}
+	}
 	if *printTools {
 		return a.out(srv.Tools())
 	}
