@@ -197,6 +197,84 @@ func TestEnumIsEnforced(t *testing.T) {
 	}
 }
 
+func TestStdinEnumIsEnforced(t *testing.T) {
+	// The stdin diversion must not skip validation: an out-of-enum value
+	// for the stdin parameter is refused exactly like any other (#1648).
+	spec := adapter.Spec{
+		Name: "c", Command: "cat",
+		Tools: []adapter.ToolSpec{{
+			Name: "through", Stdin: "body",
+			Params: []adapter.Param{
+				{Name: "body", Required: true, Enum: []string{"fast", "slow"}},
+			},
+		}},
+	}
+	_, err := spec.Call(context.Background(), "through", map[string]any{"body": "sideways"})
+	if err == nil {
+		t.Fatal("an out-of-enum stdin value should be refused")
+	}
+	if !strings.Contains(err.Error(), `body must be one of fast, slow, got "sideways"`) {
+		t.Errorf("the refusal should match the ordinary enum error: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "through", map[string]any{"body": "fast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(res.Stdout) != "fast" {
+		t.Errorf("an in-enum value must still reach stdin unchanged: %q", res.Stdout)
+	}
+}
+
+func TestValidateRefusesAPositionalBoolean(t *testing.T) {
+	// A boolean with no flag can never take effect — the declaration is
+	// wrong, and Validate says so naming the parameter (#1648).
+	bad := adapter.Spec{
+		Name: "x", Command: "echo",
+		Tools: []adapter.ToolSpec{{
+			Name: "say", Params: []adapter.Param{
+				{Name: "text"},
+				{Name: "loud", Type: "boolean"},
+			},
+		}},
+	}
+	err := bad.Validate()
+	if err == nil {
+		t.Fatal("a positional boolean should not validate")
+	}
+	if !strings.Contains(err.Error(), "loud") || !strings.Contains(err.Error(), "no flag") {
+		t.Errorf("the refusal should name the parameter and the missing flag: %v", err)
+	}
+
+	ok := adapter.Spec{
+		Name: "x", Command: "echo",
+		Tools: []adapter.ToolSpec{{
+			Name: "say", Stdin: "body",
+			Params: []adapter.Param{
+				{Name: "loud", Type: "boolean", Flag: "--loud"},
+				{Name: "body", Type: "boolean"},
+			},
+		}},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("a flagged boolean and a boolean stdin parameter should validate: %v", err)
+	}
+}
+
+func TestAnUnknownArgumentNamesIt(t *testing.T) {
+	// A key naming no declared parameter is a caller mistake, not a silent
+	// no-op: the error names the unknown key and what exists (#1648).
+	_, err := echoSpec().Call(context.Background(), "say",
+		map[string]any{"text": "hello", "tga": "important"})
+	if err == nil {
+		t.Fatal("an unknown argument should be refused")
+	}
+	for _, want := range []string{`unknown argument "tga"`, "text", "tag"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q from:\n%v", want, err)
+		}
+	}
+}
+
 func TestValidateRefusesNegativeTimeouts(t *testing.T) {
 	// A negative timeout passes time.ParseDuration, so without an explicit
 	// refusal it validates and then every call is born expired (#1758).

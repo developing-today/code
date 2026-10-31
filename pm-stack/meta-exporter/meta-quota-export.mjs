@@ -66,7 +66,18 @@ export function parseSubscriptionQuota(payload) {
   if (!q || typeof q !== "object") {
     throw new ExportError("unparseable", 6, "subscription-quota: subscription_quota object missing");
   }
-  const num = (v) => (typeof v === "string" || typeof v === "number" ? Number(v) : NaN);
+  // Plain decimal spellings only (#2789). Number() also accepts "",
+  // whitespace-only, hex ("0x10" -> 16), and scientific ("1e2" -> 100)
+  // strings, which turned drifted fields into real measurements (a ""
+  // used value exported as a measured 0% window). Reject every
+  // non-decimal spelling here so drift fails closed at the parse;
+  // surrounding whitespace is drift too, not a spelling.
+  const DECIMAL = /^[0-9]+(\.[0-9]+)?$/;
+  const num = (v) => {
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && DECIMAL.test(v)) return Number(v);
+    return NaN;
+  };
   const windowUsed = num(q.window_weighted_used);
   const windowLimit = num(q.window_weighted_limit);
   const weeklyUsed = num(q.weekly_weighted_used);
@@ -85,9 +96,12 @@ export function parseSubscriptionQuota(payload) {
   // export, including the healthy weekly window and free credits).
   // Tolerate exactly that shape — emit the window with resetAt: null.
   // A missing reset on a window WITH recorded usage, and any malformed
-  // reset value, still fail closed.
+  // reset value, still fail closed. An empty/whitespace-only reset
+  // string is treated like an absent reset: it carries no reading, so
+  // on a zero-usage window it is tolerated, and on a window with usage
+  // it fails closed exactly like the absent case.
   const resetField = (raw, used, label) => {
-    if (raw === null || raw === undefined) {
+    if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
       if (used === 0) return null;
       throw new ExportError(
         "unparseable",
@@ -111,9 +125,22 @@ export function parseSubscriptionQuota(payload) {
   }
   const shortName = durationSecs === 18_000 ? "5h" : durationSecs === 3_600 ? "1h" : `window-${durationSecs}s`;
   const iso = (epochSecs) => new Date(epochSecs * 1000).toISOString();
+  // as_of is console metadata, not a measurement: an absent or
+  // empty value means "the console didn't say when" and stays null,
+  // while any other non-decimal spelling fails closed — never the
+  // 1970 epoch that Number("") used to produce.
+  const asOfRaw = q.as_of;
+  let consoleAsOf = null;
+  if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
+    const asOf = num(asOfRaw);
+    if (!Number.isFinite(asOf) || asOf < 0) {
+      throw new ExportError("unparseable", 6, "subscription-quota: field as_of not a finite number");
+    }
+    consoleAsOf = iso(asOf);
+  }
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
-    consoleAsOf: Number.isFinite(num(q.as_of)) ? iso(num(q.as_of)) : null,
+    consoleAsOf,
     windows: [
       { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
       { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },

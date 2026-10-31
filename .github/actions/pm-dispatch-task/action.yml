@@ -219,10 +219,14 @@ runs:
             priority="normal"
           fi
         fi
+        # Runtime-generated delimiter (#2712): prompt content is arbitrary
+        # (caller-supplied or template-built), so a fixed delimiter line in
+        # the prompt would truncate this output and corrupt the rest.
+        prompt_delim="PM_DISPATCH_TASK_PROMPT_EOF_$(openssl rand -hex 8)"
         {
-          echo "prompt<<PM_DISPATCH_TASK_PROMPT_EOF"
+          echo "prompt<<$prompt_delim"
           echo "$resolved_prompt"
-          echo "PM_DISPATCH_TASK_PROMPT_EOF"
+          echo "$prompt_delim"
           echo "prompt_source=$prompt_source"
           echo "title=$title"
           echo "priority=$priority"

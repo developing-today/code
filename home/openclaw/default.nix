@@ -18,8 +18,9 @@
 # into ~/.openclaw/workspace) for the knowledge pack it runs with.
 #
 # Secrets: referenced by path/name only, never values. The gateway token
-# lives in ~/.secrets/openclaw/gateway-token (0600, created on the machine,
-# not in git, not in the Nix store) and is read at service start.
+# lives in /run/secrets/openclaw/gateway-token (decrypted by sops-nix at
+# activation from secrets/sops/common/bws.yaml; never in git or the Nix
+# store) and is read at service start.
 let
   homeDir = "/home/user";
   # Local provider-proxy ports. The canonical definitions live in
@@ -90,9 +91,9 @@ in
     # from that file at service start (nix-openclaw runtime contract), so
     # the token itself never enters the store.
     environment = {
-      OPENCLAW_GATEWAY_TOKEN = "${homeDir}/.secrets/openclaw/gateway-token";
-      OPENCLAW_SLACK_BOT_TOKEN = "/home/user/.secrets/openclaw/slack-bot-token";
-      OPENCLAW_SLACK_APP_TOKEN = "/home/user/.secrets/openclaw/slack-app-token";
+      OPENCLAW_GATEWAY_TOKEN = "/run/secrets/openclaw/gateway-token";
+      OPENCLAW_SLACK_BOT_TOKEN = "/run/secrets/openclaw/slack-bot-token";
+      OPENCLAW_SLACK_APP_TOKEN = "/run/secrets/openclaw/slack-app-token";
     };
 
     # Extra binaries on the gateway's PATH (not the login shell's):

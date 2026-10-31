@@ -46,6 +46,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify every declared dispatch input is wired (#2681)
+        run: |
+          python3 - <<'PYEOF2'
+          import re, sys
+          path = ".github/workflows/jules-daily-flake-sync.yml"
+          text = open(path).read()
+          block = re.search(r"workflow_dispatch:\n    inputs:\n((?:      .*\n|        .*\n|          .*\n)+)", text)
+          names = re.findall(r"^      (\w+):", block.group(1), re.M) if block else []
+          ignored = set(re.findall(r"^      (\w+):\n        description: \"[^\"]*[Ii]gnored", block.group(1), re.M)) if block else set()
+          missing = [n for n in names if n not in ignored and ("inputs." + n) not in text]
+          if missing:
+              sys.exit("declared workflow_dispatch inputs never referenced: " + ", ".join(missing))
+          print("all declared dispatch inputs are wired or explicitly ignored:", ", ".join(names) or "none")
+          PYEOF2
+
       - name: Run Flake Sync & Config Agent via pm-dispatch
         id: dispatch
         uses: developing-today/code/.github/actions/pm-dispatch-start@main
@@ -78,6 +93,8 @@ jobs:
             - Verify that all system and host configurations evaluate cleanly without errors:
               `nix eval --raw .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath`
             - Ensure git hooks, commit messages, and treefmt formatting pass cleanly.
+
+            ${{ github.event_name == 'workflow_dispatch' && !inputs.auto_merge && 'OPERATOR DIRECTIVE: auto_merge is false for this manually dispatched run — open the Pull Request if warranted, but do NOT merge it. Leave it open for a human and say in the PR description that auto_merge was off for this run.' || '' }}
 
             ### 4. PULL REQUEST & MERGE
             - If updates or improvements are present:
