@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/mcpclient"
 	"github.com/dezren39/mcpx/internal/pool"
+	"github.com/dezren39/mcpx/internal/testsupport"
 )
 
 // selfUpstream is a legacy MCP endpoint that identifies as mcpx
@@ -345,4 +349,92 @@ func TestPoolRefusesOwnInstanceByIdentity(t *testing.T) {
 	if n := u.lists(); n != 0 {
 		t.Fatalf("identity refusal listed tools %d times; want 0 (identity decides first)", n)
 	}
+}
+
+func newFakeDaemon(t *testing.T, instance string) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		case "/v1/version":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "dev"})
+		case "/v1/recipes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"recipes": []any{}})
+		case "/v1/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"instance": instance})
+		case "/v1/events":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		}
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func writeShimConfig(t *testing.T, endpoint string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "mcpx.json")
+	content := fmt.Sprintf(`{"mcpServers":{},"daemon":{"endpoint":%q}}`, endpoint)
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+func stdioPool(t *testing.T, cmd string, endpoint string, args ...string) *pool.Pool {
+	t.Helper()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"shim": {
+			Name:    "shim",
+			Command: cmd,
+			Args:    args,
+			Env:     map[string]string{"MCPX_DAEMON_ENDPOINT": endpoint},
+		},
+	}}
+	r, err := cfg.Resolve("shim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := pool.New(r)
+	t.Cleanup(p.Close)
+	return p
+}
+
+// An mcpx serve stdio shim adopts its backing daemon's instance identity
+// (serve.go CmdServe via GET /v1/status), not the shim process's own
+// fresh ID (#1877, Codex P1 on PR 2975).
+// Regression: verify a stdio shim backed by the same daemon is refused by
+// the self-connection guard, while a shim backed by a distinct daemon is
+// admitted as a distinct peer.
+func TestPoolStdioShimBackingIdentity(t *testing.T) {
+	mcpx := testsupport.MCPXBinary(t)
+	pool.OwnInstanceID = "daemon-alpha"
+	defer func() { pool.OwnInstanceID = "" }()
+
+	// 1. Shim backed by the same daemon ("daemon-alpha"):
+	// The stdio shim must adopt "daemon-alpha", matching pool.OwnInstanceID.
+	// The pool must refuse it as a self-connection.
+	sameDaemon := newFakeDaemon(t, "daemon-alpha")
+	sameCfg := writeShimConfig(t, sameDaemon.URL)
+	samePool := stdioPool(t, mcpx, sameDaemon.URL, "--config", sameCfg, "serve")
+	_, err := samePool.Acquire(context.Background(), "global")
+	if err == nil || !strings.Contains(err.Error(), "self-connection") {
+		t.Fatalf("stdio shim backed by same daemon was admitted: err=%v, want self-connection refusal", err)
+	}
+
+	// 2. Shim backed by a distinct daemon ("daemon-beta"):
+	// The stdio shim must adopt "daemon-beta", distinct from pool.OwnInstanceID.
+	// The pool must admit it as a distinct peer.
+	diffDaemon := newFakeDaemon(t, "daemon-beta")
+	diffCfg := writeShimConfig(t, diffDaemon.URL)
+	diffPool := stdioPool(t, mcpx, diffDaemon.URL, "--config", diffCfg, "serve")
+	lease, err := diffPool.Acquire(context.Background(), "global")
+	if err != nil {
+		t.Fatalf("stdio shim backed by distinct daemon was refused: %v", err)
+	}
+	lease.Release()
 }
