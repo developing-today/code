@@ -338,6 +338,31 @@ fn trailing_placeholder_error() -> anyhow::Error {
     )
 }
 
+// Here-string content is removed before pipes are processed. In particular,
+// unquoted content consumes the rest of the line, including any `|>`.
+fn source_pipe_position(line: &str) -> Option<usize> {
+    let mut from = 0;
+    loop {
+        let pipe = find_unquoted_from(line, "|>", &[], from);
+        let here = find_unquoted_from(line, "<<<", &[], from);
+        match (pipe, here) {
+            (Some(p), Some(h)) if p < h => return Some(p),
+            (Some(p), None) => return Some(p),
+            (_, Some(h)) => {
+                let after = &line[h + 3..];
+                let content = after.trim_start();
+                let quote = content.chars().next()?;
+                if quote != '\'' && quote != '"' {
+                    return None;
+                }
+                let end = content[1..].find(quote)?;
+                from = line.len() - content.len() + 1 + end + 1;
+            }
+            (None, None) => return None,
+        }
+    }
+}
+
 pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     let line = line.trim();
     if line.is_empty() {
@@ -372,7 +397,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     // before reporting the placeholder error -- and a failing
     // substitution would mask the diagnostic with its own error
     // (Codex review, PR #3096).
-    if let Some(pos) = find_unquoted(line, "|>") {
+    if let Some(pos) = source_pipe_position(line) {
         let right = line[pos + 2..].trim();
         if has_trailing_placeholder(right) {
             return Err(trailing_placeholder_error());
@@ -737,6 +762,29 @@ mod tests {
         match preprocess_repl_line("put - name <<< content").unwrap() {
             ReplInput::Ready(s) => assert!(s.contains("__STDIN_CONTENT__:content")),
             _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_here_string_pipe_is_literal_content() {
+        for line in [
+            "put - name <<< literal |> -",
+            "put - name <<< 'literal |> -'",
+            "put - name <<< \"literal |> -\"",
+        ] {
+            match preprocess_repl_line(line).unwrap() {
+                ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:literal |> - name"),
+                _ => panic!("expected Ready"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_after_quoted_here_string_rejected_before_substitution() {
+        for quote in ['\'', '"'] {
+            let line = format!("echo $(exit 3) <<< {quote}literal |> -{quote} |> put name -");
+            let error = preprocess_repl_line(&line).unwrap_err().to_string();
+            assert!(error.contains("trailing '-' content placeholder"), "{error}");
         }
     }
 
