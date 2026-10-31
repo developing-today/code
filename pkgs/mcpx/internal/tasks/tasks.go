@@ -37,9 +37,12 @@ type Task struct {
 	StatusMessage string    `json:"statusMessage,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 	LastUpdatedAt time.Time `json:"lastUpdatedAt"`
-	// TTL is milliseconds after creation that the result is kept. Null in
-	// the MCP specification means unbounded; mcpx never offers unbounded,
-	// because a result nobody collects is memory nobody frees.
+	// TTL is how long a finished task's result is kept, in milliseconds,
+	// measured from when the task reaches a terminal state — never from
+	// creation: a task still working when its TTL passes keeps working,
+	// and its retention clock starts when it finishes. Null in the MCP
+	// specification means unbounded; mcpx never offers unbounded, because
+	// a result nobody collects is memory nobody frees.
 	TTL          int64 `json:"ttl"`
 	PollInterval int64 `json:"pollInterval,omitempty"`
 	// InputRequests are the questions an input_required task is waiting
@@ -57,6 +60,7 @@ type Task struct {
 	fault    *Fault
 	cancel   context.CancelFunc
 	done     chan struct{}
+	timer    *time.Timer
 	OnCancel func(ctx context.Context, reason string) `json:"-"`
 }
 
@@ -227,12 +231,6 @@ FROM tasks`)
 			continue
 		}
 
-		expiresAtMs := createdMs + ttlMs
-		if expiresAtMs <= nowMs {
-			toDelete = append(toDelete, id)
-			continue
-		}
-
 		createdAt := time.UnixMilli(createdMs)
 		updatedAt := time.UnixMilli(updatedMs)
 
@@ -268,16 +266,18 @@ FROM tasks`)
 			toUpdate = append(toUpdate, t)
 		}
 
+		// Retention runs from the terminal transition, which the row's
+		// updated_at_ms records; a row that was still working at shutdown
+		// became terminal just above, at load time (its LastUpdatedAt).
+		expiresAtMs := t.LastUpdatedAt.UnixMilli() + ttlMs
+		if expiresAtMs <= nowMs {
+			toDelete = append(toDelete, id)
+			continue
+		}
+
 		close(t.done)
 		s.tasks[t.TaskID] = t
-
-		remaining := time.Duration(expiresAtMs-nowMs) * time.Millisecond
-		time.AfterFunc(remaining, func() {
-			s.mu.Lock()
-			delete(s.tasks, id)
-			s.deleteFromDBLocked(id)
-			s.mu.Unlock()
-		})
+		s.armExpiryLocked(t, time.Duration(expiresAtMs-nowMs)*time.Millisecond)
 	}
 
 	for _, id := range toDelete {
@@ -527,13 +527,58 @@ func (s *Store) Admit(requestor Requestor) bool {
 // milliseconds.
 func DefaultTTL() int64 { return int64(defaults.TaskTTL / time.Millisecond) }
 
+// armExpiryLocked (re)starts t's retention timer: after d, a task that
+// is still in the store and terminal is deleted from memory and the DB.
+// A task that is not terminal is never deleted by this timer — retention
+// is the only clock it serves. Called with s.mu held, or during load
+// before the store is shared.
+func (s *Store) armExpiryLocked(t *Task, d time.Duration) {
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+	if d <= 0 {
+		return
+	}
+	id := t.TaskID
+	t.timer = time.AfterFunc(d, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		cur, ok := s.tasks[id]
+		if !ok || cur != t || !Terminal(cur.Status) {
+			return
+		}
+		delete(s.tasks, id)
+		s.deleteFromDBLocked(id)
+	})
+}
+
+// armRetentionLocked starts t's full retention clock (its TTL) from now.
+// Called with s.mu held, at the moment t reaches a terminal state.
+func (s *Store) armRetentionLocked(t *Task) {
+	s.armExpiryLocked(t, time.Duration(t.TTL)*time.Millisecond)
+}
+
 // Start runs fn in the background and returns its handle at once.
 //
 // The requestor key is who the task counts against: Start clamps the
 // requested TTL to the store's MaxTTL and refuses with ErrPerRequestorCap
 // when the requestor already holds MaxPerRequestor non-terminal tasks. The
 // empty key is the UnboundRequestor bucket, capped like any other.
+//
+// The ttl is retention, not a deadline: it is measured from when the task
+// reaches a terminal state (see Task.TTL), so work that outlives its
+// ttl still runs to completion. A caller that needs the work itself
+// bounded uses StartWithDeadline.
 func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
+	return s.StartWithDeadline(requestor, ttl, 0, fn)
+}
+
+// StartWithDeadline is Start with an explicit bound on the work itself:
+// a task still not terminal deadline after it starts is cancelled, as
+// if Cancel had been called, and its retention clock starts from that
+// cancellation. A zero deadline leaves the work unbounded. The
+// requestor key, TTL clamp and per-requestor cap are Start's, above.
+func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL()
 	}
@@ -589,15 +634,14 @@ func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Contex
 		}
 	}()
 
-	// Expire it after its TTL, so an uncollected result does not live
-	// forever.
-	time.AfterFunc(time.Duration(ttl)*time.Millisecond, func() {
-		s.mu.Lock()
-		delete(s.tasks, t.TaskID)
-		s.deleteFromDBLocked(t.TaskID)
-		s.mu.Unlock()
-		cancel()
-	})
+	if deadline > 0 {
+		// The deadline bounds the work, never the retention: firing
+		// cancels a still-running task through the ordinary cancel
+		// path, and retention runs from that terminal transition.
+		time.AfterFunc(deadline, func() {
+			s.CancelWithReason(t.TaskID, "deadline exceeded before the task completed")
+		})
+	}
 	// Snapshotted under the lock, so the value handed back cannot be read
 	// while the goroutine above is writing the original.
 	s.mu.Lock()
@@ -619,6 +663,7 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 		t.Status, t.fault = Failed, fault
 		t.StatusMessage = fault.Message
 		s.saveTaskLocked(t)
+		s.armRetentionLocked(t)
 		return true
 	}
 	t.Status, t.result = Completed, result
@@ -630,6 +675,7 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 		}
 	}
 	s.saveTaskLocked(t)
+	s.armRetentionLocked(t)
 	return true
 }
 
@@ -737,6 +783,7 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 			t.StatusMessage = reason
 		}
 		s.saveTaskLocked(t)
+		s.armRetentionLocked(t)
 		onCancel = t.OnCancel
 		cancel = t.cancel
 	}

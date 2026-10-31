@@ -5,7 +5,9 @@
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
+import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isIsoDate, isTimestampNotFuture } from "./validate.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -27,6 +29,10 @@ export interface FleetFeed {
   version: 1;
   /** ISO timestamp of collection on the sandbox. */
   generatedAt: string;
+  /** Collector checkout drift vs origin/main (#1116 item 3), measured
+   *  by the collector in its own checkout at collection time. Absent
+   *  in feeds written before the drift check existed. */
+  checkout?: CheckoutDrift;
   quota: QuotaView;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
@@ -129,7 +135,7 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (typeof v !== "object" || v === null) return "not an object";
   const s = v as Partial<OrchestrationSection>;
   if (s.version !== 1) return "version";
-  if (typeof s.generatedAt !== "string" || !Number.isFinite(Date.parse(s.generatedAt))) return "generatedAt";
+  if (!isIsoDate(s.generatedAt)) return "generatedAt";
   if (typeof s.runId !== "string") return "runId";
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
@@ -246,8 +252,9 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   const f = v as Partial<FleetFeed>;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" &&
-    Number.isFinite(Date.parse(f.generatedAt)) &&
+    // A generatedAt implausibly in the future is invalid, not
+    // "maximally fresh" (#2242, via the shared primitive).
+    isTimestampNotFuture(f.generatedAt) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&

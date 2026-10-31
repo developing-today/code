@@ -56,6 +56,20 @@ fn record_key(doc_key: &[u8]) -> Option<&str> {
     std::str::from_utf8(doc_key.strip_suffix(&[0])?).ok()
 }
 
+/// Write `contents` to `path` atomically: a temp file in the same
+/// directory, renamed over the real path, so a crash mid-write cannot
+/// leave a torn file at `path` (the pattern `tags::save_registry` uses).
+async fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    tokio::fs::write(&tmp, contents)
+        .await
+        .with_context(|| format!("write temp file {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, path)
+        .await
+        .with_context(|| format!("rename {} over {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
 impl RecordsStore {
     /// Open the world's records doc, creating it on first use. With
     /// `namespace_file`, the doc's namespace ID is remembered there so the
@@ -63,30 +77,57 @@ impl RecordsStore {
     ///
     /// # Errors
     ///
-    /// Docs failures, or an unreadable namespace file.
+    /// Docs failures. A namespace file that cannot be read is ignored,
+    /// and one that cannot be parsed is recreated with a warning: the
+    /// file only points at a cache (the records are recomputable from
+    /// the journal), so it must never brick the world's startup.
     pub async fn open(docs: &Docs, namespace_file: Option<&Path>) -> Result<Self> {
         let author = docs.author_default().await?;
         if let Some(path) = namespace_file
             && let Ok(text) = tokio::fs::read_to_string(path).await
         {
-            let id: NamespaceId = text
-                .trim()
-                .parse()
-                .with_context(|| format!("parse records namespace in {}", path.display()))?;
-            if let Some(doc) = docs.open(id).await? {
-                return Ok(Self { doc, author });
+            match text.trim().parse::<NamespaceId>() {
+                Ok(id) => match docs.open(id).await {
+                    Ok(Some(doc)) => return Ok(Self { doc, author }),
+                    Ok(None) => {
+                        tracing::warn!(
+                            "records doc {id} from {} is gone; creating a new one",
+                            path.display()
+                        );
+                    }
+                    // iroh-docs 0.101 stringifies its typed
+                    // store::OpenError::NotFound ("Replica not found")
+                    // through the RPC layer, so a gone doc surfaces as
+                    // this error rather than the Ok(None) the Docs::open
+                    // docs promise. It is the same case as Ok(None):
+                    // warn and recreate. Any other error still fails.
+                    Err(error) if error.to_string().contains("Replica not found") => {
+                        tracing::warn!(
+                            "records doc {id} from {} is gone ({error}); creating a new one",
+                            path.display()
+                        );
+                    }
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("open records doc {id} from {}", path.display())
+                        });
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        "records namespace in {} is unparseable ({error}); \
+                         creating a new records doc and rewriting the namespace file",
+                        path.display()
+                    );
+                }
             }
-            tracing::warn!(
-                "records doc {id} from {} is gone; creating a new one",
-                path.display()
-            );
         }
         let doc = docs.create().await?;
         if let Some(path) = namespace_file {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            tokio::fs::write(path, doc.id().to_string()).await?;
+            write_atomic(path, doc.id().to_string().as_bytes()).await?;
         }
         Ok(Self { doc, author })
     }
@@ -398,6 +439,60 @@ mod tests {
         world.shutdown().await.unwrap();
         host.shutdown().await;
         replica.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_recovers_from_an_empty_namespace_file() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        std::fs::write(&path, "").unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        // The torn file was rewritten with the new doc's namespace.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_recovers_from_a_garbage_namespace_file() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        std::fs::write(&path, "abc123partial").unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_reuses_the_doc_a_valid_namespace_names() {
+        let host = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        let first = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        let second = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        assert_eq!(first.namespace(), second.namespace());
+        host.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn open_recreates_when_the_named_doc_is_gone() {
+        // A well-formed namespace for a doc this store does not hold:
+        // warn-and-recreate, and the file ends up naming the new doc.
+        let host = Node::spawn().await;
+        let other = Node::spawn().await;
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("records.namespace");
+        let foreign = RecordsStore::open(&other.docs, None).await.unwrap();
+        std::fs::write(&path, foreign.namespace().to_string()).unwrap();
+        let store = RecordsStore::open(&host.docs, Some(&path)).await.unwrap();
+        assert_ne!(store.namespace(), foreign.namespace());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.trim(), store.namespace().to_string());
+        other.shutdown().await;
+        host.shutdown().await;
     }
 
     #[tokio::test]

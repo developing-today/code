@@ -97,7 +97,12 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	ready := make(chan string, 1)
 	start := time.Now()
 	run := r.Header.Get("X-Mcpx-Run")
-	// The task counts against the caller's session, else its run —
+	// askTTL is this call's waiting deadline, not just retention: a
+	// parked call nobody answers within it is cancelled
+	// (StartWithDeadline), and the same span then serves as the
+	// result's retention from completion, per the task store's TTL
+	// semantics (#1653).
+	// The task counts against the caller's session, else its run --
 	// the same fallback the explicit-task branch in handleCall uses.
 	// Charging the session alone put every session-less reporting
 	// call in the shared unbound bucket, so one run's pending call
@@ -106,7 +111,8 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	if cc.SessionID == "" {
 		reportingRequestor = tasks.Caller(run)
 	}
-	t, terr := s.taskStore().Start(reportingRequestor, s.set.Duration("proto.askTTL").Milliseconds(),
+	askTTL := s.set.Duration("proto.askTTL")
+	t, terr := s.taskStore().StartWithDeadline(reportingRequestor, askTTL.Milliseconds(), askTTL,
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withRun(ctx, run)

@@ -6653,9 +6653,9 @@
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
       // is seated nowhere. Decline-with-reason: it is dominated on its own
-      // doors — the slowest decode in the fleet (AA v4.3.2: ~984s/task,
-      // 57-61 t/s) at a higher burn than MiMo and below DeepSeek Flash's
-      // intelligence, on the same shared plan meters. The provider blocks
+      // doors — the slowest decode in the fleet (57-61 t/s; AA v5: II 32,
+      // level with DeepSeek Flash's) at a higher burn than MiMo, on the
+      // same shared plan meters. The provider blocks
       // keep listing the GLM models (catalog rule); no route seats them.
       "gemini-flash-plan": {
         "name": "Gemini Flash - plan providers",
@@ -6820,8 +6820,8 @@
         // API door plus the two Codex/ChatGPT subscription doors, each given an
         // explicit entry in this PR. openai.alternate is NOT a leaf yet: it
         // resolves through the fork's built-in catalog, which predates Terra.
-        // AA v4.3.2 (launch day): low 36.2 / medium 41.3 / high 43.9 / xhigh 45.4 /
-        // max 48.1; $1 in / $5 out per 1M — exactly half of Sol; >272k input tokens
+        // AA v5 (re-baselined 2026-10-31, #1673): medium II 38 / max II 51;
+        // $1 in / $5 out per 1M — exactly half of Sol; >272k input tokens
         // bills the whole request at 2x input / 1.5x output.
         // 2026-10-27 door correction: the original leaves openai-codex + chatgpt
         // (both front the codex proxy :18744) sit in disabled_providers — they
@@ -6840,8 +6840,8 @@
       },
       "argon-plan": {
         "name": "Gemini Argon - plan providers",
-        // NEW 2026-10-27 (pool redesign): Gemini 4 Argon (AA v4.3.2: high
-        // II 53; CAI 64 — the strongest coding evidence in the fleet).
+        // NEW 2026-10-27 (pool redesign): Gemini 4 Argon (AA v5: high
+        // II 50).
         // Doors: the OpenCode Go leaves x3. Two draft seats were cut on
         // live evidence during the deploy: Antigravity LS (its own live
         // model list, 38 models read from the :18745 proxy, serves NO
@@ -6877,7 +6877,7 @@
       "beam-plan": {
         "name": "Reflection Beam - plan providers",
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
-        // (was a raw Command Code leaf inside scout). AA v4.3.2: II 30,
+        // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
         // Doors: the Command Code free route plus OpenCode Go's beam-free
         // on all three workspaces. Leaves are seated unconditionally: the
@@ -6893,8 +6893,8 @@
       },
       "mimo-flash-plan": {
         "name": "MiMo Flash - plan providers",
-        // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v4.3.2:
-        // II 38 at ~$0.06/task list — the cheapest workhorse-adjacent
+        // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
+        // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
         // seat; slow per task at ~1,253s, so it leads the patient
         // background tier, not interactive pools). Doors: Go x3,
         // ClinePass (flat meter — the reservation that keeps ClinePass's
@@ -6919,10 +6919,10 @@
         "name": "Scout - routine work: cheapest, fastest, smart enough",
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
         // leaf on every door has wired (Flash/GLM are overpowered for this tier at any rung:
-        // AA v4.3.2 Flash max 45, GLM max 42 vs Haiku low 29). Flash addresses the PLAN pool
+        // AA v5 Flash max II 32, GLM max II 32, Haiku #high II 30). Flash addresses the PLAN pool
         // directly so routine traffic can never reach the PAYG tail on the parent route.
         // 2026-10-26 pass 3.1: Beam joins as a direct leaf — Reflection Beam 1.0 via the
-        // Command Code proxy (AA v4.3.2: II 30, TTFT 0.59s, ~385 t/s decode, :free variant).
+        // Command Code proxy (AA v5: II 18, TTFT 0.59s, ~385 t/s decode, :free variant).
         // The door was probe-verified live 2026-10-26 (chat completion answered), so the
         // registry's "no API access" note is stale for the proxy path. Caveats: the proxy
         // injects its own ~21k-token agent prompt per call, and the free tier's rate
@@ -6999,7 +6999,12 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark / Gemini Flash / Sonnet round-robin",
+        "name": "Workhorse primary - Antigravity only: Gemini Flash",
+        // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
+        // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
+        // Flash and Muse Spark contributor legs are removed from
+        // workhorse-primary; DeepSeek keeps its own routes and Spark
+        // keeps its workhorse-weighted seat — only the primary changed.
         // 2026-10-30: the Spark leg ran through muse-proxy
         // (provider "muse", muse/muse-spark-1.3) — the direct meta
         // door is dead (attestation; see the "muse" provider note).
@@ -7078,18 +7083,12 @@
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
-          "opencode-route/deepseek-flash#high",
-          "muse-direct/muse-spark-1.3-contributor",
-          "opencode-route/gemini-flash-plan#high",
-          "opencode-route/sonnet-plan#high"
+          "opencode-route/gemini-flash-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/deepseek-flash": 1,
-          "muse-direct/muse-spark-1.3-contributor": 1,
-          "opencode-route/gemini-flash-plan": 2,
-          "opencode-route/sonnet-plan": 1
+          "opencode-route/gemini-flash-plan": 2
         }
       },
       "workhorse": {
@@ -7110,8 +7109,8 @@
         //   pool: it is the tier's Meta/vendor-diversity seat (its edge
         //   is the separate Meta quota).
         // The relief pool's members are unchanged in kind from the
-        // balance pass (AA v4.3.2): Haiku #high 38 / 26.7s TTFT; Terra
-        // #medium 41.3 / 1.43s; Spark #xhigh 45 / 19.1s / ~300 t/s.
+        // balance pass (AA v5): Haiku #high II 30 / 26.7s TTFT; Terra
+        // #medium II 38 / 1.43s; Spark #xhigh / 19.1s / ~300 t/s.
         // 2026-10-29 (code#2173): the primary target below is the
         // TEMPORARY workhorse-primary wrapper (round-robin of
         // deepseek-flash#high, meta/muse-spark-1.3, and
@@ -7131,30 +7130,35 @@
         // by weight. Not addressed by any agent directly.
         // 2026-10-28 (Job 2): the Spark seat addresses spark-plan#xhigh
         // (was the direct meta contributor leaf) at the same weight 1.
+        // 2026-10-31 (Drew): Sonnet and DeepSeek Flash plan join the relief pool (Spark already seated).
         "targets": [
           "opencode-route/haiku-plan#high",
           "opencode-route/terra-plan#medium",
-          "opencode-route/spark-plan#xhigh"
+          "opencode-route/spark-plan#xhigh",
+          "opencode-route/sonnet-plan#high",
+          "opencode-route/deepseek-flash-plan#high"
         ],
         "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
           "opencode-route/terra-plan": 2,
-          "opencode-route/spark-plan": 1
+          "opencode-route/spark-plan": 1,
+          "opencode-route/sonnet-plan": 1,
+          "opencode-route/deepseek-flash-plan": 1
         }
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
-        // 2026-10-26 pass 3 (AA v4.3.2, pages read 2026-10-26): Sonnet #high 47 / TTFT ~12s /
-        // $0.88 per task (AA's Oct-26 cache-weighted costing; the Sep $1.08 figure is stale),
-        // Spark contributor #max 48 / 42.0s / 176 t/s (single Meta door is the caveat), Sol
-        // #medium 48 / 4.4s / $0.21 — that family's elbow and this chain's value star, Pro
-        // #high <=36 last (TTFT ~2s class; fires only when every seat above is walled).
-        // Luna #max REMOVED in pass 3: at 38 it sat 10 points under the pool's band with a
+        // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): Sonnet #high II 41 / TTFT ~12s /
+        // $1.64 per task (AA v5 costing),
+        // Spark contributor #max / 42.0s / 176 t/s (single Meta door is the caveat), Sol
+        // #medium II 46 / TTFT 3.62s / $0.36 — that family's elbow and this chain's value star, Pro
+        // #high last (TTFT ~2s class; fires only when every seat above is walled).
+        // Luna #max REMOVED in pass 3: at II 28 (AA v5) it sat under the pool's band with a
         // 93.8s TTFT — the balance rule's remove case; Sol already covers the OpenAI door.
-        // 2026-10-26: Terra #medium (AA launch-day II 41.3 @ $0.095/task — its family's
-        // elbow and OpenAI's default rung) slots in above Pro: it out-scores Pro's <=36
+        // 2026-10-26: Terra #medium (AA v5 II 38 @ $0.17/task — its family's
+        // elbow and OpenAI's default rung) slots in above Pro: it out-scores Pro's band
         // band at half of Sol's price. Per-rung TTFT is unpublished tonight (only max's
         // 78s is known); acceptable risk in an ordered chain's relief seat, and issue
         // #1249 tracks the missing numbers. Workhorse carries Terra #medium too, at
@@ -7207,10 +7211,10 @@
       },
       "speed": {
         "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
-        // 2026-10-26 pass 3 (AA v4.3.2, pages read 2026-10-26): a latency pool is judged on
-        // time-to-first-token as much as decode — Spark contributor #xhigh 45 / TTFT 19.1s /
-        // 303 t/s, Flash #max 45 / 1.1s / 170 t/s (plan pool addressed directly, no PAYG
-        // tail), Haiku #medium 34 / 11.9s / 174 t/s (the pool's minimum-bar seat, kept for
+        // 2026-10-26 pass 3 (AA figures re-baselined to v5 2026-10-31, #1673): a latency pool is judged on
+        // time-to-first-token as much as decode — Spark contributor #xhigh / TTFT 19.1s /
+        // 303 t/s, Flash #max II 32 / 1.1s / 170 t/s (plan pool addressed directly, no PAYG
+        // tail), Haiku #medium / 11.9s / 174 t/s (the pool's minimum-bar seat, kept for
         // its speed; #xhigh's 67.4s TTFT failed the pool's purpose). Luna REMOVED: its #max
         // paired the pool's slowest decode (~127 t/s) with a 93.8s TTFT.
         // 2026-10-27 pool redesign: one definition of fast — decode
@@ -7224,7 +7228,7 @@
         // 2026-10-28 (Job 2): the Spark seat repoints to spark-plan at
         // the same rung and weight, and Gemini Flash joins at weight 1
         // via gemini-flash-plan — antigravity-ls serves
-        // gemini-3.8-flash live (AA v4.3.2: ~II 40-41 at high,
+        // gemini-3.8-flash live (AA v5: II 31 at high,
         // ~311 t/s decode), which clears this pool's bar.
         "targets": [
           "opencode-route/spark-plan#xhigh",
@@ -7248,7 +7252,7 @@
         // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
         // builds predating #554 the decoder strips the unknown limit key and the pool
         // simply runs uncapped.
-        // AA v4.3.2: Haiku #high 38, Luna #xhigh 35 (TTFT 24.2s; #max would be 93.8s).
+        // AA v5: Haiku #high II 30, Luna #xhigh II 23 (TTFT 24.2s; #max would be 93.8s).
         // 2026-10-27 pool redesign: this is now the <=100k element of the
         // renamed `small` pool (below).
         "targets": [

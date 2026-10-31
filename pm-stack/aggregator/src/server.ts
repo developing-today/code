@@ -7,6 +7,7 @@
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
+import { decodePathSegment } from "./path-segment.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
@@ -727,7 +728,12 @@ async function handler(req: Request): Promise<Response> {
 
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
   if (discussMatch) {
-    const objectRef = decodeURIComponent(discussMatch[1]);
+    // #2748: a malformed percent-encoding is a JSON 400, never a raw
+    // URIError out of the handler.
+    const objectRef = decodePathSegment(discussMatch[1]);
+    if (objectRef === null) {
+      return json({ error: `malformed percent-encoding in path segment: ${discussMatch[1]}` }, 400);
+    }
     const { title, githubRefs } = await discussTitle(objectRef);
     const thread = await commentsStore.forObject(objectRef);
     return html(renderDiscuss(objectRef, title, thread, await commentFormOpts(githubRefs), prov()));
@@ -839,7 +845,11 @@ async function handler(req: Request): Promise<Response> {
 
   const itemMatch = /^\/item\/(.+)$/.exec(path);
   if (itemMatch) {
-    const id = decodeURIComponent(itemMatch[1]);
+    // #2748: same guard as /discuss — JSON 400 on malformed encoding.
+    const id = decodePathSegment(itemMatch[1]);
+    if (id === null) {
+      return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
+    }
     const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
     const subject = board.find((b) => b.id === id) ?? rows.find((r) => r.subject === id);
     if (subject) {

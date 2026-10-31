@@ -439,7 +439,12 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
-	t, terr := s.taskStore().Start(askRequestor(cc), ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	// The /v1/ask ttl is the interruptible call's lifetime (proto.askTTL
+	// by default), not just retention: it bounds the work itself, which
+	// internal/pool's budget treats as the outer bound while upstream
+	// working time pauses for questions. StartWithDeadline keeps that
+	// bound explicit now that Start's ttl is retention-only (#1653).
+	t, terr := s.taskStore().StartWithDeadline(askRequestor(cc), ttl, time.Duration(ttl)*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over

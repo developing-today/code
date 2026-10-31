@@ -235,6 +235,62 @@ describe("jules mapping (#898 §5)", () => {
     expect(s.tracked).toBe(2);
     expect(s.at).toBe("2026-10-25T14:58:00Z");
   });
+
+  test("ties totals to the last run across midnight, not the lexicographic max (#1587)", () => {
+    // Yesterday's late note must not outrank today's note all day.
+    const s = julesSummary({
+      last_run: "2026-10-26T00:10:00Z",
+      items: {},
+      jules_note_2359:
+        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
+      jules_note_0010:
+        "Jules list this run: 12 sessions - 3 COMPLETED, 1 FAILED, 2 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
+    });
+    expect(s.total).toBe(12);
+    expect(s.completed).toBe(3);
+    expect(s.failed).toBe(1);
+    expect(s.at).toBe("2026-10-26T00:10:00Z");
+  });
+
+  test("a stale late-evening note does not stand in for the morning run (#1587)", () => {
+    const s = julesSummary({
+      last_run: "2026-10-26T09:30:00Z",
+      items: {},
+      jules_note_2359:
+        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
+      jules_note_0930:
+        "Jules list this run: 20 sessions - 9 COMPLETED, 2 FAILED, 3 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
+    });
+    expect(s.total).toBe(20);
+    expect(s.completed).toBe(9);
+    expect(s.failed).toBe(2);
+  });
+
+  test("an unpadded note key never outranks a padded later one (#1587)", () => {
+    const s = julesSummary({
+      last_run: "2026-10-27T14:58:00Z",
+      items: {},
+      jules_note_905:
+        "Jules list this run: 50 sessions - 40 COMPLETED, 5 FAILED, 1 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 3 IN_PROGRESS. 1 Jules response sent.",
+      jules_note_1458:
+        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
+    });
+    expect(s.total).toBe(84);
+    expect(s.completed).toBe(77);
+    expect(s.failed).toBe(6);
+  });
+
+  test("omits totals when no note can be tied to the last run (#1587)", () => {
+    const s = julesSummary({
+      last_run: "2026-10-26T10:00:00Z",
+      items: {},
+      jules_note_0930:
+        "Jules list this run: 20 sessions - 9 COMPLETED, 2 FAILED, 3 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
+    });
+    expect(s.total).toBeUndefined();
+    expect(s.at).toBe("2026-10-26T10:00:00Z");
+    expect(s.tracked).toBe(0);
+  });
 });
 
 describe("roadmap grains (#898 §3)", () => {

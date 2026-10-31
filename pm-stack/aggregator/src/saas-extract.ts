@@ -13,12 +13,14 @@
 
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
-  return [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  // Real calendar dates only (#2264), mirroring snapshot-records.ts.
+  return [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
 }
 
 /** The freshest ISO date in a text, or null. */
@@ -441,17 +443,59 @@ const githubMetrics: MetricExtractor = (section) => {
 
 const modalMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
+  const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
   const credits = /\$(\d+(?:\.\d+)?) monthly compute-credit/.exec(plan);
+  // Monthly console read (§2.2, #1111): the Usage bullet carries the
+  // dated used figure, e.g. "$12.50 compute credits used on 2026-10-24"
+  // or "used $12.50". Plan bullet holds the $30/mo grant (the limit).
+  // Percentage reads (e.g. "used 50% of monthly compute credits") are
+  // deliberately NOT numbers: no fallback below matches a bare number,
+  // so they stay null instead of masquerading as dollars (Codex P2).
+  const usedMatch =
+    /\$(\d+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
+    /(\d+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
+    /used[:\s]+\$(\d+(?:\.\d+)?)/i.exec(usage) ??
+    /used[:\s]+(\d+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
+  const used = usedMatch ? Number(usedMatch[1]) : null;
   return [
     metric({
       id: "compute-credits",
       label: "Compute credits / month",
       unit: "usd",
+      used,
       limit: credits ? Number(credits[1]) : 30,
       highlight: true,
-      note: "No run hours or credit balance recorded — manual dashboard read (§2.2).",
+      note: used != null ? "Monthly console read (§2.2)." : "No run hours or credit balance recorded — manual dashboard read (§2.2).",
     }),
   ];
+};
+
+/** Bitwarden Secrets Manager (#1111): counts only — secret
+ * names/values never enter the hub. The Usage bullet carries the dated
+ * `bws` count-only read, e.g. "121 secrets, 1 project (bws count-only
+ * read 2026-10-26)". No metrics until a dated count is recorded. */
+const bitwardenMetrics: MetricExtractor = (section) => {
+  const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
+  const secrets = /(\d+)\s*secrets?/i.exec(usage);
+  const projects = /(\d+)\s*projects?/i.exec(usage);
+  return [
+    metric({
+      id: "secrets-count",
+      label: "Secrets",
+      unit: "count",
+      used: secrets ? Number(secrets[1]) : null,
+      highlight: true,
+      note: "bws count-only read (§2.2); names/values never enter the hub.",
+    }),
+    metric({
+      id: "projects-count",
+      label: "Projects",
+      unit: "count",
+      used: projects ? Number(projects[1]) : null,
+      highlight: true,
+      note: "bws count-only read (§2.2); names/values never enter the hub.",
+    }),
+  ].filter((m) => m.used != null);
 };
 
 const ociMetrics: MetricExtractor = (section) => {
@@ -585,7 +629,7 @@ const SERVICE_SPECS: ServiceSpec[] = [
     summaryKey: /^Bitwarden/,
     status: "active",
     cadenceDays: 7,
-    metrics: () => [],
+    metrics: bitwardenMetrics,
     shellNote:
       "Counts only in this hub — secret names/values never enter it. No count recorded yet; plan/price unknown.",
   },

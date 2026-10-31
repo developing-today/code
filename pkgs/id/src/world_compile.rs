@@ -1087,7 +1087,7 @@ restore = |text| match U64.from_str(text) {
                 native: false,
             },
             &compiler,
-            &[],
+            &["Screen".to_owned(), "RocText".to_owned()],
             COMPILE_TIMEOUT,
         )
         .await
@@ -1115,7 +1115,11 @@ restore = |text| match U64.from_str(text) {
             },
         )
         .unwrap();
-        assert_eq!(world.view().unwrap(), b"count=1");
+        assert!(
+            String::from_utf8(world.view().unwrap())
+                .unwrap()
+                .contains("count=1")
+        );
     }
 
     #[tokio::test]
@@ -1212,7 +1216,7 @@ restore = |text| match U64.from_str(text) {
                 native: true,
             },
             &compiler,
-            &[],
+            &["Screen".to_owned(), "RocText".to_owned()],
             COMPILE_TIMEOUT,
         )
         .await
@@ -1251,7 +1255,7 @@ restore = |text| match U64.from_str(text) {
             },
         )
         .unwrap();
-        assert_eq!(view.as_deref(), Some("count=1"));
+        assert!(view.as_deref().is_some_and(|view| view.contains("count=1")));
     }
 
     #[test]

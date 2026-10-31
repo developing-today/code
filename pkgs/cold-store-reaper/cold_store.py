@@ -1562,7 +1562,14 @@ class ColdStore:
 
     def s3_list_objects(self, bucket: str) -> list[dict]:
         """Every object in the bucket, following ListObjectsV2
-        continuation tokens until the listing is complete."""
+        continuation tokens until the listing is complete.
+
+        Progress guard: a truncated page must hand back a usable,
+        advancing NextContinuationToken. A missing/empty token would
+        re-request page 1 (the token only joins the query when truthy)
+        and a repeated token re-requests the same page — both loop
+        forever, appending duplicates. Raise instead, naming the
+        bucket, so the caller sees a stuck endpoint, not a hang."""
         out: list[dict] = []
         token = None
         while True:
@@ -1571,10 +1578,22 @@ class ColdStore:
                 query["continuation-token"] = token
             status, _h, resp = self._s3_request("GET", bucket, query=query)
             self._s3_check(status, resp, f"list of {bucket}")
-            page, truncated, token = _parse_s3_list_page(resp)
+            page, truncated, next_token = _parse_s3_list_page(resp)
             out.extend(page)
             if not truncated:
                 return out
+            if not next_token or next_token == token:
+                defect = (
+                    "a missing or empty"
+                    if not next_token
+                    else "a non-advancing"
+                )
+                raise ColdStoreError(
+                    f"list of {bucket}: truncated page returned {defect} "
+                    "NextContinuationToken; aborting instead of "
+                    "re-requesting the same page forever"
+                )
+            token = next_token
 
     def s3_get_object(
         self, bucket: str, key: str, expected_size: int | None = None

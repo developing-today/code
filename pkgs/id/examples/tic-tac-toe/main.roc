@@ -1,5 +1,7 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
+import pf.RocJson
+
 # A two-player tic-tac-toe world.
 #
 # State is a 9-character board string, the ply count, and the winner. The
@@ -59,7 +61,13 @@ layout : Model, U64, U64 -> Str
 layout = |model, _width, _height| view(model)
 
 records : Model -> Str
-records = |model| "{\"board\":\"${model.board}\",\"plays\":${model.plays.to_str()},\"winner\":\"${model.winner}\"}"
+records = |model| encode_or_crash(
+    RocJson.Object([
+        { key: "board", value: RocJson.String(model.board) },
+        { key: "plays", value: RocJson.Number(model.plays.to_str()) },
+        { key: "winner", value: RocJson.String(model.winner) },
+    ]),
+)
 
 ## The board is the whole state: the ply count is the number of marks on it
 ## and the winner follows from its lines, so nothing else is stored.
@@ -78,6 +86,11 @@ restore = |board| {
 }
 
 # --- helpers ---------------------------------------------------------------
+
+encode_or_crash = |value| match RocJson.encode(value) {
+    Ok(text) => text
+    Err(_) => crash "tic-tac-toe attempted to encode an invalid or oversized JSON value"
+}
 
 empty_cell : U8
 empty_cell = 45 # '-'

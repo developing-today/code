@@ -41,6 +41,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
 use crate::envelope_net::{Reply, answer_frames, send};
 use crate::envelope_outbox::{Outcome, check_target};
+use crate::event_sync::{CLOSE_WAIT, SESSION_DEADLINE};
 use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
 use crate::world_hub::WorldHub;
@@ -713,13 +714,21 @@ pub struct PullRequest {
 #[derive(Clone, Debug)]
 pub struct ArtifactPullProtocol {
     hub: WorldHub,
+    /// Deadline for the request frame to arrive (see `accept`).
+    frame_deadline: Duration,
+    /// Bound on the post-answer wait for the dialer to close.
+    close_wait: Duration,
 }
 
 impl ArtifactPullProtocol {
     /// Serve the artifacts of the worlds in `hub` to Iroh peers.
     #[must_use]
     pub const fn new(hub: WorldHub) -> Self {
-        Self { hub }
+        Self {
+            hub,
+            frame_deadline: SESSION_DEADLINE,
+            close_wait: CLOSE_WAIT,
+        }
     }
 
     async fn page(&self, request: &PullRequest) -> Result<Page> {
@@ -745,7 +754,16 @@ fn refused(error: anyhow::Error) -> AcceptError {
 impl ProtocolHandler for ArtifactPullProtocol {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = conn.accept_bi().await?;
-        let Some(frame) = read_frame(&mut recv).await.map_err(refused)? else {
+        // A peer that connects and never sends its request frame
+        // must not hold this handler forever (#2087): bound the
+        // read by the same session deadline event sync uses for a
+        // silent peer.
+        let frame = tokio::time::timeout(self.frame_deadline, read_frame(&mut recv)).await;
+        let frame = match frame {
+            Ok(frame) => frame.map_err(refused)?,
+            Err(_elapsed) => return Ok(()),
+        };
+        let Some(frame) = frame else {
             return Ok(());
         };
         let request: PullRequest =
@@ -754,7 +772,10 @@ impl ProtocolHandler for ArtifactPullProtocol {
         let bytes = serde_json::to_vec(&page).map_err(|error| refused(error.into()))?;
         write_frame(&mut send, &bytes).await.map_err(refused)?;
         send.finish()?;
-        conn.closed().await;
+        // Bound the wait for the dialer to close, as event sync
+        // does (#2087): a peer that never closes must not pin the
+        // handler after its answer is sent.
+        let _ = tokio::time::timeout(self.close_wait, conn.closed()).await;
         Ok(())
     }
 }
@@ -1483,6 +1504,94 @@ mod tests {
         assert!(outcome.refused.is_none());
         assert!(!away.are_friends(&ann, &bo));
         assert_eq!(away.artifacts().head_seq(&ann), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_silent_or_never_closing_pull_peer_does_not_pin_the_handler() {
+        // #2087 regression: accept waited forever for the request
+        // frame and for the dialer to close after answering. Both
+        // waits are now bounded (short bounds injected here), and
+        // the handler future completing is the observable release.
+        // No Router here: accept() is driven directly, so the
+        // endpoint must advertise the pull ALPN itself.
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![PULL_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let client = endpoint().await;
+
+        // Silent peer: connects, opens a stream, sends nothing.
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let protocol = ArtifactPullProtocol {
+            hub: WorldHub::single(WorldService::new(world, None)),
+            frame_deadline: Duration::from_millis(200),
+            close_wait: Duration::from_millis(200),
+        };
+        let accept_task = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let incoming = server.accept().await.expect("incoming");
+                let conn = incoming.await.expect("connecting");
+                protocol.accept(conn).await
+            }
+        });
+        let silent = client.connect(loopback(&server), PULL_ALPN).await.unwrap();
+        let (mut send, _recv) = silent.open_bi().await.unwrap();
+        // Announce the stream with a partial frame-length prefix
+        // (an idle stream is not visible to accept_bi), then stall:
+        // no request frame ever arrives.
+        send.write_all(&[0, 0]).await.unwrap();
+        let _send = send;
+        let released = tokio::time::timeout(Duration::from_secs(15), accept_task)
+            .await
+            .expect("a silent peer's handler is released at the frame deadline")
+            .expect("the accept task did not panic");
+        assert!(
+            released.is_ok(),
+            "the silent accept ends cleanly: {released:?}"
+        );
+
+        // Never-closing peer: reads its answer, then holds the
+        // connection open instead of closing it.
+        let world = WorldHandle::spawn(WorldCore::new("home", WorldLimits::default()).unwrap());
+        let protocol = ArtifactPullProtocol {
+            hub: WorldHub::single(WorldService::new(world, None)),
+            frame_deadline: Duration::from_secs(30),
+            close_wait: Duration::from_millis(200),
+        };
+        let accept_task = tokio::spawn({
+            let server = server.clone();
+            async move {
+                let incoming = server.accept().await.expect("incoming");
+                let conn = incoming.await.expect("connecting");
+                protocol.accept(conn).await
+            }
+        });
+        let peer = client.connect(loopback(&server), PULL_ALPN).await.unwrap();
+        let (mut send, mut recv) = peer.open_bi().await.unwrap();
+        let request = PullRequest {
+            account: public(1),
+            after: 0,
+        };
+        write_frame(&mut send, &serde_json::to_vec(&request).unwrap())
+            .await
+            .unwrap();
+        send.finish().unwrap();
+        let answer = read_frame(&mut recv).await.unwrap();
+        assert!(
+            answer.is_some(),
+            "the pull is answered before the close wait"
+        );
+        let released = tokio::time::timeout(Duration::from_secs(15), accept_task)
+            .await
+            .expect("a never-closing peer's handler is released at the close wait")
+            .expect("the accept task did not panic");
+        assert!(
+            released.is_ok(),
+            "the answered accept ends cleanly: {released:?}"
+        );
     }
 
     #[test]
