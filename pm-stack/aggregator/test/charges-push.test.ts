@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Explicit timeout: five subprocess push invocations can exceed the bun default 5s per-test timeout on slower hosts (Codex P2 on PR #3167).
 test("only a successfully installed feed confirms its charges", async () => {
   const dir = await mkdtemp(join(tmpdir(), "charges-push-"));
   const bin = join(dir, "bin");
@@ -46,4 +47,4 @@ test("only a successfully installed feed confirms its charges", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 30000);
