@@ -564,7 +564,8 @@ mod tests {
         drop(other);
         let line = fs::read_to_string(path(&scratch)).unwrap();
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
-        file.write_all(line.trim_end_matches('\n').as_bytes()).unwrap();
+        file.write_all(line.trim_end_matches('\n').as_bytes())
+            .unwrap();
         drop(file);
 
         let mut outbox = Outbox::open(path(&dir)).unwrap();
