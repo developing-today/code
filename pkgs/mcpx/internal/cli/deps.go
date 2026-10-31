@@ -85,6 +85,7 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 		if text, err := m.JSON(); err == nil {
 			out.Manifest = string(text)
 			out.ManifestName = filepath.Base(m.Path)
+			out.ManifestDir = m.Dir
 			// A runtime is never handed a package.jsonc: the comments are
 			// stripped on the way out, so it is plain JSON by then.
 			if m.JSONC {

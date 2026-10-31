@@ -173,6 +173,15 @@ type DepsOptions struct {
 	Manifest string `json:"manifest,omitempty"`
 	// ManifestName is the filename to write it as: package.json by default.
 	ManifestName string `json:"manifestName,omitempty"`
+	// ManifestDir is the directory the selected manifest was read
+	// from, on the caller's filesystem: the resolution base for
+	// its local file:/link: artifacts, which npm resolves against
+	// the manifest's directory rather than the script's. It is a
+	// base for a runner sharing the caller's filesystem (local
+	// execution) -- the only case local artifacts can be
+	// transported at all; a remote daemon cannot open it and the
+	// set's data fields remain the whole story there.
+	ManifestDir string `json:"manifestDir,omitempty"`
 	// Lockfile is the lockfile's content, honoured frozen and never
 	// rewritten. It is bytes, not a string, because a lockfile may be binary
 	// (bun.lockb): encoding/json carries []byte as base64, so the content
@@ -628,6 +637,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			Packages:     opts.Deps.Packages,
 			Manifest:     opts.Deps.Manifest,
 			ManifestName: opts.Deps.ManifestName,
+			ManifestDir:  opts.Deps.ManifestDir,
 			Lockfile:     opts.Deps.Lockfile,
 			LockfileName: opts.Deps.LockfileName,
 			Source:       opts.Deps.Source,

@@ -254,6 +254,80 @@ func satisfiesSet(set string, want semver) bool {
 	return true
 }
 
+// wildcardPrefix splits a version written with component wildcards
+// ("1.x", "1.2.*", "1.X") into the numeric components written before
+// the first wildcard. ok is false when the version has no wildcard
+// component (or a non-numeric component precedes one, which is not a
+// version shape at all). A wildcard admits anything at its position
+// and below: npm's "1.2.*" is the range >=1.2.0 <1.3.0, and parsing
+// it as a plain version (which fails) falsely reported compatible
+// pins as conflicts (Codex review, PR #2589).
+func wildcardPrefix(rest string) (prefix []int, ok bool) {
+	parts := strings.Split(rest, ".")
+	for i, part := range parts {
+		if i > 2 {
+			return nil, false
+		}
+		if part == "x" || part == "X" || part == "*" {
+			out := make([]int, i)
+			for j := 0; j < i; j++ {
+				n, err := strconv.Atoi(parts[j])
+				if err != nil || n < 0 {
+					return nil, false
+				}
+				out[j] = n
+			}
+			return out, true
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+// satisfiesWildcard reports whether v satisfies a wildcard version
+// under op, at the precision the wildcard was written: a bare or =
+// wildcard pins only the written numeric components; ^ and ~ widen
+// from them the way npm desugars them (^1.2.x is >=1.2.0 <2.0.0,
+// ~1.2.x is >=1.2.0 <1.3.0, ^/~1.x is >=1.0.0 <2.0.0). Any other
+// operator over a wildcard is not a shape npm gives meaning, so it
+// satisfies nothing rather than guessing.
+func satisfiesWildcard(op string, prefix []int, v semver) bool {
+	matchesPrefix := func() bool {
+		for i, n := range prefix {
+			if v.nums[i] != n {
+				return false
+			}
+		}
+		return true
+	}
+	switch op {
+	case "", "=":
+		return matchesPrefix()
+	case "^", "~":
+		if len(prefix) == 0 {
+			return true
+		}
+		low := semver{}
+		for i, n := range prefix {
+			low.nums[i] = n
+		}
+		if compareSemver(v, low) < 0 {
+			return false
+		}
+		high := semver{}
+		switch {
+		case op == "~" && len(prefix) >= 2:
+			high.nums[0], high.nums[1] = prefix[0], prefix[1]+1
+		default:
+			high.nums[0] = prefix[0] + 1
+		}
+		return compareSemver(v, high) < 0
+	}
+	return false
+}
+
 // splitToken separates a range token's comparison operator from its
 // version part (">=1.3.0" -> ">=", "1.3.0"; a bare version has none).
 func splitToken(tok string) (string, string) {
@@ -270,6 +344,9 @@ func satisfiesToken(tok string, v semver) bool {
 		return true
 	}
 	op, rest := splitToken(tok)
+	if prefix, wild := wildcardPrefix(rest); wild {
+		return satisfiesWildcard(op, prefix, v)
+	}
 	base, ok := parseSemver(rest)
 	if !ok {
 		return false

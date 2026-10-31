@@ -277,6 +277,39 @@ func TestAPinInsideTheManifestRangeIsNotAConflict(t *testing.T) {
 	}
 }
 
+// TestAWildcardManifestRangeAdmitsMatchingPins is the Codex finding
+// on PR #2589 (config.go): a manifest declaring foo: "1.x" or
+// "1.2.*" was read as a plain version, the parse failed, and a
+// compatible explicit pin (foo@1.2.3) was reported as a conflict.
+// Component wildcards are ranges at their written precision.
+func TestAWildcardManifestRangeAdmitsMatchingPins(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"foo":"1.x","bar":"1.2.*","baz":"1.2.3"}}`)
+	for _, spec := range []string{"foo@1.2.3", "foo@1.9.9", "bar@1.2.0", "bar@1.2.9"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the wildcard range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	// And pins outside the wildcard still contradict it.
+	for _, spec := range []string{"foo@2.0.0", "bar@1.3.0", "bar@2.2.1"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s is outside the wildcard range and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}
+
 // TestADisjunctiveManifestRangeAdmitsEitherAlternative is the Codex
 // finding on PR #2589 (config.go): the range check evaluated every
 // whitespace-separated token as one conjunction, so a manifest declaring

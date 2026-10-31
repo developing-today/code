@@ -105,6 +105,81 @@ func TestMaterialiseDepsDenoImportsMap(t *testing.T) {
 	}
 }
 
+func TestMaterialiseDepsLocalArtifactResolvesAgainstManifestDir(t *testing.T) {
+	// Codex review, PR #2589: discovery found the manifest ABOVE
+	// the script, and its file: artifact resolved against the
+	// script's directory instead of the manifest's, so the
+	// transport looked for a file that was never there (ENOENT).
+	project := t.TempDir()
+	manifestDir := filepath.Join(project, "app")
+	scriptDir := filepath.Join(manifestDir, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "local.tgz"), []byte("artifact-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workdir := t.TempDir()
+	_, err := materialiseDeps(workdir, KindNode, &Deps{
+		Manifest:     `{"name":"proj","dependencies":{"local":"file:./local.tgz"}}`,
+		ManifestName: "package.json",
+		ManifestDir:  manifestDir,
+		AutoInstall:  "off",
+	}, true, scriptDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(workdir, "local.tgz"))
+	if err != nil {
+		t.Fatalf("the artifact was not transported from the manifest directory: %v", err)
+	}
+	if string(got) != "artifact-bytes" {
+		t.Fatalf("transported artifact = %q", got)
+	}
+}
+
+func TestWorkDirKeyDiffersByLocalArtifactContent(t *testing.T) {
+	// Codex review, PR #2589: two projects with identical dep
+	// payloads but different content behind file:./local.tgz
+	// selected the same cached workdir, and the second transport
+	// overwrote the first project's installed package. The
+	// artifact's content is part of the workdir identity.
+	base := t.TempDir()
+	mk := func(content string) string {
+		if err := os.WriteFile(filepath.Join(base, "local.tgz"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		opts := Options{Deps: &Deps{
+			Manifest:     `{"name":"proj","dependencies":{"local":"file:./local.tgz"}}`,
+			ManifestName: "package.json",
+			ManifestDir:  base,
+		}}
+		return workDirKeyMaterial(KindNode, opts)
+	}
+	a1, a2, b := mk("content-A"), mk("content-A"), mk("content-B")
+	if a1 != a2 {
+		t.Errorf("the same artifact at the same base must share a workdir key")
+	}
+	if a1 == b {
+		t.Errorf("different artifact content must not share a workdir key")
+	}
+	// The resolution base is part of the identity too (the
+	// finding's terms): the same bytes behind a file: ref in a
+	// different project are a different artifact source.
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "local.tgz"), []byte("content-A"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Deps: &Deps{
+		Manifest:     `{"name":"proj","dependencies":{"local":"file:./local.tgz"}}`,
+		ManifestName: "package.json",
+		ManifestDir:  other,
+	}}
+	if workDirKeyMaterial(KindNode, opts) == a1 {
+		t.Errorf("a different resolution base must not share a workdir key")
+	}
+}
+
 func TestDepsFlagsMatrix(t *testing.T) {
 	cases := []struct {
 		kind string

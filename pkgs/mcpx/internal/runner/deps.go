@@ -35,6 +35,19 @@ type Deps struct {
 	// ManifestName is the filename to write it as: package.json by
 	// default.
 	ManifestName string
+	// ManifestDir is the directory the selected manifest was read
+	// from, on the resolver's filesystem: the resolution base for
+	// its local file:/link: artifacts. The manifest may sit above
+	// the script (discovery walks up) or outside it entirely (an
+	// explicit deps.manifest), and npm resolves file: against the
+	// MANIFEST's directory -- resolving against the script's
+	// directory instead looked for artifacts that were never
+	// there and failed with ENOENT (Codex review, PR #2589). It
+	// is meaningful only to a runner sharing the resolver's
+	// filesystem, which is the only case the local-artifact
+	// transport already serves; a set that arrived as data only
+	// leaves it empty and falls back to the project directory.
+	ManifestDir string
 	// Lockfile is the lockfile's content, honoured frozen and never
 	// rewritten.
 	Lockfile []byte
@@ -228,14 +241,23 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	// there is nothing local to copy from; the requirement is left
 	// as written.
 	if projectDir != "" {
+		// The resolution base is the selected manifest's own
+		// directory when the set carries it, not the script's:
+		// discovery may have found the manifest above the script,
+		// or the caller may have named one outside it (Codex
+		// review, PR #2589).
+		base := projectDir
+		if d.ManifestDir != "" {
+			base = d.ManifestDir
+		}
 		for _, spec := range deps {
 			rel, ok := localFileRef(spec)
 			if !ok {
 				continue
 			}
-			src := filepath.Join(projectDir, rel)
+			src := filepath.Join(base, rel)
 			dst := filepath.Join(dir, rel)
-			if !withinDir(projectDir, src) || !withinDir(dir, dst) {
+			if !withinDir(base, src) || !withinDir(dir, dst) {
 				return nil, fmt.Errorf("deps: local dependency %q escapes its base directory", spec)
 			}
 			if err := copyLocalArtifact(src, dst); err != nil {
@@ -677,6 +699,82 @@ func projectDenoConfigIdentity(dir string) string {
 		CompilerOptions json.RawMessage              `json:"compilerOptions"`
 	}{imports, scopes, compilerOptions}); err == nil {
 		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// localDepsIdentity identifies a set's local file:/link: artifacts
+// by content and resolution base, for the workdir key. The dep
+// fingerprint covers only the transported DATA (packages, manifest
+// text, lockfiles): two projects whose payloads are identical but
+// whose file:./localpkg directories hold different code fingerprinted
+// alike, shared one cached workdir, and the second project's
+// transport overwrote the first's installed package while its
+// install marker still claimed the set was installed (Codex review,
+// PR #2589). Hashing the artifacts' content -- the same discipline
+// projectDenoConfigIdentity applies to project configuration --
+// gives differing content differing workdirs. "" when the set names
+// no local artifacts, so sets without them keep their existing
+// workdir identity.
+func localDepsIdentity(d *Deps, base string) string {
+	if d == nil || base == "" {
+		return ""
+	}
+	var manifest map[string]any
+	if strings.TrimSpace(d.Manifest) != "" {
+		if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
+			return ""
+		}
+	}
+	deps := d.effectiveDeps(manifest)
+	rels := make([]string, 0, len(deps))
+	for _, spec := range deps {
+		if rel, ok := localFileRef(spec); ok {
+			rels = append(rels, rel)
+		}
+	}
+	if len(rels) == 0 {
+		return ""
+	}
+	sort.Strings(rels)
+	h := sha256.New()
+	fmt.Fprintf(h, "base:%s\n", base)
+	for _, rel := range rels {
+		src := filepath.Join(base, rel)
+		fmt.Fprintf(h, "ref:%s:", rel)
+		info, err := os.Stat(src)
+		if err != nil {
+			h.Write([]byte("missing\n"))
+			continue
+		}
+		if !info.IsDir() {
+			content, err := os.ReadFile(src)
+			if err != nil {
+				h.Write([]byte("unreadable\n"))
+				continue
+			}
+			sum := sha256.Sum256(content)
+			fmt.Fprintf(h, "file:%s\n", hex.EncodeToString(sum[:]))
+			continue
+		}
+		// A directory artifact (link: or a file: directory): hash
+		// every file's relative path and content, in walk order.
+		_ = filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			r, rerr := filepath.Rel(src, path)
+			if rerr != nil {
+				return nil
+			}
+			content, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return nil
+			}
+			sum := sha256.Sum256(content)
+			fmt.Fprintf(h, "entry:%s:%s\n", r, hex.EncodeToString(sum[:]))
+			return nil
+		})
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -192,6 +192,15 @@ func workDirKeyMaterial(kind string, opts Options) string {
 	if kind == KindDeno && opts.Deps != nil {
 		material += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
 	}
+	if opts.Deps != nil {
+		base := opts.Deps.ManifestDir
+		if base == "" {
+			base = depsProjectDir(opts)
+		}
+		if id := localDepsIdentity(opts.Deps, base); id != "" {
+			material += "\x00" + id
+		}
+	}
 	return material
 }
 
