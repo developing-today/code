@@ -97,7 +97,13 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	ready := make(chan string, 1)
 	start := time.Now()
 	run := r.Header.Get("X-Mcpx-Run")
-	t := s.taskStore().Start(s.set.Duration("proto.askTTL").Milliseconds(),
+	// askTTL is this call's waiting deadline, not just retention: a
+	// parked call nobody answers within it is cancelled
+	// (StartWithDeadline), and the same span then serves as the
+	// result's retention from completion, per the task store's TTL
+	// semantics (#1653).
+	askTTL := s.set.Duration("proto.askTTL")
+	t := s.taskStore().StartWithDeadline(askTTL.Milliseconds(), askTTL,
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withRun(ctx, run)
