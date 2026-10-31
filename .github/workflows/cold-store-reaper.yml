@@ -1,0 +1,108 @@
+name: cold-store-reaper
+
+# Test verification for pkgs/cold-store-reaper (#1427).
+#
+# The package verifies sha256s, enforces budget stops, and produces the
+# only portable Turso exports, but until now nothing ran its tests:
+# 3,179 lines of Python suites (tests/) plus the worker local proof
+# (worker/test/run-local-proof.mjs) executed only when a human
+# remembered. The last three cold-store PRs before this workflow all
+# shipped unexecuted test changes. This workflow runs both suites on
+# every PR and push to main that touches the package.
+#
+# The Python suites are stdlib unittest with fake in-process servers —
+# no network, no credentials. Their external requirements are the
+# zstd and curl CLIs (cold_store.py shells out to both) and the
+# sqlite3 CLI (the export-turso tests rebuild a database through the
+# SQLITE3_BIN seam in scripts/export-turso.sh). One Python test also
+# cross-checks worker/src/decoder.js against a real Python pack when
+# node and the worker's node_modules are present (it skips otherwise),
+# so the python job installs the worker dependencies first to keep
+# that cross-check live instead of silently skipped.
+#
+# The worker proof needs the reverse: node plus the real Python
+# reaper (it packs a bundle with cold_store.ColdStore.pack), so its
+# job provisions Python and zstd as well.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/cold-store-reaper/**"
+      - ".github/workflows/cold-store-reaper.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/cold-store-reaper/**"
+      - ".github/workflows/cold-store-reaper.yml"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: "python: unittest suites"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install CLI requirements (zstd, curl, sqlite3)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd curl sqlite3
+
+      - name: Install worker dependencies (for the decoder cross-check test)
+        working-directory: pkgs/cold-store-reaper/worker
+        run: npm ci
+
+      - name: Run the Python suites
+        run: python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
+
+  worker-proof:
+    name: "worker: local proof"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install CLI requirements (zstd)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      - name: Run the worker local proof
+        working-directory: pkgs/cold-store-reaper/worker
+        run: |
+          npm ci
+          npm test
