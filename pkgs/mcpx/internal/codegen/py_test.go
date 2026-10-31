@@ -912,3 +912,67 @@ func TestPythonCodexRound8(t *testing.T) {
 		t.Errorf("control-character module must import: %v\n%s\n--- module ---\n%s", err, got2, ctrl)
 	}
 }
+
+// TestPythonCodexRound9 covers the round-9 finding: a tool description is
+// emitted as "# " comment lines, and Python's tokenizer treats a bare carriage
+// return as a newline. Splitting on "\n" alone left the tail of such a
+// description uncommented, so the whole generated module failed to import.
+func TestPythonCodexRound9(t *testing.T) {
+	l := pythonLang(t)
+	out := l.EmitModule([]codegen.Namespace{{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "carriage",
+				Description: "hello\rworld",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+			{
+				Name:        "nul",
+				Description: "before\x00after",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+			{
+				Name:        "crlf",
+				Description: "line one\r\nline two\rline three",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+		},
+	}}, "http://127.0.0.1:1234", "sess-9")
+
+	// No raw carriage return or NUL may survive into the source text.
+	if strings.ContainsAny(out, "\r\x00") {
+		t.Errorf("generated module carries a raw control character:\n%q", out)
+	}
+	// The description survives as readable comment lines, one per line.
+	for _, want := range []string{"    # hello", "    # world", "    # line one", "    # line two"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing comment line %q:\n%s", want, out)
+		}
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"import mcpx_client\n" +
+		"from mcpx_client import tools\n" +
+		"assert hasattr(tools.Demo, 'carriage')\n" +
+		"assert hasattr(tools.Demo, 'nul')\n" +
+		"print('comment-import-ok')\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	got, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(got), "comment-import-ok") {
+		t.Errorf("a description with CR/NUL must still yield an importable module: %v\n%s\n--- module ---\n%s", err, got, out)
+	}
+}

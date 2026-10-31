@@ -393,6 +393,38 @@ func pyNamespaceDoc(ns Namespace) string {
 	return "    " + pyQuote(strings.Join(lines, "\n")+"\n") + "\n"
 }
 
+// pyCommentLines splits text into safe single-line Python comments. A bare
+// carriage return is a source newline to Python's tokenizer, so splitting on
+// "\n" alone leaves it embedded — the rest of the description then reads as
+// uncommented code and the whole module fails to import (IndentationError).
+// Other control characters (NUL, vertical tab, form feed, ESC, ...) are not
+// valid in Python source either, so they are escaped rather than dropped:
+// the comment still reads as the tool description, but cannot change the
+// program. Tabs are legal in a comment and are kept.
+func pyCommentLines(s string) []string {
+	cleaned := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(s)
+	lines := strings.Split(cleaned, "\n")
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		var b strings.Builder
+		for _, r := range l {
+			switch {
+			case r == '\t':
+				b.WriteRune(r)
+			case r < 0x20 || r == 0x7f:
+				fmt.Fprintf(&b, `\x%02x`, r)
+			case r == 0x2028 || r == 0x2029:
+				// Unicode line separators terminate a line in some readers.
+				fmt.Fprintf(&b, `\u%04x`, r)
+			default:
+				b.WriteRune(r)
+			}
+		}
+		out = append(out, sanitizeComment(b.String()))
+	}
+	return out
+}
+
 // pyAllParams is schemaFields plus the required-only names: a name
 // the schema requires (through allOf, say) but never declares under
 // properties still needs a generated parameter, or the method cannot
@@ -419,8 +451,8 @@ func pyAllParams(raw json.RawMessage) (params, required []string) {
 func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	var b strings.Builder
 	if d := strings.TrimSpace(t.Description); d != "" {
-		for _, l := range strings.Split(d, "\n") {
-			b.WriteString("    # " + sanitizeComment(l) + "\n")
+		for _, l := range pyCommentLines(d) {
+			b.WriteString("    # " + l + "\n")
 		}
 	}
 	params, required := pyAllParams(t.InputSchema)
