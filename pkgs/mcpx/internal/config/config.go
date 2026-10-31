@@ -818,6 +818,12 @@ func pickList(near, far []string) []string {
 }
 
 // ResolveAll returns every enabled server, sorted by name.
+//
+// Two enabled servers resolving to the same namespace are refused: the
+// generated client would declare that namespace twice and no script
+// could run (#1649). ResolveAll is the single choke point every load
+// path passes through, and it resolves in sorted name order, so the
+// first owner named in the error is deterministic.
 func (c *Config) ResolveAll() ([]*Resolved, error) {
 	names := make([]string, 0, len(c.MCPServers))
 	for n, s := range c.MCPServers {
@@ -828,11 +834,16 @@ func (c *Config) ResolveAll() ([]*Resolved, error) {
 	}
 	sort.Strings(names)
 	out := make([]*Resolved, 0, len(names))
+	owners := make(map[string]string, len(names))
 	for _, n := range names {
 		r, err := c.Resolve(n)
 		if err != nil {
 			return nil, err
 		}
+		if first, dup := owners[r.Namespace]; dup {
+			return nil, fmt.Errorf("servers %q and %q both resolve to namespace %q; rename one server or set an explicit mcpx.namespace", first, n, r.Namespace)
+		}
+		owners[r.Namespace] = n
 		out = append(out, r)
 	}
 	return out, nil
