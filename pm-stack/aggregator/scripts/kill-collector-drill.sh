@@ -19,10 +19,13 @@
 #      FEED_STALE_MS — 15 minutes, the #1148 watchdog threshold the code
 #      itself uses (src/health.ts, src/sources/live.ts) — and records
 #      the health payload at that moment as the fired-signal evidence.
-#   4. Restores, ALWAYS (trap on EXIT/INT/TERM plus an explicit restore
-#      step): starts the timer again and immediately runs the collector
-#      once so the feed is fresh, then confirms via /api/health that the
-#      feed age is back under the threshold.
+#   4. Restores, ALWAYS once the kill has happened (trap on
+#      EXIT/INT/TERM plus an explicit restore step): starts the timer
+#      again and immediately runs the collector once so the feed is
+#      fresh, then confirms via /api/health that the feed age is back
+#      under the threshold. The restore is gated on the kill: a drill
+#      that refuses to start (step 1, or the preconditions below)
+#      touches nothing — no timer/service start on any refusal path.
 #   5. Reports: writes a JSON result to the state dir; with gh available
 #      it posts the result as a comment on #1283. If the expected signal
 #      does NOT fire, it instead files a new issue under epic #1184 with
@@ -103,9 +106,17 @@ except Exception:
 '
 }
 
-# --- restore: idempotent, safe to call from the trap at any point ---------
+# --- restore: idempotent, and gated on the kill ---------------------------
+# The trap is installed before the precondition checks, so without the
+# gate a REFUSAL (die -> exit) would fire restore() and start the
+# collector the drill just refused to touch — masking the very
+# findings the interlocks exist to surface (#2865). KILLED is set only
+# after the collector stop succeeds; until then restore() is a no-op
+# and every refusal path leaves the system exactly as it found it.
+KILLED=0
 RESTORED=0
 restore() {
+	[ "$KILLED" = 1 ] || return 0
 	[ "$RESTORED" = 1 ] && return 0
 	RESTORED=1
 	log "restoring collector (timer start + immediate collection run)"
@@ -125,6 +136,10 @@ log "preconditions ok: collector active, feed fresh (age ${BASE_AGE}ms), no inci
 # --- kill -------------------------------------------------------------------
 log "stopping $COLLECTOR_TIMER"
 sudo -n systemctl stop "$COLLECTOR_TIMER" || die "failed to stop $COLLECTOR_TIMER (sudo -n systemctl required)"
+# The collector is stopped from here on: the restore gate opens, and
+# any later exit (signal, die, the explicit restore step) puts the
+# collector back exactly as the drill found it.
+KILLED=1
 sudo -n systemctl stop "$COLLECTOR_SERVICE" 2>/dev/null || true
 
 # --- wait for the honesty signal ---------------------------------------------
