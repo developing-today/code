@@ -541,18 +541,76 @@ func hidePropsAtScope(m map[string]any, hide []string) {
 }
 
 // schemaProps is the property name set of a tool's inputSchema.
+// Declarations are collected through same-instance composition
+// (allOf/anyOf/oneOf, if/then/else) and local references before a
+// name counts as undeclared: a target that declares an argument
+// inside allOf accepts that argument exactly as if it were declared
+// at the root, and generated clients already support such schemas --
+// treating the pin as unknown would reject a valid view at load
+// (Codex P2 on PR #2976).
 func schemaProps(schema json.RawMessage) map[string]bool {
 	out := map[string]bool{}
 	var m map[string]any
 	if err := json.Unmarshal(schema, &m); err != nil {
 		return out
 	}
+	collectSchemaProps(m, m, out, map[string]bool{})
+	return out
+}
+
+func collectSchemaProps(m, root map[string]any, out map[string]bool, resolving map[string]bool) {
 	if props, ok := m["properties"].(map[string]any); ok {
 		for name := range props {
 			out[name] = true
 		}
 	}
-	return out
+	for _, k := range []string{"allOf", "anyOf", "oneOf"} {
+		if subs, ok := m[k].([]any); ok {
+			for _, sub := range subs {
+				if sm, ok := sub.(map[string]any); ok {
+					collectSchemaProps(sm, root, out, resolving)
+				}
+			}
+		}
+	}
+	for _, k := range []string{"if", "then", "else"} {
+		if sub, ok := m[k].(map[string]any); ok {
+			collectSchemaProps(sub, root, out, resolving)
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveSchemaPointer(root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				resolving[ref] = true
+				collectSchemaProps(tm, root, out, resolving)
+				delete(resolving, ref)
+			}
+		}
+	}
+}
+
+// resolveSchemaPointer resolves a local JSON Pointer reference ("#"
+// or "#/a/b") against the document root.
+func resolveSchemaPointer(root map[string]any, ref string) (any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 // validateViews checks declared tool views against the target tools

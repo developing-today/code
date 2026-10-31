@@ -781,3 +781,52 @@ func TestEffectiveSchemaPinnedPromotesPinnedTriggerDependencies(t *testing.T) {
 		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: a dependentSchemas entry triggered by a
+// pinned property always fires at enforcement (the pin is merged
+// before rules run), so the advertised projection must promote the
+// dependent schema to an unconditional same-instance constraint --
+// the dependentRequired promotion alone leaves callers seeing {} as
+// valid while enforcement rejects it for the missing dependency.
+func TestEffectiveSchemaPinnedPromotesPinnedDependentSchemas(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"dependentSchemas":{"tailnet":{"required":["limit"]},"verbose":{"required":["format"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"allOf":[{"required":["limit"]}]`) {
+		t.Errorf("pinned trigger's dependent schema must promote to allOf: %s", got)
+	}
+	if strings.Contains(got, `"dependentSchemas":{"tailnet"`) {
+		t.Errorf("pinned trigger must not stay conditional in the projection: %s", got)
+	}
+	if !strings.Contains(got, `"dependentSchemas":{"verbose":{"required":["format"]}}`) {
+		t.Errorf("unpinned triggers keep their dependent schema: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a requirement reached through a local
+// reference sits at the instance scope the reference occupies -- a
+// root $ref is a root constraint -- so the pinned projection must
+// resolve it instead of leaving the referenced requirement in place
+// (which, against a hidden pin and additionalProperties:false,
+// advertised an unsatisfiable schema).
+func TestEffectiveSchemaPinnedResolvesLocalRefRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"need":{"required":["tailnet","limit"]}},"$ref":"#/$defs/need"}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("referenced requirement must be projected at the root scope: %s", got)
+	}
+	if strings.Contains(got, `"required":["tailnet","limit"]`) && !strings.Contains(got, `"$defs"`) {
+		t.Errorf("unprojected referenced requirement must not survive outside $defs: %s", got)
+	}
+}

@@ -319,3 +319,22 @@ func TestReloadDefersViewValidationOnExpiredCatalog(t *testing.T) {
 		t.Fatalf("expired catalog must defer view validation, got %v", err)
 	}
 }
+
+// Codex P2 on PR #2976: validateViews collects argument names via
+// schemaProps; a target declaring an argument through same-instance
+// composition (allOf) or a local reference declares it for pin
+// purposes exactly as a root-level declaration does.
+func TestSchemaPropsCollectsComposedDeclarations(t *testing.T) {
+	composed := schemaProps(json.RawMessage(`{"type":"object","allOf":[{"properties":{"tailnet":{"type":"string"}}}]}`))
+	if !composed["tailnet"] {
+		t.Errorf("allOf-declared property must count as an argument: %v", composed)
+	}
+	referred := schemaProps(json.RawMessage(`{"$defs":{"base":{"properties":{"limit":{"type":"number"}}}},"$ref":"#/$defs/base"}`))
+	if !referred["limit"] {
+		t.Errorf("reference-declared property must count as an argument: %v", referred)
+	}
+	root := schemaProps(json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}}}`))
+	if !root["name"] || len(root) != 1 {
+		t.Errorf("root declarations unchanged: %v", root)
+	}
+}

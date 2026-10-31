@@ -843,12 +843,49 @@ func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMess
 // stripPinnedRequirements projects one schema at its own instance
 // scope; see projectPinnedRule for the contract.
 func stripPinnedRequirements(v any, pinned map[string]bool) any {
+	root, _ := v.(map[string]any)
+	return stripPinnedScope(v, pinned, root, map[string]bool{})
+}
+
+// stripPinnedScope is stripPinnedRequirements with the rule document's
+// root available for resolving local references and a set of the
+// references currently being resolved, so a self-referential
+// definition cannot recurse forever. A local $ref applies its target
+// at the very instance scope where the reference sits -- a definition
+// referenced from the root is a root constraint, not a nested scope
+// -- so a resolvable reference is inlined (target keys merged under
+// the referencing schema's own keys) and projected like any other
+// same-instance schema; a requirement reached only through a
+// reference must not survive the projection unexamined (Codex P2 on
+// PR #2976).
+func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolving map[string]bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
 	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveLocalPointer(root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				merged := make(map[string]any, len(tm)+len(m))
+				for k, val := range tm {
+					merged[k] = val
+				}
+				for k, val := range m {
+					if k != "$ref" {
+						merged[k] = val
+					}
+				}
+				resolving[ref] = true
+				out := stripPinnedScope(merged, pinned, root, resolving)
+				delete(resolving, ref)
+				return out
+			}
+			return target
+		}
+	}
 	out := make(map[string]any, len(m))
 	var promoted []string
+	var promotedSubs []any
 	for k, val := range m {
 		switch k {
 		case "required":
@@ -901,21 +938,46 @@ func stripPinnedRequirements(v any, pinned map[string]bool) any {
 			if subs, ok := val.([]any); ok {
 				projected := make([]any, len(subs))
 				for i, sub := range subs {
-					projected[i] = stripPinnedRequirements(sub, pinned)
+					projected[i] = stripPinnedScope(sub, pinned, root, resolving)
 				}
 				out[k] = projected
 			} else {
 				out[k] = val
 			}
 		case "not", "if", "then", "else":
-			out[k] = stripPinnedRequirements(val, pinned)
+			out[k] = stripPinnedScope(val, pinned, root, resolving)
 		case "dependentSchemas":
 			if subs, ok := val.(map[string]any); ok {
 				projected := make(map[string]any, len(subs))
-				for prop, sub := range subs {
-					projected[prop] = stripPinnedRequirements(sub, pinned)
+				triggers := make([]string, 0, len(subs))
+				for prop := range subs {
+					triggers = append(triggers, prop)
 				}
-				out[k] = projected
+				sort.Strings(triggers)
+				for _, prop := range triggers {
+					sub := stripPinnedScope(subs[prop], pinned, root, resolving)
+					if pinned[prop] {
+						// The pin always supplies the trigger, so
+						// the projected dependent schema applies
+						// unconditionally at this scope: promote it
+						// into allOf, analogous to the pinned
+						// dependentRequired promotion above. An
+						// empty or true projection constrains
+						// nothing and is dropped.
+						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
+							continue
+						}
+						if b, isBool := sub.(bool); isBool && b {
+							continue
+						}
+						promotedSubs = append(promotedSubs, sub)
+						continue
+					}
+					projected[prop] = sub
+				}
+				if len(projected) > 0 {
+					out[k] = projected
+				}
 			} else {
 				out[k] = val
 			}
@@ -943,7 +1005,44 @@ func stripPinnedRequirements(v any, pinned map[string]bool) any {
 		}
 		out["required"] = required
 	}
+	if len(promotedSubs) > 0 {
+		switch existing := out["allOf"].(type) {
+		case []any:
+			out["allOf"] = append(existing, promotedSubs...)
+		case nil:
+			out["allOf"] = promotedSubs
+		default:
+			wrapped := make([]any, 0, len(promotedSubs)+1)
+			wrapped = append(wrapped, existing)
+			out["allOf"] = append(wrapped, promotedSubs...)
+		}
+	}
 	return out
+}
+
+// resolveLocalPointer resolves a local JSON Pointer reference ("#"
+// or "#/a/b") against the document root. Plain-name fragments name
+// $anchors, not pointers, and do not resolve here.
+func resolveLocalPointer(root map[string]any, ref string) (any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 func filterPinnedNames(names []any, pinned map[string]bool) []any {
