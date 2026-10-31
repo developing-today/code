@@ -5,7 +5,7 @@
  */
 
 import type { Slice } from "prosemirror-model";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
@@ -496,5 +496,84 @@ describe("handlePaste batch ordering (#1323)", () => {
     await vi.waitFor(() => {
       expect(imageAlts(v)).toEqual(["one.png", "three.png"]);
     });
+  });
+});
+
+// ============================================================================
+// Upload completing after the document shrank (#1379)
+// ============================================================================
+
+describe("upload completing after the document shrank (#1379)", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  if (!handlePaste) throw new Error("plugin must define a paste handler");
+
+  it("inserts at a clamped in-range position instead of throwing and losing the image", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    // A paragraph long enough to paste at position 25.
+    const longDoc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [richSchema.text("abcdefghijklmnopqrstuvwxyz0123456789")]),
+    ]);
+    const state = EditorState.create({
+      schema: richSchema,
+      doc: longDoc,
+      plugins: [plugin!],
+      selection: TextSelection.create(longDoc, 25),
+    });
+    const view = new EditorView(container, { state });
+
+    let resolveFetch!: (value: Response) => void;
+    const fetchPromise = new Promise<Response>((res) => {
+      resolveFetch = res;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => fetchPromise);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const event = {
+        clipboardData: { files: [new File(["x"], "shrunk.png", { type: "image/png" })] },
+        preventDefault: vi.fn(),
+      };
+      const claimed = handlePaste!.call(
+        plugin,
+        view,
+        event as unknown as ClipboardEvent,
+        undefined as unknown as Slice,
+      );
+      expect(claimed).toBe(true);
+
+      // The document is replaced with a single character while the
+      // upload is in flight: the captured insert position (25) is now
+      // out of range and the placeholder decoration is deleted with
+      // the replaced range.
+      const smallDoc = richSchema.node("doc", null, [
+        richSchema.node("paragraph", null, [richSchema.text("x")]),
+      ]);
+      view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, smallDoc.content));
+
+      resolveFetch({
+        ok: true,
+        json: () => Promise.resolve({ hash: "shrunk", name: "shrunk.png", url: "/blob/shrunk.png" }),
+      } as Response);
+
+      const alts: string[] = [];
+      await vi.waitFor(() => {
+        alts.length = 0;
+        view.state.doc.descendants((node) => {
+          if (node.type.name === "image") alts.push(String(node.attrs.alt));
+          return true;
+        });
+        expect(alts).toEqual(["shrunk.png"]);
+      });
+      // Neither an upload failure nor an insertion failure was logged:
+      // the upload succeeded and the image landed.
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      view.destroy();
+      container.remove();
+      vi.restoreAllMocks();
+    }
   });
 });
