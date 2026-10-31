@@ -45,13 +45,16 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 
 	switch kind {
 	case "tools/call":
+		// Decode only the name and the opaque arguments first. The
+		// gateway-specific argument fields (mcpx_call's namespace /
+		// tool strings) are decoded in the gateway branch below, and
+		// only there: a raw or pass-through tool's own arguments are
+		// the upstream's, and an upstream argument that happens to be
+		// named namespace or tool with a non-string value must not
+		// fail this decode and cost the call its ask attribution.
 		var p struct {
-			Name      string `json:"name"`
-			Arguments struct {
-				Namespace string          `json:"namespace"`
-				Tool      string          `json:"tool"`
-				Arguments json.RawMessage `json:"arguments"`
-			} `json:"arguments"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
 		}
 		if err := json.Unmarshal(params, &p); err != nil {
 			return "", mcpserver.ErrNotInterruptible
@@ -70,13 +73,9 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			if ns == "" {
 				return "", mcpserver.ErrNotInterruptible
 			}
-			var raw struct {
-				Arguments json.RawMessage `json:"arguments"`
-			}
-			_ = json.Unmarshal(params, &raw)
 			body["server"], body["tool"] = ns, tool
-			if len(raw.Arguments) > 0 {
-				body["args"] = raw.Arguments
+			if len(p.Arguments) > 0 {
+				body["args"] = p.Arguments
 			}
 			// The upstream judges what the client can answer, as on the
 			// direct path (mcpBackend.Call).
@@ -89,13 +88,9 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 		// gateway tools, because on a collision the upstream's tool is
 		// the one the name means.
 		if ns := d.passTool(ctx, p.Name); ns != "" {
-			var raw struct {
-				Arguments json.RawMessage `json:"arguments"`
-			}
-			_ = json.Unmarshal(params, &raw)
 			body["server"], body["tool"] = ns, p.Name
-			if len(raw.Arguments) > 0 {
-				body["args"] = raw.Arguments
+			if len(p.Arguments) > 0 {
+				body["args"] = p.Arguments
 			}
 			// The upstream judges what the client can answer, as on the
 			// direct path (mcpBackend.Call).
@@ -106,12 +101,10 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			// A script is one call making many; the daemon correlates its
 			// questions through the run id rather than a single (server, key).
 			var e struct {
-				Arguments struct {
-					Source     string `json:"source"`
-					TimeoutSec int    `json:"timeoutSec"`
-				} `json:"arguments"`
+				Source     string `json:"source"`
+				TimeoutSec int    `json:"timeoutSec"`
 			}
-			if json.Unmarshal(params, &e) != nil || e.Arguments.Source == "" {
+			if json.Unmarshal(p.Arguments, &e) != nil || e.Source == "" {
 				return "", mcpserver.ErrNotInterruptible
 			}
 			c, err := d.client(ctx)
@@ -123,14 +116,25 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 				return "", err
 			}
 			body["kind"] = "exec"
-			body["source"] = e.Arguments.Source
-			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.Arguments.TimeoutSec)
+			body["source"] = e.Source
+			body["options"] = mcpBackend{app: d.app}.execOptions(ctx, e.TimeoutSec)
 			break
 		}
 		if p.Name != "mcpx_call" {
 			return "", mcpserver.ErrNotInterruptible
 		}
-		ns, tool := p.Arguments.Namespace, p.Arguments.Tool
+		// The gateway branch: only now are mcpx_call's own argument
+		// fields decoded, so only a malformed mcpx_call -- not a raw
+		// tool with upstream-shaped arguments -- fails on them.
+		var g struct {
+			Namespace string          `json:"namespace"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(p.Arguments, &g); err != nil {
+			return "", mcpserver.ErrNotInterruptible
+		}
+		ns, tool := g.Namespace, g.Tool
 		if tool == "" {
 			// A dotted name in the namespace field is what somebody sends,
 			// because that is how the tools are written everywhere else.
@@ -142,8 +146,8 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 			return "", mcpserver.ErrNotInterruptible
 		}
 		body["server"], body["tool"] = ns, tool
-		if len(p.Arguments.Arguments) > 0 {
-			body["args"] = p.Arguments.Arguments
+		if len(g.Arguments) > 0 {
+			body["args"] = g.Arguments
 		}
 
 	case "prompts/get":
