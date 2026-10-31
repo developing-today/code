@@ -55,6 +55,68 @@ describe("dns register parser", () => {
     expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["first.de"]);
   });
 
+  test("summary ages renewals by the Chicago day, not UTC (#1684)", () => {
+    // 2026-10-31T01:30:00Z is 20:30 CDT on 2026-10-30 in Chicago:
+    // the UTC day has already rolled over, the Chicago day has not.
+    // With the UTC derivation the domain renewing "today" (Chicago)
+    // was skipped by nextRenewal and dropped from renewingSoon.
+    const entry = (domain: string, renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal,
+      autoRenew: "ON",
+      priceUsd: 10,
+      priorYearCost: "unknown",
+      used: "test",
+      plan: "Active — test",
+      review: "",
+      status: "active" as const,
+    });
+    const section = {
+      generatedAt: "2026-10-31T01:30:00Z",
+      source: "test",
+      totalAnnualListUsd: 20,
+      entries: [entry("today.dev", "2026-10-30"), entry("tomorrow.dev", "2026-10-31")],
+    };
+    const summary = summarizeDns(section, new Date("2026-10-31T01:30:00Z"), 45);
+    expect(summary.nextRenewal?.domain).toBe("today.dev");
+    expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["today.dev", "tomorrow.dev"]);
+  });
+
+  test("summary Chicago day holds across the spring DST boundary (#1684)", () => {
+    // 2026-03-08T01:30:00Z is 19:30 CST on 2026-03-07 — the evening
+    // before the spring-forward. Chicago "today" is still 03-07,
+    // and the 45-day horizon is a calendar count (addDaysYmd), so
+    // the cutoff lands on 2026-04-21 regardless of the lost hour.
+    const entry = (domain: string, renewal: string) => ({
+      domain,
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal,
+      autoRenew: "ON",
+      priceUsd: 10,
+      priorYearCost: "unknown",
+      used: "test",
+      plan: "Active — test",
+      review: "",
+      status: "active" as const,
+    });
+    const section = {
+      generatedAt: "2026-03-08T01:30:00Z",
+      source: "test",
+      totalAnnualListUsd: 30,
+      entries: [
+        entry("today.dev", "2026-03-07"),
+        entry("cutoff.dev", "2026-04-21"),
+        entry("beyond.dev", "2026-04-22"),
+      ],
+    };
+    const summary = summarizeDns(section, new Date("2026-03-08T01:30:00Z"), 45);
+    expect(summary.nextRenewal?.domain).toBe("today.dev");
+    expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["today.dev", "cutoff.dev"]);
+  });
+
   test("a file without the register table parses to nothing (fail-soft)", () => {
     expect(parseDnsRegister("# nothing here\n")).toEqual([]);
     expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
