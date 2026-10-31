@@ -803,12 +803,27 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
         let c = decode_char(bytes[i + 2])?;
+        // Canonical spelling only (#1840): three characters carry
+        // two bytes, so the final character's low 2 bits are unused.
+        // The encoder zeroes them; a spelling that sets them decodes
+        // to the same bytes, which made every token malleable into
+        // alias strings that all verified. Refuse them here, at the
+        // single choke point every verify path funnels through.
+        if c & 0x03 != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12) | (c << 6);
         data.push((triple >> 16) as u8);
         data.push((triple >> 8) as u8);
     } else if remaining == 2 {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
+        // Same refusal for the two-character final group: it carries
+        // one byte, so the final character's low 4 bits are unused
+        // and must be zero (#1840).
+        if b & 0x0F != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12);
         data.push((triple >> 16) as u8);
     } else if remaining == 1 {
@@ -884,6 +899,38 @@ mod tests {
             let decoded = base64url_decode(&encoded).unwrap();
             assert_eq!(decoded, data, "Failed for len={len}");
         }
+    }
+
+    #[test]
+    fn test_base64url_decode_refuses_trailing_bit_aliases() {
+        // #1840: the final character of an unpadded encoding carries
+        // unused low bits (2 for a 3-char final group, 4 for a 2-char
+        // one). The canonical encoder zeroes them; a spelling that
+        // sets them decodes to the same bytes, so a token had up to
+        // 16 alias strings that all verified. Decode refuses the
+        // non-canonical spellings outright.
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let alias = |encoded: &str, mask: u32| -> String {
+            let mut bytes = encoded.as_bytes().to_vec();
+            let last = bytes.len() - 1;
+            let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+            assert_eq!(value & mask, 0, "canonical encoding zeroes the trailing bits");
+            bytes[last] = ALPHABET[(value | mask) as usize];
+            String::from_utf8(bytes).unwrap()
+        };
+        // 2-byte input -> 3-char final group, low 2 bits unused.
+        let data2 = [0xABu8, 0xCD];
+        let enc2 = base64url_encode(&data2);
+        assert_eq!(base64url_decode(&enc2).unwrap(), data2);
+        assert!(base64url_decode(&alias(&enc2, 0b01)).is_none());
+        assert!(base64url_decode(&alias(&enc2, 0b10)).is_none());
+        // 1-byte input -> 2-char final group, low 4 bits unused.
+        let data1 = [0xABu8];
+        let enc1 = base64url_encode(&data1);
+        assert_eq!(base64url_decode(&enc1).unwrap(), data1);
+        assert!(base64url_decode(&alias(&enc1, 0b0001)).is_none());
+        assert!(base64url_decode(&alias(&enc1, 0b1000)).is_none());
     }
 
     #[test]
