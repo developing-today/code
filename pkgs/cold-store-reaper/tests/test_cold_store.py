@@ -1970,6 +1970,78 @@ class TestOffsetLessLastModified(EvictTestBase):
         )
 
 
+
+class TestS3ListPageValidation(unittest.TestCase):
+    """#2733: _parse_s3_list_page must fail closed with ColdStoreError.
+
+    A malformed or shape-drifted body must never escape as a raw
+    ParseError/ValueError, and a wrong-root document must never be
+    read as an empty bucket (backup + eviction plan from this list).
+    """
+
+    def _page(self, contents="", root="ListBucketResult", extra=""):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<{root} xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<Name>b</Name>{extra}{contents}</{root}>"
+        ).encode()
+
+    def _entry(self, size_marker):
+        return (
+            "<Contents><Key>a.bin</Key>"
+            "<LastModified>2026-10-01T00:00:00.000Z</LastModified>"
+            f"{size_marker}</Contents>"
+        )
+
+    def test_non_xml_body_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(b'{"error": "nope"}')
+
+    def test_wrong_root_raises_cold_store_error(self):
+        body = b"<html><body>proxy error</body></html>"
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(body)
+
+    def test_non_numeric_size_raises(self):
+        for bad in ("abc", "1.5"):
+            with self.subTest(size=bad):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._parse_s3_list_page(
+                        self._page(self._entry(f"<Size>{bad}</Size>"))
+                    )
+
+    def test_negative_size_raises(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(
+                self._page(self._entry("<Size>-5</Size>"))
+            )
+
+    def test_missing_size_keeps_default_zero(self):
+        objects, truncated, token = cold_store._parse_s3_list_page(
+            self._page(self._entry(""))
+        )
+        self.assertEqual(objects[0]["size"], 0)
+        self.assertFalse(truncated)
+        self.assertIsNone(token)
+
+    def test_valid_page_pagination_and_stamp_unchanged(self):
+        body = self._page(
+            self._entry("<Size>3</Size>"),
+            extra=("<IsTruncated>true</IsTruncated>"
+                   "<NextContinuationToken>tok2</NextContinuationToken>"),
+        )
+        objects, truncated, token = cold_store._parse_s3_list_page(body)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["key"], "a.bin")
+        self.assertEqual(objects[0]["size"], 3)
+        self.assertEqual(
+            objects[0]["last_modified"],
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(token, "tok2")
+
+
 class TestOffsetLessBackupPick(S3TestBase):
     """backup_supabase picks the newest by LastModified with max():
     a mixed listing used to crash the pick outright (#2110)."""
