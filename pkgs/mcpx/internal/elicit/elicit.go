@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/schemaval"
 
 	_ "modernc.org/sqlite"
 	"os"
@@ -497,6 +498,26 @@ func (b *Broker) Respond(a Answer) error {
 	if a.Action == Accept && r.Mode == Sample {
 		if err := ValidateSampleResult(a.Content, true, true); err != nil {
 			return err
+		}
+	}
+
+	// An accepted form answer is validated against the question's own
+	// requestedSchema before it is recorded -- and therefore before the
+	// waiter relays it upstream (#1954). The mcpclient path validates
+	// answers mcpx relays as a client; answers entered here (CLI,
+	// dashboard, daemon routes) reached the asker unchecked, so a wrong
+	// type or a missing required field surfaced as an upstream error
+	// against an answer the user had already given. A mismatch refuses
+	// the answer with the failing paths and the question stays pending
+	// for a corrected one, like the refusals above. A requestedSchema
+	// that does not compile is the asker's defect, not the answerer's:
+	// the answer is recorded unvalidated rather than wedging on a
+	// schema the answerer never wrote (the mcpclient rule).
+	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 {
+		if schema, err := schemaval.Compile(r.Schema); err == nil {
+			if err := schema.ValidateJSON(a.Content); err != nil {
+				return fmt.Errorf("accepted content does not match the requested schema: %w", err)
+			}
 		}
 	}
 
