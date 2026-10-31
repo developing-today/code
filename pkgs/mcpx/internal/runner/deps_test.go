@@ -254,6 +254,38 @@ func TestRebaseDenoMappingEscapesPathCharacters(t *testing.T) {
 	}
 }
 
+// TestMaterialiseDepsTransportsLocalFileDependencies is the Codex
+// finding on PR #2589 (runner/deps.go): a relative file: requirement
+// was copied into the workdir manifest unchanged while its artifact
+// stayed in the project, so a frozen npm ci resolved it against the
+// workdir and failed with ENOENT.
+func TestMaterialiseDepsTransportsLocalFileDependencies(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "local-dep.tgz"), []byte("tarball-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, "vendor", "linked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "vendor", "linked", "index.js"), []byte("export {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindNode, &Deps{
+		Manifest: `{"name":"p","dependencies":{"foo":"file:./local-dep.tgz","bar":"link:./vendor/linked"}}`,
+	}, true, project); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "local-dep.tgz"))
+	if err != nil || string(got) != "tarball-bytes" {
+		t.Fatalf("tarball not transported: %q, %v", got, err)
+	}
+	got, err = os.ReadFile(filepath.Join(dir, "vendor", "linked", "index.js"))
+	if err != nil || string(got) != "export {}" {
+		t.Fatalf("linked directory not transported: %q, %v", got, err)
+	}
+}
+
 // TestSelectedLockfileFollowsTheRuntime is the Codex finding on
 // PR #2589 (deps/chain.go): with both lockfiles present, discovery's
 // first (bun.lock) was transported and used for every runtime, so a

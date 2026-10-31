@@ -215,6 +215,35 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	}
 	deps := d.effectiveDeps(manifest)
 
+	// Local file dependencies (file:/link: with a relative path)
+	// resolve against the manifest's own directory, and the
+	// materialised copy lives somewhere else: copied unchanged, the
+	// requirement points at an artifact that was never transported,
+	// and a frozen npm ci fails with ENOENT before the script runs
+	// (Codex review, PR #2589). When the project directory is known
+	// (a local execution), transport the referenced artifacts into
+	// the workdir at the same relative paths, so the verbatim
+	// manifest and lockfile resolve exactly as they did in place.
+	// With no project directory the set arrived as data only, and
+	// there is nothing local to copy from; the requirement is left
+	// as written.
+	if projectDir != "" {
+		for _, spec := range deps {
+			rel, ok := localFileRef(spec)
+			if !ok {
+				continue
+			}
+			src := filepath.Join(projectDir, rel)
+			dst := filepath.Join(dir, rel)
+			if !withinDir(projectDir, src) || !withinDir(dir, dst) {
+				return nil, fmt.Errorf("deps: local dependency %q escapes its base directory", spec)
+			}
+			if err := copyLocalArtifact(src, dst); err != nil {
+				return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
+			}
+		}
+	}
+
 	if manifest != nil || len(deps) > 0 {
 		if manifest == nil {
 			manifest = map[string]any{
@@ -665,6 +694,74 @@ func depsProjectDir(opts Options) string {
 		return filepath.Dir(opts.File)
 	}
 	return opts.Dir
+}
+
+// localFileRef extracts the relative path from a file:/link:
+// requirement ("file:./local-dep.tgz" -> "./local-dep.tgz"). Absolute
+// paths, file:// URLs and non-local requirements are not local refs:
+// they already name their own resolution base.
+func localFileRef(spec string) (string, bool) {
+	var rest string
+	switch {
+	case strings.HasPrefix(spec, "file:"):
+		rest = strings.TrimPrefix(spec, "file:")
+	case strings.HasPrefix(spec, "link:"):
+		rest = strings.TrimPrefix(spec, "link:")
+	default:
+		return "", false
+	}
+	if rest == "" || strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "//") {
+		return "", false
+	}
+	return rest, true
+}
+
+// withinDir reports whether path is dir itself or lives under it,
+// after both are cleaned by filepath.Join semantics.
+func withinDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// copyLocalArtifact copies a local dependency artifact — a tarball
+// file, or a directory for a link:/directory file: requirement —
+// from the project into the exec workdir at the same relative path.
+func copyLocalArtifact(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		content, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return writeBytesIfChanged(dst, content)
+	}
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return writeBytesIfChanged(target, content)
+	})
 }
 
 // rebaseDenoMapping rewrites a project config mapping for a
