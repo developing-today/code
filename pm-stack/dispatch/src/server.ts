@@ -298,24 +298,27 @@ export interface EnqueueDispatchOutcome {
 
 /**
  * Enqueue with pre-existing-row handling (issue #2677):
- * - attach flow (issue_number): a pre-existing canonical row means the
- *   caller's distinct dispatch gets its own task via a dispatch-scoped
- *   suffix key; if the retry also returns a pre-existing row, warn
- *   explicitly instead of reporting a silent 201-as-new.
- * - any other flow (incl. a caller-supplied dedupe_key repeat): return
+ * - attach flow (issue_number) with the CANONICAL key: a pre-existing
+ *   canonical row means the caller's distinct dispatch gets its own task
+ *   via a dispatch-scoped suffix key; if the retry also returns a
+ *   pre-existing row, warn explicitly instead of a silent 201-as-new.
+ * - any other flow (incl. a caller-supplied dedupe_key repeat — also
+ *   when combined with issue_number: the caller explicitly chose that
+ *   key, so a repeat is an intentional dedupe, never a retry): return
  *   the existing task WITH a warning naming its actual status.
  */
 export async function enqueueDispatchTask(args: {
   enqueue: (dedupeKey: string) => Promise<TaskRow>;
   dedupeKey: string;
   attach: boolean;
+  callerSuppliedKey: boolean;
   requestStartedAt: Date;
 }): Promise<EnqueueDispatchOutcome> {
   const first = await args.enqueue(args.dedupeKey);
   if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
     return { task: first, preExisting: false, retried: false, warnings: [] };
   }
-  if (!args.attach) {
+  if (!args.attach || args.callerSuppliedKey) {
     return {
       task: first,
       preExisting: true,
@@ -405,6 +408,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       },
       dedupeKey,
       attach: body.issueNumber !== undefined,
+      callerSuppliedKey: body.dedupeKey !== undefined,
       requestStartedAt,
     });
   } catch (e) {

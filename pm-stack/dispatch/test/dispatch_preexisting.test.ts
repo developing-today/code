@@ -64,6 +64,7 @@ describe("enqueueDispatchTask attach flow (#2677)", () => {
       enqueue,
       dedupeKey: CANONICAL,
       attach: true,
+      callerSuppliedKey: false,
       requestStartedAt: START,
     });
 
@@ -85,6 +86,7 @@ describe("enqueueDispatchTask attach flow (#2677)", () => {
       enqueue,
       dedupeKey: CANONICAL,
       attach: true,
+      callerSuppliedKey: false,
       requestStartedAt: START,
     });
 
@@ -105,6 +107,7 @@ describe("enqueueDispatchTask attach flow (#2677)", () => {
       enqueue,
       dedupeKey: CANONICAL,
       attach: true,
+      callerSuppliedKey: false,
       requestStartedAt: START,
     });
 
@@ -124,6 +127,7 @@ describe("enqueueDispatchTask non-attach flows (#2677)", () => {
       enqueue,
       dedupeKey: CANONICAL,
       attach: false,
+      callerSuppliedKey: true,
       requestStartedAt: START,
     });
 
@@ -143,6 +147,7 @@ describe("enqueueDispatchTask non-attach flows (#2677)", () => {
       enqueue,
       dedupeKey: CANONICAL,
       attach: true,
+      callerSuppliedKey: false,
       requestStartedAt: START,
     });
 
@@ -151,5 +156,26 @@ describe("enqueueDispatchTask non-attach flows (#2677)", () => {
     expect(out.preExisting).toBe(false);
     expect(out.retried).toBe(false);
     expect(out.warnings).toEqual([]);
+  });
+});
+
+describe("enqueueDispatchTask caller-supplied key on an attach request (#2677, Codex P2)", () => {
+  test("issue_number + explicit dedupe_key repeat returns the existing task — no dispatch-scoped retry", async () => {
+    const old = row({ id: 777, status: "queued", created_at: BEFORE });
+    const { enqueue, keys } = stubQueue(old);
+
+    const out = await enqueueDispatchTask({
+      enqueue,
+      dedupeKey: CANONICAL,
+      attach: true,
+      callerSuppliedKey: true,
+      requestStartedAt: START,
+    });
+
+    expect(keys.length).toBe(1); // the caller chose the key: a repeat is an intentional dedupe
+    expect(out.task.id).toBe(777);
+    expect(out.preExisting).toBe(true);
+    expect(out.retried).toBe(false);
+    expect(out.warnings.join(" ")).toContain("no new task was queued");
   });
 });
