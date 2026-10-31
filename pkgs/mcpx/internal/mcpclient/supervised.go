@@ -97,6 +97,23 @@ func (w *connWriter) flushLocked(reply supervisorReply, buffered []byte) error {
 // Close closes the underlying connection.
 func (w *connWriter) Close() { w.conn.Close() }
 
+// closeAfterFlush closes the connection only after any in-flight
+// initial flush completes (Codex P2 on PR #2861). handleAttach holds
+// w.mu across the publish of w and the handshake+buffer flush, so
+// acquiring w.mu here is a barrier on that flush: without it,
+// finishWhenDone could observe pumpDone (child exited with no further
+// stdout during the flush), see attachedEver && !reported, and close
+// the connection mid-flush, losing bytes already drained from the
+// tail buffer. The barrier is bounded — every flush write carries
+// AttachedWriteTimeout, and at finishWhenDone's call sites the stdout
+// pump has already exited, so the flush is the only holder it can
+// wait on. No connection write happens under s.mu.
+func (w *connWriter) closeAfterFlush() {
+	w.mu.Lock()
+	w.mu.Unlock()
+	w.Close()
+}
+
 type supervisorHandshake struct {
 	Version int `json:"version"`
 }
@@ -369,8 +386,22 @@ func (s *supervisor) pumpStdout() {
 		n, err := s.stdoutR.Read(chunk)
 		if n > 0 {
 			data := chunk[:n]
+			// The unattached decision and the tail-buffer append
+			// are atomic under s.mu (Codex P2 on PR #2861): if the
+			// snapshot is nil, the append happens while still
+			// holding s.mu, so a chunk read just before an attach
+			// is either inside the buffer that attach drains or
+			// routed to the published writer — never stranded in
+			// the buffer behind a live stream, which would
+			// withhold it and reverse stream order. buf.Write is
+			// a bounded memory append, not a connection write, so
+			// holding s.mu across it does not restore the #2390
+			// hazard.
 			s.mu.Lock()
 			w := s.attached
+			if w == nil {
+				s.buf.Write(data)
+			}
 			s.mu.Unlock()
 			if w != nil {
 				if _, werr := w.Write(data); werr != nil {
@@ -390,8 +421,6 @@ func (s *supervisor) pumpStdout() {
 					w.Close()
 					s.signal()
 				}
-			} else {
-				s.buf.Write(data)
 			}
 		}
 		if err != nil {
@@ -544,7 +573,7 @@ func (s *supervisor) finishWhenDone() {
 				case <-grace.C:
 				}
 			}
-			attached.Close()
+			attached.closeAfterFlush()
 			s.mu.Lock()
 			if s.attached == attached {
 				s.attached = nil
@@ -564,7 +593,7 @@ func (s *supervisor) finishWhenDone() {
 			attached := s.attached
 			s.mu.Unlock()
 			if attached != nil {
-				attached.Close()
+				attached.closeAfterFlush()
 			}
 			if s.ln != nil {
 				s.ln.Close()
