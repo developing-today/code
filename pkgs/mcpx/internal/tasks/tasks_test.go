@@ -340,3 +340,30 @@ func TestConcurrentStartsRespectThePerRequestorCap(t *testing.T) {
 		t.Errorf("a concurrent burst admits exactly the cap, got %d", got)
 	}
 }
+
+func TestAskAndUnboundBucketsAreSeparateLedgers(t *testing.T) {
+	// One logical ask operation on the embedded MCP surface creates two
+	// store tasks — the /v1/ask backing (AskRequestor) and the MCP
+	// wrapper (UnboundRequestor) — so at a per-requestor cap of 1 each
+	// ledger must admit its own half, while still capping its own kind.
+	st := tasks.New()
+	st.MaxPerRequestor = 1
+	block := make(chan struct{})
+	defer close(block)
+	fn := func(ctx context.Context) (any, *tasks.Fault) {
+		<-block
+		return "ok", nil
+	}
+	if _, err := st.Start(tasks.AskRequestor, 60000, fn); err != nil {
+		t.Fatalf("ask backing start: %v", err)
+	}
+	if _, err := st.Start(tasks.UnboundRequestor, 60000, fn); err != nil {
+		t.Fatalf("the MCP wrapper is a separate ledger and still starts at cap 1: %v", err)
+	}
+	if _, err := st.Start(tasks.AskRequestor, 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Errorf("a second ask backing is refused, got %v", err)
+	}
+	if _, err := st.Start(tasks.UnboundRequestor, 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Errorf("a second unbound task is refused, got %v", err)
+	}
+}

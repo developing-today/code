@@ -395,6 +395,17 @@ type askReq struct {
 	Relay *CallRelay `json:"relay,omitempty"`
 }
 
+// askRequestor names who an ask-seam task counts against: the caller's
+// session when it has one, else the ask bucket (tasks.AskRequestor) —
+// not the shared unbound bucket, for the two-ledgers reason recorded
+// on tasks.AskRequestor.
+func askRequestor(cc config.CallContext) string {
+	if cc.SessionID != "" {
+		return cc.SessionID
+	}
+	return tasks.AskRequestor
+}
+
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	var req askReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit)).Decode(&req); err != nil {
@@ -431,7 +442,7 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// arrives for a call nothing has heard of.
 	ready := make(chan string, 1)
 	caps := withClientCaps(context.Background(), r)
-	t, terr := s.taskStore().Start(cc.SessionID, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	t, terr := s.taskStore().Start(askRequestor(cc), ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over

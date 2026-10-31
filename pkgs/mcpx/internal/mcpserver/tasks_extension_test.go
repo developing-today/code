@@ -493,6 +493,7 @@ func TestRefusedAskedTaskAbandonsTheCall(t *testing.T) {
 	}
 	handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": id}))
 }
+
 // tasks-request-headers / sep-2663-server-rejects-mismatched-mcp-name-on-tasks-get:
 // Mcp-Name on tasks/get mirrors the taskId, and one that contradicts it is
 // -32020. One left out is tolerated: SEP-2243 does not name the tasks

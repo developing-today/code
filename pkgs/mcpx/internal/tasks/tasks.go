@@ -374,6 +374,17 @@ func NewID() string {
 // who asked" must not mean "unlimited".
 const UnboundRequestor = "unbound"
 
+// AskRequestor is the bucket anonymous ask-seam tasks count against
+// (/v1/ask backings, handleAskBegin). It is its own bucket, not
+// UnboundRequestor: on the daemon's embedded MCP surface one logical
+// operation creates two store tasks — the /v1/ask backing here and the
+// MCP wrapper in mcpserver, which counts against UnboundRequestor —
+// and charging both to the one bucket made a per-requestor cap of 1
+// refuse (and abandon) a lone anonymous ask call. Separate ledgers,
+// each capped at the same limit, keep one operation to one slot in
+// each. Identified ask callers keep counting against their session.
+const AskRequestor = "unbound-ask"
+
 // The task-store limit defaults (protoTasks.*). A seam wires the settings
 // over these; the store applies them when its fields are unset.
 const (

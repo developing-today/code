@@ -473,10 +473,14 @@ func (s *Server) taskStore() *tasks.Store {
 }
 
 // taskRequestor names who a /v1 request belongs to for the task store's
-// per-requestor limits: the session the caller named, else its run, else
-// the unbound bucket (capped like any other).
+// per-requestor limits: the session the caller named (the query param,
+// or the X-Mcpx-Session header creation keys by via callContext), else
+// its run, else the unbound bucket (capped like any other).
 func taskRequestor(r *http.Request) string {
 	if v := r.URL.Query().Get("session"); v != "" {
+		return v
+	}
+	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
 		return v
 	}
 	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
