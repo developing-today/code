@@ -187,6 +187,61 @@ describe("dashboard comments", () => {
     expect((await reloaded.all()).find((c) => c.id === gh.id)?.githubUrl).toContain("issuecomment-1");
   });
 
+  test("github result reports: empty refused, posted terminal, repeats idempotent (#1686)", async () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "agg-comments-result-"));
+    const store = new CommentsStore(join(dir2, "comments.json"));
+    const addGh = () =>
+      store.add({
+        objectRef: "gh:developing-today/code#906",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#906",
+      });
+
+    // Empty report on a pending comment: refused, state unchanged.
+    const pending = await addGh();
+    await expect(store.markGithubResult(pending.id, {})).rejects.toThrow("url or an error");
+    expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
+
+    // A report carrying both url and error: refused, unchanged.
+    await expect(
+      store.markGithubResult(pending.id, { url: "https://github.com/x#1", error: "boom" }),
+    ).rejects.toThrow("both");
+    expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
+
+    // Posted, then: an empty report and a later failure are both
+    // refused (posted is terminal); the same url repeats as a no-op;
+    // a different url conflicts.
+    const posted = await addGh();
+    await store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-9" });
+    await expect(store.markGithubResult(posted.id, {})).rejects.toThrow("url or an error");
+    await expect(store.markGithubResult(posted.id, { error: "late failure" })).rejects.toThrow(
+      "already posted",
+    );
+    const repeat = await store.markGithubResult(posted.id, {
+      url: "https://github.com/x#issuecomment-9",
+    });
+    expect(repeat?.githubState).toBe("posted");
+    await expect(
+      store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-10" }),
+    ).rejects.toThrow("different url");
+    const after = (await store.all()).find((c) => c.id === posted.id);
+    expect(after?.githubState).toBe("posted");
+    expect(after?.githubUrl).toBe("https://github.com/x#issuecomment-9");
+
+    // Failed is not terminal against success: a retry that lands
+    // moves failed -> posted; a repeat failure is a no-op.
+    const retried = await addGh();
+    await store.markGithubResult(retried.id, { error: "first attempt failed" });
+    const again = await store.markGithubResult(retried.id, { error: "second attempt failed" });
+    expect(again?.githubState).toBe("failed");
+    const landed = await store.markGithubResult(retried.id, {
+      url: "https://github.com/x#issuecomment-11",
+    });
+    expect(landed?.githubState).toBe("posted");
+  });
+
   test("validation rejects anonymous authors, empty bodies, targetless github comments", () => {
     expect(validateNewComment({ objectRef: "x", kind: "note", body: "hi" }).ok).toBe(false);
     expect(validateNewComment({ objectRef: "x", kind: "note", author: drew, body: "  " }).ok).toBe(false);
