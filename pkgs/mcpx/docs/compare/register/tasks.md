@@ -9,46 +9,39 @@ tags:         area:compare
 description:  2025-11-25 core tasks versus the 2026 io.modelcontextprotocol/tasks extension, difference by difference, and what mcpx implements
 ```
 
-A task turns a long request into a handle the client can poll, cancel and collect later. 2025-11-25 put "experimental"
-tasks in the core protocol, requested per call and hostable by either side; 2026-07-28 moved them into the
-`io.modelcontextprotocol/tasks` extension, where only servers host them, the server decides when to use one, and the wire
-format is incompatible. For mcpx the headline is that it implements the 2025-11-25 shape for every revision and advertises
-the 2026 extension without any of its wire format (TASK-01, CAP-26), so a 2026 host that trusts the advertisement gets a
-task handle labelled as a finished result (TASK-05). The extension's normative text lives in the external `ext-tasks`
-repository, so these rows rest on SEP-2663 and `docs/extensions/tasks/overview.mdx`; neither opencode version nor lootbox
-declares tasks, and the `requestId` that 2025-11-25 made optional is in [progress-cancellation.md](progress-cancellation.md).
+A task turns a long request into a handle a client can poll, cancel and collect later. The 2025-11-25 core and 2026 extension have different wire formats. Task observations below reflect phases 1–2 of [#1554](https://github.com/developing-today/code/issues/1554); other observations retain their original snapshot. Limits, cancellation, audit, ID entropy and upstream input relay remain open questions on #1554.
 
-Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
+Status column: updated task rows are current; other rows are **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
+| ID | Difference | Labels | Where it exists | mcpx | Value | Effort | Risk |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| TASK-01 | Tasks leave the core and become an extension | `2025-11-25 has` `2026-07-28 removes` `has better replacement` `specs conflict` `mcpx missing` | `25-11 core · 26-07 extension only` | ✗ — 2025-11-25 shape for every era; extension advertised, not built (#209) | + high | L | high |
+| TASK-01 | Tasks leave the core and become an extension | `2025-11-25 has` `2026-07-28 removes` `has better replacement` `specs conflict` | `25-11 core · 26-07 extension only` | Separate legacy and extension paths (`internal/mcpserver/tasks.go:maybeTask`; `internal/mcpserver/server.go:capabilities`). | + high | L | high |
 | TASK-02 | Client-hosted tasks (sampling, elicitation) removed; `tools/call` only | `2025-11-25 has` `2026-07-28 removes` | `25-11 server + client · 26-07 server only`; opencode, lootbox declare none | ✓ — `tools/call` only; no client tasks declared | − moot | S | low |
-| TASK-03 | Opt-in moves from `params.task` to the server's discretion | `2026-07-28 removes` `has better replacement` `mcpx missing` | `25-11 client asks · 26-07 server decides` | partial — honours `task` from any era; never offers one (#209) | + med | M | med |
-| TASK-04 | `tasks.list` declared without requestor binding | `2025-11-25 has` `mcpx missing` | `25-11 only` | ✗ — declared; lists every connection's tasks (wire W23) (#209) | + med | S | med |
-| TASK-05 | `CreateTaskResult`: `{task}` → flat `Task` with `resultType: "task"` | `2026-07-28 has` `mcpx missing` | `25-11 nested · 26-07 flat` | ✗ — nested shape stamped `resultType: "complete"` (W22) (#209) | + high | S | high |
-| TASK-06 | `Task.ttl` → `ttlMs` | `2026-07-28 has` `mcpx missing` | `25-11 ttl · 26-07 ttlMs` | ✗ — `ttl` only (#209) | + low | S | low |
-| TASK-07 | `Task.pollInterval` → `pollIntervalMs` | `2026-07-28 has` `mcpx missing` | `25-11 pollInterval · 26-07 pollIntervalMs` | ✗ — `pollInterval` only (#209) | + low | S | low |
-| TASK-08 | `tasks/get` returns a `DetailedTask` with inline result or error | `2026-07-28 has` `specs conflict` `mcpx missing` | `25-11 status only · 26-07 detailed` | ✗ — status snapshot only (#209) | + med | M | med |
-| TASK-09 | Blocking `tasks/result` removed | `2026-07-28 removes` `has better replacement` | `25-11 only`; extension: `-32601` | acc. — served to every era | + low | S | low |
-| TASK-10 | `tasks/list` removed | `2026-07-28 removes` `has no replacement` | `25-11 only` | acc. — served to every era, unscoped | + low | S | med |
-| TASK-11 | `tasks/update` added for mid-task input | `2026-07-28 has` `mcpx missing` | `26-07 extension only` | ✗ — `-32601` (#209) | + med | M | med |
-| TASK-12 | `tasks/cancel` result: `Task` → empty acknowledgement | `2026-07-28 has` `mcpx missing` | `25-11 Task, MUST cancel · 26-07 empty ack, cooperative` | partial — 2025-11-25 snapshot to every era (#209) | + low | S | low |
-| TASK-13 | `tasks/cancel` on a finished task | `2025-11-25 has` `mcpx missing` | `25-11 MUST -32602 · 26-07 empty ack` | ✗ — returns the task snapshot (#209) | + low | S | low |
-| TASK-14 | Status push: `notifications/tasks/status` → `notifications/tasks` on listen | `2025-11-25 has` `2026-07-28 has` | `25-11 unsolicited · 26-07 listen filter taskIds` | ✗ — never sent; dropped when received | + low | M | low |
-| TASK-15 | `io.modelcontextprotocol/related-task` `_meta` | `2025-11-25 has` `2026-07-28 removes` `mcpx missing` | `25-11 MUST · 26-07 —` | ✗ — never sent (#209) | + low | S | low |
+| TASK-03 | Opt-in moves from `params.task` to the server's discretion | `2026-07-28 removes` `has better replacement` | `25-11 client asks · 26-07 server decides` | Legacy opt-in; modern server decides (`internal/mcpserver/tasks.go:maybeTask`). | + med | M | med |
+| TASK-04 | `tasks.list` declared without requestor binding | `2025-11-25 has` `mcpx missing` | `25-11 only` | Lists connection-owned tasks only; unowned tasks remain readable by ID (`internal/mcpserver/tasks.go:visible`, `handleTask`; #1554). | + med | S | med |
+| TASK-05 | `CreateTaskResult`: `{task}` → flat `Task` with `resultType: "task"` | `2026-07-28 has` | `25-11 nested · 26-07 flat` | Legacy `{task}`; modern flat `resultType: "task"` (`internal/mcpserver/tasks.go:maybeTask`, `created`; `internal/mcpclient/tasks.go:finishModernTask`). | + high | S | high |
+| TASK-06 | `Task.ttl` → `ttlMs` | `2026-07-28 has` | `25-11 ttl · 26-07 ttlMs` | Legacy `ttl`, modern `ttlMs` (`internal/tasks/tasks.go:Task`; `internal/mcpserver/tasks.go:modernTask`; `internal/mcpclient/tasks.go:modernTaskResult.UnmarshalJSON`). | + low | S | low |
+| TASK-07 | `Task.pollInterval` → `pollIntervalMs` | `2026-07-28 has` | `25-11 pollInterval · 26-07 pollIntervalMs` | Legacy `pollInterval`, modern `pollIntervalMs` (`internal/tasks/tasks.go:Task`; `internal/mcpserver/tasks.go:modernTask`; `internal/mcpclient/tasks.go:finishModernTask`). | + low | S | low |
+| TASK-08 | `tasks/get` returns a `DetailedTask` with inline result or error | `2026-07-28 has` `specs conflict` | `25-11 status only · 26-07 detailed` | Modern get inlines terminal result/error or pending input (`internal/mcpserver/tasks.go:detailedNow`, `handleModernTask`; `internal/mcpclient/tasks.go:finishModernTask`). | + med | M | med |
+| TASK-09 | Blocking `tasks/result` removed | `2026-07-28 removes` `has better replacement` | `25-11 only`; extension: `-32601` | Modern method-not-found; legacy result remains (`internal/mcpserver/tasks.go:handleModernTask`, `handleTask`). | + low | S | low |
+| TASK-10 | `tasks/list` removed | `2026-07-28 removes` `has no replacement` | `25-11 only` | Modern method-not-found; legacy list scoped to connection (`internal/mcpserver/tasks.go:handleModernTask`, `handleTask`). | + low | S | med |
+| TASK-11 | `tasks/update` added for mid-task input | `2026-07-28 has` | `26-07 extension only` | Modern update answers outstanding asked-task questions, ignoring unknown keys (`internal/mcpserver/tasks.go:updateAsked`, `handleModernTask`). | + med | M | med |
+| TASK-12 | `tasks/cancel` result: `Task` → empty acknowledgement | `2026-07-28 has` `mcpx missing` | `25-11 Task, MUST cancel · 26-07 empty ack, cooperative` | Modern empty acknowledgement, legacy snapshot; modern cancellation still forces terminal state (`internal/mcpserver/tasks.go:handleTask`, `handleModernTask`; `internal/tasks/tasks.go:CancelWithReason`; #1554). | + low | S | low |
+| TASK-13 | `tasks/cancel` on a finished task | `2025-11-25 has` | `25-11 MUST -32602 · 26-07 empty ack` | Legacy terminal cancel rejected; modern acknowledged (`internal/mcpserver/tasks.go:handleTask`, `handleModernTask`). | + low | S | low |
+| TASK-14 | Status push: `notifications/tasks/status` → `notifications/tasks` on listen | `2025-11-25 has` `2026-07-28 has` | `25-11 unsolicited · 26-07 listen filter taskIds` | Modern listen supports task notifications (`internal/tasks/tasks.go:Watch`; `internal/mcpserver/listen_tasks_test.go:TestListenDeliversTaskStatusNotifications`). | + low | M | low |
+| TASK-15 | `io.modelcontextprotocol/related-task` `_meta` | `2025-11-25 has` `2026-07-28 removes` `mcpx missing` | `25-11 MUST · 26-07 —` | Legacy result and task-related input requests carry related-task metadata (`internal/mcpserver/tasks.go:handleTask`; `internal/conformance/stateful_test.go:TestStatefulServer`). | + low | S | low |
 | TASK-16 | `io.modelcontextprotocol/model-immediate-response` hint | `2025-11-25 has` `2026-07-28 removes` `has no replacement` | `25-11 only` | n/a — never sent | − moot | S | low |
-| TASK-17 | `failed` versus `isError` semantics inverted | `2026-07-28 has` `specs conflict` | `25-11 isError → failed · 26-07 isError → completed` | n/a — faults map to `failed`; `isError` path untraced | + low | S | low |
-| TASK-18 | Mid-task input: `tasks/result` side channel → `inputRequests` + `tasks/update` | `2026-07-28 has` `mcpx missing` | `25-11 side channel · 26-07 polled` | ✗ — `input_required` status exists, carries nothing (#209) | + med | M | med |
+| TASK-17 | `failed` versus `isError` semantics inverted | `2026-07-28 has` `specs conflict` | `25-11 isError → failed · 26-07 isError → completed` | Legacy store marks isError failed; modern detailed result reports completed (`internal/tasks/tasks.go:finish`; `internal/mcpserver/tasks.go:detailedNow`). | + low | S | low |
+| TASK-18 | Mid-task input: `tasks/result` side channel → `inputRequests` + `tasks/update` | `2026-07-28 has` `mcpx missing` | `25-11 side channel · 26-07 polled` | Server relays asked-task input via get/update; upstream input_required yields a named error instead (`internal/mcpserver/tasks.go:driveAsked`, `updateAsked`; `internal/mcpclient/tasks.go:TaskInputRequiredError`; #1554). | + med | M | med |
 | TASK-19 | Progress on tasks: supported → not supported | `2025-11-25 has` `2026-07-28 removes` | `25-11 token lives with task · 26-07 none` | n/a — mcpx sends no progress | − moot | S | low |
-| TASK-20 | Durable creation before `CreateTaskResult` | `2026-07-28 has` | `26-07 extension only` | partial — in-process store; lost on restart | + low | L | low |
-| TASK-21 | HTTP routing: `Mcp-Name` = `taskId` on `tasks/*` | `2026-07-28 has` | `26-07 extension only` | n/a — no extension client; header ignored as server | + low | S | low |
-| TASK-22 | Undeclared task support: SHOULD NOT create → `-32021` | `2026-07-28 has` `mcpx missing` | `25-11 SHOULD NOT · 26-07 MUST -32021` | ✗ — tasks served to non-declaring clients (#209) | + low | S | low |
-| TASK-23 | Task IDs unguessable | `2025-11-25 has` `2026-07-28 has` | `25-11 MUST when unbound · 26-07 MUST` | partial — 64 random bits | + low | S | med |
-| TASK-24 | Tasks bound to the requestor; checked on every request | `2025-11-25 has` `mcpx missing` | `25-11 MUST with auth context · 26-07 MUST` | ✗ — one store shared by every connection (#209) | + med | S | high |
+| TASK-20 | Durable creation before `CreateTaskResult` | `2026-07-28 has` | `26-07 extension only` | Injected SQLite store saves before returning and can reopen; database write errors are ignored (`internal/tasks/tasks.go:StartWithDeadline`, `saveTaskLocked`, `Open`; `internal/mcpserver/tasks.go:tasks`). | + low | L | low |
+| TASK-21 | HTTP routing: `Mcp-Name` = `taskId` on `tasks/*` | `2026-07-28 has` | `26-07 extension only` | Client sets task routing headers (`internal/mcpclient/headers_tasks_test.go:TestStandardHeadersTaskID`); server header validation is a separate transport concern. | + low | S | low |
+| TASK-22 | Undeclared task support: SHOULD NOT create → `-32021` | `2026-07-28 has` | `25-11 SHOULD NOT · 26-07 MUST -32021` | Modern undeclared clients get -32021 for extension methods and required tools (`internal/mcpserver/tasks.go:missingTasks`, `handleTask`, `maybeTask`). | + low | S | low |
+| TASK-23 | Task IDs unguessable | `2025-11-25 has` `2026-07-28 has` | `25-11 MUST when unbound · 26-07 MUST` | Open: 64 random bits (`internal/tasks/tasks.go:NewID`); entropy is an open question on #1554; #2869 is unmerged. | + low | S | med |
+| TASK-24 | Tasks bound to the requestor; checked on every request | `2025-11-25 has` `mcpx missing` | `25-11 MUST with auth context · 26-07 MUST` | Connection-owned legacy tasks isolated; unowned tasks accessible by ID and ownership is in memory (`internal/mcpserver/tasks.go:startTask`, `visible`, `handleTask`; #1554). | + med | S | high |
 | TASK-25 | Reserved names `tasks/`, `notifications/tasks/`, `resultType: "task"` | `2026-07-28 has` `specs conflict` | `26-07 extension only` | n/a — nothing reserved clashes | − moot | S | low |
-| TASK-26 | MRTR rounds resolved before a `CreateTaskResult` | `2026-07-28 has` | `26-07 + extension` | n/a — no extension tasks | + low | M | low |
-| TASK-27 | One task store across MCP and `/v1` | `mcpx missing` | mcpx only | ✗ — two stores; each surface sees only its own (#209) | + med | S | med |
+| TASK-26 | MRTR rounds resolved before a `CreateTaskResult` | `2026-07-28 has` | `26-07 + extension` | Server answers sendable questions inline before returning a task (`internal/mcpserver/tasks.go:askTask`, `maybeTask`). | + low | M | low |
+| TASK-27 | One task store across MCP and `/v1` | | mcpx only | Daemon injects its task store into MCP (`internal/daemon/ops.go:TaskStore`; `internal/mcpserver/tasks.go:tasks`; `internal/cli/serve.go:MCPServer`, `internal/cli/root.go`). | + med | S | med |
 
 ## TASK-01 Tasks leave the core and become an extension
 
@@ -57,11 +50,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   through `capabilities.extensions`. SEP-2663 says it is not wire-compatible with 2025-11-25 and must not be enabled under
   2025-11-25.
 - **Where.** Core in 2025-11-25; extension only with 2026-07-28.
-- **mcpx @ 05c78b2.** Implements the 2025-11-25 shape for every revision (`internal/mcpserver/server.go:475-500`;
-  `internal/mcpserver/tasks.go:88-126`) and advertises both the legacy `tasks` capability and the extension to 2025-11-25
-  and 2026 hosts (`internal/mcpserver/server.go:1404-1417`), without the extension's wire format (no `tasks/update`, no
-  `resultType: "task"`, `ttl` rather than `ttlMs`). The feature table gives `FeatTasks` no ceiling
-  (`internal/mcpserver/revisions.go:90`), so "tasks" reads as continuous from 2025-11-25 to 2026.
+- **mcpx (current).** Separate legacy and extension paths (`internal/mcpserver/tasks.go:maybeTask`; `internal/mcpserver/server.go:capabilities`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + high: a real extension implementation would let long upstream calls survive a 2026 host's
   disconnect; declaring what is not delivered is the build brief's "declared but not delivered" bug class.
 - **Effort.** L — new result shape, update and poll flow, notifications; the rows below are the parts.
@@ -102,8 +92,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   MUST ignore it, and the server alone decides per request whether to return a task to a client that declared the
   extension.
 - **Where.** `task` param in 2025-11-25 only.
-- **mcpx @ 05c78b2.** Reads `params.task.ttl` in every era (`internal/mcpserver/tasks.go:40-56`) and never creates a task
-  unasked.
+- **mcpx (current).** Legacy opt-in; modern server decides (`internal/mcpserver/tasks.go:maybeTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: server-chosen tasks would let mcpx hand back a handle for a slow upstream call without the
   host asking, which is the extension's whole model.
 - **Effort.** M.
@@ -121,8 +111,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** A 2025-11-25 receiver that cannot identify requestors SHOULD NOT declare `tasks.list`, because listing exposes
   every task's metadata to anyone.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** Declares `"list": {}` (`internal/mcpserver/server.go:1412`) and `tasks/list` returns the whole shared
-  store (`internal/mcpserver/tasks.go:89-95`). Wire W23: a POST with no session lists the task W22 created.
+- **mcpx (current).** Lists connection-owned tasks only; unowned tasks remain readable by ID (`internal/mcpserver/tasks.go:visible`, `handleTask`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: removes cross-host metadata exposure.
 - **Effort.** S — stop declaring it, or bind first (TASK-24).
 - **Risk.** med: on a shared daemon any host sees every host's task ids and can collect their results.
@@ -135,9 +125,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2025-11-25 `CreateTaskResult` is `{ task: Task }`. The extension's is `Result & Task` with
   `resultType: "task"`, a value the extension reserves and advertises.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** Returns `{"task": t}` to every era (`internal/mcpserver/server.go:499-500`); for a 2026 host the reply
-  also gets `resultType: "complete"` stamped (`internal/mcpserver/server.go:452-454`). Wire W22:
-  `{"resultType":"complete","task":{"taskId":…,"ttl":60000,"pollInterval":1000}}`.
+- **mcpx (current).** Legacy `{task}`; modern flat `resultType: "task"` (`internal/mcpserver/tasks.go:maybeTask`, `created`; `internal/mcpclient/tasks.go:finishModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + high: without it no 2026 host can use an mcpx task.
 - **Effort.** S for the shape, given the rest of TASK-01.
 - **Risk.** high: a 2026 host reads `resultType: "complete"` and treats `{task: …}` as an empty tool result.
@@ -153,7 +142,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Renamed; still milliseconds, `null` for unlimited. The extension adds that it MAY change over the task's
   lifetime. The request-side `TaskMetadata.ttl` disappears with the `task` param.
 - **Where.** `ttl` in 2025-11-25; `ttlMs` in the extension.
-- **mcpx @ 05c78b2.** JSON tag `ttl` (`internal/tasks/tasks.go:36`); wire W22 shows `"ttl":60000`.
+- **mcpx (current).** Legacy `ttl`, modern `ttlMs` (`internal/tasks/tasks.go:Task`; `internal/mcpserver/tasks.go:modernTask`; `internal/mcpclient/tasks.go:modernTaskResult.UnmarshalJSON`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: a rename.
 - **Effort.** S.
 - **Risk.** low: extension clients see no TTL.
@@ -165,7 +155,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** Renamed. Servers MAY rate-limit clients that poll faster.
 - **Where.** `pollInterval` in 2025-11-25; `pollIntervalMs` in the extension.
-- **mcpx @ 05c78b2.** JSON tag `pollInterval` (`internal/tasks/tasks.go:37`); wire W22 shows `"pollInterval":1000`.
+- **mcpx (current).** Legacy `pollInterval`, modern `pollIntervalMs` (`internal/tasks/tasks.go:Task`; `internal/mcpserver/tasks.go:modernTask`; `internal/mcpclient/tasks.go:finishModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low.
 - **Effort.** S.
 - **Risk.** low: extension clients see no interval.
@@ -179,7 +170,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   variants: `input_required` carries `inputRequests`, `completed` carries `result`, `failed` carries `error`; `resultType`
   MUST be `"complete"` on it.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** Returns a status snapshot (`internal/mcpserver/tasks.go:97-102`).
+- **mcpx (current).** Modern get inlines terminal result/error or pending input (`internal/mcpserver/tasks.go:detailedNow`, `handleModernTask`; `internal/mcpclient/tasks.go:finishModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: one polling call gives everything, which suits hosts that reconnect.
 - **Effort.** M.
 - **Risk.** med: see TASK-01.
@@ -195,8 +187,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2025-11-25 `tasks/result` blocks until the task is terminal, returns its payload, and is where mid-task input
   requests travel. The extension removes it; clients calling it MUST get `-32601`, and results move into `tasks/get`.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** Served in every era (`internal/mcpserver/tasks.go:104-117`); a 2026 caller gets the result stamped
-  `resultType: "complete"` (wire, tasks section).
+- **mcpx (current).** Modern method-not-found; legacy result remains (`internal/mcpserver/tasks.go:handleModernTask`, `handleTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: accept-liberally is harmless as long as it is not advertised to 2026 hosts, which it is
   (CAP-26).
 - **Effort.** S.
@@ -211,7 +203,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Listing cannot be scoped without sessions, so the extension removes it with no replacement: clients must keep
   the task ids they were given.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** Served in every era and unscoped (`internal/mcpserver/tasks.go:89-95`; wire W23).
+- **mcpx (current).** Modern method-not-found; legacy list scoped to connection (`internal/mcpserver/tasks.go:handleModernTask`, `handleTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: stop serving it to hosts that declared the extension; for legacy hosts the fix is TASK-24.
 - **Effort.** S.
 - **Risk.** med: SEP-2663's own argument, "a server cannot inadvertently leak the existence of one caller's tasks to
@@ -226,8 +219,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** `tasks/update {taskId, inputResponses}` answers a task's outstanding `inputRequests`. The reply is an empty
   acknowledgement and eventually consistent; unknown or already-answered keys SHOULD be ignored; partial sets are allowed.
 - **Where.** Extension only.
-- **mcpx @ 05c78b2.** `handleTask` knows get, list, result and cancel only (`internal/mcpserver/tasks.go:75-127`). Wire:
-  `{"code":-32601,"message":"no method tasks/update"}`.
+- **mcpx (current).** Modern update answers outstanding asked-task questions, ignoring unknown keys (`internal/mcpserver/tasks.go:updateAsked`, `handleModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: input for long tasks without holding a request open; it maps directly onto the broker and
   `Ask.Reply` machinery MRTR already uses.
 - **Effort.** M.
@@ -242,7 +235,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   extension returns an empty acknowledgement; cancellation is cooperative and the task may still end in another terminal
   state.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** Returns a snapshot of the task to every era (`internal/mcpserver/tasks.go:119-124`).
+- **mcpx (current).** Modern empty acknowledgement, legacy snapshot; modern cancellation still forces terminal state (`internal/mcpserver/tasks.go:handleTask`, `handleModernTask`; `internal/tasks/tasks.go:CancelWithReason`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: an acknowledgement is simpler for an asynchronous daemon.
 - **Effort.** S.
 - **Risk.** low.
@@ -256,8 +250,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2025-11-25: cancelling a task already `completed`, `failed` or `cancelled` MUST be rejected with `-32602`. The
   extension acknowledges with an empty result.
 - **Where.** 2025-11-25 MUST; extension changes it.
-- **mcpx @ 05c78b2.** Returns the task snapshot, 200 (`internal/mcpserver/tasks.go:119-124`;
-  `internal/tasks/tasks.go:194-206`; wire, tasks section, id 303). An unknown id correctly gets `-32602 "no task …"`.
+- **mcpx (current).** Legacy terminal cancel rejected; modern acknowledged (`internal/mcpserver/tasks.go:handleTask`, `handleModernTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low.
 - **Effort.** S.
 - **Risk.** low.
@@ -271,9 +265,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `notifications/tasks`, carries the full `DetailedTask`, and delivers it only on a `subscriptions/listen` stream whose
   filter lists `taskIds` (a field the extension adds to the core filter).
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** Sends neither to hosts. An upstream's `notifications/tasks/status` falls through the client's
-  notification switch (`internal/mcpclient/client.go:478-521`). `docs/protocol.md:297-299` and `:375` say it is dropped
-  because "mcpx polls task state"; mcpx never creates upstream tasks (TOOL-21), so nothing is polled.
+- **mcpx (current).** Modern listen supports task notifications (`internal/tasks/tasks.go:Watch`; `internal/mcpserver/listen_tasks_test.go:TestListenDeliversTaskStatusNotifications`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: saves hosts polling.
 - **Effort.** M — needs the listen stream to accept `taskIds` ([notifications.md](notifications.md)).
 - **Risk.** low: optional in both designs.
@@ -288,8 +281,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   response) to carry `_meta["io.modelcontextprotocol/related-task"] = {taskId}`. Neither the 2026 core nor SEP-2663 defines
   it.
 - **Where.** 2025-11-25 only.
-- **mcpx @ 05c78b2.** Never sent: no occurrence in `internal/`. Results from `tasks/result` and questions raised while a
-  task runs carry none.
+- **mcpx (current).** Legacy result and task-related input requests carry related-task metadata (`internal/mcpserver/tasks.go:handleTask`; `internal/conformance/stateful_test.go:TestStatefulServer`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: lets a 2025-11-25 host tie a mid-task question to its task. The upstream direction would give
   mcpx exact attribution of questions on shared instances ([elicitation.md](elicitation.md), ELI-19).
 - **Effort.** S.
@@ -320,9 +313,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** 2025-11-25: a tool result with `isError: true` puts the task in `failed`. Extension: `failed` MUST NOT be used
   for `isError`; that is `completed` with the result, and `failed` is only for JSON-RPC errors, carried in `error`.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** JSON-RPC faults map to `failed` through `tasks.Fault` (`internal/mcpserver/tasks.go:60-67`); how an
-  `isError` result is classified was not traced. `mcpx_call` drops upstream `isError` anyway (a tools-register item), so
-  an mcpx task would report such a call as `completed`.
+- **mcpx (current).** Legacy store marks isError failed; modern detailed result reports completed (`internal/tasks/tasks.go:finish`; `internal/mcpserver/tasks.go:detailedNow`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: the extension's rule is the cleaner one for a proxy.
 - **Effort.** S.
 - **Risk.** low: clients switching on status misreport tool errors between the two designs.
@@ -336,8 +328,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `elicitation/create` or sampling on that stream. Extension: pending requests appear in `tasks/get` as `inputRequests`
   and are answered with `tasks/update`.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** The `input_required` status exists (`SetTaskStatus`, `internal/mcpserver/tasks.go:69-73`), but
-  nothing attaches `inputRequests` to a task, and `tasks/result` carries no questions.
+- **mcpx (current).** Server relays asked-task input via get/update; upstream input_required yields a named error instead (`internal/mcpserver/tasks.go:driveAsked`, `updateAsked`; `internal/mcpclient/tasks.go:TaskInputRequiredError`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: fits mcpx's broker model, where questions are already data.
 - **Effort.** M.
 - **Risk.** med: a task whose upstream asks something sits at `input_required` with no way to answer through tasks.
@@ -364,8 +356,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** New MUST in the extension: a server returns `CreateTaskResult` only once `tasks/get` for that id would succeed.
 - **Where.** Extension only.
-- **mcpx @ 05c78b2.** An in-process store (`internal/mcpserver/tasks.go:31-38`): trivially consistent within one process,
-  gone on restart.
+- **mcpx (current).** Injected SQLite store saves before returning and can reopen; database write errors are ignored (`internal/tasks/tasks.go:StartWithDeadline`, `saveTaskLocked`, `Open`; `internal/mcpserver/tasks.go:tasks`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: satisfied in-process; restart durability is a separate, larger feature.
 - **Effort.** L for durability across daemon restarts.
 - **Risk.** low: tasks vanish on restart, which servers may do (they may purge), but it surprises hosts that persisted ids.
@@ -377,8 +369,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Over Streamable HTTP, `tasks/get`, `tasks/update` and `tasks/cancel` MUST set `Mcp-Name` to `params.taskId`, so
   a load balancer can route to the instance that owns the task.
 - **Where.** Extension only.
-- **mcpx @ 05c78b2.** Never a tasks-extension client, and its client sends no `Mcp-Name` at all; as a server it does not
-  check `Mcp-Method`/`Mcp-Name` (both transports-register items).
+- **mcpx (current).** Client sets task routing headers (`internal/mcpclient/headers_tasks_test.go:TestStandardHeadersTaskID`); server header validation is a separate transport concern.
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: needed if mcpx becomes a 2026 HTTP client of task-returning upstreams.
 - **Effort.** S.
 - **Risk.** low: misrouted polls against multi-instance upstreams.
@@ -392,8 +384,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   `requiredCapabilities.extensions["io.modelcontextprotocol/tasks"]`, and MUST do the same for `tasks/get`, `tasks/update`
   and `tasks/cancel` from clients that did not declare the extension.
 - **Where.** As stated.
-- **mcpx @ 05c78b2.** Serves `task` params and `tasks/*` to every client, declared or not (wire W22, W23), and never emits
-  `-32021`.
+- **mcpx (current).** Modern undeclared clients get -32021 for extension methods and required tools (`internal/mcpserver/tasks.go:missingTasks`, `handleTask`, `maybeTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: honest failure for 2026 clients.
 - **Effort.** S.
 - **Risk.** low.
@@ -409,7 +401,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** Task ids may act as bearer tokens, so both designs require enough entropy: 2025-11-25 when tasks cannot be bound
   to an authorization context, the extension always.
 - **Where.** 2025-11-25 and the extension.
-- **mcpx @ 05c78b2.** `tsk-` plus 8 random bytes, 64 bits (`internal/tasks/tasks.go:86-90`).
+- **mcpx (current).** Open: 64 random bits (`internal/tasks/tasks.go:NewID`); entropy is an open question on #1554; #2869 is unmerged.
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: 128 bits would remove the question.
 - **Effort.** S.
 - **Risk.** med: with no binding (TASK-24) the id is the only protection, and `tasks/list` hands ids out anyway (TASK-04).
@@ -423,9 +416,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   without one they SHOULD document the limitation. Extension: authentication and authorization MUST be checked on every
   task request, and task `inputRequests` get the same trust model as direct ones.
 - **Where.** 2025-11-25 and the extension.
-- **mcpx @ 05c78b2.** The task store belongs to the `mcpserver.Server` and every stdio or HTTP connection shares it
-  (`internal/mcpserver/tasks.go:34-36`); any client that knows or lists an id can get, collect or cancel another client's
-  task (wire W23).
+- **mcpx (current).** Connection-owned legacy tasks isolated; unowned tasks accessible by ID and ownership is in memory (`internal/mcpserver/tasks.go:startTask`, `visible`, `handleTask`; #1554).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: isolation between hosts sharing one daemon.
 - **Effort.** S — key tasks by the connection binding now, by principal once `/mcp` has one.
 - **Risk.** high: result disclosure between hosts. `/mcp` has no authentication, so the 2025-11-25 MUST does not strictly
@@ -454,8 +446,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** A `tools/call` may go through one or more `input_required` rounds and then return `resultType: "task"`; servers
   SHOULD resolve all MRTR exchanges synchronously first. The two phases have separate key spaces.
 - **Where.** 2026-07-28 with the extension.
-- **mcpx @ 05c78b2.** No extension tasks. Its interruptible calls already run as daemon tasks internally
-  ([mrtr.md](mrtr.md), MRTR-20), so the extension's model is close to what mcpx does inside.
+- **mcpx (current).** Server answers sendable questions inline before returning a task (`internal/mcpserver/tasks.go:askTask`, `maybeTask`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + low: design guidance for when mcpx implements the extension.
 - **Effort.** M.
 - **Risk.** low.
@@ -465,11 +457,10 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 ## TASK-27 One task store across MCP and `/v1`
 
 - **What.** `internal/tasks` says one store is shared so that a task started on one surface is visible from the other. In
-  practice the MCP server and the daemon each create their own.
+  practice the daemon now injects its store into the MCP server.
 - **Where.** mcpx internal parity (config = /v1 = MCP).
-- **mcpx @ 05c78b2.** The MCP server makes `tasks.New()` (`internal/mcpserver/tasks.go:35`) and the daemon another
-  (`internal/daemon/ops.go:428-429`). MCP `tasks/list` never shows `/v1/call` tasks or MRTR calls (which are daemon
-  tasks), and `mcpx_tasks_list` never shows MCP tasks.
+- **mcpx (current).** Daemon injects its task store into MCP (`internal/daemon/ops.go:TaskStore`; `internal/mcpserver/tasks.go:tasks`; `internal/cli/serve.go:MCPServer`, `internal/cli/root.go`).
+  The assessment and source references below preserve the original 05c78b2 comparison; implementation-specific claims there are historical, not current.
 - **Value to mcpx.** + med: one view of background work.
 - **Effort.** S — the daemon hands its store to the lazily built MCP server.
 - **Risk.** med: a doc/code disagreement, and users look in the wrong place.
