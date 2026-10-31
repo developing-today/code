@@ -283,6 +283,33 @@ func literalValueKey(k string) bool {
 	return false
 }
 
+// nameMapKey reports whether a schema keyword's value is a map of
+// NAME -> schema (properties, $defs, ...). Keys in such a map are
+// property or definition names, never keywords: an argument named
+// "default" or a definition named "enum" is a name whose schema must
+// be traversed like any other, not a literal payload to skip.
+func nameMapKey(k string) bool {
+	switch k {
+	case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+		return true
+	}
+	return false
+}
+
+// The two traversals below walk a decoded schema in SCHEMA position.
+// They are structure-aware in three ways a blind walk cannot be:
+//
+//   - literal payloads (literalValueKey) are instance data, not
+//     schemas, and are never descended into;
+//   - name maps (nameMapKey) flip the walk into name position, where
+//     every value is a schema whatever its key spells;
+//   - a subschema carrying its own $id is a separate resource:
+//     references inside it resolve against that resource, so the
+//     subtree is never re-based (rewrite returns it verbatim), and
+//     plain-name fragments ("#T", an $anchor) are not JSON Pointers
+//     and are likewise left alone -- anchors resolve document-wide,
+//     so the copy still finds them.
+
 // hasLocalRef reports whether a decoded schema document contains a
 // $ref pointing inside itself.
 func hasLocalRef(v any) bool {
@@ -294,11 +321,17 @@ func hasLocalRef(v any) bool {
 					return true
 				}
 			}
-			if literalValueKey(k) {
+			switch {
+			case literalValueKey(k):
 				continue
-			}
-			if hasLocalRef(val) {
-				return true
+			case nameMapKey(k):
+				if hasLocalRefInNames(val) {
+					return true
+				}
+			default:
+				if hasLocalRef(val) {
+					return true
+				}
 			}
 		}
 	case []any:
@@ -311,25 +344,48 @@ func hasLocalRef(v any) bool {
 	return false
 }
 
+// hasLocalRefInNames walks a name -> schema map: every value is a
+// schema, whatever its key spells.
+func hasLocalRefInNames(v any) bool {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, sub := range t {
+		if hasLocalRef(sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // rewriteLocalRefs returns a copy of a decoded schema document with
-// every local $ref re-based at base: "#" becomes base itself and
-// "#/..." becomes base + "/...".
+// every local root-pointer $ref re-based at base: "#" becomes base
+// itself and "#/..." becomes base + "/...". Plain-name fragments
+// ("#anchor") and the inside of any $id-carrying subschema are
+// returned unchanged (see the traversal note above).
 func rewriteLocalRefs(v any, base string) any {
 	switch t := v.(type) {
 	case map[string]any:
+		if id, ok := t["$id"].(string); ok && id != "" {
+			return v // a separate resource: its refs are its own
+		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
 			if k == "$ref" {
-				if ref, ok := val.(string); ok && strings.HasPrefix(ref, "#") {
+				if ref, ok := val.(string); ok && (ref == "#" || strings.HasPrefix(ref, "#/")) {
 					out[k] = base + strings.TrimPrefix(ref, "#")
 					continue
 				}
 			}
-			if literalValueKey(k) {
+			switch {
+			case literalValueKey(k):
 				out[k] = val // literal instance data, not a schema
-				continue
+			case nameMapKey(k):
+				out[k] = rewriteLocalRefsInNames(val, base)
+			default:
+				out[k] = rewriteLocalRefs(val, base)
 			}
-			out[k] = rewriteLocalRefs(val, base)
 		}
 		return out
 	case []any:
@@ -341,6 +397,20 @@ func rewriteLocalRefs(v any, base string) any {
 	default:
 		return v
 	}
+}
+
+// rewriteLocalRefsInNames rewrites a name -> schema map: every value
+// is a schema, whatever its key spells.
+func rewriteLocalRefsInNames(v any, base string) any {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	out := make(map[string]any, len(t))
+	for name, sub := range t {
+		out[name] = rewriteLocalRefs(sub, base)
+	}
+	return out
 }
 
 // DeadRules returns the rules that match none of the known tool names:

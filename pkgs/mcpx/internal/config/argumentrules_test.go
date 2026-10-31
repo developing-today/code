@@ -361,6 +361,91 @@ func TestMergedRulesPreserveLiteralRefValues(t *testing.T) {
 	}
 }
 
+// Property and definition NAMES are not keywords: a rule constraining
+// an argument named "default" (or "enum") writes that name as a key of
+// the properties map, and its value is a schema like any other. The
+// ref traversal must walk it in name position, or the schema's $ref
+// is left pointing at the combined root and loading fails.
+func TestMergedRulesTraversePropertyNamesNotKeywords(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$defs": {"T": {"type": "string", "minLength": 2}},
+			"properties": {
+				"default": {"$ref": "#/$defs/T"},
+				"enum": {"$ref": "#/$defs/T"}
+			}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("merged rule with arguments named default/enum does not compile: %v", err)
+	}
+	if v := set.Check("anything", map[string]any{"default": "ok", "enum": "ok"}); v != nil {
+		t.Errorf("conforming call refused after merge: %v", v)
+	}
+	if v := set.Check("anything", map[string]any{"default": "x"}); v == nil {
+		t.Error("rule behind the argument named default lost its bite in the merge")
+	}
+	if v := set.Check("anything", map[string]any{"enum": 42}); v == nil {
+		t.Error("rule behind the argument named enum lost its bite in the merge")
+	}
+}
+
+// A rule carrying its own absolute $id is a separate resource: its
+// internal references resolve against that resource, so composition
+// must copy the document without re-basing the references inside it.
+func TestMergedRulesRespectSchemaIDBoundaries(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$id": "https://example.com/rules/arg.json",
+			"$defs": {"T": {"type": "string", "minLength": 2}},
+			"properties": {"name": {"$ref": "#/$defs/T"}}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{"properties": {"other": {"type": "boolean"}}}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("merged rule with its own $id does not compile: %v", err)
+	}
+	if v := set.Check("anything", map[string]any{"name": "ok", "other": true}); v != nil {
+		t.Errorf("conforming call refused after merge: %v", v)
+	}
+	if v := set.Check("anything", map[string]any{"name": "x"}); v == nil {
+		t.Error("$id rule's referenced constraint lost its bite in the merge")
+	}
+}
+
+// A plain-name fragment ("#T") references an $anchor, not a JSON
+// Pointer into the document root: prefixing it produces a pointer to
+// a nonexistent definition. Composition must leave anchor references
+// (and their targets) alone.
+func TestMergedRulesPreserveAnchorReferences(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$defs": {"T": {"$anchor": "T", "type": "string", "minLength": 2}},
+			"properties": {"name": {"$ref": "#T"}}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("merged rule with an anchor reference does not compile: %v", err)
+	}
+	if v := set.Check("anything", map[string]any{"name": "ok"}); v != nil {
+		t.Errorf("conforming call refused after merge: %v", v)
+	}
+	if v := set.Check("anything", map[string]any{"name": "x"}); v == nil {
+		t.Error("anchor-referenced constraint lost its bite in the merge")
+	}
+}
+
 // A nearer config file that redefines a server without restating its
 // argumentRules must not drop the farther file's server-level rules:
 // rules only tighten, across layers as within one file.
