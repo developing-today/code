@@ -208,7 +208,16 @@ def _env_headers() -> Dict[str, str]:
         ("x-mcpx-run", os.environ.get("MCPX_RUN", "")),
         ("x-mcpx-input", os.environ.get("MCPX_INPUT", "")),
     )
-    return {k: v for k, v in pairs if v}
+    env = {k: v for k, v in pairs if v}
+    for k, v in env.items():
+        # The socket branch below splices these values into a raw request,
+        # so a line break would smuggle in extra headers (and the daemon
+        # reads the first value of each). http.client already rejects
+        # line breaks on the TCP branch; reject them here so both
+        # branches fail loudly instead of sending a forged request.
+        if "\r" in v or "\n" in v:
+            raise ValueError("%s must not contain a line break" % k)
+    return env
 
 
 def _post(path: str, body: bytes) -> "tuple[int, Any]":
@@ -229,7 +238,9 @@ def _post(path: str, body: bytes) -> "tuple[int, Any]":
         finally:
             conn.close()
     else:
-        conn_http = http.client.HTTPConnection(ENDPOINT.split("//")[-1].split("/")[0], timeout=None)
+        authority = ENDPOINT.split("//")[-1].split("/")[0]
+        conn_cls = http.client.HTTPSConnection if ENDPOINT.startswith("https://") else http.client.HTTPConnection
+        conn_http = conn_cls(authority, timeout=None)
         try:
             # http.client encodes str header values as Latin-1 and
             # raises on anything outside it (a non-Latin-1 MCPX_CWD, say);
@@ -382,6 +393,28 @@ func pyNamespaceDoc(ns Namespace) string {
 	return "    " + pyQuote(strings.Join(lines, "\n")+"\n") + "\n"
 }
 
+// pyAllParams is schemaFields plus the required-only names: a name
+// the schema requires (through allOf, say) but never declares under
+// properties still needs a generated parameter, or the method cannot
+// accept it and no valid call can be made. Undeclared names have no
+// property schema, so they render as Any. The TypeScript side keeps
+// schemaFields untouched: this packet must not change .ts output.
+func pyAllParams(raw json.RawMessage) (params, required []string) {
+	params, required = schemaFields(raw)
+	have := map[string]bool{}
+	for _, p := range params {
+		have[p] = true
+	}
+	for _, r := range required {
+		if !have[r] {
+			params = append(params, r)
+			have[r] = true
+		}
+	}
+	sort.Strings(params)
+	return params, required
+}
+
 // pyToolMethod renders one typed method.
 func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	var b strings.Builder
@@ -390,7 +423,7 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 			b.WriteString("    # " + sanitizeComment(l) + "\n")
 		}
 	}
-	params, required := schemaFields(t.InputSchema)
+	params, required := pyAllParams(t.InputSchema)
 	req := map[string]bool{}
 	for _, r := range required {
 		req[r] = true
@@ -477,7 +510,7 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 // level is a naming problem (two parents, one shape) that belongs with the
 // output-schema phase, not with proving the dimension carries a second target.
 func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
-	params, required := schemaFields(t.InputSchema)
+	params, required := pyAllParams(t.InputSchema)
 	if len(params) > 0 {
 		base := nsClass + pyClassName(t.Name) + "Args"
 		req := map[string]bool{}
@@ -548,21 +581,45 @@ func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 	}
 }
 
+// pyOutputProps merges the properties a result object always
+// carries: its own plus every allOf branch's. Every allOf branch
+// applies, so those fields are always present — unlike anyOf/oneOf,
+// whose fields stay Any. The first declaration of a repeated name
+// wins, so the output is deterministic.
+func pyOutputProps(s *schema, into map[string]*schema) {
+	if s == nil {
+		return
+	}
+	for k, v := range s.Properties {
+		if _, ok := into[k]; !ok {
+			into[k] = v
+		}
+	}
+	for _, sub := range s.AllOf {
+		pyOutputProps(sub, into)
+	}
+}
+
 // pyObjectFieldPairs returns a schema's top-level properties as
 // (name, annotation) pairs in sorted order: the name is the pyParam
 // rendering used by the class form of a TypedDict.
 func pyObjectFieldPairs(s *schema) ([][2]string, bool) {
-	if s == nil || len(s.Properties) == 0 {
+	if s == nil {
 		return nil, false
 	}
-	keys := make([]string, 0, len(s.Properties))
-	for k := range s.Properties {
+	merged := map[string]*schema{}
+	pyOutputProps(s, merged)
+	if len(merged) == 0 {
+		return nil, false
+	}
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	pairs := make([][2]string, 0, len(keys))
 	for _, k := range keys {
-		pairs = append(pairs, [2]string{k, pyTypeForSchema(s.Properties[k], "    ")})
+		pairs = append(pairs, [2]string{k, pyTypeForSchema(merged[k], "    ")})
 	}
 	return pairs, true
 }
@@ -651,7 +708,22 @@ func pyTypeForSchema(s *schema, indent string) string {
 			}
 		}
 		if compound != "" {
-			return compound
+			if compound == "Any" {
+				return "Any"
+			}
+			// A mixed enum keeps its scalar members: the compound
+			// container alone would make a type checker reject the
+			// valid scalar values.
+			var scalars []string
+			for _, e := range s.Enum {
+				if _, ok := pyCompoundType(e); !ok {
+					scalars = append(scalars, pyLiteral(e))
+				}
+			}
+			if len(scalars) == 0 {
+				return compound
+			}
+			return "Union[" + compound + ", Literal[" + strings.Join(dedupe(scalars), ", ") + "]]"
 		}
 		parts := make([]string, 0, len(s.Enum))
 		for _, e := range s.Enum {
@@ -834,8 +906,15 @@ func pyQuote(s string) string {
 			b.WriteString(`\r`)
 		case '\t':
 			b.WriteString(`\t`)
+		// Python source cannot carry the rest of the C0 controls
+		// (NUL included): they would land verbatim in the generated
+		// module and fail the import. Escape them as \uXXXX.
 		default:
-			b.WriteRune(r)
+			if r < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			} else {
+				b.WriteRune(r)
+			}
 		}
 	}
 	b.WriteByte('"')
@@ -940,7 +1019,7 @@ func pyParam(name string) string {
 // with undeclared keys use the module-level call() escape hatch, the
 // same line the TypeScript client draws.
 func pyOpenExtra(raw json.RawMessage) bool {
-	params, _ := schemaFields(raw)
+	params, _ := pyAllParams(raw)
 	if len(params) > 0 || len(raw) == 0 {
 		return false
 	}
@@ -970,6 +1049,17 @@ func pyMethodName(name string) string {
 	// as the class constructor, with no explicit call. Rename the
 	// binding (the request keeps the tool's original name).
 	if len(safe) > 4 && strings.HasPrefix(safe, "__") && strings.HasSuffix(safe, "__") {
+		return safe + "_"
+	}
+	// Runtime bindings are taken at module level: a tool named
+	// _MISSING would bind that name in the class scope, and every
+	// later method's `= _MISSING` default is evaluated in the class
+	// namespace — the default would resolve to the method, not the
+	// module sentinel, and the call would send a function as an
+	// argument. Rename the binding; the request keeps the tool's
+	// original name (a tool literally named e.g. _MISSING_ then
+	// collides here and becomes the raising stub, as before).
+	if pyRuntimeNames[safe] {
 		return safe + "_"
 	}
 	return safe
@@ -1063,7 +1153,7 @@ func PythonDeclarations(nss []Namespace) string {
 					sanitizeComment(collisionText(names)), pyQuote(ns.Server))
 				continue
 			}
-			params, required := schemaFields(t.InputSchema)
+			params, required := pyAllParams(t.InputSchema)
 			req := map[string]bool{}
 			for _, r := range required {
 				req[r] = true

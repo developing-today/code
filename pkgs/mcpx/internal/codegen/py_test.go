@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dezren39/mcpx/internal/codegen"
 )
@@ -262,7 +263,15 @@ func TestPythonClientEdgeCases(t *testing.T) {
 		{"/v1/resource", "demo-server", "", ``},
 	}
 	for i, want := range wantCalls {
-		rec := <-recCh
+		// The fixture daemon always answers, but a missing record
+		// must fail the test — not hang until the package timeout
+		// with no assertion to show for it.
+		var rec recorded
+		select {
+		case rec = <-recCh:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("call %d: timed out waiting for the fixture daemon request", i)
+		}
 		if rec.Path != want.path {
 			t.Fatalf("call %d path = %s, want %s (body %v)", i, rec.Path, want.path, rec.Body)
 		}
@@ -777,5 +786,129 @@ func TestPythonCodexRound7(t *testing.T) {
 	}
 	if strings.TrimSpace(string(got)) != "import-ok" {
 		t.Fatalf("driver output = %q, want import-ok", got)
+	}
+}
+
+// TestPythonCodexRound8 covers the 2026-10-30 CodeRabbit pass and the
+// Codex _MISSING follow-up on #2591: required-only parameter names, an
+// allOf-only output schema, a mixed scalar/compound enum, a tool named
+// _MISSING, control characters in quoted strings, header value
+// validation, and HTTPS endpoint support.
+func TestPythonCodexRound8(t *testing.T) {
+	l := pythonLang(t)
+	demo := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "seal",
+				InputSchema: json.RawMessage(`{"type":"object","required":["token"]}`),
+			},
+			{
+				Name:         "describe",
+				InputSchema:  json.RawMessage(`{"type":"object","properties":{}}`),
+				OutputSchema: json.RawMessage(`{"allOf":[{"type":"object","properties":{"ok":{"type":"boolean"}}}]}`),
+			},
+			{
+				Name:        "mode",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"level":{"enum":[{"x":true},"auto"]}}}`),
+			},
+			{
+				Name:        "_MISSING",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"v":{"type":"string"}}}`),
+			},
+			{
+				Name:        "ping",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}}}`),
+			},
+		},
+	}
+	out := l.EmitModule([]codegen.Namespace{demo}, "http://127.0.0.1:1234", "sess-8")
+	// A required name with no declared property still gets a parameter.
+	if !strings.Contains(out, "def seal(self, *, token: Any)") {
+		t.Errorf("required-only name must be a parameter:\n%s", out)
+	}
+	// allOf-only output still gets a Result TypedDict.
+	if !strings.Contains(out, "class DemoDescribeResult(TypedDict, total=False):") ||
+		!strings.Contains(out, "ok: bool") ||
+		!strings.Contains(out, "-> DemoDescribeResult:") {
+		t.Errorf("allOf-only output schema must render a Result TypedDict:\n%s", out)
+	}
+	// A mixed enum keeps its scalar members.
+	if !strings.Contains(out, `Union[Dict[str, Any], Literal["auto"]]`) {
+		t.Errorf("mixed enum must keep scalar members:\n%s", out)
+	}
+	// A tool named _MISSING must not bind that name in the class scope.
+	if !strings.Contains(out, "def _MISSING_(") || strings.Contains(out, "def _MISSING(") {
+		t.Errorf("a _MISSING tool must be renamed so later defaults keep the sentinel:\n%s", out)
+	}
+	// Header values and endpoint selection in the runtime half.
+	if !strings.Contains(out, "must not contain a line break") {
+		t.Errorf("the runtime must validate header values:\n%s", out)
+	}
+	if !strings.Contains(out, `HTTPSConnection if ENDPOINT.startswith("https://")`) {
+		t.Errorf("the runtime must select HTTPSConnection for https endpoints:\n%s", out)
+	}
+	// Control characters in names must escape, not land verbatim.
+	ctrl := l.EmitModule([]codegen.Namespace{{
+		Name: "demo", Server: "demo\x01server",
+		Tools: []codegen.Tool{{Name: "ping", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}},
+	}}, "http://127.0.0.1:1234", "sess-8")
+	if !strings.Contains(ctrl, `demo`+`\u0001`+`server`) {
+		t.Errorf("control characters must escape as \\uXXXX:\n%s", ctrl)
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import os, sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"import mcpx_client\n" +
+		"from mcpx_client import tools\n" +
+		"kw = tools.Demo.ping.__kwdefaults__ or {}\n" +
+		"sentinel_ok = len(kw) > 0 and all(v is mcpx_client._MISSING for v in kw.values())\n" +
+		"os.environ['MCPX_CWD'] = 'a\\nb'\n" +
+		"try:\n" +
+		"    mcpx_client._env_headers()\n" +
+		"    header_ok = False\n" +
+		"except ValueError:\n" +
+		"    header_ok = True\n" +
+		"print('sentinel-ok' if sentinel_ok else 'sentinel-BAD')\n" +
+		"print('header-ok' if header_ok else 'header-BAD')\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	cmd.Env = append(os.Environ(), "MCPX_ENDPOINT=http://127.0.0.1:1234", "MCPX_SESSION=sess-8", "MCPX_SOCKET=")
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated module failed runtime checks: %v\n%s\n--- module ---\n%s", err, got, out)
+	}
+	for _, want := range []string{"sentinel-ok", "header-ok"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("driver output missing %q:\n%s\n--- module ---\n%s", want, got, out)
+		}
+	}
+
+	// The control-character module must import: escapes, not verbatim C0.
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(ctrl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctrlDriver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"import mcpx_client\n" +
+		"print('ctrl-import-ok')\n"
+	if err := os.WriteFile(filepath.Join(dir, "ctrl_driver.py"), []byte(ctrlDriver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd2 := exec.Command(python, filepath.Join(dir, "ctrl_driver.py"))
+	got2, err := cmd2.CombinedOutput()
+	if err != nil || !strings.Contains(string(got2), "ctrl-import-ok") {
+		t.Errorf("control-character module must import: %v\n%s\n--- module ---\n%s", err, got2, ctrl)
 	}
 }
