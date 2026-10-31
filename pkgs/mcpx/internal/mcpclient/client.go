@@ -1378,6 +1378,31 @@ func (c *Client) recordToolHints(tools []Tool) {
 	c.mu.Unlock()
 }
 
+// SeedToolExec merges taskSupport declarations learned elsewhere -- the
+// pool's cached catalogue -- into this client's snapshot, for names the
+// client has not listed itself. Pool.refreshSchemas lists on whichever
+// instance the schema lease happens to hold; a session- or call-scoped
+// serving client, or a restarted global instance behind a retained
+// catalogue, may never have listed, and its snapshot would otherwise
+// stay empty so a taskSupport-"required" tool silently took the plain
+// path (#1556 Codex review). The client's own list always wins:
+// seeding only fills gaps.
+func (c *Client) SeedToolExec(tools []Tool) {
+	if len(tools) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.toolExec == nil {
+		c.toolExec = make(map[string]string, len(tools))
+	}
+	for _, t := range tools {
+		if _, ok := c.toolExec[t.Name]; !ok {
+			c.toolExec[t.Name] = parseTaskSupport(t.Execution)
+		}
+	}
+}
+
 // ListResources returns static resources plus resource templates.
 func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
 	all, _, err := c.ListResourcesWithHints(ctx)
@@ -1526,6 +1551,38 @@ func (c *Client) toolCallReissueAllowed(name string) bool {
 	return ok && (h.readOnly || h.idempotent)
 }
 
+// urlElicitationRetry applies the bounded -32042 URL-elicitation
+// recovery to one failed call (#2079): on a 2025-11-25 connection, a
+// well-formed -32042 names URL elicitations the installed handler opens
+// before the call can proceed. It reports retry=true when the handler
+// accepted and the call should be re-issued once. Every other outcome
+// returns the error to surface: the original error untouched when the
+// fault is not a recoverable -32042 (wrong version, malformed data, no
+// handler installed), the handler's own error when it fails, and a
+// declined error when the elicitations were refused or expired.
+func (c *Client) urlElicitationRetry(ctx context.Context, name string, err error) (bool, error) {
+	var re *rpcError
+	if err == nil || c.negotiatedVersion() != "2025-11-25" ||
+		!errors.As(err, &re) || re.Code != codeURLElicitationRequired {
+		return false, err
+	}
+	els, wellFormed := parseURLElicitations(re.Data)
+	c.mu.Lock()
+	h := c.onURLElicitationRequired
+	c.mu.Unlock()
+	if !wellFormed || h == nil {
+		return false, err
+	}
+	accepted, herr := h(ctx, els)
+	if herr != nil {
+		return false, herr
+	}
+	if !accepted {
+		return false, fmt.Errorf("mcpx: the URL elicitations required by tool %s were declined or expired", name)
+	}
+	return true, nil
+}
+
 // CallTool invokes a tool and returns the raw CallToolResult.
 //
 // A broken response stream re-issues the call once only when the tool's
@@ -1553,9 +1610,20 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	// task answer is polled to its terminal result before returning.
 	support := c.resolveTaskSupport(name)
 	if support == taskSupportRequired && c.Era == EraLegacy {
-		return c.callToolAsLegacyTask(ctx, name, args)
+		raw, err := c.callToolAsLegacyTask(ctx, name, args)
+		if err != nil {
+			// A -32042 can surface from the task-augmented call itself
+			// or from tasks/result at the end of the poll; it gets the
+			// same one-shot URL-elicitation recovery as the plain path
+			// below (#1556 Codex review).
+			if retry, rerr := c.urlElicitationRetry(ctx, name, err); retry {
+				raw, err = c.callToolAsLegacyTask(ctx, name, args)
+			} else {
+				err = rerr
+			}
+		}
+		return raw, err
 	}
-	taskRequired := support == taskSupportRequired && c.Era == EraModern
 	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return nil, err
@@ -1587,31 +1655,23 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		// open before the call can proceed (#2079). The retry is gated
 		// on its own flag, not the attempt index: the -32020 continue
 		// above already spends attempts, and the -32042 retry must
-		// happen exactly once regardless. Malformed data, or no handler
-		// installed, leaves the original error untouched; any other
-		// negotiated version is untouched too.
-		if !retried32042 && err != nil && c.negotiatedVersion() == "2025-11-25" &&
-			errors.As(err, &re) && re.Code == codeURLElicitationRequired {
-			els, wellFormed := parseURLElicitations(re.Data)
-			c.mu.Lock()
-			h := c.onURLElicitationRequired
-			c.mu.Unlock()
-			if wellFormed && h != nil {
-				accepted, herr := h(ctx, els)
-				if herr != nil {
-					return nil, herr
-				}
-				if !accepted {
-					return nil, fmt.Errorf("mcpx: the URL elicitations required by tool %s were declined or expired", name)
-				}
+		// happen exactly once regardless.
+		if !retried32042 && err != nil {
+			retry, rerr := c.urlElicitationRetry(ctx, name, err)
+			if retry {
 				retried32042 = true
 				continue
 			}
+			err = rerr
 		}
 		if err != nil {
 			return nil, err
 		}
-		if taskRequired && isTaskResult(raw) {
+		// Any modern task answer is polled to its terminal result, not
+		// only a required tool's: advertising the tasks extension lets
+		// the server answer an optional tool with a task past its eager
+		// window, and the handle is not the tool's result.
+		if c.Era == EraModern && isTaskResult(raw) {
 			raw, err = c.finishModernTask(ctx, name, raw)
 			if err != nil {
 				return nil, err

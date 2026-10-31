@@ -83,12 +83,13 @@ func parseTaskSupport(raw json.RawMessage) string {
 // tools/list round trip of its own: a server may never answer one, and
 // a call would hang on a question its caller never asked (the same
 // rule the re-issue gate follows; see toolCallReissueAllowed). The
-// snapshot is populated by every ListTools this client serves, and the
-// pool lists the catalogue on its pooled clients as its normal
-// operation (refreshSchemas), so a client serving pooled calls has
-// listed the server it calls. A client that has never listed resolves
-// "" -- the plain path, exactly what it did before task execution
-// existed.
+// snapshot is populated by every ListTools this client serves. The
+// pool also seeds it from its cached catalogue before a pooled call
+// (Client.SeedToolExec): refreshSchemas lists on whichever instance the
+// schema lease happens to hold, which is not necessarily the client
+// that later serves a session- or call-scoped call. A client that has
+// neither listed nor been seeded resolves "" -- the plain path, exactly
+// what it did before task execution existed.
 func (c *Client) resolveTaskSupport(name string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,8 +120,20 @@ func (c *Client) cancelTask(taskID string) {
 
 // waitTaskPoll sleeps one poll interval, or ends the wait: the caller's
 // context finishing cancels the task and returns its error, and the
-// task's TTL expiring cancels it and returns a timeout error.
+// task's TTL expiring cancels it and returns a timeout error. The sleep
+// is capped at the remaining TTL, so an interval longer than the time
+// left cannot overshoot the deadline by a whole interval.
 func (c *Client) waitTaskPoll(ctx context.Context, tool, taskID string, interval time.Duration, deadline time.Time) error {
+	if !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			c.cancelTask(taskID)
+			return fmt.Errorf("mcpx: tool %s: task %s did not finish within its TTL", tool, taskID)
+		}
+		if interval > remaining {
+			interval = remaining
+		}
+	}
 	t := time.NewTimer(interval)
 	defer t.Stop()
 	select {
@@ -134,6 +147,32 @@ func (c *Client) waitTaskPoll(ctx context.Context, tool, taskID string, interval
 		return fmt.Errorf("mcpx: tool %s: task %s did not finish within its TTL", tool, taskID)
 	}
 	return nil
+}
+
+// taskCallContext bounds one task-loop request (tasks/get, tasks/result)
+// by the task deadline as well as the caller's context: a poll issued
+// with only the caller's context could block past the TTL indefinitely
+// against a stalled upstream, and the promised TTL outer bound would
+// bound nothing.
+func taskCallContext(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if deadline.IsZero() {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, deadline)
+}
+
+// taskPollError classifies a failed task-loop request: the caller's own
+// cancellation wins, then the task deadline, then the request's error.
+func (c *Client) taskPollError(ctx context.Context, tool, taskID string, deadline time.Time, err error) error {
+	if ctx.Err() != nil {
+		c.cancelTask(taskID)
+		return ctx.Err()
+	}
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		c.cancelTask(taskID)
+		return fmt.Errorf("mcpx: tool %s: task %s did not finish within its TTL", tool, taskID)
+	}
+	return err
 }
 
 func taskDeadline(start time.Time, ttlMs int64) time.Time {
@@ -164,6 +203,15 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 	if err != nil {
 		return nil, err
 	}
+	// The relay a downstream caller attached rides this call exactly as
+	// it rides the plain path: beginRelay merges its _meta (progress
+	// token, trace) into the request and keeps its callbacks registered
+	// for the task's whole lifetime, not just the submission.
+	params, done, err := c.beginRelay(relayFrom(ctx), params)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	var created json.RawMessage
 	if err := c.call(ctx, "tools/call", params, &created); err != nil {
 		return nil, err
@@ -182,8 +230,11 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 		switch task.Status {
 		case taskStatusCompleted, taskStatusFailed:
 			var raw json.RawMessage
-			if err := c.call(ctx, "tasks/result", getParams, &raw); err != nil {
-				return nil, err
+			rctx, rcancel := taskCallContext(ctx, deadline)
+			err := c.call(rctx, "tasks/result", getParams, &raw)
+			rcancel()
+			if err != nil {
+				return nil, c.taskPollError(ctx, name, task.TaskID, deadline, err)
 			}
 			if task.Status == taskStatusCompleted {
 				c.checkToolOutput(ctx, name, raw)
@@ -203,12 +254,11 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 			return nil, err
 		}
 		var snap legacyTask
-		if err := c.call(ctx, "tasks/get", getParams, &snap); err != nil {
-			if ctx.Err() != nil {
-				c.cancelTask(task.TaskID)
-				return nil, ctx.Err()
-			}
-			return nil, err
+		gctx, gcancel := taskCallContext(ctx, deadline)
+		err := c.call(gctx, "tasks/get", getParams, &snap)
+		gcancel()
+		if err != nil {
+			return nil, c.taskPollError(ctx, name, task.TaskID, deadline, err)
 		}
 		if snap.TaskID == "" {
 			return nil, fmt.Errorf("mcpx: tool %s: malformed tasks/get response: no taskId", name)
@@ -235,6 +285,7 @@ type modernTaskResult struct {
 	TaskID         string          `json:"taskId"`
 	Status         string          `json:"status"`
 	StatusMessage  string          `json:"statusMessage,omitempty"`
+	CreatedAt      string          `json:"createdAt,omitempty"`
 	TTLMs          int64           `json:"ttlMs"`
 	PollIntervalMs int64           `json:"pollIntervalMs"`
 	Result         json.RawMessage `json:"result,omitempty"`
@@ -249,9 +300,13 @@ func isTaskResult(raw json.RawMessage) bool {
 }
 
 // finishModernTask polls a modern task handle from CallTool to its
-// terminal state and returns the inlined result. It runs only for
-// taskSupport-"required" tools: a task answer for any other tool is the
-// server's eager-window behaviour and is returned to the caller as-is.
+// terminal state and returns the inlined result. It runs for ANY task
+// answer CallTool accepts, not only taskSupport-"required" tools:
+// advertising the tasks extension lets a server answer an optional (or
+// undeclared) tool with a task once its eager window passes (this
+// repo's mcpserver.maybeTask does exactly that), and a task handle is
+// not a tool result -- returning it as one would hand the caller a
+// receipt instead of the output.
 func (c *Client) finishModernTask(ctx context.Context, name string, raw json.RawMessage) (json.RawMessage, error) {
 	var task modernTaskResult
 	if err := json.Unmarshal(raw, &task); err != nil || task.TaskID == "" {
@@ -291,12 +346,11 @@ func (c *Client) finishModernTask(ctx context.Context, name string, raw json.Raw
 			return nil, err
 		}
 		var snap modernTaskResult
-		if err := c.call(ctx, "tasks/get", getParams, &snap); err != nil {
-			if ctx.Err() != nil {
-				c.cancelTask(task.TaskID)
-				return nil, ctx.Err()
-			}
-			return nil, err
+		gctx, gcancel := taskCallContext(ctx, deadline)
+		err := c.call(gctx, "tasks/get", getParams, &snap)
+		gcancel()
+		if err != nil {
+			return nil, c.taskPollError(ctx, name, task.TaskID, deadline, err)
 		}
 		if snap.TaskID == "" {
 			return nil, fmt.Errorf("mcpx: tool %s: malformed tasks/get response: no taskId", name)
@@ -306,6 +360,18 @@ func (c *Client) finishModernTask(ctx context.Context, name string, raw json.Raw
 		}
 		if snap.TTLMs <= 0 {
 			snap.TTLMs = task.TTLMs
+		} else if snap.TTLMs != task.TTLMs {
+			// A modern upstream may restate a task's TTL as it works
+			// (TASK-06); the deadline follows the new value instead of
+			// cancelling a live task at its original expiry. TTL is
+			// milliseconds after creation, so the deadline is the
+			// creation time plus the new TTL when the snapshot names
+			// one, and now plus the new TTL when it does not.
+			base := time.Now()
+			if ct, perr := time.Parse(time.RFC3339Nano, snap.CreatedAt); perr == nil && !ct.IsZero() {
+				base = ct
+			}
+			deadline = base.Add(time.Duration(snap.TTLMs) * time.Millisecond)
 		}
 		task = snap
 		fetched = true
