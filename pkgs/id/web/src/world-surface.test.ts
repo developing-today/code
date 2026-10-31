@@ -180,6 +180,86 @@ describe("world screen presenter", () => {
     );
   });
 
+  it("measures U+FE0E text-presentation sequences as width 1, like Rust unicode-width 0.2.2 (#1581)", () => {
+    const root = document.createElement("div");
+    const expectNarrow = (symbol: string) => {
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(true);
+      const wideScreen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, wideScreen)).toBe(false);
+    };
+    // Default-emoji-presentation bases narrow to 1 with U+FE0E (VS15):
+    // ⬛︎ U+2B1B, ⬜︎ U+2B1C, ⭕︎ U+2B55 (the classes the wide fix added),
+    // ⌚︎ U+231A, ⭐︎ U+2B50, and astral 🕐︎ U+1F550.
+    for (const symbol of [
+      "\u{2B1B}\u{FE0E}",
+      "\u{2B1C}\u{FE0E}",
+      "\u{2B55}\u{FE0E}",
+      "\u{231A}\u{FE0E}",
+      "\u{2B50}\u{FE0E}",
+      "\u{1F550}\u{FE0E}",
+    ]) {
+      expectNarrow(symbol);
+    }
+    // The same bases alone (no U+FE0E) are wide: ⌚ U+231A and
+    // ⭐ U+2B50 render in 2 columns and are refused in 1.
+    for (const symbol of ["\u{231A}", "\u{2B50}"]) {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+    // A combining mark between the base and U+FE0E breaks the narrowing:
+    // U+2B1B U+0301 U+FE0E still measures 2 under unicode-width 0.2.2.
+    const interrupted = "\u{2B1B}\u{0301}\u{FE0E}";
+    const interruptedScreen: ScreenSurface = {
+      kind: "screen",
+      version: 1,
+      width: 2,
+      height: 1,
+      cells: [
+        { symbol: interrupted, fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ],
+    };
+    expect(renderWorldSurface(root, interruptedScreen)).toBe(true);
+    expect(renderWorldSurface(root, makeScreen([{ symbol: interrupted, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
+      false,
+    );
+    // Wide code points outside the text-presentation set keep width 2
+    // with U+FE0E: 😀︎ U+1F600 U+FE0E and 漢︎ U+6F22 U+FE0E.
+    for (const symbol of ["\u{1F600}\u{FE0E}", "\u{6F22}\u{FE0E}"]) {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    }
+  });
+
   it("measures astral-plane, ZWJ and variation-selector glyphs as width 2, like Rust unicode-width (#761)", () => {
     const root = document.createElement("div");
     // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
