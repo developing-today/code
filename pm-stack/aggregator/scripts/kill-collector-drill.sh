@@ -110,9 +110,13 @@ except Exception:
 # The trap is installed before the precondition checks, so without the
 # gate a REFUSAL (die -> exit) would fire restore() and start the
 # collector the drill just refused to touch — masking the very
-# findings the interlocks exist to surface (#2865). KILLED is set only
-# after the collector stop succeeds; until then restore() is a no-op
-# and every refusal path leaves the system exactly as it found it.
+# findings the interlocks exist to surface (#2865). KILLED is armed
+# immediately BEFORE the destructive timer stop — after every
+# precondition refusal — so until that point restore() is a no-op and
+# every refusal path leaves the system exactly as it found it, while
+# a signal interrupting the stop itself (this drill's systemd service
+# is cancelled via TERM) still restores a timer the stop may already
+# have deactivated (Codex P2 on PR #3027).
 KILLED=0
 RESTORED=0
 restore() {
@@ -135,11 +139,15 @@ log "preconditions ok: collector active, feed fresh (age ${BASE_AGE}ms), no inci
 
 # --- kill -------------------------------------------------------------------
 log "stopping $COLLECTOR_TIMER"
-sudo -n systemctl stop "$COLLECTOR_TIMER" || die "failed to stop $COLLECTOR_TIMER (sudo -n systemctl required)"
-# The collector is stopped from here on: the restore gate opens, and
-# any later exit (signal, die, the explicit restore step) puts the
-# collector back exactly as the drill found it.
+# Arm restoration BEFORE the destructive stop: if TERM/INT lands
+# while systemctl stop is in flight, the timer may already be
+# deactivated even though the stop never returns success — with the
+# gate armed only after a successful stop, both traps would skip
+# restore and leave the collector stopped indefinitely. Every
+# precondition refusal is above this point, so arming here can never
+# fire restore on a refusal.
 KILLED=1
+sudo -n systemctl stop "$COLLECTOR_TIMER" || die "failed to stop $COLLECTOR_TIMER (sudo -n systemctl required)"
 sudo -n systemctl stop "$COLLECTOR_SERVICE" 2>/dev/null || true
 
 # --- wait for the honesty signal ---------------------------------------------

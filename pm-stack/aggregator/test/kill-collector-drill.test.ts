@@ -28,6 +28,7 @@ import { join } from "node:path";
 const DRILL = join(import.meta.dir, "..", "scripts", "kill-collector-drill.sh");
 
 interface Scenario {
+  interruptStop?: boolean; // stub systemctl stop sends TERM to the drill, then fails
   timerActive: boolean;
   healthPlan: string[]; // per health-channel call: fresh | stale | fail
   incidentFlag?: boolean;
@@ -56,6 +57,10 @@ function runDrill(scn: Scenario) {
 echo "systemctl $*" >> "${stubLog}"
 if [ "$1" = "is-active" ]; then
   [ "\${STUB_TIMER_ACTIVE:-1}" = "1" ] && exit 0 || exit 1
+fi
+if [ "$1" = "stop" ] && [ "\${STUB_INTERRUPT_STOP:-0}" = "1" ]; then
+  kill -TERM "$PPID"
+  exit 1
 fi
 exit 0
 `,
@@ -117,6 +122,7 @@ printf '{"feed":{"generatedAt":"%s"},"degraded":false}' "$(cat "${base}/gen-at")
         PM_DRILL_STATE_DIR: state,
         PM_DRILL_NO_POST: "1",
         STUB_TIMER_ACTIVE: scn.timerActive ? "1" : "0",
+        STUB_INTERRUPT_STOP: scn.interruptStop ? "1" : "0",
       },
       encoding: "utf8",
       timeout: 30000,
@@ -172,6 +178,21 @@ describe("kill-collector drill: refusals touch nothing (#2865)", () => {
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("already stale");
     expectNoStart(r.systemctlLog);
+  });
+});
+
+describe("kill-collector drill: an interrupted stop still restores (#2865, Codex P2 on #3027)", () => {
+  test("TERM lands while systemctl stop is in flight -> restore starts timer + service", () => {
+    // The stub stop signals the drill (TERM, as systemd cancellation
+    // does) after the stop is already in flight, then fails. Restore
+    // must be armed BEFORE the stop, or both traps skip it and the
+    // collector timer stays stopped indefinitely.
+    const r = runDrill({ timerActive: true, healthPlan: ["fresh"], interruptStop: true });
+    expect(r.status).not.toBe(0);
+    const calls = r.systemctlLog.split("\n").filter(Boolean);
+    const starts = calls.filter((l) => l.includes(" start "));
+    expect(starts.filter((l) => l.includes("start fleet-feed-collector.timer"))).toHaveLength(1);
+    expect(starts.filter((l) => l.includes("start fleet-feed-collector.service"))).toHaveLength(1);
   });
 });
 
