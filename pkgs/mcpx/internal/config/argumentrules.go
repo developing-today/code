@@ -810,10 +810,21 @@ func compactJSON(raw json.RawMessage) string {
 	return s
 }
 
-// projectPinnedRule returns the rule schema with pinned property
-// names removed from every required / dependentRequired list, at any
-// depth. A schema that does not decode is returned unchanged: the
-// projection is presentation, and a malformed rule keeps its
+// projectPinnedRule returns the rule schema as the pinned view
+// advertises it. At the rule's own instance scope, a pinned property
+// is removed from required lists (the pin itself satisfies it: pins
+// merge before enforcement) and a dependentRequired entry triggered
+// by a pinned property is promoted -- the pin always inserts the
+// trigger before the rule is enforced, so the trigger's remaining
+// dependencies are unconditional requirements of the caller, and the
+// advertised schema must say so or it understates what enforcement
+// demands. The projection follows same-instance applicators (allOf,
+// anyOf, oneOf, not, if/then/else, dependentSchemas) but never
+// crosses into a nested instance scope (properties, items, $defs,
+// ...): a property there that shares a pinned name is a different
+// property, which the top-level pin does not satisfy (Codex P2s on
+// PR #2976). A schema that does not decode is returned unchanged:
+// the projection is presentation, and a malformed rule keeps its
 // verbatim meaning rather than a guessed one.
 func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -829,48 +840,110 @@ func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMess
 	return out
 }
 
+// stripPinnedRequirements projects one schema at its own instance
+// scope; see projectPinnedRule for the contract.
 func stripPinnedRequirements(v any, pinned map[string]bool) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			switch k {
-			case "required":
-				if names, ok := val.([]any); ok {
-					if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
-						out[k] = kept
-					}
-					continue
-				}
-			case "dependentRequired":
-				if deps, ok := val.(map[string]any); ok {
-					keptDeps := map[string]any{}
-					for prop, depVal := range deps {
-						if names, ok := depVal.([]any); ok {
-							if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
-								keptDeps[prop] = kept
-							}
-						} else {
-							keptDeps[prop] = depVal
-						}
-					}
-					if len(keptDeps) > 0 {
-						out[k] = keptDeps
-					}
-					continue
-				}
-			}
-			out[k] = stripPinnedRequirements(val, pinned)
-		}
-		return out
-	case []any:
-		for i, el := range t {
-			t[i] = stripPinnedRequirements(el, pinned)
-		}
-		return t
-	default:
+	m, ok := v.(map[string]any)
+	if !ok {
 		return v
 	}
+	out := make(map[string]any, len(m))
+	var promoted []string
+	for k, val := range m {
+		switch k {
+		case "required":
+			if names, ok := val.([]any); ok {
+				if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
+					out[k] = kept
+				}
+				continue
+			}
+			out[k] = val
+		case "dependentRequired":
+			deps, ok := val.(map[string]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				depVal := deps[prop]
+				names, ok := depVal.([]any)
+				if !ok {
+					keptDeps[prop] = depVal
+					continue
+				}
+				kept := filterPinnedNames(names, pinned)
+				if pinned[prop] {
+					// The pin always supplies the trigger, so
+					// its remaining dependencies promote to
+					// unconditional requirements at this scope.
+					for _, n := range kept {
+						if name, ok := n.(string); ok {
+							promoted = append(promoted, name)
+						}
+					}
+					continue
+				}
+				if len(kept) > 0 {
+					keptDeps[prop] = kept
+				}
+			}
+			if len(keptDeps) > 0 {
+				out[k] = keptDeps
+			}
+		case "allOf", "anyOf", "oneOf":
+			if subs, ok := val.([]any); ok {
+				projected := make([]any, len(subs))
+				for i, sub := range subs {
+					projected[i] = stripPinnedRequirements(sub, pinned)
+				}
+				out[k] = projected
+			} else {
+				out[k] = val
+			}
+		case "not", "if", "then", "else":
+			out[k] = stripPinnedRequirements(val, pinned)
+		case "dependentSchemas":
+			if subs, ok := val.(map[string]any); ok {
+				projected := make(map[string]any, len(subs))
+				for prop, sub := range subs {
+					projected[prop] = stripPinnedRequirements(sub, pinned)
+				}
+				out[k] = projected
+			} else {
+				out[k] = val
+			}
+		default:
+			// Any other key is either not a schema position or
+			// opens a nested instance scope: the pinned names
+			// have no meaning there, and the value keeps its
+			// verbatim meaning.
+			out[k] = val
+		}
+	}
+	if len(promoted) > 0 {
+		required, _ := out["required"].([]any)
+		seen := map[string]bool{}
+		for _, n := range required {
+			if name, ok := n.(string); ok {
+				seen[name] = true
+			}
+		}
+		for _, name := range promoted {
+			if !seen[name] {
+				seen[name] = true
+				required = append(required, name)
+			}
+		}
+		out["required"] = required
+	}
+	return out
 }
 
 func filterPinnedNames(names []any, pinned map[string]bool) []any {

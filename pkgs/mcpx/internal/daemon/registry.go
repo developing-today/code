@@ -484,6 +484,27 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 	if err := dec.Decode(&m); err != nil {
 		return schema
 	}
+	hidePropsAtScope(m, hide)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return out
+}
+
+// hidePropsAtScope removes the hidden properties from one schema
+// object's properties and required lists, and recurses into its
+// allOf members, which constrain the same instance: a member's
+// requirement on a hidden property would otherwise survive the root
+// projection, and against additionalProperties:false with the
+// property's declaration deleted it advertises a schema no caller
+// can satisfy, even though calls succeed because pins merge before
+// forwarding (Codex P2 on PR #2976). Disjunctive applicators
+// (anyOf/oneOf) are not projected: a branch requiring the hidden
+// property stays satisfiable through the merged pin at call time,
+// and weakening a branch would misstate the choice the schema
+// offers.
+func hidePropsAtScope(m map[string]any, hide []string) {
 	if props, ok := m["properties"].(map[string]any); ok {
 		for _, h := range hide {
 			delete(props, h)
@@ -510,11 +531,13 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 			m["required"] = kept
 		}
 	}
-	out, err := json.Marshal(m)
-	if err != nil {
-		return schema
+	if subs, ok := m["allOf"].([]any); ok {
+		for _, sub := range subs {
+			if sm, ok := sub.(map[string]any); ok {
+				hidePropsAtScope(sm, hide)
+			}
+		}
 	}
-	return out
 }
 
 // schemaProps is the property name set of a tool's inputSchema.
@@ -537,7 +560,13 @@ func schemaProps(schema json.RawMessage) map[string]bool {
 // of an argument the target's schema does not declare, is a load
 // error naming the view -- never a silent no-op. A server whose
 // schemas are not cached yet cannot be checked and is skipped; the
-// listing path invents nothing for a missing target either way.
+// listing path invents nothing for a missing target either way. An
+// expired cache is skipped for the same reason: its contents are
+// stale, so treating them as authoritative would let an old
+// catalogue veto a reload that uses a tool or argument the upstream
+// added after the cache was fetched, until an operator refreshed
+// the server by hand (Codex P2 on PR #2976). Validation defers
+// until the catalogue is refreshed.
 func validateViews(order []string, views map[string]*config.Resolved, pools map[string]*pool.Pool) error {
 	for _, name := range order {
 		view := views[name]
@@ -549,7 +578,7 @@ func validateViews(order []string, views map[string]*config.Resolved, pools map[
 			continue
 		}
 		all, _, _ := p.CachedSchemas()
-		if len(all) == 0 {
+		if len(all) == 0 || p.SchemaExpired() {
 			continue
 		}
 		byName := make(map[string]mcpclient.Tool, len(all))

@@ -735,3 +735,49 @@ func TestEffectiveSchemaPinnedDropsPinnedRequirements(t *testing.T) {
 		t.Errorf("EffectiveSchema must keep the verbatim rule: %s", full)
 	}
 }
+
+// Codex P2 on PR #2976: the pinned projection must respect JSON
+// Schema instance scope. A nested object's property that shares a
+// pinned name is a different property -- merging the top-level pin
+// does not populate it -- so its requirement must survive the
+// projection verbatim, or the advertised schema accepts calls
+// enforcement rejects.
+func TestEffectiveSchemaPinnedKeepsNestedScopeRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"properties":{"options":{"type":"object","required":["tailnet"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"options":{"type":"object"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["tailnet"]`) {
+		t.Errorf("nested-scope requirement on a same-named property must survive projection: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: pins merge before rules are enforced, so a
+// dependentRequired entry triggered by a pinned property always
+// fires at enforcement time. The advertised projection must promote
+// the trigger's remaining dependencies to unconditional requirements,
+// or it accepts calls ({} for the issue's example) that enforcement
+// rejects for a missing dependency.
+func TestEffectiveSchemaPinnedPromotesPinnedTriggerDependencies(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"dependentRequired":{"tailnet":["limit"],"verbose":["tailnet","format"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("dependencies of a pinned trigger must promote to required: %s", got)
+	}
+	if !strings.Contains(got, `"dependentRequired":{"verbose":["format"]}`) {
+		t.Errorf("unpinned triggers keep their entry with pinned names filtered: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+}

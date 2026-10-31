@@ -265,3 +265,57 @@ func TestAdvertisedViewSchemaDropsPinnedRuleRequirements(t *testing.T) {
 		}
 	}
 }
+
+// Codex P2 on PR #2976: hiding a pinned property must also project
+// it out of same-instance allOf constraints. Left in place, an
+// allOf member requiring the hidden property -- whose declaration
+// the hide deleted -- makes the advertised schema unsatisfiable
+// against additionalProperties:false, even though calls succeed
+// because pins merge before forwarding.
+func TestHideSchemaPropsProjectsAllOfRequirements(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"required":["limit"],"allOf":[{"required":["tailnet","limit"]}]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	if strings.Contains(string(out), "tailnet") {
+		t.Errorf("hidden property must be projected out of allOf constraints too: %s", out)
+	}
+	if !strings.Contains(string(out), `"required":["limit"]`) {
+		t.Errorf("unhidden requirements must survive in root and allOf member: %s", out)
+	}
+}
+
+// Codex P2 on PR #2976: an expired cached catalogue is stale data
+// and must not veto a reload -- a view using a tool or argument the
+// upstream added after the cache was fetched would fail validation
+// until an operator refreshed the server by hand. Validation
+// defers until the catalogue is refreshed.
+func TestReloadDefersViewValidationOnExpiredCatalog(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"srv": {Name: "srv", Command: "echo"},
+		"v": {Name: "v", AliasOf: "srv", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"peek": {From: "tool_a"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cache schemas whose freshness deadline has already passed.
+	r.pools["srv"].SetSchemas([]mcpclient.Tool{
+		{Name: "tool_a", InputSchema: json.RawMessage(`{"type":"object","properties":{"arg1":{"type":"string"}}}`)},
+	}, nil, nil, "", time.Now().Add(-20*time.Minute), time.Now().Add(-10*time.Minute), false)
+	if !r.pools["srv"].SchemaExpired() {
+		t.Fatal("seeded catalog must read as expired for this test to mean anything")
+	}
+	// A view the stale catalogue would veto (unknown target) must
+	// reload without error: validation defers to the refresh.
+	badCfg := &config.Config{MCPServers: map[string]*config.Server{
+		"srv": {Name: "srv", Command: "echo"},
+		"v": {Name: "v", AliasOf: "srv", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"peek": {From: "nonexistent"},
+		}}},
+	}}
+	if _, _, err := r.Reload(badCfg); err != nil {
+		t.Fatalf("expired catalog must defer view validation, got %v", err)
+	}
+}
