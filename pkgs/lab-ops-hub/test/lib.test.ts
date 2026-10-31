@@ -8,8 +8,12 @@ import {
   crawlFetcher,
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
+  parseJsonObjectBody,
   readResponseTextCapped,
   validateCrawlUrl,
+  validateMachineBody,
+  validateNoteBody,
+  validateTaskBody,
 } from "../src/lib.ts";
 
 test("validateCrawlUrl accepts public http(s) targets", () => {
@@ -778,4 +782,77 @@ test("computeBudget counts ledger rows toward D1 writes (#442)", () => {
   assert.equal(b.month_to_date_self_counted.d1_rows_written.used, 60_000_000);
   assert.equal(b.month_to_date_self_counted.d1_rows_written.estimated_overage_usd, 10);
   assert.equal(b.estimated_overage_usd, 10);
+});
+
+// --- JSON POST body validation (#2480) -------------------------------------
+
+const post = (body: string) =>
+  new Request("http://lab-ops-hub.test/api/x", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+  });
+
+test("parseJsonObjectBody rejects malformed JSON (all four JSON POST routes share it)", async () => {
+  for (const raw of ["{not json", "", "{", '{"a":}']) {
+    const r = await parseJsonObjectBody(post(raw));
+    assert.equal(r.ok, false, raw);
+    if (!r.ok) assert.equal(r.error, "invalid JSON", raw);
+  }
+});
+
+test("parseJsonObjectBody rejects non-object JSON", async () => {
+  for (const raw of ["[]", "[1,2]", '"hello"', "42", "null", "true"]) {
+    const r = await parseJsonObjectBody(post(raw));
+    assert.equal(r.ok, false, raw);
+    if (!r.ok) assert.equal(r.error, "JSON object required", raw);
+  }
+});
+
+test("parseJsonObjectBody accepts a JSON object and returns it untouched", async () => {
+  const r = await parseJsonObjectBody(post('{"name":"  padded  ","n":1}'));
+  assert.equal(r.ok, true);
+  if (r.ok) assert.deepEqual(r.body, { name: "  padded  ", n: 1 });
+});
+
+test("validateMachineBody requires a nonblank string name", () => {
+  for (const b of [{}, { name: null }, { name: 42 }, { name: "" }, { name: "   " }, { name: ["x"] }]) {
+    const r = validateMachineBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "name required");
+  }
+  const ok = validateMachineBody({ name: "  amd-6  " });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.equal(ok.values.name, "  amd-6  "); // original preserved, not trimmed
+});
+
+test("validateNoteBody requires title, then body", () => {
+  // Both missing: title is reported first.
+  const both = validateNoteBody({});
+  assert.equal(both.ok, false);
+  if (!both.ok) assert.equal(both.error, "title required");
+  for (const b of [{ title: null, body: "x" }, { title: " ", body: "x" }, { title: 7, body: "x" }]) {
+    const r = validateNoteBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "title required");
+  }
+  for (const b of [{ title: "t" }, { title: "t", body: null }, { title: "t", body: "" }, { title: "t", body: "  " }, { title: "t", body: 9 }]) {
+    const r = validateNoteBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "body required");
+  }
+  const ok = validateNoteBody({ title: " t ", body: " b " });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.deepEqual(ok.values, { title: " t ", text: " b " });
+});
+
+test("validateTaskBody requires a nonblank string title", () => {
+  for (const b of [{}, { title: null }, { title: false }, { title: "" }, { title: "\t\n " }]) {
+    const r = validateTaskBody(b as Record<string, unknown>);
+    assert.equal(r.ok, false, JSON.stringify(b));
+    if (!r.ok) assert.equal(r.error, "title required");
+  }
+  const ok = validateTaskBody({ title: "do it" });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.equal(ok.values.title, "do it");
 });

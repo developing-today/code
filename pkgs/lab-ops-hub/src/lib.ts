@@ -353,3 +353,68 @@ export function computeBudget(by: Record<string, number>): {
     estimated_overage_usd: Math.round(total * 1_000_000) / 1_000_000,
   };
 }
+
+// --- JSON POST body validation (#2480) --------------------------------------
+// The JSON POST routes (machines, notes, tasks, crawl) used to call
+// req.json() unguarded and bind required fields unchecked: malformed JSON
+// threw a SyntaxError and a missing NOT NULL field threw a raw SQLite
+// constraint error, and the outer catch in index.ts turned both into a
+// 500 carrying internal error text. These pure helpers give the routes a
+// shared 400 vocabulary instead: an unparseable body -> "invalid JSON", a
+// JSON value that is not an object -> "JSON object required", and a
+// required field that is missing, not a string, or blank ->
+// "<field> required". Valid values are returned untouched (no trimming),
+// so successful requests are unchanged; genuine operational failures
+// still fall through to the 500 path in index.ts.
+
+export type JsonObjectBody =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; error: string };
+
+export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody> {
+  let parsed: unknown;
+  try {
+    parsed = await req.json();
+  } catch {
+    return { ok: false, error: "invalid JSON" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "JSON object required" };
+  }
+  return { ok: true, body: parsed as Record<string, unknown> };
+}
+
+export type RequiredString = { ok: true; value: string } | { ok: false; error: string };
+
+// A required field is satisfied only by a string with non-whitespace
+// content; the original string is preserved exactly (callers bind what
+// the client sent, not a trimmed copy).
+export function requireNonBlankString(body: Record<string, unknown>, field: string): RequiredString {
+  const v = body[field];
+  if (typeof v !== "string" || v.trim() === "") return { ok: false, error: `${field} required` };
+  return { ok: true, value: v };
+}
+
+export type Validated<T> = { ok: true; values: T } | { ok: false; error: string };
+
+export function validateMachineBody(body: Record<string, unknown>): Validated<{ name: string }> {
+  const name = requireNonBlankString(body, "name");
+  if (!name.ok) return name;
+  return { ok: true, values: { name: name.value } };
+}
+
+// Notes check title before body, matching the order the fields are named
+// in the route's contract (and the triage note for #2480).
+export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
+  const title = requireNonBlankString(body, "title");
+  if (!title.ok) return title;
+  const text = requireNonBlankString(body, "body");
+  if (!text.ok) return text;
+  return { ok: true, values: { title: title.value, text: text.value } };
+}
+
+export function validateTaskBody(body: Record<string, unknown>): Validated<{ title: string }> {
+  const title = requireNonBlankString(body, "title");
+  if (!title.ok) return title;
+  return { ok: true, values: { title: title.value } };
+}
