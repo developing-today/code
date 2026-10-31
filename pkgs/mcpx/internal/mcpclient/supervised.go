@@ -40,6 +40,80 @@ const SupervisorProtocolVersion = 1
 // while no daemon is attached (1 MiB, tail-keep; see tailBuffer).
 const DefaultUnattachedBuffer = 1 << 20
 
+// DefaultAttachedWriteTimeout is the default bound on a single write to
+// the attached daemon (see AttachedWriteTimeout).
+const DefaultAttachedWriteTimeout = 5 * time.Second
+
+// AttachedWriteTimeout bounds every write to the attached daemon's
+// connection. A daemon that stops reading must not wedge the supervisor:
+// once the socket buffer fills, an unbounded write would block the
+// stdout pump forever — the child exit would never surface and detach
+// could never proceed (#2390). On expiry the attach is dropped, the
+// unwritten bytes go to the tail buffer, and the pump keeps draining
+// the child. It is a variable so tests can shorten it.
+var AttachedWriteTimeout = DefaultAttachedWriteTimeout
+
+// connWriter is the per-connection writer for the attached daemon. All
+// writes to the attached connection serialise on its own mutex, never
+// on the supervisor's state mutex s.mu, and every write carries the
+// AttachedWriteTimeout deadline. s.mu only snapshots, publishes, and
+// clears the *connWriter pointer.
+type connWriter struct {
+	mu   sync.Mutex
+	conn net.Conn
+}
+
+// Write writes p under the writer mutex with a fresh write deadline.
+func (w *connWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writeLocked(p)
+}
+
+func (w *connWriter) writeLocked(p []byte) (int, error) {
+	_ = w.conn.SetWriteDeadline(time.Now().Add(AttachedWriteTimeout))
+	return w.conn.Write(p)
+}
+
+// flushLocked writes the handshake reply and then the buffered child
+// output as one serialised unit. The caller (handleAttach) holds w.mu
+// across the publish of w as the attached connection and this flush, so
+// no live pump chunk can overtake the reply or the buffered bytes.
+func (w *connWriter) flushLocked(reply supervisorReply, buffered []byte) error {
+	b, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	if _, err := w.writeLocked(append(b, '\n')); err != nil {
+		return err
+	}
+	if len(buffered) > 0 {
+		_, err := w.writeLocked(buffered)
+		return err
+	}
+	return nil
+}
+
+// Close closes the underlying connection.
+func (w *connWriter) Close() { w.conn.Close() }
+
+// closeAfterFlush closes the connection only after any in-flight
+// initial flush completes (Codex P2 on PR #2861). handleAttach holds
+// w.mu across the publish of w and the handshake+buffer flush, so
+// acquiring w.mu here is a barrier on that flush: without it,
+// finishWhenDone could observe pumpDone (child exited with no further
+// stdout during the flush), see attachedEver && !reported, and close
+// the connection mid-flush, losing bytes already drained from the
+// tail buffer. The barrier is bounded — every flush write carries
+// AttachedWriteTimeout, and at finishWhenDone's call sites the stdout
+// pump has already exited, so the flush is the only holder it can
+// wait on. No connection write happens under s.mu.
+func (w *connWriter) closeAfterFlush() {
+	w.mu.Lock()
+	w.mu.Unlock()
+	w.Close()
+}
+
 type supervisorHandshake struct {
 	Version int `json:"version"`
 }
@@ -149,7 +223,7 @@ type supervisor struct {
 	ln      net.Listener
 
 	mu           sync.Mutex
-	attached     net.Conn
+	attached     *connWriter
 	attachedEver bool
 	reported     bool
 	buf          *tailBuffer
@@ -299,7 +373,12 @@ func (s *supervisor) spawnChild() error {
 }
 
 // pumpStdout moves child stdout to the attached daemon, or into the
-// bounded tail buffer while nobody is attached.
+// bounded tail buffer while nobody is attached. It never writes while
+// holding s.mu (#2390): s.mu only snapshots the attached writer, the
+// write itself serialises on the writer's own mutex under a bounded
+// deadline, so a stalled daemon can block this pump for at most
+// AttachedWriteTimeout — never the supervisor's state, and never
+// forever.
 func (s *supervisor) pumpStdout() {
 	defer close(s.pumpDone)
 	chunk := make([]byte, 32<<10)
@@ -307,19 +386,71 @@ func (s *supervisor) pumpStdout() {
 		n, err := s.stdoutR.Read(chunk)
 		if n > 0 {
 			data := chunk[:n]
+			// The unattached decision and the tail-buffer append
+			// are atomic under s.mu (Codex P2 on PR #2861): if the
+			// snapshot is nil, the append happens while still
+			// holding s.mu, so a chunk read just before an attach
+			// is either inside the buffer that attach drains or
+			// routed to the published writer — never stranded in
+			// the buffer behind a live stream, which would
+			// withhold it and reverse stream order. buf.Write is
+			// a bounded memory append, not a connection write, so
+			// holding s.mu across it does not restore the #2390
+			// hazard.
 			s.mu.Lock()
-			if s.attached != nil {
-				if _, werr := s.attached.Write(data); werr != nil {
-					// The daemon went away mid-write (e.g. it was
-					// SIGKILLed): keep the bytes it missed.
-					s.buf.Write(data)
-					s.attached.Close()
-					s.attached = nil
-				}
-			} else {
+			w := s.attached
+			if w == nil {
 				s.buf.Write(data)
 			}
 			s.mu.Unlock()
+			if w != nil {
+				if _, werr := w.Write(data); werr != nil {
+					// The daemon went away mid-write (e.g. it was
+					// SIGKILLed) or stopped reading until the
+					// write deadline expired: keep the bytes it
+					// missed, and drop the attach — but only if
+					// it still points at this same writer, so a
+					// newer attach is never cleared by a stale
+					// pump error.
+					//
+					// The recovery is coordinated with attach
+					// drain/publication (Codex P2 on PR #2861):
+					// the current writer is snapshotted under
+					// s.mu, and when there is no replacement the
+					// tail-buffer append also happens under
+					// s.mu — atomic with the next attach's
+					// drain, as in the unattached path above.
+					// When a newer writer has already replaced
+					// w, the chunk belongs to the live stream:
+					// it is routed to that writer (outside
+					// s.mu, serialised on the writer's mutex,
+					// behind its initial flush) instead of
+					// being stranded in the buffer behind the
+					// live chunks that follow.
+					s.mu.Lock()
+					cur := s.attached
+					if cur == w {
+						s.attached = nil
+					}
+					if cur == nil || cur == w {
+						s.buf.Write(data)
+					}
+					s.mu.Unlock()
+					if cur != nil && cur != w {
+						if _, rerr := cur.Write(data); rerr != nil {
+							s.buf.Write(data)
+							s.mu.Lock()
+							if s.attached == cur {
+								s.attached = nil
+							}
+							s.mu.Unlock()
+							cur.Close()
+						}
+					}
+					w.Close()
+					s.signal()
+				}
+			}
 		}
 		if err != nil {
 			return
@@ -375,20 +506,26 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		reply.StderrTail = s.stderr.Tail(800)
 	}
 	buffered := s.buf.Drain()
-	s.attached = conn
+	// Publish the writer as the attached connection BEFORE the reply
+	// and buffered flush go out, and hold the writer's mutex across
+	// the publish and the flush (#2390): the pump snapshots the writer
+	// under s.mu but serialises its writes on w.mu, so while the flush
+	// holds w.mu no live chunk can overtake the reply or the buffered
+	// bytes — and s.mu itself is never held across a connection write,
+	// so a stalled daemon blocks only this flush, only until the write
+	// deadline.
+	w := &connWriter{conn: conn}
+	w.mu.Lock()
+	s.attached = w
 	s.attachedEver = true
 	if reply.ChildState == "exited" {
 		s.reported = true
 	}
-	// The reply and the buffered flush go out under the lock so the
-	// stdout pump cannot interleave live bytes ahead of them.
-	werr := writeReply(conn, reply)
-	if werr == nil && len(buffered) > 0 {
-		_, werr = conn.Write(buffered)
-	}
 	s.mu.Unlock()
+	werr := w.flushLocked(reply, buffered)
+	w.mu.Unlock()
 	if werr != nil {
-		s.detach(conn)
+		s.detach(w)
 		return
 	}
 	if reply.ChildState == "exited" {
@@ -397,7 +534,7 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		// finishWhenDone observes exited && detached and returns.
 		go func() {
 			_, _ = io.Copy(io.Discard, r)
-			s.detach(conn)
+			s.detach(w)
 		}()
 		return
 	}
@@ -406,17 +543,17 @@ func (s *supervisor) handleAttach(conn net.Conn) {
 		// The daemon detached (clean close or death). The child's
 		// stdin stays open: EOF there is a lifecycle signal a
 		// supervised child must not see just because a daemon left.
-		s.detach(conn)
+		s.detach(w)
 	}()
 }
 
-func (s *supervisor) detach(conn net.Conn) {
+func (s *supervisor) detach(w *connWriter) {
 	s.mu.Lock()
-	if s.attached == conn {
+	if s.attached == w {
 		s.attached = nil
 	}
 	s.mu.Unlock()
-	conn.Close()
+	w.Close()
 	s.signal()
 }
 
@@ -465,7 +602,7 @@ func (s *supervisor) finishWhenDone() {
 				case <-grace.C:
 				}
 			}
-			attached.Close()
+			attached.closeAfterFlush()
 			s.mu.Lock()
 			if s.attached == attached {
 				s.attached = nil
@@ -485,7 +622,7 @@ func (s *supervisor) finishWhenDone() {
 			attached := s.attached
 			s.mu.Unlock()
 			if attached != nil {
-				attached.Close()
+				attached.closeAfterFlush()
 			}
 			if s.ln != nil {
 				s.ln.Close()
