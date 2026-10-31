@@ -147,11 +147,72 @@ type Options struct {
 	CaptureConsole *bool `json:"captureConsole,omitempty"`
 	// Phases are lines run around the script, as runner.Phases.
 	Phases *Phases `json:"phases,omitempty"`
+	// Deps says where the script's packages come from (#1913). It travels as
+	// data -- specifiers and the manifest's own text -- because a path would
+	// name the caller's filesystem, which a daemon without shared storage
+	// cannot read.
+	Deps *DepsOptions `json:"deps,omitempty"`
 
 	// Hooks are scripts run at the edges of this run, in declaration order
 	// within a phase. They append to the daemon's config-declared hooks
 	// rather than replacing them, the way ScriptConfig.Prefix layers.
 	Hooks []Hook `json:"hooks,omitempty"`
+}
+
+// DepsOptions is a script's dependency set as it crosses the wire.
+//
+// Manifest and Lockfile carry the files' CONTENT rather than a path, for the
+// same reason phase lines do: a remote daemon that receives a path can only
+// read its own filesystem, and the caller meant theirs. The names are
+// separate so the workdir gets a file the runtime recognises.
+type DepsOptions struct {
+	// Packages are explicit specifiers: name or name@version.
+	Packages []string `json:"packages,omitempty"`
+	// Manifest is the manifest's text, already comment-stripped when it came
+	// from a package.jsonc.
+	Manifest string `json:"manifest,omitempty"`
+	// ManifestName is the filename to write it as: package.json by default.
+	ManifestName string `json:"manifestName,omitempty"`
+	// ManifestDir is the directory the selected manifest was read
+	// from, on the caller's filesystem: the resolution base for
+	// its local file:/link: artifacts, which npm resolves against
+	// the manifest's directory rather than the script's. It is a
+	// base for a runner sharing the caller's filesystem (local
+	// execution) -- the only case local artifacts can be
+	// transported at all; a remote daemon cannot open it and the
+	// set's data fields remain the whole story there.
+	ManifestDir string `json:"manifestDir,omitempty"`
+	// PackageDirs records, per package name, the directory a relative
+	// local specifier for that package resolves against when it differs
+	// from ManifestDir -- a config-layer package's origin, carried so a
+	// set combining a project manifest with config-only file: packages
+	// resolves each artifact against its own layer's directory.
+	PackageDirs map[string]string `json:"packageDirs,omitempty"`
+	// Lockfile is the lockfile's content, honoured frozen and never
+	// rewritten. It is bytes, not a string, because a lockfile may be binary
+	// (bun.lockb): encoding/json carries []byte as base64, so the content
+	// survives the wire byte-for-byte, where a string would replace invalid
+	// UTF-8 with replacement characters and corrupt it.
+	Lockfile []byte `json:"lockfile,omitempty"`
+	// LockfileName is the filename to write it as, such as bun.lock.
+	LockfileName string `json:"lockfileName,omitempty"`
+	// Lockfiles carries EVERY lockfile found beside the manifest, not
+	// just the first: which one governs depends on the runtime that
+	// finally executes the script, and that is only known at the
+	// runner. Lockfile above stays as the first entry for consumers
+	// that predate the list.
+	Lockfiles []DepsLockfile `json:"lockfiles,omitempty"`
+	// Source is the resolved deps.source, carried so the daemon materialises
+	// the same set the caller judged.
+	Source string `json:"source,omitempty"`
+	// AutoInstall is the resolved deps.autoInstall: off, fallback or always.
+	AutoInstall string `json:"autoInstall,omitempty"`
+}
+
+// DepsLockfile is one lockfile's name and content on the wire.
+type DepsLockfile struct {
+	Name    string `json:"name"`
+	Content []byte `json:"content,omitempty"`
 }
 
 // Phases is runner.Phases on the wire.
@@ -570,6 +631,30 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 // keeps rendering logs to a terminal while the service collects the same
 // records for the result.
 func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Options, sink Sink) (*Result, error) {
+	// The wire dependency set becomes the runner's in RunWith, the one
+	// boundary every caller (CLI, /v1, MCP) crosses, so no path can
+	// accept deps and then drop them (#1913). This conversion is NOT
+	// part of sink defaulting: callers that supply a sink (the
+	// streaming CLI path, the daemon's execStream handler) were
+	// silently losing their dependency sets when it was nested inside
+	// `if sink == nil` (Codex review, PR #2589).
+	if opts.Deps != nil && ropts.Deps == nil {
+		ropts.Deps = &runner.Deps{
+			Packages:     opts.Deps.Packages,
+			Manifest:     opts.Deps.Manifest,
+			ManifestName: opts.Deps.ManifestName,
+			ManifestDir:  opts.Deps.ManifestDir,
+			PackageDirs:  opts.Deps.PackageDirs,
+			Lockfile:     opts.Deps.Lockfile,
+			LockfileName: opts.Deps.LockfileName,
+			Source:       opts.Deps.Source,
+			AutoInstall:  opts.Deps.AutoInstall,
+		}
+		for _, l := range opts.Deps.Lockfiles {
+			ropts.Deps.Lockfiles = append(ropts.Deps.Lockfiles,
+				runner.Lockfile{Name: l.Name, Content: l.Content})
+		}
+	}
 	if sink == nil {
 		sink = func(Frame) error { return nil }
 	}

@@ -27,6 +27,7 @@ import (
 	"github.com/dezren39/mcpx/internal/preflight"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -89,6 +90,10 @@ type Options struct {
 	GlobalsSource string
 	// CaptureConsole mirrors console output into the record stream.
 	CaptureConsole bool
+	// Deps is the script's resolved dependency set (#1913), materialised
+	// into the workdir before the run. Nil means no set was resolved and
+	// the run behaves exactly as it did before the chain existed.
+	Deps *Deps
 	// Phases are lines injected at named points in the generated launcher.
 	// Every point a user might want is named, because a launcher that is
 	// half-configurable invites forking it.
@@ -175,6 +180,30 @@ func warnSink(opts Options) io.Writer {
 	return os.Stderr
 }
 
+// workDirKeyMaterial is the WorkRoot directory key's input: the
+// runtime kind, the client source, and the dependency set's
+// fingerprint. For Deno the generated deno.json also carries the
+// project's own configuration (see materialiseDeps), which the dep
+// fingerprint does not cover, so its identity joins the key -- two
+// projects with identical payloads would otherwise share one workdir
+// and overwrite each other's config (Codex review, PR #2589).
+func workDirKeyMaterial(kind string, opts Options) string {
+	material := kind + "\x00" + opts.ClientSource + "\x00" + opts.Deps.fingerprint()
+	if kind == KindDeno && opts.Deps != nil {
+		material += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
+	}
+	if opts.Deps != nil {
+		base := opts.Deps.ManifestDir
+		if base == "" {
+			base = depsProjectDir(opts)
+		}
+		if id := localDepsIdentity(opts.Deps, base); id != "" {
+			material += "\x00" + id
+		}
+	}
+	return material
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -193,7 +222,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 	case opts.WorkRoot != "":
-		sum := sha256.Sum256([]byte(opts.ClientSource))
+		// The key hashes the runtime kind and the dependency set's
+		// fingerprint beside the client source: runs sharing a client
+		// but resolving different packages get different directories,
+		// so materialised package.json / deno.json / lockfiles /
+		// node_modules from one set can never leak into another set's
+		// run -- or into a run with no set at all (Codex review,
+		// PR #2589). The runtime belongs in the key because Node and
+		// Bun payloads can be identical while carrying separate npm
+		// and Bun lockfiles: sharing one directory would let a later
+		// Node install delete a live Bun run's dependencies (Codex
+		// review, PR #2589, ace6c3609 round).
+		sum := sha256.Sum256([]byte(workDirKeyMaterial(rt.Kind, opts)))
 		workDir = filepath.Join(opts.WorkRoot, hex.EncodeToString(sum[:])[:16])
 		if err := os.MkdirAll(workDir, 0o700); err != nil {
 			return nil, err
@@ -266,6 +306,65 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		clientPath = sideCar
 	}
 
+	// The dependency set is materialised before the launcher and the
+	// type check, because both resolve the script's imports (#1913).
+	var depsFlags []string
+	if opts.Deps != nil {
+		projectDir := depsProjectDir(opts)
+		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "", projectDir)
+		if derr != nil {
+			return nil, derr
+		}
+		depsFlags = flags
+		if len(flags) > 0 {
+			inner := rt.Args
+			rt.Args = func(script string) []string {
+				a := inner(script)
+				out := append([]string{}, a[:len(a)-1]...)
+				out = append(out, flags...)
+				return append(out, a[len(a)-1])
+			}
+		}
+		if opts.Deps.frozenNPM(rt.Kind) {
+			if cerr := installFrozenNPM(ctx, workDir, opts.Deps, opts.Env); cerr != nil {
+				return nil, cerr
+			}
+		}
+		if opts.Deps.frozenBun(rt.Kind) {
+			if cerr := installFrozenBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
+				return nil, cerr
+			}
+		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
+			if cerr := installBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
+				return nil, cerr
+			}
+		}
+		// A file script resolves bare imports from its own directory
+		// upward, never from the exec workdir, so an installed set was
+		// invisible to it (ERR_MODULE_NOT_FOUND after a successful
+		// install). Link the materialised modules beside the script --
+		// beside is where this runner already places the client and
+		// the launcher; nothing is installed into the project itself
+		// (Codex review, PR #2589).
+		if opts.File != "" && (rt.Kind == KindNode || rt.Kind == KindBun) {
+			// The link beside the script is shared by every file run
+			// in that directory, and refreshing it mid-flight would
+			// swap the dependency set under a run still importing
+			// (Codex review, PR #2589). Serialize file runs per
+			// script directory for the link's whole lifetime: the
+			// lock is taken before linking and released only when
+			// this Run returns, after the process has exited.
+			unlock, lerr2 := lockScriptDir(ctx, filepath.Dir(scriptPath))
+			if lerr2 != nil {
+				return nil, lerr2
+			}
+			defer unlock()
+			if lerr := linkNodeModules(filepath.Dir(scriptPath), workDir); lerr != nil {
+				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
+			}
+		}
+	}
+
 	// A module with a default export is a program with an entry point; one
 	// without is a program that ran on import. Supporting both is what lets a
 	// single file be imported as a library and still invoked directly.
@@ -291,7 +390,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheck(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout)
+		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
@@ -339,7 +439,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				rt.ConfigArgs, opts.Dir)
+				append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
@@ -460,6 +560,78 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		return res, nil
 	}
+}
+
+// fileScriptLocks serializes file runs per script directory (see the
+// linkNodeModules call site in Run): one single-capacity channel per
+// directory acting as a semaphore, held from linking until the run's
+// process has exited.
+var fileScriptLocks sync.Map // map[string]chan struct{}
+
+// lockScriptDir acquires the directory's semaphore, observing ctx
+// while it waits: a queued run whose request was cancelled must
+// return promptly instead of blocking behind a long-running script
+// until that script exits, however long that takes (Codex review,
+// PR #2589).
+func lockScriptDir(ctx context.Context, dir string) (func(), error) {
+	c, _ := fileScriptLocks.LoadOrStore(dir, make(chan struct{}, 1))
+	ch := c.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("deps: waiting for the script directory lock: %w", ctx.Err())
+	}
+}
+
+// linkNodeModules symlinks workDir/node_modules beside a file script
+// so the script's bare imports resolve to the materialised dependency
+// set. What already sits at that path decides:
+//   - a real install or directory is the project's own and wins
+//     untouched;
+//   - a symlink to THIS set's modules is already right;
+//   - a symlink into an earlier mcpx workdir (runner-owned: its
+//     parent holds the generated client) is stale the moment the
+//     dep set changes -- the new fingerprint picked a new workdir,
+//     and keeping the old link would keep importing the old set
+//     (Codex review, PR #2589) -- so it is refreshed;
+//   - a dangling link (its content-addressed target was pruned) is
+//     replaced; any other symlink is left as the project put it.
+func linkNodeModules(scriptDir, workDir string) error {
+	modules := filepath.Join(workDir, "node_modules")
+	if st, err := os.Stat(modules); err != nil || !st.IsDir() {
+		return nil
+	}
+	link := filepath.Join(scriptDir, "node_modules")
+	fi, err := os.Lstat(link)
+	if err != nil {
+		return os.Symlink(modules, link)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return nil // a real directory or file: the project's own
+	}
+	target, rerr := os.Readlink(link)
+	if rerr != nil {
+		return nil
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(scriptDir, target)
+	}
+	if filepath.Clean(target) == filepath.Clean(modules) {
+		return nil // already points at this set
+	}
+	if _, serr := os.Stat(target); serr != nil {
+		_ = os.Remove(link) // dangling
+		return os.Symlink(modules, link)
+	}
+	// A live link elsewhere: refresh it only when it is one this
+	// runner left -- an earlier workdir, recognisable by the
+	// generated client sitting beside its node_modules.
+	if _, serr := os.Stat(filepath.Join(filepath.Dir(target), clientFileName)); serr == nil {
+		_ = os.Remove(link)
+		return os.Symlink(modules, link)
+	}
+	return nil
 }
 
 // writeIfChanged avoids touching mtime when content is identical, which keeps
