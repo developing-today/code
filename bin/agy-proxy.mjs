@@ -528,6 +528,11 @@ class AgyWorker {
       this._fail(turnError(err.message, { isSpawnError: true }));
     });
     child.on('close', (code, signal) => {
+      // Flush any unterminated final line before judging the exit
+      // (#683): a partial delta that never got its newline is real
+      // output, and the resume-retry gate reads hasOutput from the
+      // deltas this flush delivers.
+      this._flushLineBuffer();
       // Failure is judged by the child's exit (#678): the last stderr
       // line names the cause when there is one, then the signal, then
       // the exit code — the same detail ladder the cold path used.
@@ -554,12 +559,23 @@ class AgyWorker {
     this.lineBuffer += chunk.toString();
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      this._onEvent(obj);
-    }
+    for (const line of lines) this._processLine(line);
+  }
+
+  _processLine(line) {
+    if (!line.trim()) return;
+    let obj;
+    try { obj = JSON.parse(line); } catch { return; }
+    this._onEvent(obj);
+  }
+
+  // The child can exit mid-line: whatever tail is still buffered is a
+  // complete final line for judging purposes (#683) -- run it through
+  // the same path a terminated line takes before any close judgment.
+  _flushLineBuffer() {
+    const tail = this.lineBuffer;
+    this.lineBuffer = '';
+    if (tail.trim()) this._processLine(tail);
   }
 
   _onEvent(obj) {
