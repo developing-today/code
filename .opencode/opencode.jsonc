@@ -6999,7 +6999,22 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Antigravity only: Gemini Flash",
+        "name": "Workhorse primary - GPT: Terra",
+        // 2026-10-31 (Drew): primary switches to GPT. The Gemini Flash
+        // leg leaves primary; primary now seats terra-plan#medium
+        // (GPT-6.1 Terra on the two Codex/ChatGPT doors: openai +
+        // openai.alternate). Reason: every other plan pool sits at an
+        // extreme - Meta weekly, OpenDesign 7d, Antigravity
+        // Claude/gpt-oss, OpenCode Go monthly, ClinePass and OpenRouter
+        // are walled at 100%, Antigravity Gemini just reset to ~0 -
+        // while Codex is the only mid-range pool (main weekly ~85%,
+        // alternate ~22% at the 2026-10-31 08:14 CDT read). Terra is
+        // workhorse's standing OpenAI seat and keeps its
+        // workhorse-weighted seat (#medium w2) unchanged. Gemini Flash
+        // keeps its own gemini-flash-plan route and other seats.
+        // TO REVERT: restore the name above, point targets back at
+        // "opencode-route/gemini-flash-plan#high", and restore the
+        // weights map entry to gemini-flash-plan.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
         // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
         // Flash and Muse Spark contributor legs are removed from
@@ -7083,12 +7098,12 @@
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
-          "opencode-route/gemini-flash-plan#high"
+          "opencode-route/terra-plan#medium"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/gemini-flash-plan": 2
+          "opencode-route/terra-plan": 2
         }
       },
       "workhorse": {
