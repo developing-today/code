@@ -28,6 +28,9 @@ def worker_req(path, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
     req.add_header("Authorization", "Bearer " + os.environ["GHB_WORKER_BEARER"])
+    # Cloudflare's edge bot-filters the default Python-urllib UA (403);
+    # a plain browser UA is required for this poller to reach the Worker.
+    req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     if data:
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as r:
