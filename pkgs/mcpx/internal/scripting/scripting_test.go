@@ -100,6 +100,63 @@ func TestValidationDetectsSyntaxAndUnbalancedDelimiters(t *testing.T) {
 	}
 }
 
+func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
+	valid := []struct {
+		name string
+		src  string
+	}{
+		{"regex double quote", "const re = /\"/;\nconst ok = re.test(\"x\");\n"},
+		{"regex escaped open paren", "const re = /\\(/;\nconst ok = re.test(\"(\");\n"},
+		{"regex close brace", "const re = /}/;\nconst ok = re.test(\"}\");\n"},
+		{"regex comment-like", "const re = /\\/*/;\nconst ok = re.test(\"/*\");\n"},
+		{"regex apostrophe", "const re = /'/;\nconst ok = re.test(\"'\");\n"},
+		{"regex char class delimiter", "const re = /[)]/;\nconst ok = re.test(\")\");\n"},
+		{"regex slash in char class", "const re = /[/]/;\n"},
+		{"regex negated class bracket", "const re = /[^]]/;\n"},
+		{"regex with flags then division", "const re = /a+/gi;\nconst q = 10 / 2 / 5;\n"},
+		{"regex as call argument", "const ok = test(/}/, s);\n"},
+		{"division chain", "const q = a / b / c;\n"},
+		{"division assign", "let x = 10;\nx /= 2;\n"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			res := scripting.Validate(tc.src, nil)
+			if !res.Valid {
+				t.Fatalf("expected valid script, got: %s", res.Summary())
+			}
+		})
+	}
+
+	invalid := []struct {
+		name string
+		src  string
+		err  string
+	}{
+		{"unclosed regex before newline", "const re = /abc\nconst x = 1;\n", "unclosed regex literal"},
+		{"unclosed regex at EOF", "const re = /abc", "unclosed regex literal"},
+		{"unclosed paren after division", "const q = a / b;\nconst x = (1;\n", "unclosed delimiter '('"},
+		{"unclosed string after division", "const q = a / b;\nconst s = \"oops\n", "unclosed string literal"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name, func(t *testing.T) {
+			res := scripting.Validate(tc.src, nil)
+			if res.Valid {
+				t.Fatalf("expected invalid result for %s", tc.name)
+			}
+			found := false
+			for _, d := range res.Diagnostics {
+				if strings.Contains(d.Message, tc.err) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected diagnostic containing %q, got: %s", tc.err, res.Summary())
+			}
+		})
+	}
+}
+
 func TestValidationDetectsMissingToolArgumentsAndAsksQuestions(t *testing.T) {
 	src := `
 const res = await tools.github.listIssues();
