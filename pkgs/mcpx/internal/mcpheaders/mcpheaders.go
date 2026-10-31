@@ -11,7 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -231,10 +231,12 @@ func Check(params []Param, args json.RawMessage, header func(string) (string, bo
 			continue
 		}
 		// Integers compare numerically: 42.0 in a header is 42.
+		// The comparison is exact: a float64 round-trip would call
+		// 9007199254740990.5 equal to 9007199254740990.
 		if _, isNum := lookupNumber(root, p.Path); isNum {
-			hf, herr := strconv.ParseFloat(got, 64)
-			bf, berr := strconv.ParseFloat(body, 64)
-			if herr == nil && berr == nil && hf == bf {
+			hf, hok := exactNumber(got)
+			bf, bok := exactNumber(body)
+			if hok && bok && hf.Cmp(bf) == 0 {
 				continue
 			}
 		}
@@ -291,28 +293,95 @@ func plain(root any, p Param) (string, bool, error) {
 	case bool:
 		return strconv.FormatBool(x), true, nil
 	case json.Number:
-		if i, err := strconv.ParseInt(x.String(), 10, 64); err == nil {
-			if i > maxSafeInt || i < -maxSafeInt {
-				return "", false, fmt.Errorf("%s: %d is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), i)
-			}
-			return strconv.FormatInt(i, 10), true, nil
-		}
 		// A whole-valued number written in float form (42.0, 42.00,
 		// 4.2e1, -0.0) is an integer for comparison purposes: JSON
 		// Schema's integer type accepts it and the spec says integers
 		// compare numerically. Rejecting it here, before Check's
 		// numeric fallback can run, made the forgiveness one-sided —
-		// it only ever applied to the header's form (#1665).
-		f, err := strconv.ParseFloat(x.String(), 64)
-		if err != nil || math.Trunc(f) != f {
+		// it only ever applied to the header's form (#1665). The
+		// verdict is computed on the exact decimal value: a float64
+		// round-trip rounds 9007199254740990.5 to an integer and
+		// underflows 1e-400 to 0.
+		i, verdict := exactInteger(x.String())
+		switch verdict {
+		case integerNotWhole:
 			return "", false, fmt.Errorf("%s: %s is not an integer", strings.Join(p.Path, "."), x)
-		}
-		if f > float64(maxSafeInt) || f < -float64(maxSafeInt) {
+		case integerOutOfRange:
 			return "", false, fmt.Errorf("%s: %s is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), x)
 		}
-		return strconv.FormatInt(int64(f), 10), true, nil
+		return strconv.FormatInt(i, 10), true, nil
 	}
 	return "", false, fmt.Errorf("%s: a %T cannot be mirrored into a header", strings.Join(p.Path, "."), v)
+}
+
+type integerVerdict int
+
+const (
+	integerOK integerVerdict = iota
+	integerNotWhole
+	integerOutOfRange
+)
+
+// exactInteger judges a JSON number literal on its exact decimal
+// value: whether it is a whole number, and if so whether it lies
+// inside the JavaScript safe-integer range.
+func exactInteger(s string) (int64, integerVerdict) {
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if i > maxSafeInt || i < -maxSafeInt {
+			return 0, integerOutOfRange
+		}
+		return i, integerOK
+	}
+	r, ok := boundedRat(s)
+	if !ok {
+		// boundedRat refuses only absurd exponents, and there the
+		// exponent's sign decides: a positive one makes any nonzero
+		// mantissa an out-of-range integer, a negative one a nonzero
+		// fraction below 1.
+		if j := strings.IndexAny(s, "eE"); j >= 0 && strings.HasPrefix(s[j+1:], "-") {
+			return 0, integerNotWhole
+		}
+		return 0, integerOutOfRange
+	}
+	if !r.IsInt() {
+		return 0, integerNotWhole
+	}
+	n := r.Num()
+	if !n.IsInt64() || n.Int64() > maxSafeInt || n.Int64() < -maxSafeInt {
+		return 0, integerOutOfRange
+	}
+	return n.Int64(), integerOK
+}
+
+// exactNumber parses a strict JSON number literal into its exact
+// rational value, for Check's numeric comparison. A header string is
+// sender-controlled, so the JSON grammar is enforced first —
+// big.Rat.SetString alone would also accept "3/2" and friends.
+func exactNumber(s string) (*big.Rat, bool) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var n json.Number
+	if err := dec.Decode(&n); err != nil || dec.More() {
+		return nil, false
+	}
+	return boundedRat(n.String())
+}
+
+// boundedRat is big.Rat.SetString with an exponent bound: without
+// one, a literal like 1e999999999 would make SetString try to
+// materialise a billion-digit number. An all-zero mantissa is
+// exactly zero at any exponent, so it is answered directly; any
+// other refusal is left to the caller to interpret.
+func boundedRat(s string) (*big.Rat, bool) {
+	if j := strings.IndexAny(s, "eE"); j >= 0 {
+		if e, err := strconv.Atoi(s[j+1:]); err != nil || e > 512 || e < -512 {
+			if strings.Trim(s[:j], "-0.") == "" {
+				return new(big.Rat), true
+			}
+			return nil, false
+		}
+	}
+	return new(big.Rat).SetString(s)
 }
 
 // maxSafeInt is 2^53-1, JavaScript's Number.MAX_SAFE_INTEGER.
