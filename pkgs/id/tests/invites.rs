@@ -110,7 +110,7 @@ fn a_link_without_an_inviter_key_is_refused() {
 }
 
 #[test]
-fn a_link_with_duplicate_fields_is_refused() {
+fn test_a_link_with_duplicate_fields_is_refused() {
     let t7 = ticket(7);
     let dup_ticket = ticket(8);
     let invite_by = by(&inviter());

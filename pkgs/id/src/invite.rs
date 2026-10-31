@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_fields_are_refused() {
+    fn test_duplicate_fields_are_refused() {
         let other_key = "11".repeat(32);
         let other_node = "33".repeat(32);
 
