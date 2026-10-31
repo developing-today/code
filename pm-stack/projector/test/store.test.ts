@@ -7,6 +7,7 @@ import {
   migrate,
   upsertItem,
   upsertComment,
+  markCommentDeleted,
   upsertLink,
   getItems,
   getComments,
@@ -100,6 +101,38 @@ describe("store: items", () => {
 });
 
 describe("store: comments + links + subject view", () => {
+  test("same GitHub id is independent across comment kinds and deletion is scoped", async () => {
+    const base: Omit<CommentRow, "fetched_at"> = {
+      id: "collision", ref: "test/collision#1", kind: "issue_comment", author: null,
+      body: "issue", created_at: "2026-01-01", updated_at: null, url: null,
+      path: null, line: null, diff_hunk: null, review_state: null, submitted_at: null,
+      commit_id: null, deleted: 0, source_updated_at: "2026-01-01",
+    };
+    await upsertComment(db, base);
+    await upsertComment(db, { ...base, kind: "review", body: "review" });
+    await upsertComment(db, { ...base, kind: "review_comment", body: "line" });
+    await upsertComment(db, { ...base, body: "updated issue" });
+    let rows = await getComments(db, [base.ref]);
+    expect(rows.map((r) => [r.kind, r.body]).sort()).toEqual([
+      ["issue_comment", "updated issue"], ["review", "review"], ["review_comment", "line"],
+    ]);
+    await markCommentDeleted(db, base.id, "issue_comment");
+    rows = await getComments(db, [base.ref]);
+    expect(rows.map((r) => r.kind).sort()).toEqual(["review", "review_comment"]);
+    await markCommentDeleted(db, base.id, "review_comment");
+    rows = await getComments(db, [base.ref]);
+    expect(rows.map((r) => r.kind)).toEqual(["review"]);
+  });
+
+  test("legacy schema is rejected with a clear rebuild instruction", async () => {
+    const legacy = createClient({ url: ":memory:" });
+    try {
+      await legacy.execute("CREATE TABLE pmp_comments (id TEXT PRIMARY KEY, kind TEXT NOT NULL)");
+      await expect(migrate(legacy)).rejects.toThrow(/legacy pmp_comments.*rebuild/i);
+    } finally {
+      legacy.close();
+    }
+  });
   test("comments upsert and read, newest first", async () => {
     const base: Omit<CommentRow, "fetched_at"> = {
       id: "c1",
