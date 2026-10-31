@@ -348,7 +348,7 @@
           # semantic recipe fields. The recipe projects out generation
           # noise (absolute source path, body serialisation), so this is
           # green on any correctly regenerated file.
-          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check";
+          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
