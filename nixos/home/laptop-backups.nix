@@ -93,6 +93,14 @@ let
   watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
     builtins.readFile ./laptop-backups-watchdog.sh
   );
+  # The watchdog checks only the jobs that are enabled: a disabled job
+  # has no run record and no timer, so requiring them would fail the
+  # watchdog forever in a supported configuration.
+  watchdogJobs = lib.concatStringsSep "," (
+    (lib.optional cfg.dashboard.enable "dashboard")
+    ++ (lib.optional cfg.repoArchive.enable "repo-archive")
+  );
+  watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
     pkgs.coreutils
     pkgs.findutils
@@ -314,12 +322,12 @@ in
           };
         };
       })
-      (lib.mkIf cfg.watchdog.enable {
+      (lib.mkIf watchdogWanted {
         laptop-backups-watchdog = {
           Unit.Description = "Freshness watchdog for the laptop backups - names a stopped backup (code#1841)";
           Service = {
             Type = "oneshot";
-            ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours}";
+            ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours} ${watchdogJobs}";
             Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
           };
         };
@@ -404,7 +412,7 @@ in
           Install.WantedBy = [ "timers.target" ];
         };
       })
-      (lib.mkIf cfg.watchdog.enable {
+      (lib.mkIf watchdogWanted {
         laptop-backups-watchdog = {
           Unit.Description = "Run the laptop-backups freshness watchdog a few times daily (code#1841)";
           Timer = {

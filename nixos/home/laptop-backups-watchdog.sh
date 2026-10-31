@@ -17,12 +17,20 @@
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
 #
-# Usage: laptop-backups-watchdog [max-age-hours]   (default 26, a
-# little over one daily period; the module option
-# services.laptop-backups.watchdog.maxAgeHours feeds this argument).
+# Usage: laptop-backups-watchdog [max-age-hours] [jobs]
+#   max-age-hours   (default 26, a little over one daily period; the
+#                   module option services.laptop-backups.watchdog
+#                   .maxAgeHours feeds this argument).
+#   jobs            comma-separated subset of dashboard,repo-archive
+#                   (default both). The module passes only the jobs
+#                   whose enable flag is on: a disabled job has no
+#                   record and no timer, so requiring them would fail
+#                   the watchdog forever in a supported configuration.
 # Test hooks: LAPTOP_BACKUPS_RECORD overrides the record path and
 # `systemctl` is resolved via PATH, so the suite can stub both.
 MAX_AGE_HOURS="${1:-26}"
+JOBS="${2:-dashboard,repo-archive}"
+want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
 NOW_EPOCH="$(date +%s)"
 MAX_AGE_SEC=$(( MAX_AGE_HOURS * 3600 ))
@@ -31,6 +39,7 @@ violations=0
 complain() { echo "laptop-backups-watchdog: FAIL $*" >&2; violations=$((violations + 1)); }
 
 # --- (a) the dashboard run record -------------------------------------------
+if want_job dashboard; then
 if [ ! -f "$RECORD" ]; then
   complain "pm-dashboard-backup: no run record at $RECORD"
 else
@@ -59,9 +68,13 @@ PYEOF
     *) complain "pm-dashboard-backup: run record $verdict (threshold ${MAX_AGE_HOURS}h)" ;;
   esac
 fi
+fi
 
-# --- (b) both timers' last triggers ------------------------------------------
-for timer in pm-dashboard-backup.timer repo-archive-backup.timer; do
+# --- (b) enabled timers' last triggers ---------------------------------------
+timers=()
+want_job dashboard && timers+=(pm-dashboard-backup.timer)
+want_job repo-archive && timers+=(repo-archive-backup.timer)
+for timer in "${timers[@]}"; do
   job="${timer%.timer}"
   raw="$(systemctl --user show -p LastTriggerUSec --value "$timer" 2>/dev/null || true)"
   if [ -z "$raw" ]; then
@@ -83,4 +96,4 @@ if [ "$violations" -gt 0 ]; then
   echo "laptop-backups-watchdog: $violations violation(s)" >&2
   exit 1
 fi
-echo "laptop-backups-watchdog: OK pm-dashboard-backup record fresh+complete, both timers fired within ${MAX_AGE_HOURS}h"
+echo "laptop-backups-watchdog: OK jobs [$JOBS] fresh within ${MAX_AGE_HOURS}h"

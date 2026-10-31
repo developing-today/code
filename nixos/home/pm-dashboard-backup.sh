@@ -114,11 +114,25 @@ PYEOF
 }
 on_exit() {
   rc=$?
+  # A trapped signal forces a failed record even when bash enters this
+  # handler with $? still 0 (waiting on a child in the same process
+  # group: the child takes the signal, bash's own status reads clean).
+  if [ -n "$INTERRUPTED" ] && [ "$rc" -eq 0 ]; then rc=$((128 + INTERRUPTED)); fi
   if [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi
   if [ "$RECORD_SKIP" -ne 1 ]; then write_record "$rc"; fi
   if [ $rc -ne 0 ]; then echo "pm-dashboard-backup: FAILED exit=$rc" >&2; fi
 }
 trap on_exit EXIT
+# Termination signals are explicit failures, never a clean exit: the
+# watchdog accepts a fresh record as healthy, so an interrupted run
+# recorded "complete" would mask a backup that never finished. The
+# signal trap exits 128+signum (HUP 129, INT 130, TERM 143); on_exit
+# additionally forces that code if it was entered with $? = 0.
+INTERRUPTED=""
+on_signal() { INTERRUPTED="$1"; exit $((128 + $1)); }
+trap 'on_signal 1' HUP
+trap 'on_signal 2' INT
+trap 'on_signal 15' TERM
 
 # --- DATE validation (#989) -------------------------------------------------
 # DATE becomes a directory under $ROOT, the archive filename, and both

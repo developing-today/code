@@ -58,6 +58,11 @@ run_watchdog() {
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
+run_watchdog_jobs() { # $1 jobs list
+  LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    PATH="$BIN:$PATH" bash "$SCRIPT" 26 "$1" >"$TMP_ROOT/out.log" 2>&1
+  RC=$?
+}
 
 expect_ok() {
   if [[ "$RC" -eq 0 ]]; then echo "ok: $1: watchdog exited 0"
@@ -93,6 +98,23 @@ run_watchdog; expect_named_failure stale-timer repo-archive-backup
 rm -f "$RECORD"
 set_triggers "1 hour ago" "1 hour ago"
 run_watchdog; expect_named_failure missing-record pm-dashboard-backup
+
+# jobs subset: dashboard only -> a stale repo-archive timer is not a
+# violation (the job is disabled, so its timer does not exist)
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "40 hours ago"
+run_watchdog_jobs dashboard; expect_ok jobs-dashboard-only
+
+# jobs subset: repo-archive only -> a missing dashboard record is not
+# a violation (the job is disabled, so no record is ever written)
+rm -f "$RECORD"
+set_triggers "40 hours ago" "1 hour ago"
+run_watchdog_jobs repo-archive; expect_ok jobs-repo-only
+
+# jobs subset still names an enabled job's violation
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "40 hours ago"
+run_watchdog_jobs repo-archive; expect_named_failure jobs-repo-stale repo-archive-backup
 
 if (( failures > 0 )); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2
