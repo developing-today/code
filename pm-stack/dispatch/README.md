@@ -62,13 +62,15 @@ Repo <repo>` so the session knows its tracking ids.
 Responses: `wait: true` → `201 {task_id, session_id, issue_number|null,
 queue, status: "claimed"}` after the launch. `wait: false` → `202
 {task_id, issue_number|null, status: "launching"}` right after the
-enqueue; steps 3–5 finish asynchronously and any failure is PATCHed onto
-the task's `last_error`.
+enqueue; steps 3–5 finish asynchronously.
 
-If the launch fails after the enqueue (wait: true), the task is
-cancelled via `cancel_repo_task`, the failure is noted on the issue, and
-the response is `502 {task_id, error}` — a task is never left `queued`
-for a session that launched, nor `claimed` without a session id.
+If the launch fails after the enqueue, the task is cancelled via
+`cancel_repo_task` and the failure is noted on the issue — the same
+handling for both wait modes. For `wait: true` the response is
+`502 {task_id, error}`; for `wait: false` the `202` has already been
+returned, so the cancellation and the issue note are the record — a
+task is never left `queued` for a session that did not launch, nor
+`claimed` without a session id.
 
 ### `POST /v1/tasks` — enqueue only
 
