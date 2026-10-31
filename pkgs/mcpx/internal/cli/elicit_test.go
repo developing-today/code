@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dezren39/mcpx/internal/elicit"
 )
@@ -101,7 +105,7 @@ func TestConfirmSendRequiresExplicitYes(t *testing.T) {
 		"y\n": true, "yes\n": true, "Y\n": true,
 		"n\n": false, "\n": false, "": false, "send it\n": false,
 	} {
-		got, err := confirmSend(strings.NewReader(in))
+		got, err := confirmSend(context.Background(), strings.NewReader(in))
 		if err != nil || got != want {
 			t.Errorf("confirmSend(%q) = %v, %v; want %v", in, got, err, want)
 		}
@@ -143,5 +147,46 @@ func TestRenderAnswerReviewIncludesEffectiveDefaults(t *testing.T) {
 	}
 	if !strings.Contains(out, "api_token") || !strings.Contains(out, "(set)") {
 		t.Errorf("sensitive default not masked as (set) in review:\n%s", out)
+	}
+}
+
+// Codex P2 on PR 3011: URL hosts are case-insensitive but the
+// publicsuffix list is not -- an uppercase host must still resolve to
+// the registrable domain, not render the suffix itself.
+func TestRenderQuestionURLUppercaseHostShowsRegistrableDomain(t *testing.T) {
+	out := renderQuestion(elicit.Request{
+		ID: "elc-5", Message: "Log in", Mode: elicit.URL,
+		URL: "https://login.example.CO.UK/auth",
+	})
+	if !strings.Contains(out, "  domain   example.co.uk\n") {
+		t.Errorf("uppercase host lost its registrable domain:\n%s", out)
+	}
+}
+
+// Codex P2 on PR 3011: cancelling the command context (Ctrl-C) while
+// the confirmation read is blocked must end the prompt without a
+// relay decision, not leave the command stuck on stdin.
+func TestConfirmSendHonoursContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	defer pr.Close()
+	done := make(chan error, 1)
+	go func() {
+		ok, err := confirmSend(ctx, pr)
+		if ok {
+			done <- errors.New("confirmSend returned yes on a cancelled read")
+			return
+		}
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("confirmSend on cancel = %v; want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("confirmSend ignored context cancellation and stayed blocked")
 	}
 }

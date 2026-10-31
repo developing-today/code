@@ -160,7 +160,7 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 			}
 			if r.Mode == elicit.Form {
 				fmt.Print(renderAnswerReview(r, content))
-				confirmed, err := confirmSend(os.Stdin)
+				confirmed, err := confirmSend(ctx, os.Stdin)
 				if err != nil {
 					return err
 				}
@@ -168,6 +168,12 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 					return fmt.Errorf("answer not sent: declined at review")
 				}
 			}
+		}
+		// A cancellation that landed during the review (or at any
+		// point above) wins over the relay: the user said stop, so
+		// nothing is sent (Codex review, PR #3011).
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		return b.Respond(elicit.Answer{
 			ID: fs.Arg(0), Action: elicit.Accept, Content: content, By: "cli",
@@ -356,7 +362,14 @@ func urlDomainLines(raw string) string {
 	if host == "" {
 		return ""
 	}
-	domain, err := publicsuffix.EffectiveTLDPlusOne(host)
+	// The publicsuffix list compares labels case-sensitively, while
+	// URL hosts are case-insensitive: an uppercase host would look
+	// up CO.UK, miss the lowercase rules, and render the suffix
+	// itself as the domain -- dropping the registrant's label from
+	// the review indicator (Codex review, PR #3011). The lookup
+	// uses the lowercased host; the full URL printed above and the
+	// host forms below keep the host as the server sent it.
+	domain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
 	if err != nil {
 		domain = host
 	}
@@ -443,15 +456,29 @@ func isSetValue(raw json.RawMessage) bool {
 }
 
 // confirmSend asks for the relay decision; anything but y/yes -- EOF
-// included -- is a no, so a vanished terminal never sends.
-func confirmSend(in io.Reader) (bool, error) {
+// included -- is a no, so a vanished terminal never sends. The read is
+// cancellation-aware: main cancels the command context on SIGINT, and
+// a prompt that ignored that would sit blocked on the read and could
+// still relay on a later y, after the user already said stop
+// (Codex review, PR #3011).
+func confirmSend(ctx context.Context, in io.Reader) (bool, error) {
 	fmt.Print("Send this answer? [y/N] ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true, nil
+	type result struct{ line string }
+	read := make(chan result, 1)
+	go func() {
+		line, _ := bufio.NewReader(in).ReadString('\n')
+		read <- result{line}
+	}()
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case r := <-read:
+		switch strings.ToLower(strings.TrimSpace(r.line)) {
+		case "y", "yes":
+			return true, nil
+		}
+		return false, nil
 	}
-	return false, nil
 }
 
 func compactJSON(raw json.RawMessage) string {
