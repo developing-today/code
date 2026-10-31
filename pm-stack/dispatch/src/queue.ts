@@ -7,8 +7,12 @@
 // for the other fleet repos. The RPC returns the created row (incl. id);
 // NOTE it dedupes on dedupe_key against ALL tasks incl. done ones, so a
 // returned row whose dedupe_key was already consumed is the OLD task —
-// callers get the row as-is and the canonical-key flows anchor to fresh
-// issues, which cannot collide.
+// callers get the row as-is. The create-an-issue canonical-key flow
+// anchors to a fresh issue, which cannot collide; the issue_number
+// ATTACH flow anchors to an existing issue whose canonical key may
+// already be consumed (live or terminal), so attach callers MUST detect
+// a pre-existing row and must never report it as newly queued — see
+// enqueueDispatchTask in server.ts (issue #2677).
 import type { Packet } from "./packet.ts";
 import { REPO_QUEUES } from "./config.ts";
 
