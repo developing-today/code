@@ -72,15 +72,15 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	key, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
 	r.beginAsk(id, server, key, cc.SessionID)
 	defer r.endAsk(id)
-	res, err := p.Call(ctx, key, tool, args)
+	res, err := p.Call(ctx, key, effTool, effArgs)
 	if err != nil {
-		return nil, r.explainCall(ctx, server, tool, args, err)
+		return nil, r.explainCall(ctx, server, effTool, effArgs, err)
 	}
 	return res, nil
 }
