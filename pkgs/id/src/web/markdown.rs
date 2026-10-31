@@ -449,6 +449,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
     let mut blocks = Vec::new();
     let mut fence = FenceTracker::default();
     let mut fence_prefix = String::new();
+    let mut html_prefix = String::new();
     let mut html = HtmlBlockTracker::default();
     let mut i = 0;
     while i < lines.len() {
@@ -467,10 +468,35 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // only the unstripped line missed the opening behind the
         // marker (Codex P2 on #1565's eighth cut).
         let container_stripped = strip_container_prefixes(stripped);
+        // While an HTML block is open, feed it lines relative to
+        // the container it opened in: a blank line inside a
+        // blockquote is just `>` once spaces are stripped, and
+        // feeding that literal line kept the tracker open past the
+        // block's end, suppressing what follows it (Codex P2 on
+        // #1565's ninth cut). Mirrors fence_prefix below.
+        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
+        // on a blank quote line -- so relativity is computed by
+        // re-stripping this line's own container prefixes.)
+        let html_line = if html.in_html() && !html_prefix.is_empty() {
+            container_stripped
+        } else {
+            stripped
+        };
+        let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(stripped) || html.feed(container_stripped))
+            && (html.feed(html_line) || html.feed(container_stripped))
         {
+            if !was_in_html && html.in_html() {
+                // Opened on this line (via the container-stripped
+                // form when a container prefix is present): remember
+                // the prefix for the block's interior lines.
+                html_prefix =
+                    stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            if !html.in_html() {
+                html_prefix.clear();
+            }
             i += 1;
             continue;
         }
@@ -628,6 +654,7 @@ fn is_link_reference_definition_start(stripped: &str) -> bool {
 fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
     let mut fence = FenceTracker::default();
     let mut fence_prefix = String::new();
+    let mut html_prefix = String::new();
     let mut html = HtmlBlockTracker::default();
     let mut defs = Vec::new();
     // A link reference definition is only a definition where it can
@@ -661,10 +688,35 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // on #1565's seventh cut). The indent limit applies only
         // to recognizing an OPENING line.
         let container_stripped = strip_container_prefixes(stripped);
+        // While an HTML block is open, feed it lines relative to
+        // the container it opened in: a blank line inside a
+        // blockquote is just `>` once spaces are stripped, and
+        // feeding that literal line kept the tracker open past the
+        // block's end, suppressing what follows it (Codex P2 on
+        // #1565's ninth cut). Mirrors fence_prefix below.
+        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
+        // on a blank quote line -- so relativity is computed by
+        // re-stripping this line's own container prefixes.)
+        let html_line = if html.in_html() && !html_prefix.is_empty() {
+            container_stripped
+        } else {
+            stripped
+        };
+        let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(stripped) || html.feed(container_stripped))
+            && (html.feed(html_line) || html.feed(container_stripped))
         {
+            if !was_in_html && html.in_html() {
+                // Opened on this line (via the container-stripped
+                // form when a container prefix is present): remember
+                // the prefix for the block's interior lines.
+                html_prefix =
+                    stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            if !html.in_html() {
+                html_prefix.clear();
+            }
             at_block_start = true;
             i += 1;
             continue;
@@ -768,11 +820,17 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // paragraph text left the next line ineligible and the
         // definition was omitted from the synthesis context
         // (Codex P2 on #1565's eighth cut).
+        // A setext underline ends a paragraph only when a
+        // paragraph precedes it: a lone `=` at a block start is
+        // itself paragraph text, and a definition-shaped line
+        // after it is that paragraph's continuation, not a
+        // definition (Codex P2 on #1565's ninth cut).
+        let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
         at_block_start = stripped.starts_with('#')
             || stripped.starts_with('>')
             || strip_container_prefixes(stripped) != stripped
             || is_thematic_break(stripped)
-            || is_setext_underline(stripped);
+            || setext_ends_paragraph;
         i += 1;
     }
     defs
@@ -4823,6 +4881,70 @@ mod tests {
             "reference after thematic break resolves in recovered footnote: {first:?}"
         );
         assert_eq!(first, second, "thematic-break round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_after_blockquote_html_blank_line_recovered() {
+        // Codex P2 on #1565's ninth cut: an HTML block opened
+        // inside a blockquote ends at the quote's blank line
+        // (`>`), but the scan fed the tracker the unstripped `>`
+        // line, which is not blank, so the tracker stayed open
+        // and the footnote definition after the quote was
+        // suppressed. The tracker now sees lines relative to the
+        // container it opened in.
+        let original = "> <div>\n> html\n>\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after blockquote HTML is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "blockquote-html round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_after_lone_setext_marker_not_a_definition() {
+        // Codex P2 on #1565's ninth cut: a lone `=` with no
+        // preceding paragraph is paragraph text, so the
+        // definition-shaped line after it continues that
+        // paragraph and is NOT a reference definition. The
+        // collector promoted it anyway, resolving the recovered
+        // footnote's reference link against a definition the
+        // document does not honor.
+        let original = "=\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[target\\]\\[url\\]"),
+            "unresolved reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target](https"),
+            "unresolved reference is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "lone-setext round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_after_real_setext_heading_resolves() {
+        // Control for the ninth cut's setext gate: after an actual
+        // paragraph, `=` is a setext underline, the heading ends
+        // the paragraph, and the definition after it IS honored.
+        let original = "Title\n=\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "reference after setext heading resolves in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target][url]"),
+            "resolved reference does not stay literal: {first:?}"
+        );
+        assert_eq!(first, second, "setext-heading round-trip is a fixpoint");
     }
 
     #[test]
