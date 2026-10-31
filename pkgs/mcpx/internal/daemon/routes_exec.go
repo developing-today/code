@@ -293,13 +293,23 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if ttl <= 0 {
 			ttl = s.set.Duration("tasks.ttl").Milliseconds()
 		}
-		t := store.Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+		// The task counts against the caller's identity — the session
+		// named in the options or the header, else its run — so one
+		// caller's tasks cannot exhaust another's cap; only a caller
+		// that named nothing lands in the unbound bucket (an empty
+		// requestor, which Start maps there), capped like any other.
+		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
+		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
 			if err != nil && res == nil {
 				return nil, &tasks.Fault{Code: -32603, Message: err.Error()}
 			}
 			return res, nil
 		})
+		if terr != nil {
+			writeErr(w, http.StatusTooManyRequests, terr)
+			return
+		}
 		writeJSON(w, http.StatusAccepted, map[string]any{"task": t})
 		return
 	}

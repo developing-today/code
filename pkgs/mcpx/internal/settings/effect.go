@@ -240,6 +240,9 @@ var EffectExemptions = map[string]string{
 	"protoMessages.readMaxAge":           "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoMessages.taskAfter":            "protocol message timing: era fixtures cover the flow end-to-end, but no per-setting with/without probe exists yet",
 	"protoTasks.pollInterval":            "protocol task polling: its effect is a timing interval no single run observes deterministically",
+	"protoTasks.maxTTL":                  "task-store limits: covered by internal/tasks store tests (TTL clamp), not by a settings with/without probe",
+	"protoTasks.maxPerRequestor":         "task-store limits: covered by internal/tasks store tests (per-requestor cap), not by a settings with/without probe",
+	"protoTasks.perMinute":               "task-store limits: covered by internal/tasks store tests (admission window), not by a settings with/without probe",
 	"upstream.protocol":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.probeTimeout":              "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.eraCache":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
@@ -254,7 +257,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 185 // raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl; raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
+const EffectExemptionPin = 188 // raised by three for protoTasks.maxTTL / maxPerRequestor / perMinute (#2498): task-store limits whose effects are covered by internal/tasks store tests, not settings probes; raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl; raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

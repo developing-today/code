@@ -546,6 +546,12 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		SSEKeepAlive: a.Settings().Duration("transport.sseKeepAlive"),
 		StdioDrain:   a.Settings().Duration("transport.stdioDrain"),
 		TaskPoll:     a.Settings().Duration("protoTasks.pollInterval"),
+		// The task-store limits (#2498), read from the same settings the
+		// daemon's taskStore() wiring reads. perMinute's 0 disables the
+		// window and is translated to -1 here (see Timing).
+		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
+		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
+		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),
@@ -1637,4 +1643,14 @@ func relayedFault(err error) error {
 		return err
 	}
 	return &mcpserver.UpstreamError{Code: body.Upstream.Code, Message: body.Upstream.Message, Data: body.Upstream.Data}
+}
+
+// perMinuteSetting translates protoTasks.perMinute for mcpserver.Timing:
+// the setting's 0 disables the admission window, which Timing carries as
+// -1 so a zero Timing still means "the store's default".
+func perMinuteSetting(v int) int {
+	if v == 0 {
+		return -1
+	}
+	return v
 }
