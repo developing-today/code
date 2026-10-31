@@ -197,7 +197,7 @@ func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
 //     each bare specifier to its npm: equivalent, so a script's imports
 //     resolve to the resolved set rather than whatever deno would pick.
 //   - a lockfile is written byte-for-byte and never rewritten by mcpx.
-func materialiseDeps(dir, kind string, d *Deps, fileRun bool) ([]string, error) {
+func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string) ([]string, error) {
 	var manifest map[string]any
 	if strings.TrimSpace(d.Manifest) != "" {
 		if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
@@ -280,6 +280,31 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool) ([]string, error) 
 	}
 	if kind == KindDeno && len(deps) > 0 {
 		imports := map[string]string{}
+		var scopes map[string]map[string]string
+		// The generated config replaces the project's own deno.json
+		// for this run (--config selects ONE file; deno does not
+		// merge configs), so the project's import mappings must be
+		// carried into it or a script using project aliases or JSR
+		// mappings loses them the moment dependency pins are added
+		// (Codex review, PR #2589). The resolved pins are senior:
+		// they overwrite a project mapping for the same specifier.
+		if projectDir != "" {
+			if pImports, pScopes, cfgDir, ok := loadProjectDenoConfig(projectDir); ok {
+				for k, v := range pImports {
+					imports[k] = rebaseDenoMapping(v, cfgDir)
+				}
+				if len(pScopes) > 0 {
+					scopes = map[string]map[string]string{}
+					for scope, m := range pScopes {
+						rm := map[string]string{}
+						for k, v := range m {
+							rm[k] = rebaseDenoMapping(v, cfgDir)
+						}
+						scopes[scope] = rm
+					}
+				}
+			}
+		}
 		for name, version := range deps {
 			if version == "*" || version == "" {
 				imports[name] = "npm:" + name
@@ -287,7 +312,11 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool) ([]string, error) 
 				imports[name] = "npm:" + name + "@" + version
 			}
 		}
-		text, err := json.MarshalIndent(map[string]any{"imports": imports}, "", "  ")
+		rendered := map[string]any{"imports": imports}
+		if len(scopes) > 0 {
+			rendered["scopes"] = scopes
+		}
+		text, err := json.MarshalIndent(rendered, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("deps: render deno.json: %w", err)
 		}
@@ -409,4 +438,51 @@ func writeBytesIfChanged(path string, content []byte) error {
 		return nil
 	}
 	return os.WriteFile(path, content, 0o600)
+}
+
+// loadProjectDenoConfig finds the deno configuration a script's
+// project already lives under: deno discovers it from the script's
+// directory upward, nearest first, deno.json before deno.jsonc in
+// each directory. It returns the config's import mappings and
+// scopes, plus the directory the config was found in (relative
+// mappings are relative to THAT directory). ok is false when no
+// project config exists or it cannot be parsed -- a config mcpx
+// cannot read must not fail a run it was only enriching.
+func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[string]map[string]string, cfgDir string, ok bool) {
+	for d := dir; ; d = filepath.Dir(d) {
+		for _, name := range []string{"deno.json", "deno.jsonc"} {
+			raw, err := os.ReadFile(filepath.Join(d, name))
+			if err != nil {
+				continue
+			}
+			var parsed struct {
+				Imports map[string]string            `json:"imports"`
+				Scopes  map[string]map[string]string `json:"scopes"`
+			}
+			if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
+				return nil, nil, "", false
+			}
+			return parsed.Imports, parsed.Scopes, d, true
+		}
+		if filepath.Dir(d) == d {
+			return nil, nil, "", false
+		}
+	}
+}
+
+// rebaseDenoMapping rewrites a project config mapping for a
+// generated config living in a different directory: relative
+// mappings are resolved against the project config's directory and
+// spelled as file URLs; everything else (npm:, jsr:, http(s):, bare
+// specifiers, absolute paths) travels unchanged. A trailing slash
+// is load-bearing -- it is what makes a mapping a prefix mapping.
+func rebaseDenoMapping(v, cfgDir string) string {
+	if !strings.HasPrefix(v, "./") && !strings.HasPrefix(v, "../") {
+		return v
+	}
+	abs := filepath.Join(cfgDir, v)
+	if strings.HasSuffix(v, "/") {
+		abs += "/"
+	}
+	return "file://" + filepath.ToSlash(abs)
 }

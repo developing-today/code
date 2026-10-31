@@ -279,11 +279,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	// The dependency set is materialised before the launcher and the
 	// type check, because both resolve the script's imports (#1913).
+	var depsFlags []string
 	if opts.Deps != nil {
-		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "")
+		projectDir := opts.Dir
+		if opts.File != "" {
+			projectDir = filepath.Dir(scriptPath)
+		}
+		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "", projectDir)
 		if derr != nil {
 			return nil, derr
 		}
+		depsFlags = flags
 		if len(flags) > 0 {
 			inner := rt.Args
 			rt.Args = func(script string) []string {
@@ -313,7 +319,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			// script directory for the link's whole lifetime: the
 			// lock is taken before linking and released only when
 			// this Run returns, after the process has exited.
-			unlock := lockScriptDir(filepath.Dir(scriptPath))
+			unlock, lerr2 := lockScriptDir(ctx, filepath.Dir(scriptPath))
+			if lerr2 != nil {
+				return nil, lerr2
+			}
 			defer unlock()
 			if lerr := linkNodeModules(filepath.Dir(scriptPath), workDir); lerr != nil {
 				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
@@ -346,7 +355,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		if timeout == 0 {
 			timeout = defaults.TypecheckTimeout
 		}
-		rep := preflight.TypeCheck(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout)
+		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
+			append(append([]string{}, rt.ConfigArgs...), depsFlags...))
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
@@ -394,7 +404,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				rt.ConfigArgs, opts.Dir)
+				append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
@@ -518,15 +528,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 }
 
 // fileScriptLocks serializes file runs per script directory (see the
-// linkNodeModules call site in Run): one mutex per directory, held
-// from linking until the run's process has exited.
-var fileScriptLocks sync.Map // map[string]*sync.Mutex
+// linkNodeModules call site in Run): one single-capacity channel per
+// directory acting as a semaphore, held from linking until the run's
+// process has exited.
+var fileScriptLocks sync.Map // map[string]chan struct{}
 
-func lockScriptDir(dir string) func() {
-	m, _ := fileScriptLocks.LoadOrStore(dir, &sync.Mutex{})
-	mu := m.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+// lockScriptDir acquires the directory's semaphore, observing ctx
+// while it waits: a queued run whose request was cancelled must
+// return promptly instead of blocking behind a long-running script
+// until that script exits, however long that takes (Codex review,
+// PR #2589).
+func lockScriptDir(ctx context.Context, dir string) (func(), error) {
+	c, _ := fileScriptLocks.LoadOrStore(dir, make(chan struct{}, 1))
+	ch := c.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("deps: waiting for the script directory lock: %w", ctx.Err())
+	}
 }
 
 // linkNodeModules symlinks workDir/node_modules beside a file script

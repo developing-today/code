@@ -196,6 +196,16 @@ const (
 // scheduled, where the cost is irrelevant and a broken import at three in the
 // morning is not.
 func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration) *Report {
+	return TypeCheckResolved(ctx, runtimeBin, entry, mode, timeout, nil)
+}
+
+// TypeCheckResolved is TypeCheck with the executing run's
+// resolution-relevant arguments (see ResolutionArgs): a run that
+// executes under a materialised --config checks under that same
+// config, so an import only the generated dependency map supplies
+// is not reported missing by a check that never saw the map
+// (Codex review, PR #2589).
+func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string) *Report {
 	r := &Report{}
 	if mode == TypeCheckOff || mode == "" {
 		return r
@@ -215,6 +225,7 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 	if mode == TypeCheckStrict {
 		args = append(args, "--all")
 	}
+	args = append(args, ResolutionArgs(configArgs)...)
 	args = append(args, entry)
 
 	cctx := ctx

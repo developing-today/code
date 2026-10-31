@@ -29,7 +29,7 @@ func TestMaterialiseDepsSynthesisesManifestForBun(t *testing.T) {
 	flags, err := materialiseDeps(dir, KindBun, &Deps{
 		Packages:    []string{"lodash@4.17.21", "@scope/pkg", "zod@^3.0.0"},
 		AutoInstall: "off",
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestMaterialiseDepsManifestWinsAndLockfileVerbatim(t *testing.T) {
 		Lockfile:     lock,
 		LockfileName: "bun.lockb",
 		AutoInstall:  "off",
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestMaterialiseDepsDenoImportsMap(t *testing.T) {
 	dir := t.TempDir()
 	flags, err := materialiseDeps(dir, KindDeno, &Deps{
 		Packages: []string{"zod@^3.0.0", "lodash"},
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDepsFlagsMatrix(t *testing.T) {
 
 func TestMaterialiseDepsRejectsBadManifest(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := materialiseDeps(dir, KindNode, &Deps{Manifest: "{nope"}, false); err == nil {
+	if _, err := materialiseDeps(dir, KindNode, &Deps{Manifest: "{nope"}, false, ""); err == nil {
 		t.Fatal("invalid manifest accepted")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); !os.IsNotExist(err) {
@@ -183,7 +183,7 @@ func TestMaterialiseDepsAliasKeepsNpmSpecifier(t *testing.T) {
 	if _, err := materialiseDeps(dir, KindBun, &Deps{
 		Packages:    []string{"alias@npm:@scope/pkg@2.0.0"},
 		AutoInstall: "off",
-	}, false); err != nil {
+	}, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	m := readJSON(t, filepath.Join(dir, "package.json"))
@@ -213,7 +213,7 @@ func TestSelectedLockfileFollowsTheRuntime(t *testing.T) {
 	}
 	// Materialising a node set writes the npm lockfile, not bun's.
 	dir := t.TempDir()
-	if _, err := materialiseDeps(dir, KindNode, d, false); err != nil {
+	if _, err := materialiseDeps(dir, KindNode, d, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
@@ -246,7 +246,7 @@ func TestDepsFingerprintSeparatesSets(t *testing.T) {
 func TestMaterialiseDepsStripsScriptsAndKeepsESM(t *testing.T) {
 	dir := t.TempDir()
 	d := &Deps{Manifest: `{"name":"p","type":"commonjs","scripts":{"prepare":"node ./scripts/prepare.js","preinstall":"x"},"dependencies":{"foo":"1.0.0"}}`}
-	if _, err := materialiseDeps(dir, KindNode, d, false); err != nil {
+	if _, err := materialiseDeps(dir, KindNode, d, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
@@ -394,7 +394,7 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
 		ManifestName: "package.json",
 		AutoInstall:  "off",
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 		Packages:     []string{"foo@1.3.0"},
 		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
 		ManifestName: "package.json",
-	}, false); err != nil {
+	}, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	dj := readJSON(t, filepath.Join(dir2, "deno.json"))
@@ -421,9 +421,17 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 
 func TestLockScriptDirSerializes(t *testing.T) {
 	dir := t.TempDir()
-	unlock := lockScriptDir(dir)
+	unlock, err := lockScriptDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	acquired := make(chan func(), 1)
-	go func() { acquired <- lockScriptDir(dir) }()
+	go func() {
+		u, lerr := lockScriptDir(context.Background(), dir)
+		if lerr == nil {
+			acquired <- u
+		}
+	}()
 	select {
 	case <-acquired:
 		t.Fatal("second lock on the same script dir acquired while the first was held")
@@ -437,7 +445,10 @@ func TestLockScriptDirSerializes(t *testing.T) {
 		t.Fatal("second lock on the same script dir never acquired after release")
 	}
 	// A different directory is not serialized against this one.
-	other := lockScriptDir(t.TempDir())
+	other, oerr := lockScriptDir(context.Background(), t.TempDir())
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
 	other()
 }
 
@@ -446,7 +457,7 @@ func TestMaterialiseDepsCanonicalisesSelectedManifestName(t *testing.T) {
 	_, err := materialiseDeps(dir, KindNode, &Deps{
 		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
 		ManifestName: "alt-manifest.json",
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +473,7 @@ func TestMaterialiseDepsDenoFileRunGetsConfigFlag(t *testing.T) {
 	dir := t.TempDir()
 	flags, err := materialiseDeps(dir, KindDeno, &Deps{
 		Packages: []string{"zod@^3.0.0"},
-	}, true)
+	}, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +490,7 @@ func TestMaterialiseDepsDenoFileRunGetsConfigFlag(t *testing.T) {
 
 	flags, err = materialiseDeps(dir, KindDeno, &Deps{
 		Packages: []string{"zod@^3.0.0"},
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,5 +498,78 @@ func TestMaterialiseDepsDenoFileRunGetsConfigFlag(t *testing.T) {
 		if f == "--config" {
 			t.Fatalf("flags = %v, inline runs discover the workdir config and must not get --config", flags)
 		}
+	}
+}
+
+func TestLockScriptDirHonoursCancellation(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := lockScriptDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, lerr := lockScriptDir(ctx, dir)
+		done <- lerr
+	}()
+	select {
+	case lerr := <-done:
+		t.Fatalf("lock acquired or failed before cancellation: %v", lerr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case lerr := <-done:
+		if lerr == nil {
+			t.Fatal("cancelled lock acquisition returned no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled lock acquisition never returned")
+	}
+}
+
+func TestMaterialiseDepsDenoPreservesProjectConfig(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "deno.json"), []byte(`{
+		"imports": {
+			"@app/": "./src/",
+			"zod": "npm:zod@2.0.0",
+			"lib": "jsr:@scope/lib@1"
+		},
+		"scopes": {
+			"./tools/": {"helper": "./helpers/h.ts"}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scriptDir := filepath.Join(project, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"zod@3.0.0"},
+	}, true, scriptDir); err != nil {
+		t.Fatal(err)
+	}
+	dj := readJSON(t, filepath.Join(dir, "deno.json"))
+	imports := dj["imports"].(map[string]any)
+	wantAlias := "file://" + filepath.ToSlash(filepath.Join(project, "src")) + "/"
+	if imports["@app/"] != wantAlias {
+		t.Fatalf("project alias not preserved/rebased: %v (want %q)", imports, wantAlias)
+	}
+	if imports["lib"] != "jsr:@scope/lib@1" {
+		t.Fatalf("project JSR mapping not preserved: %v", imports)
+	}
+	if imports["zod"] != "npm:zod@3.0.0" {
+		t.Fatalf("resolved pin did not govern over the project mapping: %v", imports)
+	}
+	scopes := dj["scopes"].(map[string]any)
+	toolScope := scopes["./tools/"].(map[string]any)
+	wantHelper := "file://" + filepath.ToSlash(filepath.Join(project, "helpers", "h.ts"))
+	if toolScope["helper"] != wantHelper {
+		t.Fatalf("scope mapping not preserved/rebased: %v (want %q)", scopes, wantHelper)
 	}
 }
