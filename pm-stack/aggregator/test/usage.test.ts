@@ -108,6 +108,47 @@ describe("saas extraction (Part b)", () => {
     expect(shells.length).toBe(8);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
   });
+
+  test("modal: monthly console read carries a dated used-credits value", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    ).replace(
+      "- **Last checked:** 2026-10-22 (Tracker).",
+      "- **Last checked:** console read 2026-10-24.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBe(12.5);
+    expect(credits.limit).toBe(30);
+    expect(credits.percent).toBeCloseTo(41.7, 1);
+    expect(modal.measuredAt).toBe("2026-10-24");
+  });
+
+  test("modal: no used figure stays an allowance-only shell", () => {
+    const modal = byId.get("modal")!;
+    expect(modal.metrics.find((m) => m.id === "compute-credits")?.used).toBeNull();
+  });
+
+  test("bitwarden: bws count-only read yields dated secrets/projects metrics", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 121 secrets, 1 project (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(121);
+    expect(m.get("projects-count")?.used).toBe(1);
+    expect(bw.measuredAt).toBe("2026-10-26");
+  });
+
+  test("bitwarden: no dated count stays an empty shell, names/values never parsed", () => {
+    const bw = byId.get("bitwarden")!;
+    expect(bw.metrics).toEqual([]);
+  });
 });
 
 describe("payg lines + charges (§1.2, §2.4)", () => {
