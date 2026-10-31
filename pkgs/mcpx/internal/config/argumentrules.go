@@ -893,6 +893,20 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 	}
 	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
 		if target, ok := resolveLocalPointer(root, ref); ok {
+			if dialectIgnoresRefSiblings(root) {
+				// Draft-07 and earlier: the reference replaces
+				// this schema outright and its siblings are
+				// ignored at enforcement, so the projection is
+				// the projected target alone -- conjoining the
+				// siblings advertises requirements enforcement
+				// does not hold (Codex P2 on PR #2976). This
+				// covers boolean targets too: stripPinnedScope
+				// returns a non-object target unchanged.
+				resolving[ref] = true
+				projected := stripPinnedScope(target, pinned, pinVals, root, resolving)
+				delete(resolving, ref)
+				return projected
+			}
 			if tm, ok := target.(map[string]any); ok {
 				// A $ref and its siblings are a conjunction, not a
 				// merge: copying sibling keys over the target's drops

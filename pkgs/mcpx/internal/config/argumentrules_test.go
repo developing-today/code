@@ -1207,6 +1207,46 @@ func TestEffectiveSchemaPinnedHonorsDraft07RefSiblings(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: the direct root-reference projection in
+// stripPinnedScope must honor the same draft-07 sibling semantics
+// as the verdict inliner. A draft-07 rule whose root $ref points
+// at a definition, with a sibling required, enforces only the
+// definition (the sibling is ignored); conjoining both sides
+// advertised the sibling requirement and rejected runtime-valid
+// calls. The boolean-target path takes the same rule.
+func TestEffectiveSchemaPinnedHonorsDraft07RootRefSiblings(t *testing.T) {
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"tailnet":{"type":"string"}}}`)
+	for _, tc := range []struct {
+		name string
+		rule string
+	}{
+		{"object target", `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"]}},"$ref":"#/definitions/need","required":["limit"]}`},
+		{"boolean target", `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"ok":true},"$ref":"#/definitions/ok","required":["limit"]}`},
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(tc.rule)},
+		})
+		if err != nil {
+			t.Fatalf("%s: CompileArgumentRules: %v", tc.name, err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+		if strings.Contains(string(eff), `"required":["limit"]`) {
+			t.Errorf("%s: the ignored draft-07 sibling requirement must not be advertised: %s", tc.name, eff)
+		}
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("%s: effective schema does not compile: %v (%s)", tc.name, err, eff)
+		}
+		dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiled.Validate(dec); err != nil {
+			t.Errorf("%s: {} is runtime-valid (pin supplies tailnet; the sibling is ignored) and must be advertised-valid: %v (schema %s)", tc.name, err, eff)
+		}
+	}
+}
+
 func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
 	set, err := CompileArgumentRules([]ArgumentRuleSource{
 		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},
