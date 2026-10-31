@@ -321,6 +321,35 @@ fn escape_code_span_pipes_in_line(line: &str) -> String {
 /// up to the next blank line. Lines outside tables are returned
 /// untouched — outside a table `\|` inside a code span is literal
 /// text, not an escape, so escaping there would corrupt the span.
+/// Fenced code blocks are skipped for the same reason (#2362): a
+/// table example inside a fence is literal text comrak renders
+/// verbatim, not a live table — the fence tracking mirrors
+/// `protect_newline_destinations`.
+/// A fence delimiter line (CommonMark §4.5): up to three leading
+/// spaces, then a run of at least three backticks or tildes. Either
+/// character toggles — the same approximation
+/// `protect_newline_destinations` makes.
+fn is_fence_line(line: &str) -> bool {
+    let mut spaces = 0;
+    let mut chars = line.chars();
+    let first = loop {
+        match chars.next() {
+            Some(' ') => {
+                spaces += 1;
+                if spaces > 3 {
+                    return false;
+                }
+            }
+            Some(c) => break c,
+            None => return false,
+        }
+    };
+    if first != '`' && first != '~' {
+        return false;
+    }
+    1 + chars.take_while(|&c| c == first).count() >= 3
+}
+
 fn escape_table_code_span_pipes(markdown: &str) -> String {
     if !markdown.contains('`') || !markdown.contains('|') {
         return markdown.to_string();
@@ -328,10 +357,26 @@ fn escape_table_code_span_pipes(markdown: &str) -> String {
     let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
     let mut out = String::with_capacity(markdown.len() + 16);
     let mut in_table = false;
+    let mut in_fence = false;
     for (idx, raw) in lines.iter().enumerate() {
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
         let ending = &raw[line.len()..];
+        if is_fence_line(line) {
+            in_fence = !in_fence;
+            if in_fence {
+                // A table cannot span a fence; a delimiter-looking
+                // row inside the fence must not arm `in_table` for
+                // whatever follows the fence either.
+                in_table = false;
+            }
+            out.push_str(raw);
+            continue;
+        }
+        if in_fence {
+            out.push_str(raw);
+            continue;
+        }
         if is_table_delimiter_row(line) {
             in_table = true;
             out.push_str(raw);
@@ -4443,6 +4488,36 @@ Some text
             .find(|n| n["marks"][0]["type"] == "code")
             .expect("code mark present");
         assert_eq!(code["text"], "a|b");
+    }
+
+    #[test]
+    fn test_table_example_inside_fence_untouched() {
+        // #2362: a table example inside a fenced block is literal
+        // text, not a table — the preprocessor must not escape its
+        // code-span pipes (comrak renders the fence verbatim, so a
+        // spurious backslash is visible corruption, persisted on
+        // save).
+        let md = "```markdown\n| `a|b` | H2 |\n| --- | --- |\n| `c|d` | e |\n```\n";
+        assert_eq!(
+            escape_table_code_span_pipes(md),
+            md,
+            "fenced table example passes through byte-identically"
+        );
+        let doc = markdown_to_prosemirror(md);
+        let block = &doc["content"][0];
+        assert_eq!(block["type"], "code_block", "still a code block: {doc}");
+        let text = block["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("`a|b`"), "literal pipe in the sample: {text}");
+        assert!(!text.contains("\\|"), "no spurious backslash: {text}");
+        // Tilde fences get the same protection.
+        let tilde = "~~~\n| `a|b` | H2 |\n| --- | --- |\n~~~\n";
+        assert_eq!(escape_table_code_span_pipes(tilde), tilde);
+        // A live table after the fence is still protected (#1424),
+        // and the fence's delimiter row did not leak table state.
+        let mixed = format!("{md}\n| `x|y` | H2 |\n| --- | --- |\n");
+        let out = escape_table_code_span_pipes(&mixed);
+        assert!(out.contains("`x\\|y`"), "live table still escaped: {out}");
+        assert_eq!(out.matches("\\|").count(), 1, "only the live table: {out}");
     }
 
     #[test]
