@@ -13,12 +13,14 @@
 
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
-  return [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  // Real calendar dates only (#2264), mirroring snapshot-records.ts.
+  return [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
 }
 
 /** The freshest ISO date in a text, or null. */
