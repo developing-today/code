@@ -104,3 +104,64 @@ func TestEnsureLastTouchedConcurrentOpeners(t *testing.T) {
 		t.Error("last_touched column missing after concurrent migration")
 	}
 }
+
+// Two item reads can interleave read-compute-write: both readers
+// snapshot the same metadata, the later reader commits first, and the
+// earlier reader's touch lands second. The SQL guard in touch makes
+// the update monotonic, so the stale touch must neither persist nor
+// return the older deadline -- reverting the guard to an unconditional
+// update makes this test fail on both counts.
+func TestTouchStaleReaderDoesNotRegressRenewal(t *testing.T) {
+	s, err := Open(Options{Dir: t.TempDir(), TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m, err := s.Put(strings.NewReader("hello"), PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two stale snapshots of the same pre-renewal state.
+	earlierSnap, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterSnap, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := m.Created.Add(30 * time.Minute).Truncate(time.Millisecond)
+	earlier := m.Created.Add(10 * time.Minute).Truncate(time.Millisecond)
+	// The later touch commits first.
+	if err := s.touch(&laterSnap, later); err != nil {
+		t.Fatal(err)
+	}
+	wantExpires := later.Add(2 * time.Hour)
+	if laterSnap.LastTouched.UnixMilli() != later.UnixMilli() || laterSnap.Expires.UnixMilli() != wantExpires.UnixMilli() {
+		t.Fatalf("later touch: lastTouched=%v expires=%v, want %v / %v",
+			laterSnap.LastTouched, laterSnap.Expires, later, wantExpires)
+	}
+	// The earlier (stale) touch lands second: it must keep the newer
+	// deadline and last-touch, in what it returns...
+	if err := s.touch(&earlierSnap, earlier); err != nil {
+		t.Fatal(err)
+	}
+	if earlierSnap.LastTouched.UnixMilli() != later.UnixMilli() {
+		t.Errorf("stale touch returned lastTouched %v, want the newer %v", earlierSnap.LastTouched, later)
+	}
+	if earlierSnap.Expires.UnixMilli() != wantExpires.UnixMilli() {
+		t.Errorf("stale touch returned expires %v, want the newer %v", earlierSnap.Expires, wantExpires)
+	}
+	if earlierSnap.ExpiresAt.UnixMilli() != wantExpires.UnixMilli() {
+		t.Errorf("stale touch returned expiresAt %v, want %v", earlierSnap.ExpiresAt, wantExpires)
+	}
+	// ...and in what is persisted.
+	persisted, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.LastTouched.UnixMilli() != later.UnixMilli() || persisted.Expires.UnixMilli() != wantExpires.UnixMilli() {
+		t.Errorf("persisted lastTouched=%v expires=%v, want %v / %v",
+			persisted.LastTouched, persisted.Expires, later, wantExpires)
+	}
+}
