@@ -669,3 +669,40 @@ func TestEffectiveSchemaPreservesUnevaluatedProperties(t *testing.T) {
 		}
 	}
 }
+
+// dependentSchemas subschemas are upstream applicators too: the
+// properties they evaluate count for the upstream root's
+// unevaluatedProperties, so the boundary member must carry them or
+// the advertised schema forbids arguments the upstream schema
+// accepts (Codex P2 on PR #2855, round 7).
+func TestEffectiveSchemaUnevaluatedDependentSchemas(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "*", Origin: "test", Schema: json.RawMessage(`{}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type": "object",
+		"properties": {"trigger": {}},
+		"dependentSchemas": {"trigger": {"properties": {"other": {}}}},
+		"unevaluatedProperties": false}`)
+	eff := set.EffectiveSchema("anything", upstream)
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for inst, wantErr := range map[string]bool{
+		`{"trigger": true, "other": "ok"}`:         false,
+		`{"trigger": true}`:                        false,
+		`{"trigger": true, "other": "ok", "x": 1}`: true,
+		`{"other": "ok"}`:                          true,
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != wantErr {
+			t.Errorf("validate %s: error = %v, want %v (schema %s)", inst, gotErr, wantErr, eff)
+		}
+	}
+}

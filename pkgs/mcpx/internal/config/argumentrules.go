@@ -254,6 +254,7 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 		boundary := map[string]any{"unevaluatedProperties": up}
 		for _, k := range []string{
 			"properties", "patternProperties", "additionalProperties",
+			"dependentSchemas",
 			"allOf", "anyOf", "oneOf", "not", "if", "then", "else",
 			"$ref", "$dynamicRef",
 		} {
