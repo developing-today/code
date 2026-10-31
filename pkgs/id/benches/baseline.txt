@@ -1,8 +1,11 @@
 # F11.8 committed benchmark baselines (issue #539, slice 2 / issue #1512)
 # Machine: AMD Ryzen 7 7840U (16 threads), 123 GB RAM, Linux 6.18.55 (NixOS), rustc 1.98.1
 # Taken: 2026-10-28, full-size workloads (not --quick). See BASELINES.md in this directory.
+# guest_replay line re-taken 2026-10-30 on the same machine after the #1403 harness fix:
+# the 2026-10-28 line was restore-only (the guest saw zero events); see the correction
+# note in BASELINES.md. The other three lines remain the 2026-10-28 run.
 # Format: the harness's own output lines, one per benchmark; slice 3 diffs medians.
 bench journal_append_fsync unit=us_per_append median=5180.353 min=5128.725 reps=5
 bench checkpoint_compaction unit=us_per_compact median=10971.985 min=10683.191 reps=5
-bench guest_replay unit=us_per_event median=0.146 min=0.142 reps=5
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
 bench session_fanout unit=us_per_delivery median=1.437 min=1.383 reps=5

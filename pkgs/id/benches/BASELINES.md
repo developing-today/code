@@ -27,7 +27,7 @@ work rather than scheduling.
 ```text
 bench journal_append_fsync unit=us_per_append median=5180.353 min=5128.725 reps=5
 bench checkpoint_compaction unit=us_per_compact median=10971.985 min=10683.191 reps=5
-bench guest_replay unit=us_per_event median=0.146 min=0.142 reps=5
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
 bench session_fanout unit=us_per_delivery median=1.437 min=1.383 reps=5
 ```
 
@@ -88,3 +88,30 @@ step. Remember the caveat above: baselines were taken on the laptop
 above, CI runners are a different machine class — a flag is a prompt
 to investigate (ideally by re-running on the reference machine), not
 proof of a regression.
+
+## Correction — guest_replay baseline (2026-10-30, #1403)
+
+The slice-2 `guest_replay` line above (median=0.146) was measured with a
+harness whose guest saw **zero** events: the journal was built from
+committed *chat* events, and `WorldCore::restore` applies committed chat
+to core state directly — only committed *input* (and journal system)
+events are put in `RestoredWorld.replay`. The old number was therefore
+restore-only time divided by N, mislabeled as guest replay.
+
+The harness now builds the journal from committed input events and
+asserts the counting guest saw exactly N events before recording a
+sample; an empty or short replay fails the bench run. The assertion was
+verified against the old workload first: with only the assertion added,
+the chat-based journal fails with `guest replay saw 0 of 200 committed
+events`. `WorldCore::restore` semantics are unchanged — no production
+code was touched.
+
+New line, full-size workload (10,000 events, 5 reps) on the reference
+laptop above, 2026-10-30:
+
+```text
+bench guest_replay unit=us_per_event median=0.170 min=0.145 reps=5
+```
+
+A second full run the same evening agreed on the median exactly
+(median=0.170, min=0.134). The other three baselines are unchanged.
