@@ -78,18 +78,41 @@ export function mapJulesItems(state: JulesReviewState): SessionFeedEntry[] {
 const TOTALS =
   /(\d+) sessions - (\d+) COMPLETED, (\d+) FAILED, (\d+) AWAITING_USER_FEEDBACK, (\d+) AWAITING_PLAN_APPROVAL, (\d+) IN_PROGRESS/;
 
-/** Keeper totals from the freshest jules_note_<HHMM> run note, when it parses. */
+/** Zero-padded UTC HHMM of an ISO timestamp, or null when unparseable. */
+function hhmmOf(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const m = /T(\d{1,2}):(\d{2})/.exec(iso);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return `${String(h).padStart(2, "0")}${m[2]}`;
+}
+
+/**
+ * Keeper totals from the note written by the run `last_run` names, when
+ * it parses. Note keys carry a time-of-day only (jules_note_<HHMM>), so
+ * the lexicographically largest key is not the freshest across midnight
+ * (#1587): yesterday's late note would outrank today's notes all day,
+ * and an unpadded key (905) outranks a padded later one (1458). Tie the
+ * totals to the last run's own note instead — key suffix zero-padded and
+ * compared numerically — and omit the totals when no note can be tied
+ * to the last run rather than attributing another run's numbers to it.
+ */
 export function julesSummary(state: JulesReviewState): JulesSummary {
   const summary: JulesSummary = {
     at: state.last_run ?? null,
     tracked: Object.keys(state.items ?? {}).length,
   };
-  let bestKey = "";
+  const target = hhmmOf(state.last_run);
   let bestText = "";
-  for (const [k, v] of Object.entries(state)) {
-    if (/^jules_note_\d+$/.test(k) && typeof v === "string" && k > bestKey) {
-      bestKey = k;
-      bestText = v;
+  if (target != null) {
+    for (const [k, v] of Object.entries(state)) {
+      const m = /^jules_note_(\d+)$/.exec(k);
+      if (m && typeof v === "string" && m[1].padStart(4, "0") === target) {
+        bestText = v;
+        break;
+      }
     }
   }
   const m = TOTALS.exec(bestText);

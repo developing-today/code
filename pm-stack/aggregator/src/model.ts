@@ -409,7 +409,7 @@ export interface JulesSummary {
   at: string | null;
   /** Sessions the keeper currently tracks in its `items` map. */
   tracked: number;
-  /** Totals from the keeper's freshest run note, when it parses. */
+  /** Totals from the note written by the keeper's last run, when it parses. */
   total?: number;
   completed?: number;
   failed?: number;
