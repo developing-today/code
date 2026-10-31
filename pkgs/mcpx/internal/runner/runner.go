@@ -312,7 +312,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
-			if cerr := installFrozenBun(ctx, workDir, opts.Deps); cerr != nil {
+			if cerr := installFrozenBun(ctx, rt.Bin, workDir, opts.Deps); cerr != nil {
+				return nil, cerr
+			}
+		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
+			if cerr := installBun(ctx, rt.Bin, workDir, opts.Deps); cerr != nil {
 				return nil, cerr
 			}
 		}

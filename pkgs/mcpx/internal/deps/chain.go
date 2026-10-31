@@ -33,7 +33,7 @@ type Manifest struct {
 // lockfileNames are the lockfiles a runtime may honour in a project, in the
 // order they are reported.
 var lockfileNames = []string{
-	"bun.lockb", "bun.lock", "package-lock.json", "npm-shrinkwrap.json",
+	"bun.lockb", "bun.lock", "npm-shrinkwrap.json", "package-lock.json",
 	"pnpm-lock.yaml", "yarn.lock", "deno.lock",
 }
 
@@ -135,19 +135,26 @@ func Load(path string) (*Manifest, error) {
 		raw = StripJSONC(raw)
 	}
 	var doc struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
+		Dependencies         map[string]string `json:"dependencies"`
+		DevDependencies      map[string]string `json:"devDependencies"`
+		OptionalDependencies map[string]string `json:"optionalDependencies"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("deps: %s: %w", path, err)
 	}
-	pkgs := make(map[string]string, len(doc.Dependencies)+len(doc.DevDependencies))
+	pkgs := make(map[string]string, len(doc.Dependencies)+len(doc.DevDependencies)+len(doc.OptionalDependencies))
 	for name, want := range doc.DevDependencies {
 		pkgs[name] = want
 	}
 	// A plain dependency is what the script may import at run time, so it
 	// overrides a dev entry of the same name.
 	for name, want := range doc.Dependencies {
+		pkgs[name] = want
+	}
+	// npm gives optionalDependencies precedence over dependencies:
+	// an entry in optionalDependencies overrides an entry of the same name
+	// in dependencies (npm docs / Codex review, PR #2589).
+	for name, want := range doc.OptionalDependencies {
 		pkgs[name] = want
 	}
 	dir := filepath.Dir(path)

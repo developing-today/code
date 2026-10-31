@@ -61,7 +61,7 @@ type Lockfile struct {
 // runtime honours frozen, most specific first.
 var lockfilePreference = map[string][]string{
 	KindBun:  {"bun.lock", "bun.lockb"},
-	KindNode: {"package-lock.json", "npm-shrinkwrap.json"},
+	KindNode: {"npm-shrinkwrap.json", "package-lock.json"},
 	KindDeno: {"deno.lock"},
 }
 
@@ -153,6 +153,14 @@ func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
 	if manifest != nil {
 		if deps, ok := manifest["dependencies"].(map[string]any); ok {
 			for name, v := range deps {
+				if s, ok := v.(string); ok {
+					out[name] = s
+				}
+			}
+		}
+		// Optional dependencies override dependencies of the same name:
+		if optDeps, ok := manifest["optionalDependencies"].(map[string]any); ok {
+			for name, v := range optDeps {
 				if s, ok := v.(string); ok {
 					out[name] = s
 				}
@@ -251,6 +259,13 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		delete(manifest, "scripts")
 		if manifest["type"] == "commonjs" {
 			manifest["type"] = "module"
+		}
+		if optDeps, ok := manifest["optionalDependencies"].(map[string]any); ok {
+			for name, ver := range deps {
+				if _, has := optDeps[name]; has {
+					optDeps[name] = ver
+				}
+			}
 		}
 		text, err := json.MarshalIndent(manifest, "", "  ")
 		if err != nil {
@@ -485,9 +500,22 @@ func (d *Deps) frozenBun(kind string) bool {
 
 // installFrozenBun runs bun install --frozen-lockfile in dir exactly
 // once per dep set, under the same once-per-fingerprint discipline
-// as installFrozenNPM (separate marker: the two installers are not
-// interchangeable even when a workdir fingerprint matches).
-func installFrozenBun(ctx context.Context, dir string, d *Deps) error {
+// as installFrozenNPM. It uses the resolved bun executable (bunBin / rt.Bin)
+// so custom runtime paths work even when bun is not on PATH (Codex
+// review, PR #2589).
+func installFrozenBun(ctx context.Context, bunBin, dir string, d *Deps) error {
+	return runBunInstall(ctx, bunBin, dir, d, true)
+}
+
+// installBun runs bun install in dir when explicit packages or a manifest are
+// present without a lockfile, ensuring Bun resolves against the transported
+// requirements in package.json rather than runtime auto-install fetching
+// unpinned latest (Codex review, PR #2589).
+func installBun(ctx context.Context, bunBin, dir string, d *Deps) error {
+	return runBunInstall(ctx, bunBin, dir, d, false)
+}
+
+func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool) error {
 	unlock, err := lockInstallDir(ctx, dir)
 	if err != nil {
 		return err
@@ -501,11 +529,21 @@ func installFrozenBun(ctx context.Context, dir string, d *Deps) error {
 			return nil
 		}
 	}
-	ci := exec.CommandContext(ctx, "bun", "install", "--frozen-lockfile", "--cwd", dir)
+	if bunBin == "" {
+		bunBin = "bun"
+	}
+	args := []string{"install", "--cwd", dir}
+	if frozen {
+		args = []string{"install", "--frozen-lockfile", "--cwd", dir}
+	}
+	ci := exec.CommandContext(ctx, bunBin, args...)
 	out, cerr := ci.CombinedOutput()
 	if cerr != nil {
-		return fmt.Errorf("deps: bun install --frozen-lockfile: %w: %s",
-			cerr, strings.TrimSpace(string(out)))
+		op := "bun install"
+		if frozen {
+			op = "bun install --frozen-lockfile"
+		}
+		return fmt.Errorf("deps: %s: %w: %s", op, cerr, strings.TrimSpace(string(out)))
 	}
 	_ = os.WriteFile(marker, []byte(want), 0o600)
 	return nil

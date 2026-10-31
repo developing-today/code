@@ -466,3 +466,35 @@ func TestAbbreviatedRangesKeepTheirArity(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionalDependenciesInManifestAndConflicts verifies that
+// optionalDependencies are decoded and take precedence over dependencies
+// of the same name (npm documented precedence), and that contradictory
+// explicit pins are reported as conflicts (Codex review, PR #2589).
+func TestOptionalDependenciesInManifestAndConflicts(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{
+		"dependencies": {"shared": "1.0.0", "plain": "1.0.0"},
+		"optionalDependencies": {"shared": "2.0.0", "opt": "^2.0.0"}
+	}`)
+	m, err := deps.Load(filepath.Join(project, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Packages["shared"] != "2.0.0" {
+		t.Fatalf("optionalDependencies must override dependencies: got %q, want 2.0.0", m.Packages["shared"])
+	}
+	if m.Packages["opt"] != "^2.0.0" {
+		t.Fatalf("optionalDependencies must be included: got %q, want ^2.0.0", m.Packages["opt"])
+	}
+	// Explicit pin contradicting optionalDependencies must be reported as a conflict
+	conflicts := deps.Conflicts([]string{"shared@1.0.0", "opt@1.0.0"}, m.Packages)
+	if len(conflicts) != 2 {
+		t.Fatalf("conflicts = %+v, want 2", conflicts)
+	}
+	// Compatible pin should not conflict
+	noConflicts := deps.Conflicts([]string{"opt@2.1.0"}, m.Packages)
+	if len(noConflicts) != 0 {
+		t.Fatalf("compatible pin conflicted: %+v", noConflicts)
+	}
+}

@@ -683,3 +683,52 @@ func TestFrozenBunFollowsTheLockfile(t *testing.T) {
 		t.Fatal("frozenBun is bun-only")
 	}
 }
+
+// TestShrinkwrapPreferredOverPackageLock verifies that npm-shrinkwrap takes
+// precedence over package-lock.json (npm documented precedence), per the
+// Codex review on PR #2589.
+func TestShrinkwrapPreferredOverPackageLock(t *testing.T) {
+	d := &Deps{Lockfiles: []Lockfile{
+		{Name: "package-lock.json", Content: []byte("npm")},
+		{Name: "npm-shrinkwrap.json", Content: []byte("shrinkwrap")},
+	}}
+	name, content, ok := d.selectedLockfile(KindNode)
+	if !ok || name != "npm-shrinkwrap.json" || string(content) != "shrinkwrap" {
+		t.Fatalf("node selected %q %q %v, want npm-shrinkwrap.json", name, content, ok)
+	}
+	if !d.frozenNPM(KindNode) {
+		t.Fatal("node with a transported npm-shrinkwrap.json must be a frozen npm set")
+	}
+	// Materialising a node set writes the shrinkwrap lockfile, not package-lock.
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindNode, d, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "npm-shrinkwrap.json")); err != nil {
+		t.Fatalf("npm-shrinkwrap.json not materialised: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); !os.IsNotExist(err) {
+		t.Fatal("package-lock.json materialised for a node run when shrinkwrap is preferred")
+	}
+}
+
+// TestMaterialiseDepsOptionalOverrides ensures that optionalDependencies take
+// precedence over dependencies of the same name in the materialised manifest,
+// and that compatible explicit pins update both maps rather than stranding
+// one (Codex review, PR #2589).
+func TestMaterialiseDepsOptionalOverrides(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindBun, &Deps{
+		Packages:    []string{"shared@2.0.0"},
+		Manifest:    `{"name":"proj","dependencies":{"shared":"1.0.0"},"optionalDependencies":{"shared":"2.0.0"}}`,
+		AutoInstall: "off",
+	}, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := readJSON(t, filepath.Join(dir, "package.json"))
+	deps := m["dependencies"].(map[string]any)
+	optDeps := m["optionalDependencies"].(map[string]any)
+	if deps["shared"] != "2.0.0" || optDeps["shared"] != "2.0.0" {
+		t.Fatalf("optional override lost: dependencies=%v optionalDependencies=%v", deps, optDeps)
+	}
+}
