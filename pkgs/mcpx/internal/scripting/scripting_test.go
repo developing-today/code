@@ -149,6 +149,16 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after combining-mark identifier", "const a\u0301 = 4;\nconst q = a\u0301 / 2;\n"},
 		{"division after ZWNJ identifier", "const a\u200c = 4;\nconst q = a\u200c / 2;\n"},
 		{"regex after block following typeof string statement", "typeof \"\"; {} /a+/.test(\"aa\");\n"},
+		{"division after function expression with param default object", "const n = function(a = {}) {} / 2;\n"},
+		{"regex after switch case block", "switch (1) { case 1: {} /a+/.test(\"aa\"); }\n"},
+		{"division after less-than object literal", "const q = 1 < {} / 2;\n"},
+		{"division after greater-than object literal", "const q = 1 > {} / 2;\n"},
+		{"regex after debugger statement newline", "debugger\n/a+/.test(\"aa\");\n"},
+		{"regex after break statement newline", "while (true) { break\n/a+/.test(\"aa\"); }\n"},
+		{"division after generic as assertion", "const q = 4 as Extract<number, number> / 2;\n"},
+		{"division after generic satisfies assertion", "const q = 4 satisfies Extract<number, number> / 2;\n"},
+		{"division after plain as assertion", "const q = x as number / 2;\n"},
+		{"object after ternary colon in block", "if (true) { const o = true ? {a: 1} : {}; const q = 4 / 2; }\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

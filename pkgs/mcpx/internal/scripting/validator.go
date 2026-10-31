@@ -162,6 +162,27 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// DECLARATION a '/' starts a new statement and does open a
 	// regex — and is cleared by the body's '{' or by a ';'.
 	expectFuncClassBody := false
+	// expectFuncClassParenDepth counts '(' opened while
+	// expectFuncClassBody is pending: a '{' inside the parameter
+	// list (a default object, a destructuring pattern) is not the
+	// body and must not consume the marker (Codex P2 on #1659:
+	// function(a = {}) {} / 2).
+	expectFuncClassParenDepth := 0
+	// pendingStmtColon is set by a ':' that introduces a statement
+	// (a switch case/default colon or a statement label) rather
+	// than an object entry or a ternary branch: a '{' right after
+	// it opens a statement block, not an object literal (Codex P2
+	// on #1659: switch (1) { case 1: {} /a+/.test(..) }).
+	pendingStmtColon := false
+	ternaryDepth := 0
+	// TypeScript as/satisfies assertion state: while inTypeAssert
+	// a generic argument list may follow (Extract<number, number>);
+	// its closing '>' completes the asserted operand, so a '/'
+	// after it divides instead of opening a phantom regex
+	// (Codex P2 on #1659).
+	inTypeAssert := false
+	typeAngleDepth := 0
+	typeSawAngle := false
 
 	chars := []rune(src)
 	n := len(chars)
@@ -196,6 +217,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// to follow an operand (identPrevSig == 'x').
 					prevSig = 'o'
 				}
+				if (lastIdent == "as" || lastIdent == "satisfies") && lastIdentPrev != '.' && identPrevSig == 'x' {
+					// A TypeScript assertion on an operand: a type
+					// (possibly generic) follows, and the asserted
+					// value stays the operand throughout.
+					inTypeAssert = true
+					typeAngleDepth = 0
+					typeSawAngle = false
+				}
 				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && isExprPositionStart(lastIdentPrev, prevIdent) {
 					expectFuncClassBody = true
 				}
@@ -217,6 +246,23 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				inRegex = false
 				inCharClass = false
 				regexEscaped = false
+			}
+			if ((lastIdent == "debugger" || lastIdent == "break" || lastIdent == "continue") ||
+				((prevIdent == "break" || prevIdent == "continue") && lastIdent != "")) && lastIdentPrev != '.' {
+				// Automatic semicolon insertion ends a debugger /
+				// break / continue statement at the newline: a '/'
+				// on the next line opens a regex, it is not
+				// division after the keyword (Codex P2 on #1659:
+				// debugger\n/a+/.test(..)).
+				prevSig = 'o'
+				lastIdent = ""
+				lastIdentPrev = 0
+				expectFuncClassBody = false
+				expectFuncClassParenDepth = 0
+			}
+			if typeAngleDepth == 0 {
+				inTypeAssert = false
+				typeSawAngle = false
 			}
 			if inString == '\'' || inString == '"' {
 				// unclosed single-line string literal
@@ -333,6 +379,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// keyword is not recognised as expression-position, and
 		// U+2028/U+2029 appearing inside a regex literal.
 		if ch == '/' {
+			if inTypeAssert && typeAngleDepth == 0 {
+				// The assertion carried no generic list
+				// (x as number / 2): it is already complete, and
+				// this '/' is judged by the normal ruling.
+				inTypeAssert = false
+				typeSawAngle = false
+			}
 			if prevSig == 0 || prevSig == 'o' {
 				inRegex = true
 				inCharClass = false
@@ -354,6 +407,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// Delimiters
 		switch ch {
 		case '(':
+			if expectFuncClassBody {
+				expectFuncClassParenDepth++
+			}
 			// A '(' right after a control keyword (if/for/while/
 			// switch/catch/with) opens a control header: its ')'
 			// returns to expression position, so a following '/'
@@ -376,7 +432,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				kwIdent = ""
 			}
 			exprAfter := !isObjectBrace(prevChar, kwIdent)
-			if expectFuncClassBody {
+			if pendingStmtColon {
+				exprAfter = true
+				pendingStmtColon = false
+			}
+			if expectFuncClassBody && expectFuncClassParenDepth == 0 {
 				exprAfter = false
 				expectFuncClassBody = false
 			}
@@ -397,6 +457,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			if top.char == '(' && expectFuncClassBody && expectFuncClassParenDepth > 0 {
+				expectFuncClassParenDepth--
+			}
 			closedExprAfter = top.exprAfter
 			if !matchesDelim(top.char, ch) {
 				diags = append(diags, diagnose.Diagnostic{
@@ -410,10 +473,47 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		// Track the previous significant token for the regex ruling.
 		wasOperand := prevSig == 'x'
+		if ch != '{' && !isJSWhitespace(ch) {
+			// A pending statement colon is spent by the first
+			// significant token after it if that token is not the
+			// '{' it was classifying (handled in the delimiter
+			// switch above).
+			pendingStmtColon = false
+		}
 		switch {
 		case (ch == ')' || ch == '}') && closedExprAfter:
 			prevSig = 'o'
+			if typeAngleDepth == 0 {
+				inTypeAssert = false
+				typeSawAngle = false
+			}
 		case ch == ')' || ch == '}' || ch == ']':
+			prevSig = 'x'
+			if typeAngleDepth == 0 {
+				inTypeAssert = false
+				typeSawAngle = false
+			}
+		case ch == '?':
+			ternaryDepth++
+			prevSig = 'o'
+		case ch == ':':
+			if ternaryDepth > 0 {
+				ternaryDepth--
+			} else if isStatementColon(stack, lastIdent, lastIdentPrev, prevChar) {
+				pendingStmtColon = true
+			}
+			prevSig = 'o'
+		case ch == '<' && inTypeAssert:
+			typeAngleDepth++
+			typeSawAngle = true
+			prevSig = 'x'
+		case ch == '>' && inTypeAssert && typeSawAngle:
+			typeAngleDepth--
+			if typeAngleDepth <= 0 {
+				typeAngleDepth = 0
+				inTypeAssert = false
+				typeSawAngle = false
+			}
 			prevSig = 'x'
 		case ch == '!' && wasOperand:
 			prevSig = 'x'
@@ -437,6 +537,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
 		if ch == ';' {
 			expectFuncClassBody = false
+			expectFuncClassParenDepth = 0
+			ternaryDepth = 0
+			inTypeAssert = false
+			typeAngleDepth = 0
+			typeSawAngle = false
 			// A statement boundary expires any keyword context: a
 			// '{' after ';' must not be classified by a keyword an
 			// earlier statement ended with (Codex P2 on #1659:
@@ -572,8 +677,35 @@ func isObjectBrace(prevChar rune, lastIdent string) bool {
 		return true
 	}
 	switch prevChar {
-	case '=', '(', ',', '[', ':', '!', '&', '|', '?', '+', '-', '*', '/', '%', '~', '^':
+	case '=', '(', ',', '[', ':', '!', '&', '|', '?', '+', '-', '*', '/', '%', '~', '^', '<', '>':
 		return true
+	}
+	return false
+}
+
+// isStatementColon reports whether a ':' at the current scan point
+// introduces a statement — a switch case/default colon or a statement
+// label — rather than an object entry or a ternary branch. The caller
+// has already excluded the ternary case (an unmatched '?' pending).
+// A '{' after a statement colon opens a statement block, whose '}'
+// returns to expression position.
+func isStatementColon(stack []delimToken, lastIdent string, lastIdentPrev, prevChar rune) bool {
+	if lastIdent == "case" {
+		return true
+	}
+	if len(stack) > 0 {
+		top := stack[len(stack)-1]
+		// Inside a statement block (a switch body above all) a
+		// colon ends a case/default clause or a label.
+		return top.char == '{' && top.exprAfter
+	}
+	// A label at top level: an identifier that started at a
+	// statement boundary, directly followed by the colon.
+	if lastIdent != "" && isIdentChar(prevChar) {
+		switch lastIdentPrev {
+		case 0, ';', '{', '}':
+			return true
+		}
 	}
 	return false
 }
