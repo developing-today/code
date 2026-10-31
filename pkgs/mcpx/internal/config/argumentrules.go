@@ -901,10 +901,24 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 				// siblings advertises requirements enforcement
 				// does not hold (Codex P2 on PR #2976). This
 				// covers boolean targets too: stripPinnedScope
-				// returns a non-object target unchanged.
+				// returns a non-object target unchanged. The
+				// document's definition containers are not
+				// constraints, though: the target's own nested
+				// references resolve against them, so they ride
+				// along verbatim when the projected target does
+				// not carry its own (Codex P2 on PR #2976).
 				resolving[ref] = true
 				projected := stripPinnedScope(target, pinned, pinVals, root, resolving)
 				delete(resolving, ref)
+				if pm, isMap := projected.(map[string]any); isMap {
+					for _, defsKey := range []string{"$defs", "definitions"} {
+						if _, carried := pm[defsKey]; !carried {
+							if defs, ok := m[defsKey]; ok {
+								pm[defsKey] = defs
+							}
+						}
+					}
+				}
 				return projected
 			}
 			if tm, ok := target.(map[string]any); ok {

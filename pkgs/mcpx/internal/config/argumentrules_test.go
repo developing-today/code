@@ -1247,6 +1247,44 @@ func TestEffectiveSchemaPinnedHonorsDraft07RootRefSiblings(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: the draft-07 root-reference projection
+// must preserve the document's definitions -- the projected
+// target's nested references resolve against them, and dropping
+// them leaves the advertised schema with references
+// EffectiveSchemaPinned cannot rebase, so it fails compilation
+// despite the original rule being valid.
+func TestEffectiveSchemaPinnedDraft07RootRefKeepsDefinitions(t *testing.T) {
+	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"],"properties":{"options":{"$ref":"#/definitions/options"}}},"options":{"type":"string"}},"$ref":"#/definitions/need","required":["limit"]}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"options":{"type":"string"},"tailnet":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"options":"x"}`, true},
+		{`{"options":1}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
 func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
 	set, err := CompileArgumentRules([]ArgumentRuleSource{
 		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},
