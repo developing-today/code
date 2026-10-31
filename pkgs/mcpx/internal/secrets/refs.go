@@ -126,6 +126,13 @@ type lexToken struct {
 	// comment) before this token — the raw material of automatic
 	// semicolon insertion.
 	nl bool
+	// ctrlClose, for a ")" token, reports the parenthesis it closes
+	// opened a control condition/head (if/while/for/with/switch), so
+	// the ")" does not end a value. It is recorded when the ")" is
+	// emitted, from the stack of open-paren contexts — rescanning
+	// backward for the matching "(" at every division slash made
+	// deeply nested scripts quadratic (Codex, PR #3042).
+	ctrlClose bool
 }
 
 // exprKeywords are the identifiers after which a value can start, so a
@@ -150,36 +157,25 @@ var controlKeywords = map[string]bool{
 	"if": true, "while": true, "for": true, "with": true, "switch": true,
 }
 
-func isControlConditionParen(toks []lexToken) bool {
-	if len(toks) == 0 || toks[len(toks)-1].text != ")" {
+// controlParenOpen reports whether a "(" emitted after toks opens a
+// control condition/head: the token before it is a control keyword
+// (with the for-await spelling unwrapped), and that keyword is not a
+// member name. Evaluated once, when the "(" is emitted.
+func controlParenOpen(toks []lexToken) bool {
+	if len(toks) == 0 {
 		return false
 	}
-	depth := 0
-	for i := len(toks) - 1; i >= 0; i-- {
-		t := toks[i]
-		if t.kind != tPunct {
-			continue
-		}
-		if t.text == ")" {
-			depth++
-		} else if t.text == "(" {
-			depth--
-			if depth == 0 {
-				keyword := i - 1
-				if keyword > 0 && toks[keyword].text == "await" && toks[keyword-1].text == "for" {
-					keyword--
-				}
-				if keyword >= 0 && toks[keyword].kind == tIdent && controlKeywords[toks[keyword].text] {
-					if keyword > 0 && (toks[keyword-1].text == "." || toks[keyword-1].text == "?.") {
-						return false
-					}
-					return true
-				}
-				return false
-			}
-		}
+	keyword := len(toks) - 1
+	if keyword > 0 && toks[keyword].text == "await" && toks[keyword-1].text == "for" {
+		keyword--
 	}
-	return false
+	if toks[keyword].kind != tIdent || !controlKeywords[toks[keyword].text] {
+		return false
+	}
+	if keyword > 0 && (toks[keyword-1].text == "." || toks[keyword-1].text == "?.") {
+		return false
+	}
+	return true
 }
 
 type lexer struct {
@@ -187,6 +183,10 @@ type lexer struct {
 	pos       int
 	toks      []lexToken
 	pendingNL bool
+	// parenCtrl is the stack of open-paren contexts: one entry per
+	// unmatched "(" token emitted, recording whether that paren
+	// opened a control condition/head.
+	parenCtrl []bool
 }
 
 func lex(src string) []lexToken {
@@ -196,7 +196,17 @@ func lex(src string) []lexToken {
 }
 
 func (l *lexer) emit(kind tokKind, text string, plain bool) {
-	l.toks = append(l.toks, lexToken{kind: kind, text: text, plain: plain, nl: l.pendingNL})
+	tok := lexToken{kind: kind, text: text, plain: plain, nl: l.pendingNL}
+	if kind == tPunct && text == "(" {
+		l.parenCtrl = append(l.parenCtrl, controlParenOpen(l.toks))
+	}
+	if kind == tPunct && text == ")" {
+		if n := len(l.parenCtrl); n > 0 {
+			tok.ctrlClose = l.parenCtrl[n-1]
+			l.parenCtrl = l.parenCtrl[:n-1]
+		}
+	}
+	l.toks = append(l.toks, tok)
 	l.pendingNL = false
 }
 
@@ -234,7 +244,7 @@ func (l *lexer) valueEnd() bool {
 		return !exprKeywords[t.text]
 	case tPunct:
 		if t.text == ")" {
-			return !isControlConditionParen(l.toks)
+			return !t.ctrlClose
 		}
 		if t.text == "!" {
 			// A postfix non-null assertion (n! / 2) ends a value, so
@@ -979,6 +989,24 @@ func angleEnds(toks []lexToken) []int {
 	return ends
 }
 
+// jumpableAngleList reports whether the angle list opening at i is
+// balanced and its interior can only be type arguments, never a
+// comparison chain spanning a real separator: no "=" (a declarator's
+// or assignment's equals inside the span would prove the "<" was a
+// comparison) and no ";" appears between the brackets.
+func jumpableAngleList(toks []lexToken, i int, angles []int) bool {
+	end := angles[i]
+	if end < 0 || end > len(toks) {
+		return false
+	}
+	for k := i + 1; k < end-1; k++ {
+		if toks[k].kind == tPunct && (toks[k].text == "=" || toks[k].text == ";") {
+			return false
+		}
+	}
+	return true
+}
+
 func skipDeclarator(toks []lexToken, i int, forHead bool, angles []int) int {
 	depth := 0
 	for i < len(toks) {
@@ -997,10 +1025,21 @@ func skipDeclarator(toks []lexToken, i int, forHead bool, angles []int) int {
 		// A generic call's type arguments sit at this declarator's
 		// own depth, and their commas are not declaration
 		// boundaries: identity<string, demo>("") binds nothing.
-		// Jump the whole list when it has the call shape.
+		// Jump the whole list when it has the call shape — and the
+		// instantiation-expression shape too: identity<string, demo>
+		// stored, not called, is the same type list with no call
+		// parenthesis after it. The no-call jump is deliberately
+		// narrower (jumpableAngleList): a "<" that is really a
+		// comparison can only span a real declarator separator when
+		// the tokens between hold that declarator's "=" — a type
+		// list never does.
 		if depth == 0 && t.text == "<" && i > 0 && toks[i-1].kind == tIdent {
 			if end := angles[i]; end >= 0 && end < len(toks) && toks[end].kind == tPunct && toks[end].text == "(" {
 				i = end
+				continue
+			}
+			if jumpableAngleList(toks, i, angles) {
+				i = angles[i]
 				continue
 			}
 		}

@@ -71,6 +71,8 @@ func TestReferencesFindsTheNamespacesAScriptReaches(t *testing.T) {
 		{"variable type annotation with multiple declarators", `const x: Map<string, demo> = new Map(), y = 1; demo.echo();`, only("demo"), []string{"demo"}},
 		{"an arrow return type annotation is not a parameter", `type demo = string; const f = (): demo => ""; demo.echo();`, only("demo"), []string{"demo"}},
 		{"generic type arguments in an initializer do not bind", `type demo = string; const x = identity<string, demo>(""); demo.echo();`, only("demo"), []string{"demo"}},
+		{"type arguments in an instantiation expression do not bind", `type demo = string; const x = identity<string, demo>; demo.echo();`, only("demo"), []string{"demo"}},
+		{"a comparison chain across declarators still binds", `const x = a < b, demo = c > d; demo.echo();`, only("demo"), nil},
 		{"a string key spelling a brace does not close a destructuring pattern", `const { "}": x, demo: local } = obj; demo.echo();`, only("demo"), []string{"demo"}},
 		{"type-only import specifiers do not bind values", `import { type demo } from "./types"; demo.echo();`, only("demo"), []string{"demo"}},
 		{"type-only aliased import specifiers do not bind values", `import { type demo as aliased } from "./types"; demo.echo();`, only("demo"), []string{"demo"}},
@@ -211,6 +213,22 @@ func TestReferencesManyComparisonsStayLinear(t *testing.T) {
 		t.Fatalf("References(16000 comparisons) = %v; want [demo]", got)
 	}
 	t.Logf("16000 comparisons took %v", elapsed)
+}
+
+func TestReferencesDivisionAfterNestedParensStaysLinear(t *testing.T) {
+	// Perf-guard companion (Codex round on 7838c301c): whether a ")"
+	// closes a control head is tracked as tokens are emitted, so a
+	// division slash after every closing paren no longer rescans the
+	// whole prefix — that rescan made this shape quadratic (~2s at
+	// 16,000 levels before the fix).
+	src := strings.Repeat("f(", 16000) + "1" + strings.Repeat(") / 2", 16000) + "; tools.fs.read();"
+	start := time.Now()
+	got := References(src, none)
+	elapsed := time.Since(start)
+	if len(got) != 1 || got[0] != "fs" {
+		t.Fatalf("References(16000 nested parens with division) = %v; want [fs]", got)
+	}
+	t.Logf("16000 nested parens with division took %v", elapsed)
 }
 
 func TestReferencesDeeplyNestedParensStayLinear(t *testing.T) {
