@@ -76,6 +76,7 @@ export function isDnsSection(v: unknown): v is DnsSection {
   const s = v as Partial<DnsSection>;
   return (
     typeof s.generatedAt === "string" &&
+    Number.isFinite(Date.parse(s.generatedAt)) &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
