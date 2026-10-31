@@ -260,7 +260,11 @@ impl HtmlBlockTracker {
             return false;
         };
         let lower = stripped.to_ascii_lowercase();
-        // Marker-ended blocks (CommonMark types 1-5).
+        // Marker-ended blocks (CommonMark types 1-5). The tag-named
+        // prefixes require a name boundary: `<prefix>` is not a
+        // `<pre>` block (nor `<scripture>` a `<script>`), it is a
+        // generic tag block ending at a blank line (Codex P2 on
+        // #1565's sixth cut).
         for (prefix, marker) in [
             ("<!--", "-->"),
             ("<![cdata[", "]]>"),
@@ -270,7 +274,12 @@ impl HtmlBlockTracker {
             ("<style", "</style>"),
             ("<textarea", "</textarea>"),
         ] {
-            if lower.starts_with(prefix) {
+            let boundary_ok = !prefix[1..].chars().all(|c| c.is_ascii_alphabetic())
+                || lower
+                    .as_bytes()
+                    .get(prefix.len())
+                    .is_some_and(|b| !b.is_ascii_alphanumeric() && *b != b'-');
+            if boundary_ok && lower.starts_with(prefix) {
                 if !lower[prefix.len()..].contains(marker) {
                     self.end = Some(HtmlBlockEnd::Marker(marker));
                 }
@@ -390,6 +399,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
     let lines: Vec<&str> = markdown.lines().collect();
     let mut blocks = Vec::new();
     let mut fence = FenceTracker::default();
+    let mut fence_prefix = String::new();
     let mut html = HtmlBlockTracker::default();
     let mut i = 0;
     while i < lines.len() {
@@ -400,16 +410,30 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             i += 1;
             continue;
         }
-        // Container prefixes are stripped only to find a fence's
-        // OPENING line: inside an already-open fence, a `> ``` line
-        // is literal content, not a closing delimiter (Codex P2 on
-        // #1565's fifth cut).
+        // Container prefixes are stripped to find a fence's OPENING
+        // line, and the opening line's prefix is remembered: while
+        // the fence is open, only lines carrying THAT prefix are
+        // de-prefixed (a fence genuinely inside a blockquote closes
+        // on a prefixed delimiter), while a container-shaped line
+        // inside a top-level fence stays literal (Codex P2 on
+        // #1565's fifth and sixth cuts).
+        let container_stripped = strip_container_prefixes(stripped);
         let fence_line = if fence.in_fence() {
-            stripped
+            if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
+                &stripped[fence_prefix.len()..]
+            } else {
+                stripped
+            }
         } else {
-            strip_container_prefixes(stripped)
+            container_stripped
         };
+        let was_in_fence = fence.in_fence();
         if indent <= 3 && fence.feed(fence_line) {
+            if was_in_fence {
+                fence_prefix.clear();
+            } else {
+                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
             i += 1;
             continue;
         }
@@ -461,6 +485,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
 /// them converts the link to literal text (Codex P2).
 fn collect_link_reference_definitions(markdown: &str) -> String {
     let mut fence = FenceTracker::default();
+    let mut fence_prefix = String::new();
     let mut html = HtmlBlockTracker::default();
     let mut defs = Vec::new();
     // A link reference definition is only a definition where it can
@@ -476,6 +501,10 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
         if stripped.trim().is_empty() {
+            // A blank line ENDS a blank-line-terminated HTML block;
+            // the tracker must see it or it suppresses every later
+            // definition (Codex P2 on #1565's sixth cut).
+            html.feed(stripped);
             at_block_start = true;
             continue;
         }
@@ -483,12 +512,23 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
             at_block_start = true;
             continue;
         }
+        let container_stripped = strip_container_prefixes(stripped);
         let fence_line = if fence.in_fence() {
-            stripped
+            if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
+                &stripped[fence_prefix.len()..]
+            } else {
+                stripped
+            }
         } else {
-            strip_container_prefixes(stripped)
+            container_stripped
         };
+        let was_in_fence = fence.in_fence();
         if indent <= 3 && fence.feed(fence_line) {
+            if was_in_fence {
+                fence_prefix.clear();
+            } else {
+                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
             at_block_start = true;
             continue;
         }
@@ -544,13 +584,15 @@ fn preserve_unreferenced_footnote_definitions(
         .collect();
     // ONE augmented parse recovers every orphan (Codex P2 on #1565's
     // fifth cut): the probe references every orphan label and carries
-    // every definition block plus the document's link reference
-    // definitions as resolution context -- an unreferenced definition
-    // may itself reference another footnote (`[^outer]: See
-    // [^inner].`), and a probe without the inner definition degrades
-    // that reference to escaped literal text (third cut). A per-orphan
-    // probe scaled quadratically with the number of orphans.
-    let recovered = synthesize_footnote_definitions(&orphans, &reference_defs);
+    // EVERY scanned definition block (orphan and carried alike) plus
+    // the document's link reference definitions as resolution context
+    // -- an unreferenced definition may itself reference a footnote
+    // the main parse already carried (`[^outer]: See [^inner].` where
+    // [^inner] is carried), and a probe without that definition
+    // degrades the reference to escaped literal text (third cut). A
+    // per-orphan probe scaled quadratically with the number of
+    // orphans.
+    let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
     let mut synthesized = Vec::new();
     for block in &orphans {
         if let Some(mut node) = recovered.get(&block.label) {
@@ -584,6 +626,7 @@ fn preserve_unreferenced_footnote_definitions(
 /// included). Returns the first node per label, keyed by label.
 fn synthesize_footnote_definitions(
     orphans: &[&FootnoteDefinitionBlock],
+    all_blocks: &[FootnoteDefinitionBlock],
     reference_defs: &str,
 ) -> std::collections::HashMap<String, Value> {
     let mut nodes = std::collections::HashMap::new();
@@ -594,7 +637,7 @@ fn synthesize_footnote_definitions(
     for block in orphans {
         probe.push_str(&format!("x[^{}]\n\n", block.label));
     }
-    for block in orphans {
+    for block in all_blocks {
         probe.push_str(&block.source);
         probe.push_str("\n\n");
     }
@@ -4330,6 +4373,60 @@ mod tests {
             !orphan.to_string().contains("example.com"),
             "paragraph text is not a reference definition: {orphan}"
         );
+    }
+
+    #[test]
+    fn test_blockquote_contained_fence_closes_and_real_definition_recovered() {
+        // Codex P2 on #1565's sixth cut: a fence genuinely inside a
+        // blockquote opens AND closes behind the container prefix;
+        // remembering the opening prefix lets the closing delimiter
+        // register, so the real definition after the quote is not
+        // swallowed by the still-open fence.
+        let original = "> ```\n> code\n> ```\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after a blockquote fence is recovered");
+    }
+
+    #[test]
+    fn test_reference_definitions_after_html_block_collected() {
+        // Codex P2 on #1565's sixth cut: the blank line ending an
+        // HTML block must reach the HTML tracker, or the collector
+        // treats every later line as HTML and returns no reference
+        // definitions, degrading the orphan's reference-style link.
+        let original =
+            "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "reference-style link resolves after an HTML block: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_tag_with_special_prefix_name_is_blank_line_terminated() {
+        // Codex P2 on #1565's sixth cut: `<prefix>` is not a `<pre>`
+        // block -- tag-named HTML prefixes require a name boundary,
+        // so the generic block ends at the blank line and the real
+        // definition after it is recovered.
+        let original = "<prefix>\nHTML text\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after a <prefix> block is recovered");
     }
 
     #[test]
