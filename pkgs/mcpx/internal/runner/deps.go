@@ -65,6 +65,14 @@ type Deps struct {
 	// time (see selectedLockfile); the singular fields above stay the
 	// transport's first entry for callers that predate the list.
 	Lockfiles []Lockfile
+	// NPMRC is the selected project's own .npmrc content, when one
+	// sits beside the manifest. npm ci in the isolated workdir must
+	// run under the same project settings the lockfile was generated
+	// with (legacy-peer-deps and friends): transporting the manifest
+	// and lockfile without it makes a valid frozen install attempt
+	// peer resolution the project explicitly disabled (Codex
+	// review, PR #2589).
+	NPMRC []byte
 	// Source is the resolved deps.source.
 	Source string
 	// AutoInstall is the resolved deps.autoInstall: off, fallback or
@@ -157,6 +165,10 @@ func (d *Deps) fingerprint() string {
 	}
 	if len(d.Lockfile) > 0 {
 		writeLock(d.LockfileName, d.Lockfile)
+	}
+	if len(d.NPMRC) > 0 {
+		sum := sha256.Sum256(d.NPMRC)
+		fmt.Fprintf(h, "npmrc:%s\n", hex.EncodeToString(sum[:]))
 	}
 	for _, l := range d.Lockfiles {
 		writeLock(l.Name, l.Content)
@@ -290,6 +302,14 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	// workdir (see the transport loop below): pairs of
 	// (spelling in the source project, spelling in the workdir).
 	var lockRebases [][2]string
+	// lockPathRebases records, per rebased artifact, the NORMALIZED
+	// path npm writes in a package-lock's structured entries (the
+	// "packages" key and the link entry's "resolved") beside the
+	// verbatim relative spelling: for file:./pkg npm stores simply
+	// "pkg", which neither the spec pair nor the ./-spelling pair
+	// rewrites, so the rebased project requirement no longer
+	// matched its own lockfile (Codex review, PR #2589).
+	var lockPathRebases [][2]string
 
 	// Local file dependencies (file:/link: with a relative path)
 	// resolve against the manifest's own directory, and the
@@ -407,6 +427,9 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 			lockRebases = append(lockRebases,
 				[2]string{spec, newSpec},
 				[2]string{filepath.ToSlash(rel), newRel})
+			if norm := strings.TrimPrefix(filepath.ToSlash(rel), "./"); norm != filepath.ToSlash(rel) {
+				lockPathRebases = append(lockPathRebases, [2]string{norm, newRel})
+			}
 		}
 	}
 
@@ -527,6 +550,16 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		}
 	}
 
+	if len(d.NPMRC) > 0 {
+		// The project's .npmrc travels with the manifest and the
+		// lockfile: the isolated install in this workdir is npm's
+		// --prefix target, so a .npmrc written here is exactly the
+		// project config npm reads for it.
+		if err := writeBytesIfChanged(filepath.Join(dir, ".npmrc"), d.NPMRC); err != nil {
+			return nil, fmt.Errorf("deps: write project .npmrc: %w", err)
+		}
+	}
+
 	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
 		if len(lockRebases) > 0 && isBinaryLockfile(lockName, lockContent) {
 			// A binary lockfile (bun.lockb) cannot be rebased by
@@ -550,6 +583,11 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 				text = strings.ReplaceAll(text, pair[0], pair[1])
 			}
 			lockContent = []byte(text)
+			if len(lockPathRebases) > 0 {
+				if rewritten, rerr := rebaseLockfilePaths(lockContent, lockPathRebases); rerr == nil {
+					lockContent = rewritten
+				}
+			}
 		}
 		name := filepath.Base(lockName)
 		if name == "" || name == "." || name == ".." {
@@ -850,6 +888,47 @@ func finaliseAddonsIfPresent(dir string) error {
 	return finaliseAddons(dir, am)
 }
 
+// rebaseLockfilePaths rewrites the structured path references of a
+// JSON lockfile (package-lock / npm-shrinkwrap "packages" entries):
+// a rebased local artifact's normalized path appears as a packages
+// KEY and as the "resolved" of its node_modules link entry, and both
+// must name the rebased layout. This is deliberately structural,
+// not a text substitution: the normalized path is a bare word
+// ("pkg") that a ReplaceAll would also hit inside unrelated package
+// names and specs (Codex review, PR #2589). A lockfile that does not
+// parse as JSON with a packages object is returned unchanged.
+func rebaseLockfilePaths(content []byte, pairs [][2]string) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(content, &doc); err != nil {
+		return content, err
+	}
+	pkgs, ok := doc["packages"].(map[string]any)
+	if !ok {
+		return content, nil
+	}
+	for _, pair := range pairs {
+		from, to := pair[0], pair[1]
+		if entry, ok := pkgs[from]; ok {
+			delete(pkgs, from)
+			pkgs[to] = entry
+		}
+		for _, raw := range pkgs {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if resolved, ok := entry["resolved"].(string); ok && resolved == from {
+				entry["resolved"] = to
+			}
+		}
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return content, err
+	}
+	return append(out, '\n'), nil
+}
+
 // rebaseAddonSpec rewrites a local file:/link: addition specifier for
 // the additions manifest, which lives one directory below the
 // workdir: the artifact was transported into the workdir, so a
@@ -869,7 +948,20 @@ func rebaseAddonSpec(spec string) string {
 // mergeNodeModules moves the packages installed under src into dst,
 // skipping any the destination already carries: the frozen project
 // tree wins a name both trees provide, matching the chain's
-// precedence (project over configuration layer).
+// precedence (project over configuration layer). Two shapes npm
+// actually produces must survive the merge (Codex review,
+// PR #2589):
+//   - a local (file:) package is a SYMLINK in the scratch tree, and
+//     DirEntry.IsDir is false for symlinks, so a plain directory
+//     walk dropped it while the install still reported success;
+//     symlinks are recreated at the destination with their target
+//     rebased to the destination's depth.
+//   - a package whose name the destination already carries may be
+//     an addition's own transitive dependency at an incompatible
+//     version; dropping it silently downgrades the addition. Such
+//     packages are nested under every package this merge placed
+//     (node_modules/<placed>/node_modules/<name>), where Node's
+//     resolution finds them first for that dependent.
 func mergeNodeModules(src, dst string) error {
 	entries, err := os.ReadDir(src)
 	if os.IsNotExist(err) {
@@ -878,20 +970,61 @@ func mergeNodeModules(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	move := func(from, to string) error {
-		if _, err := os.Stat(to); err == nil {
-			return nil
+	move := func(from, to string) (bool, error) {
+		if _, err := os.Lstat(to); err == nil {
+			return false, nil
 		}
 		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-			return err
+			return false, err
+		}
+		if fi, err := os.Lstat(from); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(from)
+			if err != nil {
+				return false, err
+			}
+			abs := target
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(filepath.Dir(from), target)
+			}
+			rel, err := filepath.Rel(filepath.Dir(to), filepath.Clean(abs))
+			if err != nil {
+				return false, err
+			}
+			if err := os.Symlink(rel, to); err != nil {
+				if err := copyLocalArtifact(abs, to); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
 		}
 		if err := os.Rename(from, to); err != nil {
-			return copyLocalArtifact(from, to)
+			if err := copyLocalArtifact(from, to); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	var placed, conflicts []string
+	place := func(rel string) error {
+		ok, err := move(filepath.Join(src, rel), filepath.Join(dst, rel))
+		if err != nil {
+			return err
+		}
+		if ok {
+			placed = append(placed, rel)
+		} else {
+			conflicts = append(conflicts, rel)
 		}
 		return nil
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		isDir := e.IsDir()
+		if !isDir && e.Type()&os.ModeSymlink != 0 {
+			if st, err := os.Stat(filepath.Join(src, e.Name())); err == nil && st.IsDir() {
+				isDir = true
+			}
+		}
+		if !isDir {
 			continue
 		}
 		if strings.HasPrefix(e.Name(), "@") {
@@ -900,14 +1033,28 @@ func mergeNodeModules(src, dst string) error {
 				return err
 			}
 			for _, ie := range inner {
-				if err := move(filepath.Join(src, e.Name(), ie.Name()), filepath.Join(dst, e.Name(), ie.Name())); err != nil {
+				if err := place(filepath.Join(e.Name(), ie.Name())); err != nil {
 					return err
 				}
 			}
 			continue
 		}
-		if err := move(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+		if err := place(e.Name()); err != nil {
 			return err
+		}
+	}
+	for _, rel := range conflicts {
+		for _, host := range placed {
+			nested := filepath.Join(dst, host, "node_modules", rel)
+			if _, err := os.Lstat(nested); err == nil {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+				return err
+			}
+			if err := copyLocalArtifact(filepath.Join(src, rel), nested); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -950,6 +1097,11 @@ func installAddons(ctx context.Context, dir, kind, bunBin string, env map[string
 	}
 	if err := os.WriteFile(filepath.Join(addonsDir, "package.json"), append(text, '\n'), 0o600); err != nil {
 		return fmt.Errorf("deps: write additions manifest: %w", err)
+	}
+	if npmrc, err := os.ReadFile(filepath.Join(dir, ".npmrc")); err == nil {
+		if err := os.WriteFile(filepath.Join(addonsDir, ".npmrc"), npmrc, 0o600); err != nil {
+			return fmt.Errorf("deps: write additions .npmrc: %w", err)
+		}
 	}
 	var cmd *exec.Cmd
 	switch kind {

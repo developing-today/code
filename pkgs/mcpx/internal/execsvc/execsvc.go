@@ -202,6 +202,10 @@ type DepsOptions struct {
 	// runner. Lockfile above stays as the first entry for consumers
 	// that predate the list.
 	Lockfiles []DepsLockfile `json:"lockfiles,omitempty"`
+	// NPMRC is the selected project's .npmrc content, transported
+	// with the manifest and lockfiles so the isolated frozen
+	// install runs under the project's own npm settings.
+	NPMRC []byte `json:"npmrc,omitempty"`
 	// Source is the resolved deps.source, carried so the daemon materialises
 	// the same set the caller judged.
 	Source string `json:"source,omitempty"`
@@ -647,6 +651,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			PackageDirs:  opts.Deps.PackageDirs,
 			Lockfile:     opts.Deps.Lockfile,
 			LockfileName: opts.Deps.LockfileName,
+			NPMRC:        opts.Deps.NPMRC,
 			Source:       opts.Deps.Source,
 			AutoInstall:  opts.Deps.AutoInstall,
 		}

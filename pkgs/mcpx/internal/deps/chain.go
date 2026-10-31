@@ -539,6 +539,23 @@ func (m *Manifest) LockfileText() (name string, text []byte, err error) {
 	return locks[0].Name, locks[0].Text, nil
 }
 
+// NPMRCText is the content of the .npmrc sitting beside the
+// manifest, or nil when there is none. A present-but-unreadable
+// .npmrc is an error, not an absence, on the LockfileText
+// principle: silently dropping it would run the isolated frozen
+// install under different project settings than the lockfile was
+// generated with (Codex review, PR #2589).
+func (m *Manifest) NPMRCText() ([]byte, error) {
+	b, err := os.ReadFile(filepath.Join(m.Dir, ".npmrc"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("deps: reading .npmrc %s: %w", filepath.Join(m.Dir, ".npmrc"), err)
+	}
+	return b, nil
+}
+
 // Lockfile is one lockfile's name and content.
 type Lockfile struct {
 	Name string

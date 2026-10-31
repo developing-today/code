@@ -390,7 +390,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				return nil, lerr2
 			}
 			defer unlock()
-			if lerr := linkNodeModules(filepath.Dir(scriptPath), workDir); lerr != nil {
+			// The set must also be visible at the selected
+			// manifest's directory: a module ABOVE the entry
+			// script (a helper the script imports from its
+			// parent directory) resolves bare imports from the
+			// manifest's scope, never from the script's child
+			// directory, so linking only beside the script left
+			// it with ERR_MODULE_NOT_FOUND after a successful
+			// install (Codex review, PR #2589). The manifest
+			// directory's link is shared the same way, so it is
+			// taken under that directory's lock too (always in
+			// script-then-manifest order).
+			if md := opts.Deps.ManifestDir; md != "" && filepath.Clean(md) != filepath.Clean(filepath.Dir(scriptPath)) {
+				unlock2, lerr3 := lockScriptDir(ctx, md)
+				if lerr3 != nil {
+					return nil, lerr3
+				}
+				defer unlock2()
+			}
+			if lerr := linkDepsForFileRun(filepath.Dir(scriptPath), opts.Deps.ManifestDir, workDir); lerr != nil {
 				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
 			}
 		}
@@ -613,6 +631,23 @@ func lockScriptDir(ctx context.Context, dir string) (func(), error) {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("deps: waiting for the script directory lock: %w", ctx.Err())
 	}
+}
+
+// linkDepsForFileRun links the materialised set beside the entry
+// script and at the selected manifest's directory when the two
+// differ: Node resolution from any module in the manifest's scope
+// walks up to the manifest directory, so the set placed there is
+// visible throughout that scope, while the beside-script link
+// covers scripts outside it (an explicit manifest named from
+// elsewhere).
+func linkDepsForFileRun(scriptDir, manifestDir, workDir string) error {
+	if err := linkNodeModules(scriptDir, workDir); err != nil {
+		return err
+	}
+	if manifestDir != "" && filepath.Clean(manifestDir) != filepath.Clean(scriptDir) {
+		return linkNodeModules(manifestDir, workDir)
+	}
+	return nil
 }
 
 // linkNodeModules symlinks workDir/node_modules beside a file script

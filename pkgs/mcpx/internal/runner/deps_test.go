@@ -516,6 +516,205 @@ func TestLinkNodeModules(t *testing.T) {
 	}
 }
 
+// TestMergeNodeModulesPreservesLocalSymlinks is the Codex finding on
+// PR #2589 (runner/deps.go, f1fa5ed0c round): npm installs a file:
+// package into a scratch tree as a symlink, and the merge skipped it
+// because DirEntry.IsDir is false for symlinks -- the install
+// reported success and the package was missing from the final tree.
+func TestMergeNodeModulesPreservesLocalSymlinks(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "localpkg")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"name":"helper","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "scratch", "node_modules")
+	dst := filepath.Join(root, "work", "node_modules")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(src, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(rel, filepath.Join(src, "helper")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeNodeModules(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dst, "helper", "package.json"))
+	if err != nil {
+		t.Fatalf("merged local package does not resolve: %v", err)
+	}
+	if !strings.Contains(string(b), `"name":"helper"`) {
+		t.Fatalf("merged package = %s", b)
+	}
+}
+
+// TestMergeNodeModulesNestsConflictingTransitives is the Codex
+// finding on PR #2589 (runner/deps.go, f1fa5ed0c round): an addition's
+// transitive dependency whose name the frozen tree already carries
+// at another version was dropped by the merge, silently downgrading
+// the addition. It must be nested under the placed addition, where
+// Node resolution finds it first for that dependent.
+func TestMergeNodeModulesNestsConflictingTransitives(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "scratch", "node_modules")
+	dst := filepath.Join(root, "work", "node_modules")
+	writePkg := func(base, name, version string) {
+		t.Helper()
+		dir := filepath.Join(base, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := `{"name":"` + name + `","version":"` + version + `"}`
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePkg(dst, "shared", "1.0.0")
+	writePkg(src, "helper", "1.0.0")
+	writePkg(src, "shared", "2.0.0")
+	if err := mergeNodeModules(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	version := func(path string) string {
+		t.Helper()
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return string(b)
+	}
+	if got := version(filepath.Join(dst, "shared", "package.json")); !strings.Contains(got, `"version":"1.0.0"`) {
+		t.Fatalf("the frozen tree's shared must win the top level, got %s", got)
+	}
+	if got := version(filepath.Join(dst, "helper", "node_modules", "shared", "package.json")); !strings.Contains(got, `"version":"2.0.0"`) {
+		t.Fatalf("the addition's shared must be nested under it, got %s", got)
+	}
+}
+
+// TestMaterialiseDepsRebasesNormalizedLockPaths is the Codex finding
+// on PR #2589 (runner/deps.go, f1fa5ed0c round): when two origins
+// spell the same local path and the project artifact is the one
+// rebased, npm's lockfile stores the artifact under the NORMALIZED
+// path ("pkg", not "./pkg") as a packages key and as the link
+// entry's resolved -- spellings the spec/path replacement pairs
+// never touched, so npm ci failed with "Missing: project-pkg@1.0.0
+// from lock file". The structured entries must be rebased too.
+func TestMaterialiseDepsRebasesNormalizedLockPaths(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	config := filepath.Join(root, "cfg")
+	workdir := filepath.Join(root, "work")
+	for _, d := range []string{filepath.Join(project, "pkg"), filepath.Join(config, "pkg"), workdir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "pkg", "package.json"),
+		[]byte(`{"name":"project-pkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "pkg", "package.json"),
+		[]byte(`{"name":"config-pkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock := `{"name":"proj","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"proj","version":"1.0.0","dependencies":{"project-pkg":"file:./pkg"}},"pkg":{"name":"project-pkg","version":"1.0.0"},"node_modules/project-pkg":{"resolved":"pkg","link":true}}}`
+	d := &Deps{
+		Manifest:     `{"name":"proj","version":"1.0.0","dependencies":{"project-pkg":"file:./pkg"}}`,
+		ManifestDir:  project,
+		Packages:     []string{"config-pkg@file:./pkg"},
+		PackageDirs:  map[string]string{"config-pkg": config},
+		Lockfile:     []byte(lock),
+		LockfileName: "package-lock.json",
+	}
+	if _, err := materialiseDeps(workdir, KindNode, d, false, project); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(workdir, "package-lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pkgs, _ := doc["packages"].(map[string]any)
+	if _, ok := pkgs["pkg"]; ok {
+		t.Fatalf("lockfile still keys the local package at the normalized path: %s", raw)
+	}
+	var rebased string
+	for key := range pkgs {
+		if strings.HasPrefix(key, ".mcpx-local/") {
+			rebased = key
+		}
+	}
+	if rebased == "" {
+		t.Fatalf("no rebased packages key in lockfile: %s", raw)
+	}
+	link, _ := pkgs["node_modules/project-pkg"].(map[string]any)
+	if link["resolved"] != rebased {
+		t.Fatalf("link entry resolved = %v, want the rebased path %q", link["resolved"], rebased)
+	}
+}
+
+// TestMaterialiseDepsTransportsProjectNPMRC is the Codex finding on
+// PR #2589 (runner/deps.go, f1fa5ed0c round): the runner transported
+// the manifest and lockfile but not the project's committed .npmrc,
+// so an isolated npm ci attempted peer resolution the project had
+// explicitly disabled (legacy-peer-deps) and a valid lockfile
+// failed frozen installation.
+func TestMaterialiseDepsTransportsProjectNPMRC(t *testing.T) {
+	workdir := t.TempDir()
+	d := &Deps{
+		Manifest: `{"name":"proj","version":"1.0.0"}`,
+		NPMRC:    []byte("legacy-peer-deps=true\n"),
+	}
+	if _, err := materialiseDeps(workdir, KindNode, d, false, ""); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(workdir, ".npmrc"))
+	if err != nil {
+		t.Fatalf("project .npmrc was not transported: %v", err)
+	}
+	if string(b) != "legacy-peer-deps=true\n" {
+		t.Fatalf(".npmrc = %q", b)
+	}
+}
+
+// TestLinkDepsForFileRunCoversManifestScope is the Codex finding on
+// PR #2589 (runner/runner.go, f1fa5ed0c round): linking only beside
+// the entry script left modules above it (in the manifest's own
+// directory) unable to resolve the installed set. The link must
+// exist at the manifest directory too.
+func TestLinkDepsForFileRunCoversManifestScope(t *testing.T) {
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "node_modules", "foo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	scriptDir := filepath.Join(project, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkDepsForFileRun(scriptDir, project, work); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{scriptDir, project} {
+		got, err := os.Readlink(filepath.Join(dir, "node_modules"))
+		if err != nil || got != filepath.Join(work, "node_modules") {
+			t.Fatalf("link in %s = %q, %v", dir, got, err)
+		}
+	}
+}
+
 func TestInstallFrozenNPMInstallsOncePerSet(t *testing.T) {
 	dir := t.TempDir()
 	binDir := t.TempDir()

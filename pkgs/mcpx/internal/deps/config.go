@@ -331,10 +331,32 @@ func wildcardPrefix(rest string) (prefix []int, ok bool) {
 // from them the way npm desugars them (^1.2.x is >=1.2.0 <2.0.0,
 // ~1.2.x is >=1.2.0 <1.3.0, ^/~1.x is >=1.0.0 <2.0.0, and zero-major
 // carets keep their tighter bound: ^0.2.x is >=0.2.0 <0.3.0 and
-// ^0.0.x is >=0.0.0 <0.1.0). Any other operator over a wildcard is
-// not a shape npm gives meaning, so it satisfies nothing rather
-// than guessing.
+// ^0.0.x is >=0.0.0 <0.1.0). Relational operators desugar at the
+// written precision too (npm): >=1.x is >=1.0.0, <2.x is <2.0.0,
+// while >1.x is >=2.0.0 and <=1.2.x is <1.3.0 (the strict/upper
+// forms bump the last written component).
 func satisfiesWildcard(op string, prefix []int, v semver) bool {
+	if op == ">=" || op == "<" || op == ">" || op == "<=" {
+		low := semver{}
+		for i, n := range prefix {
+			low.nums[i] = n
+		}
+		switch op {
+		case ">=":
+			return compareSemver(v, low) >= 0
+		case "<":
+			return compareSemver(v, low) < 0
+		}
+		if len(prefix) == 0 {
+			return false
+		}
+		high := low
+		high.nums[len(prefix)-1]++
+		if op == ">" {
+			return compareSemver(v, high) >= 0
+		}
+		return compareSemver(v, high) < 0
+	}
 	matchesPrefix := func() bool {
 		for i, n := range prefix {
 			if v.nums[i] != n {

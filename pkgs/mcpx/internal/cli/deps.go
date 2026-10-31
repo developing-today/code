@@ -99,6 +99,11 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 		if err != nil {
 			return nil, err
 		}
+		npmrc, err := m.NPMRCText()
+		if err != nil {
+			return nil, err
+		}
+		out.NPMRC = npmrc
 		for i, l := range locks {
 			out.Lockfiles = append(out.Lockfiles,
 				execsvc.DepsLockfile{Name: l.Name, Content: l.Text})

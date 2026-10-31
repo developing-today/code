@@ -406,6 +406,56 @@ func TestZeroMajorCaretWildcardsKeepTheirTighterBound(t *testing.T) {
 	}
 }
 
+// TestRelationalWildcardsDesugarAtWrittenPrecision is the Codex finding
+// on PR #2589 (config.go, f1fa5ed0c round): satisfiesWildcard implemented
+// only bare, =, ^ and ~ operators, so a manifest range like ">=1.x" or
+// "<2.x" reported every explicit pin as a conflict. Relational wildcard
+// bounds desugar at their written precision: >=1.x is >=1.0.0, <2.x is
+// <2.0.0, >1.2.x is >=1.3.0 and <=1.x is <2.0.0.
+func TestRelationalWildcardsDesugarAtWrittenPrecision(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"foo":">=1.x","bar":"<2.x","baz":">1.2.x","qux":"<=1.x"}}`)
+	for _, spec := range []string{"foo@1.5.0", "foo@1.0.0", "bar@1.9.9", "baz@1.3.0", "baz@2.0.0", "qux@1.9.9"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the relational wildcard range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	for _, spec := range []string{"foo@0.9.9", "bar@2.0.0", "baz@1.2.9", "qux@2.0.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s is outside the relational wildcard range and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}
+
+// TestManifestNPMRCTextReadsBesideTheManifest covers the transport
+// added for the Codex finding on PR #2589 (runner/deps.go,
+// f1fa5ed0c round): the project's .npmrc must travel with the
+// manifest and lockfile, and its absence is a nil, not an error.
+func TestManifestNPMRCTextReadsBesideTheManifest(t *testing.T) {
+	dir := t.TempDir()
+	m := &deps.Manifest{Dir: dir, Path: filepath.Join(dir, "package.json")}
+	if b, err := m.NPMRCText(); err != nil || b != nil {
+		t.Fatalf("absent .npmrc = %q, %v; want nil, nil", b, err)
+	}
+	write(t, dir, ".npmrc", "legacy-peer-deps=true\n")
+	b, err := m.NPMRCText()
+	if err != nil || string(b) != "legacy-peer-deps=true\n" {
+		t.Fatalf("NPMRCText = %q, %v", b, err)
+	}
+}
+
 // TestAnExplicitlyNamedManifestThatIsMissingFails is the Codex finding on
 // PR #2589 (chain.go): discovery tolerates finding nothing, but a manifest
 // the caller named by path must not vanish silently.
