@@ -5,7 +5,7 @@
  */
 
 import type { Slice } from "prosemirror-model";
-import { EditorState } from "prosemirror-state";
+import { EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
@@ -496,5 +496,102 @@ describe("handlePaste batch ordering (#1323)", () => {
     await vi.waitFor(() => {
       expect(imageAlts(v)).toEqual(["one.png", "three.png"]);
     });
+  });
+});
+
+// ============================================================================
+// handlePaste shrink-during-upload (#1379)
+// ============================================================================
+
+describe("handlePaste shrink-during-upload (#1379)", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  if (!handlePaste) throw new Error("plugin must define a paste handler");
+
+  let view: EditorView | null = null;
+  let container: HTMLElement | null = null;
+  let resolveUpload: ((value: Response) => void) | null = null;
+  let warnSpy: ReturnType<typeof vi.spyOn> | null = null;
+
+  function createView(): EditorView {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [richSchema.text("a long paragraph that will shrink")]),
+    ]);
+    const state = EditorState.create({ schema: richSchema, doc, plugins: [plugin!] });
+    view = new EditorView(container, { state });
+    return view;
+  }
+
+  function imageAlts(v: EditorView): string[] {
+    const alts: string[] = [];
+    v.state.doc.descendants((node) => {
+      if (node.type.name === "image") alts.push(String(node.attrs.alt));
+      return true;
+    });
+    return alts;
+  }
+
+  beforeEach(() => {
+    resolveUpload = null;
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((res) => {
+          resolveUpload = res;
+        }),
+    );
+  });
+
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+    container?.remove();
+    container = null;
+    vi.restoreAllMocks();
+  });
+
+  it("inserts at a clamped in-range position when the doc shrank past the captured insert position and the placeholder is gone", async () => {
+    const v = createView();
+
+    // Paste at the end of the long paragraph: the captured insertPos sits
+    // near the end of the original document.
+    const endPos = v.state.doc.content.size - 1;
+    v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, endPos)));
+    const event = {
+      clipboardData: { files: [new File(["x"], "shrunk.png", { type: "image/png" })] },
+      preventDefault: vi.fn(),
+    };
+    const result = handlePaste!.call(
+      plugin,
+      v,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(true);
+    expect(resolveUpload).not.toBeNull();
+
+    // While the upload is in flight, the whole document is replaced by a
+    // one-character paragraph: the placeholder decoration is deleted with
+    // its range and the captured insertPos is now far out of range.
+    const tiny = richSchema.node("paragraph", null, [richSchema.text("x")]);
+    v.dispatch(v.state.tr.replaceWith(0, v.state.doc.content.size, tiny));
+    expect(v.state.doc.content.size).toBeLessThan(endPos);
+
+    resolveUpload!({
+      ok: true,
+      json: () => Promise.resolve({ hash: "shrunk", name: "shrunk.png", url: "/blob/shrunk.png" }),
+    } as Response);
+
+    // The image still lands, clamped into the shrunken document, and the
+    // successful upload is not mislogged as a failure of either kind.
+    await vi.waitFor(() => {
+      expect(imageAlts(v)).toEqual(["shrunk.png"]);
+    });
+    const warnings = (warnSpy!.mock.calls as unknown[][]).map((args) => String(args[0]));
+    expect(warnings.some((w) => w.includes("Upload failed"))).toBe(false);
+    expect(warnings.some((w) => w.includes("Insertion failed"))).toBe(false);
   });
 });

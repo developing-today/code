@@ -268,17 +268,30 @@ function handleImageUpload(
     removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
 
     if (outcome.ok) {
-      // Find where to insert (placeholder position may have shifted)
-      const decos = imageUploadKey.getState(view.state);
-      const found = decos?.find(undefined, undefined, (spec) => spec.id === id);
-      const pos = found && found.length > 0 ? found[0].from : insertPos;
+      // Insert the uploaded image. Insertion failures are logged as
+      // insertion failures — never as upload failures (the upload
+      // succeeded) and never as unhandled rejections (#1379).
+      try {
+        // Find where to insert (placeholder position may have shifted)
+        const decos = imageUploadKey.getState(view.state);
+        const found = decos?.find(undefined, undefined, (spec) => spec.id === id);
+        const wanted = found && found.length > 0 ? found[0].from : insertPos;
 
-      // Insert image node
-      const imageNode = view.state.schema.nodes.image.create({
-        src: outcome.result.url,
-        alt: outcome.result.name || fileName,
-      });
-      removeTr.insert(pos, imageNode);
+        // The document may have shrunk past the captured position while
+        // the upload was in flight (e.g. the placeholder was deleted and
+        // the text shortened); inserting there throws a RangeError and
+        // silently loses the image. Clamp into the current doc range.
+        const pos = Math.max(0, Math.min(wanted, view.state.doc.content.size));
+
+        // Insert image node
+        const imageNode = view.state.schema.nodes.image.create({
+          src: outcome.result.url,
+          alt: outcome.result.name || fileName,
+        });
+        removeTr.insert(pos, imageNode);
+      } catch (err: unknown) {
+        console.warn(`[image-upload] Insertion failed for ${fileName}:`, err);
+      }
     }
     view.dispatch(removeTr);
   })();
