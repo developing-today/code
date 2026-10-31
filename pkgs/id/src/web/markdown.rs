@@ -376,7 +376,13 @@ impl HtmlBlockTracker {
     /// Feed one line (already stripped of up to three leading
     /// spaces). Returns true when the line belongs to an HTML block
     /// (its opening line, interior, or closing line).
-    fn feed(&mut self, stripped: &str) -> bool {
+    /// `may_open_type7` is the caller's paragraph context: a type-7
+    /// block (a lone complete inline tag) cannot interrupt a
+    /// paragraph, so when the previous line is paragraph content
+    /// the caller passes false and a type-7 opening is refused
+    /// (Codex P2 on #1565's eighteenth cut). Types 1-6 can
+    /// interrupt a paragraph and are always eligible.
+    fn feed(&mut self, stripped: &str, may_open_type7: bool) -> bool {
         if let Some(end) = self.end {
             match end {
                 HtmlBlockEnd::Marker(marker) => {
@@ -466,6 +472,9 @@ impl HtmlBlockTracker {
         }
         let trimmed = stripped.trim_end();
         if is_complete_html_tag(trimmed) {
+            if !may_open_type7 {
+                return false;
+            }
             self.end = Some(HtmlBlockEnd::BlankLine);
             return true;
         }
@@ -740,6 +749,16 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
     let mut fence_prefix = String::new();
     let mut html_prefix = String::new();
     let mut html = HtmlBlockTracker::default();
+    // Block-start eligibility, mirroring
+    // collect_link_reference_definitions: a type-7 HTML opening
+    // cannot interrupt a paragraph, so the tracker may only open
+    // one where a block can start (Codex P2 on #1565's eighteenth
+    // cut: `Body` / `<em>` / `# Heading` / `[^real]: note` -- the
+    // tracker opened at `<em>` and swallowed the heading and the
+    // definition as HTML interior). Blank lines, block starts,
+    // fences, HTML blocks and definitions leave the next line
+    // eligible; paragraph text does not.
+    let mut at_block_start = true;
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -796,7 +815,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line) || html.feed(container_stripped))
+            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
@@ -808,6 +827,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             if !html.in_html() {
                 html_prefix.clear();
             }
+            at_block_start = true;
             i += 1;
             continue;
         }
@@ -861,10 +881,20 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             continue;
         }
         if fence.in_fence() || html.in_html() || indent > 3 {
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        if stripped.trim().is_empty() {
+            at_block_start = true;
             i += 1;
             continue;
         }
         let Some(label) = footnote_definition_label(stripped) else {
+            // A plain line is paragraph text (next line not
+            // block-eligible) unless it starts a block itself (a
+            // heading, a list item, a thematic break, ...).
+            at_block_start = starts_new_block(stripped);
             i += 1;
             continue;
         };
@@ -911,6 +941,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             source: source_lines.join("\n"),
             line: i,
         });
+        at_block_start = true;
         i = j;
     }
     blocks
@@ -1087,7 +1118,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                 html.reset();
                 html_prefix.clear();
             }
-            html.feed(stripped);
+            html.feed(stripped, true);
             in_footnote_block = false;
             at_block_start = true;
             i += 1;
@@ -1139,7 +1170,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         let was_in_html = html.in_html();
         if !fence.in_fence()
             && (indent <= 3 || html.in_html())
-            && (html.feed(html_line) || html.feed(container_stripped))
+            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
         {
             if !was_in_html && html.in_html() {
                 // Opened on this line (via the container-stripped
@@ -5235,6 +5266,24 @@ mod tests {
             "inline HTML continuation survives save: {first:?}"
         );
         assert_eq!(first, second, "inline HTML round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_type7_html_after_paragraph_does_not_swallow_footnote() {
+        // #1565 eighteenth cut (Codex P2): a lone inline tag cannot
+        // interrupt a paragraph (CommonMark type 7), so in
+        // `Body` / `<em>` / `# Heading` / `[^real]: note` the tag is
+        // paragraph text, the heading still starts a block, and the
+        // unreferenced definition after it is live -- the source
+        // pre-scan must recover it, not swallow it as the interior
+        // of an HTML block opened at the tag.
+        let original = "Body\n<em>\n# Heading\n[^real]: note\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after type-7 continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "type-7 paragraph round-trip is a fixpoint");
     }
 
     #[test]
