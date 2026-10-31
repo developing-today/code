@@ -227,7 +227,11 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 		allOf = existing
 	}
 	for i, r := range matching {
-		member, scoped := scopedSchemaMember(r.Schema, fmt.Sprintf("argumentrule%d", i))
+		taken := make(map[string]bool, len(defs))
+		for name := range defs {
+			taken[name] = true
+		}
+		member, scoped := scopedSchemaMemberTaken(r.Schema, fmt.Sprintf("argumentrule%d", i), taken)
 		for name, def := range scoped {
 			defs[name] = def
 		}
@@ -253,6 +257,18 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 // the copy; a document with no local references needs no copy and is
 // returned as itself with no defs.
 func scopedSchemaMember(raw json.RawMessage, prefix string) (member any, defs map[string]any) {
+	return scopedSchemaMemberTaken(raw, prefix, nil)
+}
+
+// scopedSchemaMemberTaken is scopedSchemaMember with a set of $defs
+// names the host document already uses. The scoped copy must never
+// take one of those names: overwriting an upstream definition would
+// silently retarget the upstream schema's own references to the rule
+// document, changing (and potentially loosening) constraints the
+// upstream schema already carried. When the generated name is taken,
+// allocate the next free suffixed name and rewrite references to it
+// consistently.
+func scopedSchemaMemberTaken(raw json.RawMessage, prefix string, taken map[string]bool) (member any, defs map[string]any) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var doc any
@@ -263,6 +279,9 @@ func scopedSchemaMember(raw json.RawMessage, prefix string) (member any, defs ma
 		return doc, nil
 	}
 	name := prefix + "$doc"
+	for n := 2; taken[name]; n++ {
+		name = fmt.Sprintf("%s$doc$%d", prefix, n)
+	}
 	scoped := rewriteLocalRefs(doc, "#/$defs/"+name)
 	return map[string]any{"$ref": "#/$defs/" + name}, map[string]any{name: scoped}
 }

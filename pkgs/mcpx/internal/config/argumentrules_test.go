@@ -480,3 +480,53 @@ func TestServerArgumentRulesSurviveLayeredMerge(t *testing.T) {
 		t.Error("inherited server rule does not bite after the layered merge")
 	}
 }
+
+// A rule's scoped copy must never overwrite an upstream $defs entry
+// that happens to carry the generated name: upstream references to
+// that entry would silently resolve to the rule document instead of
+// their original target (Codex P2 on PR #2855, round 5).
+func TestEffectiveSchemaDoesNotOverwriteUpstreamDefs(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "create_repository", Origin: "test", Schema: json.RawMessage(`{
+			"$defs": {"s": {"type": "string", "pattern": "^ok-"}},
+			"properties": {"name": {"$ref": "#/$defs/s"}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type": "object",
+		"$defs": {"argumentrule0$doc": {"type": "string"}},
+		"properties": {
+			"path": {"$ref": "#/$defs/argumentrule0$doc"},
+			"name": {"type": "string"}}}`)
+	eff := set.EffectiveSchema("create_repository", upstream)
+	var root map[string]any
+	if err := json.Unmarshal(eff, &root); err != nil {
+		t.Fatalf("effective schema does not parse: %v", err)
+	}
+	defs, _ := root["$defs"].(map[string]any)
+	up, _ := defs["argumentrule0$doc"].(map[string]any)
+	if up["type"] != "string" || len(up) != 1 {
+		t.Fatalf("upstream $defs entry overwritten by rule composition: %s", eff)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("rule copy missing from $defs: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for inst, wantErr := range map[string]bool{
+		`{"path": "p", "name": "ok-1"}`:      false,
+		`{"path": {"x": 1}, "name": "ok-1"}`: true,
+		`{"path": "p", "name": "nope"}`:      true,
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != wantErr {
+			t.Errorf("validate %s: error = %v, want %v (schema %s)", inst, gotErr, wantErr, eff)
+		}
+	}
+}
