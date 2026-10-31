@@ -166,6 +166,11 @@ type Client struct {
 	// gated on mirrorsHeaders -- the gate must work whether or not
 	// header mirroring is on, and over every transport.
 	toolHints map[string]toolHint
+	// toolExec is each tool's execution.taskSupport declaration, learned
+	// from the same tools/list snapshot as toolHints, for CallTool's
+	// taskSupport "required" handling (tasks.go). A nil map means this
+	// client has never listed, and its calls take the plain path.
+	toolExec map[string]string
 	// invalidTools are tools excluded for invalid annotations, with why.
 	invalidTools map[string]string
 	// listen is the subscriptions/listen stream of a modern connection.
@@ -1089,15 +1094,19 @@ func (c *Client) callReissue(ctx context.Context, method string, params json.Raw
 		}
 		var ir inputRequired
 		_ = json.Unmarshal(raw, &ir)
-		switch ir.ResultType {
-		case "", "complete":
+		switch {
+		case ir.ResultType == "" || ir.ResultType == "complete" ||
+			(ir.ResultType == "task" && method == "tools/call"):
+			// "task" is a tools/call answer in the 2026-07-28 tasks
+			// extension: a handle, returned raw so CallTool can poll
+			// it (tasks.go). For every other method it stays invalid.
 			// Absent means complete: an earlier revision's result, or a
 			// server that left it out.
 			if out == nil {
 				return nil
 			}
 			return json.Unmarshal(raw, out)
-		case "input_required":
+		case ir.ResultType == "input_required":
 		default:
 			// "A resultType of any value unrecognized by the client MUST
 			// be considered invalid." Treating it as complete would hand a
@@ -1358,11 +1367,14 @@ func (c *Client) ListToolsWithHints(ctx context.Context) ([]Tool, CacheHints, er
 // every transport, since the gate is not a header-mirroring concern.
 func (c *Client) recordToolHints(tools []Tool) {
 	hints := make(map[string]toolHint, len(tools))
+	execs := make(map[string]string, len(tools))
 	for _, t := range tools {
 		hints[t.Name] = parseToolHint(t.Annotations)
+		execs[t.Name] = parseTaskSupport(t.Execution)
 	}
 	c.mu.Lock()
 	c.toolHints = hints
+	c.toolExec = execs
 	c.mu.Unlock()
 }
 
@@ -1535,6 +1547,15 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	if err := c.validateToolArgs(ctx, name, argsJSON); err != nil {
 		return nil, err
 	}
+	// A tool that declared taskSupport "required" cannot be called the
+	// plain way (tasks.go): legacy is task-augmented from the start;
+	// modern is server-directed, so the plain call below runs and a
+	// task answer is polled to its terminal result before returning.
+	support := c.resolveTaskSupport(name)
+	if support == taskSupportRequired && c.Era == EraLegacy {
+		return c.callToolAsLegacyTask(ctx, name, args)
+	}
+	taskRequired := support == taskSupportRequired && c.Era == EraModern
 	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return nil, err
@@ -1589,6 +1610,12 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		}
 		if err != nil {
 			return nil, err
+		}
+		if taskRequired && isTaskResult(raw) {
+			raw, err = c.finishModernTask(ctx, name, raw)
+			if err != nil {
+				return nil, err
+			}
 		}
 		c.checkToolOutput(ctx, name, raw)
 		return raw, nil
