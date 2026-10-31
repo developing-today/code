@@ -143,22 +143,50 @@ func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 // whole — splitDefault counted brackets with no string state, so the
 // default was truncated at the first bracket inside a string, the
 // remainder polluted the description, and FormSchema silently dropped
-// the (now invalid) default.
+// the (now invalid) default. The table covers the permutations: closing
+// brackets, opening brackets (which inflated depth the other way,
+// swallowing the description), escaped quotes (which kill a naive
+// string-skip without escape handling), and escaped backslashes.
 func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
-	src := "// Demo recipe.\n" +
-		"// @param cfg:json = {\"note\": \"a}b\"} the config\n" +
-		"// @param list:json = [\"a]b\", \"c\"] the list\n" +
-		"\nconst x = await demo.run({ cfg: @cfg, list: @list });\n"
-	r := recipes.Parse("demo", "/tmp/demo.ts", src)
+	cases := []struct {
+		name, def, desc string
+	}{
+		{"cfg", `{"note": "a}b"}`, "the config"},
+		{"list", `["a]b", "c"]`, "the list"},
+		{"nested", `[{"k": "v]"}]`, "the items"},
+		{"esc", `{"note": "a\"}b"}`, "escaped quote"},
+		{"open", `{"q": "a{b[c"}`, "openers in string"},
+		{"bslash", `{"p": "a\\b}c"}`, "escaped backslash"},
+	}
+	var src strings.Builder
+	src.WriteString("// Demo recipe.\n")
+	for _, c := range cases {
+		src.WriteString("// @param " + c.name + ":json = " + c.def + " " + c.desc + "\n")
+	}
+	src.WriteString("\nconst x = await demo.run({ cfg: @cfg });\n")
+	r := recipes.Parse("demo", "/tmp/demo.ts", src.String())
 	byName := map[string]recipes.Placeholder{}
 	for _, ph := range r.Placeholders {
 		byName[ph.Name] = ph
 	}
-	if ph := byName["cfg"]; ph.Default == nil || *ph.Default != `{"note": "a}b"}` || ph.Description != "the config" {
-		t.Errorf("cfg = %+v", ph)
-	}
-	if ph := byName["list"]; ph.Default == nil || *ph.Default != `["a]b", "c"]` || ph.Description != "the list" {
-		t.Errorf("list = %+v", ph)
+	for _, c := range cases {
+		ph, ok := byName[c.name]
+		if !ok {
+			t.Errorf("%s: placeholder missing", c.name)
+			continue
+		}
+		if ph.Default == nil || *ph.Default != c.def {
+			t.Errorf("%s: default = %v, want %s", c.name, ph.Default, c.def)
+		}
+		if ph.Description != c.desc {
+			t.Errorf("%s: description = %q, want %q", c.name, ph.Description, c.desc)
+		}
+		if ph.Default != nil {
+			var v any
+			if err := json.Unmarshal([]byte(*ph.Default), &v); err != nil {
+				t.Errorf("%s: default is not valid JSON: %v", c.name, err)
+			}
+		}
 	}
 	// The defaults must also reach the form schema: a headless caller
 	// that never answers is run on them.
@@ -168,10 +196,9 @@ func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
 	if err := json.Unmarshal(recipes.FormSchema(r.Placeholders), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := doc.Properties["cfg"]["default"]; !ok {
-		t.Errorf("cfg default missing from form schema: %v", doc.Properties["cfg"])
-	}
-	if _, ok := doc.Properties["list"]["default"]; !ok {
-		t.Errorf("list default missing from form schema: %v", doc.Properties["list"])
+	for _, c := range cases {
+		if _, ok := doc.Properties[c.name]["default"]; !ok {
+			t.Errorf("%s default missing from form schema: %v", c.name, doc.Properties[c.name])
+		}
 	}
 }
