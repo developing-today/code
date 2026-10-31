@@ -137,3 +137,41 @@ func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 		t.Fatalf("the @tool marker is metadata, not an input: placeholders = %+v", r.Placeholders)
 	}
 }
+
+// TestJSONDefaultsWithBracketsInsideStrings pins #1671: a JSON default
+// whose string values contain bracket characters must survive Parse
+// whole — splitDefault counted brackets with no string state, so the
+// default was truncated at the first bracket inside a string, the
+// remainder polluted the description, and FormSchema silently dropped
+// the (now invalid) default.
+func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
+	src := "// Demo recipe.\n" +
+		"// @param cfg:json = {\"note\": \"a}b\"} the config\n" +
+		"// @param list:json = [\"a]b\", \"c\"] the list\n" +
+		"\nconst x = await demo.run({ cfg: @cfg, list: @list });\n"
+	r := recipes.Parse("demo", "/tmp/demo.ts", src)
+	byName := map[string]recipes.Placeholder{}
+	for _, ph := range r.Placeholders {
+		byName[ph.Name] = ph
+	}
+	if ph := byName["cfg"]; ph.Default == nil || *ph.Default != `{"note": "a}b"}` || ph.Description != "the config" {
+		t.Errorf("cfg = %+v", ph)
+	}
+	if ph := byName["list"]; ph.Default == nil || *ph.Default != `["a]b", "c"]` || ph.Description != "the list" {
+		t.Errorf("list = %+v", ph)
+	}
+	// The defaults must also reach the form schema: a headless caller
+	// that never answers is run on them.
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(recipes.FormSchema(r.Placeholders), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Properties["cfg"]["default"]; !ok {
+		t.Errorf("cfg default missing from form schema: %v", doc.Properties["cfg"])
+	}
+	if _, ok := doc.Properties["list"]["default"]; !ok {
+		t.Errorf("list default missing from form schema: %v", doc.Properties["list"])
+	}
+}
