@@ -54,6 +54,43 @@ func TestTruncateStdoutZeroLimitDisables(t *testing.T) {
 	}
 }
 
+func TestTruncateStdoutSmallLimitHardBound(t *testing.T) {
+	// A positive limit smaller than the marker itself is still a
+	// hard bound (Codex P2 on PR 2979: limit 1 or 64 returned the
+	// full 108-byte marker).
+	full := strings.Repeat("a", 1000)
+	for _, limit := range []int64{1, 10, 64, 100} {
+		out, truncated := truncateStdout(full, limit)
+		if !truncated {
+			t.Fatalf("limit %d: expected truncated=true", limit)
+		}
+		if int64(len(out)) > limit {
+			t.Fatalf("limit %d: capped output is %d bytes, over the cap", limit, len(out))
+		}
+	}
+}
+
+func TestTruncateStdoutInvalidByteInPrefix(t *testing.T) {
+	// An invalid UTF-8 byte inside the retained prefix must not drag
+	// the cut back to before it (Codex P2 on PR 2979: the old code
+	// validated the whole shrinking prefix per dropped byte --
+	// quadratic -- and silently dropped everything after the byte).
+	in := strings.Repeat("a", 500) + "\xff" + strings.Repeat("b", 500)
+	out, truncated := truncateStdout(in, 800)
+	if !truncated {
+		t.Fatal("expected truncated=true")
+	}
+	if len(out) > 800 {
+		t.Fatalf("capped output is %d bytes, over the 800-byte cap", len(out))
+	}
+	if !strings.Contains(out, "stdout truncated") {
+		t.Fatal("no marker in capped output")
+	}
+	if !strings.Contains(out, strings.Repeat("b", 50)) {
+		t.Fatal("content after the invalid byte was dropped")
+	}
+}
+
 func TestTruncateStdoutUTF8Boundary(t *testing.T) {
 	in := strings.Repeat("é", 500) // 2 bytes each, 1000 bytes total
 	out, truncated := truncateStdout(in, 201)
