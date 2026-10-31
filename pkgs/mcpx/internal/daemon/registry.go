@@ -247,6 +247,9 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 	}
 	sort.Strings(r.order)
 	r.loadCache()
+	if err := r.validateViews(); err != nil {
+		return nil, err
+	}
 	r.warnDeadArgumentRules()
 	return r, nil
 }
@@ -377,6 +380,9 @@ func (r *Registry) View(name string) (*config.Resolved, bool) {
 
 // visibleTools applies a view's allow and deny lists to the shared cache.
 func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
+	if view != nil && len(view.ToolViews) > 0 {
+		return viewTools(view, all)
+	}
 	if view == nil || (view.Tools.Empty() && view.ExcludeTools.Empty()) {
 		return all
 	}
@@ -387,6 +393,380 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 		}
 	}
 	return out
+}
+
+// viewTools materialises a view's declared tool views (#1933 slice 1):
+// exactly the named target tools, under their view names, with any
+// description override and the pinned properties hidden from the
+// exposed inputSchema. Sorted by view name: tools/list order is
+// deterministic or prompt caches miss.
+// ruleToolName returns the identity argument rules (#1986) know a
+// listed tool by. A declared tool view (#1933) is advertised under its
+// alias, but rules are written against -- and enforced on -- the
+// target's real name: resolveAndGuard maps the alias to its From
+// before applyWritePolicy evaluates them. Schema generation must look
+// rules up by that same real name, or a rule keyed by the target would
+// be enforced without being advertised, and one keyed by an alias
+// advertised without ever being enforced.
+func ruleToolName(view *config.Resolved, name string) string {
+	if view != nil {
+		if tv, ok := view.ToolViews[name]; ok {
+			return tv.From
+		}
+	}
+	return name
+}
+
+// effectiveViewSchema is the inputSchema a surface should advertise
+// for a listed tool: the argument rules for the tool's real name
+// (ruleToolName), projected for the view when the tool is reached
+// through a declared tool view — the view's pins satisfy rule
+// requirements on pinned properties, so those requirements are not
+// advertised to a caller who cannot set them (#1933, Codex P2 on
+// PR #2976).
+func effectiveViewSchema(view *config.Resolved, name string, schema json.RawMessage) json.RawMessage {
+	if view == nil {
+		return schema
+	}
+	if tv, ok := view.ToolViews[name]; ok && len(tv.Pin) > 0 {
+		return view.ArgumentRules.EffectiveSchemaPinned(ruleToolName(view, name), schema, tv.Pin)
+	}
+	return view.ArgumentRules.EffectiveSchema(ruleToolName(view, name), schema)
+}
+
+func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
+	byName := make(map[string]mcpclient.Tool, len(all))
+	for _, t := range all {
+		byName[t.Name] = t
+	}
+	names := make([]string, 0, len(view.ToolViews))
+	for name := range view.ToolViews {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]mcpclient.Tool, 0, len(names))
+	for _, name := range names {
+		if !view.VisibleTool(name) {
+			continue
+		}
+		tv := view.ToolViews[name]
+		t, ok := byName[tv.From]
+		if !ok {
+			continue // load-time validation names this; listing must not invent it
+		}
+		t.Name = name
+		if tv.Description != "" {
+			t.Description = tv.Description
+		}
+		if len(tv.Hide) > 0 {
+			t.InputSchema = hideSchemaProps(t.InputSchema, tv.Hide)
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// hideSchemaProps returns the inputSchema with the named properties
+// removed from its properties and required lists. A schema that does
+// not parse is returned unchanged: hiding is presentation, and a
+// malformed schema is the server's own problem, already visible.
+func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
+	if len(schema) == 0 {
+		return schema
+	}
+	var m map[string]any
+	// UseNumber: decoding into float64 would silently rewrite large
+	// integers elsewhere in the schema (an enum bound of
+	// 9007199254740993 would come back 9007199254740992) when the
+	// hidden-property edit re-marshals it.
+	dec := json.NewDecoder(strings.NewReader(string(schema)))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		return schema
+	}
+	projector := schemaProjector{root: m, hide: hide, refs: map[string]string{}}
+	projector.hidePropsAtScope(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return schema
+	}
+	return out
+}
+
+// hidePropsAtScope removes the hidden properties from one schema
+// object's properties and required lists, and recurses into its
+// allOf members and the targets of its local references, which
+// constrain the same instance: a member's or referenced schema's
+// requirement on a hidden property would otherwise survive the root
+// projection, and against additionalProperties:false with the
+// property's declaration deleted it advertises a schema no caller
+// can satisfy, even though calls succeed because pins merge before
+// forwarding (Codex P2 on PR #2976). Same-instance references point to
+// projected copies; their original targets may also constrain nested instances.
+// Disjunctive applicators (anyOf/oneOf) are not projected: a branch
+// requiring the hidden property stays satisfiable through the merged
+// pin at call time, and weakening a branch would misstate the choice
+// the schema offers.
+type schemaProjector struct {
+	root map[string]any
+	hide []string
+	refs map[string]string
+}
+
+func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
+	if props, ok := m["properties"].(map[string]any); ok {
+		for _, h := range p.hide {
+			delete(props, h)
+		}
+	}
+	if req, ok := m["required"].([]any); ok {
+		kept := req[:0]
+		for _, r := range req {
+			name, _ := r.(string)
+			hidden := false
+			for _, h := range p.hide {
+				if name == h {
+					hidden = true
+					break
+				}
+			}
+			if !hidden {
+				kept = append(kept, r)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m, "required")
+		} else {
+			m["required"] = kept
+		}
+	}
+	if subs, ok := m["allOf"].([]any); ok {
+		for _, sub := range subs {
+			if sm, ok := sub.(map[string]any); ok {
+				p.hidePropsAtScope(sm)
+			}
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+		if projected, ok := p.refs[ref]; ok {
+			m["$ref"] = projected
+			return
+		}
+		if target, ok := resolveSchemaPointer(p.root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				defs, ok := p.root["$defs"].(map[string]any)
+				if !ok && p.root["$defs"] != nil {
+					return
+				}
+				if !ok {
+					defs = map[string]any{}
+					p.root["$defs"] = defs
+				}
+				name := "_mcpx_projection"
+				for i := 1; ; i++ {
+					if _, exists := defs[name]; !exists {
+						break
+					}
+					name = fmt.Sprintf("_mcpx_projection_%d", i)
+				}
+				projected := "#/$defs/" + name
+				p.refs[ref] = projected // register before recursion, including cycles
+				copy := cloneSchemaValue(tm).(map[string]any)
+				defs[name] = copy
+				m["$ref"] = projected
+				p.hidePropsAtScope(copy)
+			}
+		}
+	}
+}
+
+func cloneSchemaValue(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, value := range v {
+			out[k] = cloneSchemaValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, value := range v {
+			out[i] = cloneSchemaValue(value)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// schemaProps is the property name set of a tool's inputSchema.
+// Declarations are collected through same-instance composition
+// (allOf/anyOf/oneOf, if/then/else) and local references before a
+// name counts as undeclared: a target that declares an argument
+// inside allOf accepts that argument exactly as if it were declared
+// at the root, and generated clients already support such schemas --
+// treating the pin as unknown would reject a valid view at load
+// (Codex P2 on PR #2976).
+func schemaProps(schema json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	var m map[string]any
+	if err := json.Unmarshal(schema, &m); err != nil {
+		return out
+	}
+	collectSchemaProps(m, m, out, map[string]bool{})
+	return out
+}
+
+func collectSchemaProps(m, root map[string]any, out map[string]bool, resolving map[string]bool) {
+	if props, ok := m["properties"].(map[string]any); ok {
+		for name := range props {
+			out[name] = true
+		}
+	}
+	for _, k := range []string{"allOf", "anyOf", "oneOf"} {
+		if subs, ok := m[k].([]any); ok {
+			for _, sub := range subs {
+				if sm, ok := sub.(map[string]any); ok {
+					collectSchemaProps(sm, root, out, resolving)
+				}
+			}
+		}
+	}
+	for _, k := range []string{"if", "then", "else"} {
+		if sub, ok := m[k].(map[string]any); ok {
+			collectSchemaProps(sub, root, out, resolving)
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveSchemaPointer(root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				resolving[ref] = true
+				collectSchemaProps(tm, root, out, resolving)
+				delete(resolving, ref)
+			}
+		}
+	}
+}
+
+// resolveSchemaPointer resolves a local JSON Pointer reference ("#"
+// or "#/a/b") against the document root.
+func resolveSchemaPointer(root map[string]any, ref string) (any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// validateViews checks declared tool views against the target tools
+// the cache knows (#1933 slice 1): an unknown from target, or a pin
+// of an argument the target's schema does not declare, is a load
+// error naming the view -- never a silent no-op. A server whose
+// schemas are not cached yet cannot be checked and is skipped; the
+// listing path invents nothing for a missing target either way. An
+// expired cache is skipped for the same reason: its contents are
+// stale, so treating them as authoritative would let an old
+// catalogue veto a reload that uses a tool or argument the upstream
+// added after the cache was fetched, until an operator refreshed
+// the server by hand (Codex P2 on PR #2976). Validation defers
+// until the catalogue is refreshed.
+func validateViews(order []string, views map[string]*config.Resolved, pools map[string]*pool.Pool) error {
+	for _, name := range order {
+		view := views[name]
+		if len(view.ToolViews) == 0 {
+			continue
+		}
+		p, ok := pools[name]
+		if !ok || p == nil {
+			continue
+		}
+		all, _, _ := p.CachedSchemas()
+		if len(all) == 0 || p.SchemaExpired() {
+			continue
+		}
+		byName := make(map[string]mcpclient.Tool, len(all))
+		for _, t := range all {
+			byName[t.Name] = t
+		}
+		viewNames := make([]string, 0, len(view.ToolViews))
+		for vn := range view.ToolViews {
+			viewNames = append(viewNames, vn)
+		}
+		sort.Strings(viewNames)
+		for _, vn := range viewNames {
+			tv := view.ToolViews[vn]
+			t, ok := byName[tv.From]
+			if !ok {
+				return fmt.Errorf("server %q: toolView %q: unknown target tool %q", name, vn, tv.From)
+			}
+			props := schemaProps(t.InputSchema)
+			pins := make([]string, 0, len(tv.Pin))
+			for k := range tv.Pin {
+				pins = append(pins, k)
+			}
+			sort.Strings(pins)
+			for _, k := range pins {
+				if !props[k] {
+					return fmt.Errorf("server %q: toolView %q: pin %q is not an argument of %q", name, vn, k, tv.From)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Registry) validateViews() error {
+	return validateViews(r.order, r.views, r.pools)
+}
+
+// mergePinnedArgs returns the call arguments with a view's pinned
+// values merged over them (#1933 slice 1): a pinned argument wins
+// over whatever the caller supplied, because pinning is the view
+// author's decision, not a default. Args that are not a JSON object
+// cannot carry named arguments and pass through unless there is
+// nothing to pin.
+func mergePinnedArgs(args any, pin map[string]any) any {
+	if len(pin) == 0 {
+		return args
+	}
+	merged := map[string]any{}
+	switch a := args.(type) {
+	case nil:
+	case map[string]any:
+		for k, v := range a {
+			merged[k] = v
+		}
+	case json.RawMessage:
+		if len(a) > 0 {
+			_ = json.Unmarshal(a, &merged)
+		}
+	default:
+		b, err := json.Marshal(a)
+		if err != nil {
+			return args
+		}
+		if err := json.Unmarshal(b, &merged); err != nil {
+			return args
+		}
+	}
+	for k, v := range pin {
+		merged[k] = v
+	}
+	return merged
 }
 
 // Pool looks a server up by name or namespace.
@@ -661,7 +1041,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -1074,7 +1454,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}
@@ -1186,12 +1566,12 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
+	key, effTool, effArgs, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(ctx, key, tool, args)
+	res, err := p.Call(ctx, key, effTool, effArgs)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -1202,38 +1582,47 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, error) {
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, string, any, error) {
+	// A call through a declared tool view (#1933 slice 1) names the
+	// view; everything past this point -- policies, the destructive
+	// floor, the pool, history -- works with the target's real name
+	// and the effective arguments, pins merged over the caller's.
+	effTool, effArgs := tool, args
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
 		// Before the child is touched: a server waiting for a secret is not
 		// started just to fail.
 		if err := r.refuseBlocked(server); err != nil {
-			return "", err
+			return "", "", nil, err
 		}
 		if !view.VisibleTool(tool) {
 			if ok, reason := view.PassesPreconditions(tool, func(s string) bool { _, exists := r.Pool(s); return exists }); !ok {
-				return "", fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
+				return "", "", nil, fmt.Errorf("tool %q failed preconditions: %s", tool, reason)
 			}
-			return "", HiddenTool{Server: server, Tool: tool}
+			return "", "", nil, HiddenTool{Server: server, Tool: tool}
+		}
+		if tv, isView := view.ToolViews[tool]; isView {
+			effTool = tv.From
+			effArgs = mergePinnedArgs(args, tv.Pin)
 		}
 	}
 	key := r.keyFor(p, cc)
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	key = r.disambiguate(ctx, p, cc, key)
-	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
+	asked, err := r.applyWritePolicy(ctx, p, server, effTool, cc, effArgs)
 	if err != nil {
-		return "", err
+		return "", "", nil, err
 	}
 	if !asked {
 		// Not asked by the write policy: the destructive floor still
 		// gets its say. Under ask the policy already asked once, and
 		// asking twice about one call would be noise, not consent.
-		if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
-			return "", err
+		if err := r.confirmDestructive(ctx, p, effTool, cc); err != nil {
+			return "", "", nil, err
 		}
 	}
-	return key, nil
+	return key, effTool, effArgs, nil
 }
 
 // ReadResource dispatches a resource read.

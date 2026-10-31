@@ -194,6 +194,24 @@ func (s *ArgumentRuleSet) Check(tool string, args any) *ArgumentRuleViolation {
 // scopedSchemaMember), so a rule's local references keep their own
 // scope no matter what the root already defines.
 func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage) json.RawMessage {
+	return s.effectiveSchema(tool, upstream, nil)
+}
+
+// EffectiveSchemaPinned is EffectiveSchema for a tool reached through
+// a declared tool view (#1933): the view's pinned arguments are
+// merged over the caller's before rules are enforced, so a rule
+// requirement on a pinned property is satisfied by the pin itself.
+// Projecting the rule verbatim would advertise a requirement the
+// caller cannot meet for a property the view pins (and usually
+// hides): against an upstream additionalProperties:false, that is a
+// schema no caller can satisfy. Pinned names are therefore dropped
+// from the rules' required and dependentRequired lists in the
+// advertised projection only; enforcement is unchanged.
+func (s *ArgumentRuleSet) EffectiveSchemaPinned(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
+	return s.effectiveSchema(tool, upstream, pinned)
+}
+
+func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
 	matching := s.Matching(tool)
 	if len(matching) == 0 {
 		return upstream
@@ -231,7 +249,11 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 		for name := range defs {
 			taken[name] = true
 		}
-		member, scoped := scopedSchemaMemberTaken(r.Schema, fmt.Sprintf("argumentrule%d", i), taken)
+		schema := r.Schema
+		if len(pinned) > 0 {
+			schema = projectPinnedRule(schema, pinned)
+		}
+		member, scoped := scopedSchemaMemberTaken(schema, fmt.Sprintf("argumentrule%d", i), taken)
 		for name, def := range scoped {
 			defs[name] = def
 		}
@@ -782,4 +804,907 @@ func compactJSON(raw json.RawMessage) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+// projectPinnedRule returns the rule schema as the pinned view
+// advertises it. At the rule's own instance scope, a pinned property
+// is removed from required lists (the pin itself satisfies it: pins
+// merge before enforcement) and a dependentRequired entry triggered
+// by a pinned property is promoted -- the pin always inserts the
+// trigger before the rule is enforced, so the trigger's remaining
+// dependencies are unconditional requirements of the caller, and the
+// advertised schema must say so or it understates what enforcement
+// demands. The same promotion applies to dependentSchemas entries
+// and, under a draft-07 dialect, to both forms of their predecessor
+// keyword dependencies. The projection follows same-instance
+// applicators (allOf, anyOf, oneOf, not, if/then/else,
+// dependentSchemas) but never
+// crosses into a nested instance scope (properties, items, $defs,
+// ...): a property there that shares a pinned name is a different
+// property, which the top-level pin does not satisfy (Codex P2s on
+// PR #2976). A schema that does not decode is returned unchanged:
+// the projection is presentation, and a malformed rule keeps its
+// verbatim meaning rather than a guessed one.
+func projectPinnedRule(raw json.RawMessage, pinned map[string]any) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(stripPinnedRequirements(doc, pinned))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// stripPinnedRequirements projects one schema at its own instance
+// scope; see projectPinnedRule for the contract.
+func stripPinnedRequirements(v any, pinned map[string]any) any {
+	root, _ := v.(map[string]any)
+	set := make(map[string]bool, len(pinned))
+	for name := range pinned {
+		set[name] = true
+	}
+	return stripPinnedScope(v, set, pinned, root, map[string]bool{})
+}
+
+// conjoinRefProjection combines the projections of a $ref target and
+// its sibling schema as conjuncts under allOf. $defs is inert without
+// a reference and other schemas may still point into it by
+// document-absolute pointer, so it stays at the level where the
+// reference sat rather than inside the conjunction. With no sibling
+// constraints left, the target alone is the projection.
+func conjoinRefProjection(target, siblings any) any {
+	sm, ok := siblings.(map[string]any)
+	if !ok {
+		return target
+	}
+	defs, hasDefs := sm["$defs"]
+	delete(sm, "$defs")
+	tm, tok := target.(map[string]any)
+	if len(sm) == 0 {
+		if hasDefs && tok {
+			if _, clash := tm["$defs"]; !clash {
+				tm["$defs"] = defs
+			}
+		}
+		return target
+	}
+	out := map[string]any{"allOf": []any{target, sm}}
+	if hasDefs {
+		out["$defs"] = defs
+	}
+	return out
+}
+
+// stripPinnedScope is stripPinnedRequirements with the rule document's
+// root available for resolving local references and a set of the
+// references currently being resolved, so a self-referential
+// definition cannot recurse forever. A local $ref applies its target
+// at the very instance scope where the reference sits -- a definition
+// referenced from the root is a root constraint, not a nested scope
+// -- so a resolvable reference is projected together with its
+// siblings as a same-instance conjunction; a requirement reached
+// only through a reference must not survive the projection
+// unexamined (Codex P2 on PR #2976).
+func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return v
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveLocalPointer(root, ref); ok {
+			if dialectIgnoresRefSiblings(root) {
+				// Draft-07 and earlier: the reference replaces
+				// this schema outright and its siblings are
+				// ignored at enforcement, so the projection is
+				// the projected target alone -- conjoining the
+				// siblings advertises requirements enforcement
+				// does not hold (Codex P2 on PR #2976). This
+				// covers boolean targets too: stripPinnedScope
+				// returns a non-object target unchanged. The
+				// document's definition containers are not
+				// constraints, though: the target's own nested
+				// references resolve against them, so they ride
+				// along verbatim when the projected target does
+				// not carry its own (Codex P2 on PR #2976).
+				resolving[ref] = true
+				projected := stripPinnedScope(target, pinned, pinVals, root, resolving)
+				delete(resolving, ref)
+				if pm, isMap := projected.(map[string]any); isMap {
+					for _, defsKey := range []string{"$defs", "definitions"} {
+						if _, carried := pm[defsKey]; !carried {
+							if defs, ok := m[defsKey]; ok {
+								pm[defsKey] = defs
+							}
+						}
+					}
+					// The dialect rides along the same way: it is
+					// not an assertion sibling draft-07 ignores,
+					// it is the language the projected constraints
+					// are written in. Dropping it leaves draft-07
+					// keywords (dependencies) to be read under the
+					// upstream schema's dialect, where they are
+					// not keywords at all, so the advertised
+					// schema accepts calls enforcement rejects
+					// (Codex P2 on PR #2976).
+					if _, carried := pm["$schema"]; !carried {
+						if dialect, ok := m["$schema"]; ok {
+							pm["$schema"] = dialect
+						}
+					}
+				}
+				return projected
+			}
+			if tm, ok := target.(map[string]any); ok {
+				// A $ref and its siblings are a conjunction, not a
+				// merge: copying sibling keys over the target's drops
+				// constraints both sides carry (a sibling "required"
+				// replacing the referenced list, which the projection
+				// then strips as pinned, advertises a schema that
+				// accepts calls enforcement rejects). Project each
+				// side on its own and conjoin them (Codex P2 on
+				// PR #2976).
+				siblings := make(map[string]any, len(m)-1)
+				for k, val := range m {
+					if k != "$ref" {
+						siblings[k] = val
+					}
+				}
+				resolving[ref] = true
+				projectedTarget := stripPinnedScope(tm, pinned, pinVals, root, resolving)
+				projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
+				delete(resolving, ref)
+				return conjoinRefProjection(projectedTarget, projectedSiblings)
+			}
+			// A non-object target (a boolean schema) has no scope of
+			// its own to project, but its siblings are still
+			// same-instance constraints: dropping them advertises a
+			// schema enforcement does not hold. Conjoin them the
+			// same way when any exist.
+			siblings := make(map[string]any, len(m)-1)
+			for k, val := range m {
+				if k != "$ref" {
+					siblings[k] = val
+				}
+			}
+			if len(siblings) == 0 {
+				return target
+			}
+			resolving[ref] = true
+			projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
+			delete(resolving, ref)
+			return conjoinRefProjection(target, projectedSiblings)
+		}
+	}
+	// A condition the pins decide outright must not survive as a
+	// condition: projecting it by name-stripping alone removes the
+	// pinned requirement that made it decidable, so the advertised
+	// "if" evaluates against a caller who cannot supply the pinned
+	// property and picks the branch enforcement -- which merges the
+	// pin first -- does not (Codex P2 on PR #2976). Fold the decided
+	// branch in as an unconditional conjunct instead.
+	if _, hasIf := m["if"]; hasIf {
+		if branch, decided := pinDecidedBranch(m, pinned, pinVals, root, resolving); decided {
+			folded := make(map[string]any, len(m))
+			for k, val := range m {
+				if k != "if" && k != "then" && k != "else" {
+					folded[k] = val
+				}
+			}
+			if branch != nil {
+				if subs, ok := folded["allOf"].([]any); ok {
+					folded["allOf"] = append(append([]any{}, subs...), branch)
+				} else {
+					folded["allOf"] = []any{branch}
+				}
+			}
+			m = folded
+		}
+	}
+	out := make(map[string]any, len(m))
+	var promoted []string
+	var promotedSubs []any
+	var unsatisfiable bool
+	for k, val := range m {
+		switch k {
+		case "required":
+			if names, ok := val.([]any); ok {
+				if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
+					out[k] = kept
+				}
+				continue
+			}
+			out[k] = val
+		case "dependentRequired":
+			deps, ok := val.(map[string]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				depVal := deps[prop]
+				names, ok := depVal.([]any)
+				if !ok {
+					keptDeps[prop] = depVal
+					continue
+				}
+				kept := filterPinnedNames(names, pinned)
+				if pinned[prop] {
+					// The pin always supplies the trigger, so
+					// its remaining dependencies promote to
+					// unconditional requirements at this scope.
+					for _, n := range kept {
+						if name, ok := n.(string); ok {
+							promoted = append(promoted, name)
+						}
+					}
+					continue
+				}
+				if len(kept) > 0 {
+					keptDeps[prop] = kept
+				}
+			}
+			if len(keptDeps) > 0 {
+				out[k] = keptDeps
+			}
+		case "allOf", "anyOf", "oneOf":
+			subs, ok := val.([]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			// A branch the pins decide outright must be counted by
+			// its verdict, not name-stripped: stripping a oneOf
+			// branch decided by a pinned discriminator leaves a
+			// branch a caller who cannot supply the pin both
+			// matches and cannot match as enforcement counts it,
+			// so the advertised oneOf rejects calls the merged
+			// arguments pass (Codex P2 on PR #2976). A decided
+			// branch's truth depends only on the pins, so caller
+			// input cannot change it: a valid one always matches,
+			// an invalid one never does.
+			kept := make([]any, 0, len(subs))
+			decidedValid := 0
+			for _, sub := range subs {
+				if valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, root, resolving); decided {
+					if valid {
+						decidedValid++
+					} else if k == "allOf" {
+						unsatisfiable = true
+					}
+					continue
+				}
+				kept = append(kept, stripPinnedScope(sub, pinned, pinVals, root, resolving))
+			}
+			switch k {
+			case "allOf":
+				if len(kept) > 0 {
+					out[k] = kept
+				}
+			case "anyOf":
+				if decidedValid > 0 {
+					// One branch always matches: the disjunction
+					// constrains nothing.
+				} else if len(kept) == 0 {
+					unsatisfiable = true
+				} else {
+					out[k] = kept
+				}
+			case "oneOf":
+				if decidedValid > 1 {
+					// Two branches always match: exactly-one can
+					// never hold.
+					unsatisfiable = true
+				} else if decidedValid == 1 {
+					// The decided branch is the one match, so the
+					// caller must match none of the rest.
+					if len(kept) > 0 {
+						promotedSubs = append(promotedSubs, map[string]any{
+							"not": map[string]any{"anyOf": kept},
+						})
+					}
+				} else if len(kept) == 0 {
+					unsatisfiable = true
+				} else {
+					out[k] = kept
+				}
+			}
+		case "not":
+			// A negation inverts the effect of the schemas inside
+			// it: stripping a pinned requirement there does not
+			// relax the advertised schema, it tightens it -- the
+			// stripped inner schema succeeds vacuously for a
+			// caller who cannot supply the hidden pin, so the
+			// negation rejects calls enforcement accepts (Codex
+			// P2 on PR #2976). Evaluate the pinned contribution
+			// instead: when the pins decide the inner schema, the
+			// negation's outcome is fixed -- drop it when it
+			// always passes, keep it as not:true when it always
+			// fails. When the pins do not decide it, keep the
+			// inner schema verbatim rather than stripping it.
+			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, root, resolving); decided {
+				if valid {
+					out[k] = true
+				}
+			} else {
+				out[k] = val
+			}
+		case "if", "then", "else":
+			out[k] = stripPinnedScope(val, pinned, pinVals, root, resolving)
+		case "dependencies":
+			// The draft-07 predecessor of dependentRequired /
+			// dependentSchemas: under a pre-2019-09 dialect it
+			// constrains the instance in both of its forms -- an
+			// array of names (the dependentRequired form) or a
+			// subschema (the dependentSchemas form) -- and the
+			// projection must treat a pinned trigger exactly like
+			// its modern successors, promoting what the pin always
+			// activates to unconditional constraints at this
+			// scope. Leaving it verbatim advertises {} as valid
+			// for a rule whose pinned trigger demands more, while
+			// enforcement inserts the pin and rejects the call
+			// (Codex P2 on PR #2976). Under a modern dialect the
+			// keyword does not exist, so the value is inert data
+			// and keeps its verbatim meaning.
+			if !dialectIgnoresRefSiblings(root) {
+				out[k] = val
+				continue
+			}
+			deps, ok := val.(map[string]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				depVal := deps[prop]
+				switch dep := depVal.(type) {
+				case []any:
+					kept := filterPinnedNames(dep, pinned)
+					if pinned[prop] {
+						for _, n := range kept {
+							if name, ok := n.(string); ok {
+								promoted = append(promoted, name)
+							}
+						}
+						continue
+					}
+					if len(kept) > 0 {
+						keptDeps[prop] = kept
+					}
+				case map[string]any, bool:
+					sub := stripPinnedScope(depVal, pinned, pinVals, root, resolving)
+					if pinned[prop] {
+						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
+							continue
+						}
+						if b, isBool := sub.(bool); isBool && b {
+							continue
+						}
+						promotedSubs = append(promotedSubs, sub)
+						continue
+					}
+					keptDeps[prop] = sub
+				default:
+					keptDeps[prop] = depVal
+				}
+			}
+			if len(keptDeps) > 0 {
+				out[k] = keptDeps
+			}
+		case "dependentSchemas":
+			if subs, ok := val.(map[string]any); ok {
+				projected := make(map[string]any, len(subs))
+				triggers := make([]string, 0, len(subs))
+				for prop := range subs {
+					triggers = append(triggers, prop)
+				}
+				sort.Strings(triggers)
+				for _, prop := range triggers {
+					sub := stripPinnedScope(subs[prop], pinned, pinVals, root, resolving)
+					if pinned[prop] {
+						// The pin always supplies the trigger, so
+						// the projected dependent schema applies
+						// unconditionally at this scope: promote it
+						// into allOf, analogous to the pinned
+						// dependentRequired promotion above. An
+						// empty or true projection constrains
+						// nothing and is dropped.
+						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
+							continue
+						}
+						if b, isBool := sub.(bool); isBool && b {
+							continue
+						}
+						promotedSubs = append(promotedSubs, sub)
+						continue
+					}
+					projected[prop] = sub
+				}
+				if len(projected) > 0 {
+					out[k] = projected
+				}
+			} else {
+				out[k] = val
+			}
+		default:
+			// Any other key is either not a schema position or
+			// opens a nested instance scope: the pinned names
+			// have no meaning there, and the value keeps its
+			// verbatim meaning.
+			out[k] = val
+		}
+	}
+	if len(promoted) > 0 {
+		required, _ := out["required"].([]any)
+		seen := map[string]bool{}
+		for _, n := range required {
+			if name, ok := n.(string); ok {
+				seen[name] = true
+			}
+		}
+		for _, name := range promoted {
+			if !seen[name] {
+				seen[name] = true
+				required = append(required, name)
+			}
+		}
+		out["required"] = required
+	}
+	if len(promotedSubs) > 0 {
+		switch existing := out["allOf"].(type) {
+		case []any:
+			out["allOf"] = append(existing, promotedSubs...)
+		case nil:
+			out["allOf"] = promotedSubs
+		default:
+			wrapped := make([]any, 0, len(promotedSubs)+1)
+			wrapped = append(wrapped, existing)
+			out["allOf"] = append(wrapped, promotedSubs...)
+		}
+	}
+	if unsatisfiable {
+		// A pin-decided branch already settles this schema against
+		// every caller: advertise that verdict directly instead of
+		// a combinator no caller input can satisfy.
+		out["not"] = true
+	}
+	return out
+}
+
+// pinDecidedBranch reports whether the map's "if" condition is
+// decided by the pinned values alone, and if so returns the branch
+// ("then" for true, "else" for false; nil when that branch is absent)
+// the condition selects at enforcement time. A condition is decidable
+// only when every property it examines is pinned -- the pin merge
+// fixes those properties' values before enforcement, so the
+// condition's truth is already determined -- and the condition
+// evaluates cleanly against an instance carrying just the pins.
+// Anything else (a condition reading a caller-supplied property, a
+// whole-instance or name-pattern keyword, an unresolvable or
+// recursive reference, a condition that fails to compile) is left
+// for the ordinary name-stripping projection.
+func pinDecidedBranch(m map[string]any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (any, bool) {
+	cond, ok := m["if"]
+	if !ok {
+		return nil, false
+	}
+	if b, isBool := cond.(bool); isBool {
+		if b {
+			return m["then"], true
+		}
+		return m["else"], true
+	}
+	valid, decided := pinnedSchemaVerdict(cond, pinned, pinVals, root, resolving)
+	if !decided {
+		return nil, false
+	}
+	if valid {
+		return m["then"], true
+	}
+	return m["else"], true
+}
+
+// pinnedSchemaVerdict reports whether a schema's truth at its own
+// instance scope is decided by the pinned values alone -- every
+// property it examines is pinned and its shape is one whose truth
+// depends only on those properties (see collectConditionNames) --
+// and if so, whether an instance carrying the pins satisfies it.
+// Pins merge before enforcement, so a decided verdict is the
+// verdict enforcement reaches on the merged instance, whatever the
+// caller adds.
+func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (bool, bool) {
+	if b, isBool := schema.(bool); isBool {
+		return b, true
+	}
+	names := map[string]bool{}
+	if !collectConditionNames(schema, root, resolving, names) || len(names) == 0 {
+		return false, false
+	}
+	inst := make(map[string]any, len(names))
+	for name := range names {
+		if !pinned[name] {
+			return false, false
+		}
+		inst[name] = pinVals[name]
+	}
+	inlined, ok := inlineLocalRefs(schema, root, resolving, dialectIgnoresRefSiblings(root))
+	if !ok {
+		return false, false
+	}
+	// The detached condition compiles under the enclosing
+	// document's dialect: a branch written for draft-07 uses
+	// keywords later dialects dropped (dependencies is the
+	// concrete case -- Codex P2 on PR #2976), and compiling it
+	// as the default 2020-12 would silently ignore them and
+	// report a verdict enforcement does not reach. A condition
+	// declaring its own $schema keeps it.
+	if im, isMap := inlined.(map[string]any); isMap {
+		if _, declares := im["$schema"]; !declares {
+			if dialect, isStr := root["$schema"].(string); isStr && dialect != "" {
+				withDialect := make(map[string]any, len(im)+1)
+				for k, val := range im {
+					withDialect[k] = val
+				}
+				withDialect["$schema"] = dialect
+				inlined = withDialect
+			}
+		}
+	}
+	condRaw, err := json.Marshal(inlined)
+	if err != nil {
+		return false, false
+	}
+	compiled, err := schemaval.Compile(condRaw)
+	if err != nil {
+		return false, false
+	}
+	instRaw, err := json.Marshal(inst)
+	if err != nil {
+		return false, false
+	}
+	dec, err := schemaval.DecodeInstance(instRaw)
+	if err != nil {
+		return false, false
+	}
+	return compiled.Validate(dec) == nil, true
+}
+
+// collectConditionNames gathers the property names a condition schema
+// examines at its own instance scope: the keys of its properties, its
+// required entries, and the triggers and dependencies of its
+// dependent* keywords (and their draft-07 predecessor, dependencies),
+// followed through the same-instance applicators
+// (allOf/anyOf/oneOf/not/if/then/else, dependentSchemas values, local
+// references). It reports false for shapes whose truth can depend on
+// more than the examined properties' values -- whole-instance
+// comparisons (const/enum), property counting, name patterns, or a
+// reference that cannot be resolved -- so the caller treats those as
+// undecidable. Nested instance scopes (a property's own subschema)
+// are not entered: the validator judges those against the pin value
+// itself.
+func collectConditionNames(v any, root map[string]any, resolving map[string]bool, names map[string]bool) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return true // a boolean subschema examines nothing
+	}
+	for k, val := range m {
+		switch k {
+		case "properties":
+			props, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for name := range props {
+				names[name] = true
+			}
+		case "required":
+			list, ok := val.([]any)
+			if !ok {
+				return false
+			}
+			for _, e := range list {
+				name, ok := e.(string)
+				if !ok {
+					return false
+				}
+				names[name] = true
+			}
+		case "dependentRequired":
+			deps, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, depVal := range deps {
+				names[trigger] = true
+				list, ok := depVal.([]any)
+				if !ok {
+					return false
+				}
+				for _, e := range list {
+					name, ok := e.(string)
+					if !ok {
+						return false
+					}
+					names[name] = true
+				}
+			}
+		case "dependencies":
+			// The draft-07 predecessor of dependentRequired /
+			// dependentSchemas: under a draft-07 (or earlier)
+			// dialect it constrains the instance exactly the
+			// same way, so a condition using it examines the
+			// trigger, the listed names (property form), or
+			// whatever the schema form examines. Ignoring it
+			// let a branch carrying a live dependency be
+			// treated as decided by the pins alone and
+			// discarded, advertising calls enforcement
+			// rejects (Codex P2 on PR #2976).
+			deps, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, depVal := range deps {
+				names[trigger] = true
+				switch dep := depVal.(type) {
+				case []any:
+					for _, e := range dep {
+						name, ok := e.(string)
+						if !ok {
+							return false
+						}
+						names[name] = true
+					}
+				case map[string]any:
+					if !collectConditionNames(dep, root, resolving, names) {
+						return false
+					}
+				case bool:
+					// A boolean schema dependency examines
+					// nothing beyond the trigger.
+				default:
+					return false
+				}
+			}
+		case "dependentSchemas":
+			subs, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, sub := range subs {
+				names[trigger] = true
+				if !collectConditionNames(sub, root, resolving, names) {
+					return false
+				}
+			}
+		case "allOf", "anyOf", "oneOf":
+			subs, ok := val.([]any)
+			if !ok {
+				return false
+			}
+			for _, sub := range subs {
+				if !collectConditionNames(sub, root, resolving, names) {
+					return false
+				}
+			}
+		case "not", "if", "then", "else":
+			if !collectConditionNames(val, root, resolving, names) {
+				return false
+			}
+		case "$ref":
+			ref, ok := val.(string)
+			if !ok || resolving[ref] {
+				return false
+			}
+			target, ok := resolveLocalPointer(root, ref)
+			if !ok {
+				return false
+			}
+			resolving[ref] = true
+			ok = collectConditionNames(target, root, resolving, names)
+			delete(resolving, ref)
+			if !ok {
+				return false
+			}
+		case "additionalProperties":
+			if b, isBool := val.(bool); !isBool || !b {
+				return false
+			}
+		case "patternProperties", "propertyNames", "unevaluatedProperties",
+			"const", "enum", "minProperties", "maxProperties", "$dynamicRef":
+			return false
+		}
+	}
+	return true
+}
+
+// dialectIgnoresRefSiblings reports whether the document's
+// declared dialect predates 2019-09: in draft-07 and earlier a
+// $ref replaces its containing schema outright and its siblings
+// are ignored, where 2019-09 and later evaluate the siblings
+// alongside the reference. No $schema (or an unrecognized one)
+// takes the modern reading.
+func dialectIgnoresRefSiblings(root map[string]any) bool {
+	dialect, ok := root["$schema"].(string)
+	if !ok {
+		return false
+	}
+	for _, old := range []string{"draft-04", "draft-06", "draft-07", "draft/4", "draft/6", "draft/7"} {
+		if strings.Contains(dialect, old) {
+			return true
+		}
+	}
+	return false
+}
+
+// inlineLocalRefs returns a copy of a schema with every resolvable
+// local $ref replaced by the conjunction of its target and its
+// siblings, recursively, so the result stands alone for compilation.
+// Under a dialect that ignores $ref siblings (draft-07 and
+// earlier), the target alone replaces the reference, matching what
+// enforcement evaluates (Codex P2 on PR #2976). It reports false
+// when a reference cannot be resolved or is recursive.
+func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool, ignoreSiblings bool) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		// A subschema carrying its own $id is a separate
+		// resource: references inside it resolve against that
+		// resource, not the outer rule document this walk
+		// resolves against. Substituting the outer document's
+		// same-named definitions would evaluate a condition
+		// with different semantics than enforcement, so the
+		// shape is declined (the caller treats the condition
+		// as undecided) — the same boundary rewriteLocalRefs
+		// honours (Codex P2 on PR #2976).
+		if id, ok := t["$id"].(string); ok && id != "" {
+			return nil, false
+		}
+		if ref, ok := t["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+			if resolving[ref] {
+				return nil, false
+			}
+			target, ok := resolveLocalPointer(root, ref)
+			if !ok {
+				return nil, false
+			}
+			resolving[ref] = true
+			inTarget, okT := inlineLocalRefs(target, root, resolving, ignoreSiblings)
+			if ignoreSiblings {
+				// The dialect ignores the siblings: the
+				// reference alone is the schema enforcement
+				// evaluates, so inlining the siblings as
+				// conjuncts would judge a different --
+				// stricter -- condition.
+				delete(resolving, ref)
+				if !okT {
+					return nil, false
+				}
+				return inTarget, true
+			}
+			siblings := make(map[string]any, len(t))
+			for k, val := range t {
+				if k != "$ref" {
+					siblings[k] = val
+				}
+			}
+			inSiblings, okS := inlineLocalRefs(siblings, root, resolving, ignoreSiblings)
+			delete(resolving, ref)
+			if !okT || !okS {
+				return nil, false
+			}
+			if sm, isMap := inSiblings.(map[string]any); isMap && len(sm) == 0 {
+				return inTarget, true
+			}
+			return map[string]any{"allOf": []any{inTarget, inSiblings}}, true
+		}
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			// Only schema-valued positions are traversed: a
+			// literal payload (const/enum/default/examples) is
+			// instance data, and a "$ref" key inside it names
+			// data, not a reference -- inlining there rewrites
+			// the very value a condition compares against, so
+			// the projection evaluates a different condition
+			// than enforcement does (Codex P2 on PR #2976).
+			// Name maps flip the walk into name position, where
+			// every value is a schema whatever its key spells.
+			switch {
+			case literalValueKey(k):
+				out[k] = val
+			case nameMapKey(k):
+				inlined, ok := inlineLocalRefsInNames(val, root, resolving, ignoreSiblings)
+				if !ok {
+					return nil, false
+				}
+				out[k] = inlined
+			default:
+				inlined, ok := inlineLocalRefs(val, root, resolving, ignoreSiblings)
+				if !ok {
+					return nil, false
+				}
+				out[k] = inlined
+			}
+		}
+		return out, true
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			inlined, ok := inlineLocalRefs(e, root, resolving, ignoreSiblings)
+			if !ok {
+				return nil, false
+			}
+			out[i] = inlined
+		}
+		return out, true
+	default:
+		return v, true
+	}
+}
+
+// inlineLocalRefsInNames inlines a name -> schema map: every value
+// is a schema, whatever its key spells.
+func inlineLocalRefsInNames(v any, root map[string]any, resolving map[string]bool, ignoreSiblings bool) (any, bool) {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return v, true
+	}
+	out := make(map[string]any, len(t))
+	for name, sub := range t {
+		inlined, ok := inlineLocalRefs(sub, root, resolving, ignoreSiblings)
+		if !ok {
+			return nil, false
+		}
+		out[name] = inlined
+	}
+	return out, true
+}
+
+// resolveLocalPointer resolves a local JSON Pointer reference ("#"
+// or "#/a/b") against the document root. Plain-name fragments name
+// $anchors, not pointers, and do not resolve here.
+func resolveLocalPointer(root map[string]any, ref string) (any, bool) {
+	if ref == "#" {
+		return root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = root
+	for _, seg := range strings.Split(ref[2:], "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+func filterPinnedNames(names []any, pinned map[string]bool) []any {
+	kept := make([]any, 0, len(names))
+	for _, n := range names {
+		if name, ok := n.(string); ok && pinned[name] {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	return kept
 }

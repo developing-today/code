@@ -706,3 +706,691 @@ func TestEffectiveSchemaUnevaluatedDependentSchemas(t *testing.T) {
 		}
 	}
 }
+
+// EffectiveSchemaPinned: a rule requirement on a property the view
+// pins is satisfied by the pin (pins merge before enforcement), so
+// the advertised projection must not demand it from the caller —
+// with the property hidden and additionalProperties:false upstream,
+// the verbatim rule would advertise an unsatisfiable schema (Codex
+// P2 on PR #2976).
+func TestEffectiveSchemaPinnedDropsPinnedRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"required":["tailnet","limit"],"dependentRequired":{"verbose":["tailnet"]},"allOf":[{"required":["tailnet","limit"]}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("unpinned requirements must still be advertised: %s", got)
+	}
+	// The un-projected path is untouched: enforcement-facing schema
+	// generation still carries the full rule.
+	full := string(set.EffectiveSchema("list_devices", upstream))
+	if !strings.Contains(full, "tailnet") {
+		t.Errorf("EffectiveSchema must keep the verbatim rule: %s", full)
+	}
+}
+
+// Codex P2 on PR #2976: the pinned projection must respect JSON
+// Schema instance scope. A nested object's property that shares a
+// pinned name is a different property -- merging the top-level pin
+// does not populate it -- so its requirement must survive the
+// projection verbatim, or the advertised schema accepts calls
+// enforcement rejects.
+func TestEffectiveSchemaPinnedKeepsNestedScopeRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"properties":{"options":{"type":"object","required":["tailnet"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"options":{"type":"object"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["tailnet"]`) {
+		t.Errorf("nested-scope requirement on a same-named property must survive projection: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: pins merge before rules are enforced, so a
+// dependentRequired entry triggered by a pinned property always
+// fires at enforcement time. The advertised projection must promote
+// the trigger's remaining dependencies to unconditional requirements,
+// or it accepts calls ({} for the issue's example) that enforcement
+// rejects for a missing dependency.
+func TestEffectiveSchemaPinnedPromotesPinnedTriggerDependencies(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"dependentRequired":{"tailnet":["limit"],"verbose":["tailnet","format"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("dependencies of a pinned trigger must promote to required: %s", got)
+	}
+	if !strings.Contains(got, `"dependentRequired":{"verbose":["format"]}`) {
+		t.Errorf("unpinned triggers keep their entry with pinned names filtered: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a dependentSchemas entry triggered by a
+// pinned property always fires at enforcement (the pin is merged
+// before rules run), so the advertised projection must promote the
+// dependent schema to an unconditional same-instance constraint --
+// the dependentRequired promotion alone leaves callers seeing {} as
+// valid while enforcement rejects it for the missing dependency.
+func TestEffectiveSchemaPinnedPromotesPinnedDependentSchemas(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"dependentSchemas":{"tailnet":{"required":["limit"]},"verbose":{"required":["format"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"allOf":[{"required":["limit"]}]`) {
+		t.Errorf("pinned trigger's dependent schema must promote to allOf: %s", got)
+	}
+	if strings.Contains(got, `"dependentSchemas":{"tailnet"`) {
+		t.Errorf("pinned trigger must not stay conditional in the projection: %s", got)
+	}
+	if !strings.Contains(got, `"dependentSchemas":{"verbose":{"required":["format"]}}`) {
+		t.Errorf("unpinned triggers keep their dependent schema: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a requirement reached through a local
+// reference sits at the instance scope the reference occupies -- a
+// root $ref is a root constraint -- so the pinned projection must
+// resolve it instead of leaving the referenced requirement in place
+// (which, against a hidden pin and additionalProperties:false,
+// advertised an unsatisfiable schema).
+func TestEffectiveSchemaPinnedResolvesLocalRefRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"need":{"required":["tailnet","limit"]}},"$ref":"#/$defs/need"}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("referenced requirement must be projected at the root scope: %s", got)
+	}
+	if strings.Contains(got, `"required":["tailnet","limit"]`) && !strings.Contains(got, `"$defs"`) {
+		t.Errorf("unprojected referenced requirement must not survive outside $defs: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a condition the pins decide must be projected
+// by its decided branch, not by name-stripping. With tailnet pinned to
+// "other", enforcement merges the pin, the rule's if (tailnet const
+// "prod") is false, and the else branch requires cursor. Stripping
+// the pinned name from the if's required made the advertised if
+// succeed for a caller who omits tailnet, advertising the then branch
+// (limit required) instead -- advertised-valid calls were rejected
+// and runtime-valid calls failed advertised validation.
+func TestEffectiveSchemaPinnedDecidesPinDeterminedConditions(t *testing.T) {
+	rule := `{"if":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	for _, tc := range []struct {
+		pin       string
+		valid     []string
+		invalid   []string
+		branchReq string
+	}{
+		// Pin "other": the condition is false at enforcement, so the
+		// else requirement (cursor) is what callers must satisfy.
+		{"other", []string{`{"cursor":"c"}`}, []string{`{}`, `{"limit":1}`}, `"required":["cursor"]`},
+		// Pin "prod": the condition holds, so the then requirement
+		// (limit) applies and cursor alone no longer suffices.
+		{"prod", []string{`{"limit":1}`}, []string{`{}`, `{"cursor":"c"}`}, `"required":["limit"]`},
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": tc.pin})
+		if strings.Contains(string(eff), `"if"`) {
+			t.Errorf("pin %q: the decided condition must not survive in the projection: %s", tc.pin, eff)
+		}
+		if !strings.Contains(string(eff), tc.branchReq) {
+			t.Errorf("pin %q: decided branch requirement %s must be advertised: %s", tc.pin, tc.branchReq, eff)
+		}
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("pin %q: effective schema does not compile: %v (%s)", tc.pin, err, eff)
+		}
+		for _, inst := range tc.valid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err != nil {
+				t.Errorf("pin %q: %s must be advertised-valid: %v (schema %s)", tc.pin, inst, err, eff)
+			}
+		}
+		for _, inst := range tc.invalid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err == nil {
+				t.Errorf("pin %q: %s must be advertised-invalid (schema %s)", tc.pin, inst, eff)
+			}
+		}
+	}
+}
+
+// A condition that also reads a caller-supplied property is NOT
+// decided by the pins: it stays a condition in the projection (with
+// the pinned names stripped as before), because the caller still
+// controls its outcome.
+func TestEffectiveSchemaPinnedKeepsUndecidedConditions(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"if":{"properties":{"tailnet":{"const":"prod"},"verbose":{"const":true}},"required":["tailnet","verbose"]},"then":{"required":["limit"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"verbose":{"type":"boolean"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"if"`) {
+		t.Errorf("a condition reading unpinned properties must stay conditional: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: reference inlining for a pin-decided
+// condition must traverse only schema-valued positions. A literal
+// $ref inside a const payload is instance data, not a reference:
+// inlining it rewrites the constant, so the projection evaluates
+// the condition against a different value than enforcement does
+// and advertises the wrong branch.
+func TestEffectiveSchemaPinnedKeepsLiteralRefConstants(t *testing.T) {
+	rule := `{"$defs":{"value":{"type":"string"}},"if":{"properties":{"selector":{"const":{"$ref":"#/$defs/value"}}},"required":["selector"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	pin := map[string]any{"selector": map[string]any{"$ref": "#/$defs/value"}}
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, pin)
+	if !strings.Contains(string(eff), `"required":["limit"]`) {
+		t.Errorf("condition is true at enforcement (pin equals the const), so the then requirement must be advertised: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	dec, err := schemaval.DecodeInstance(json.RawMessage(`{"limit":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err != nil {
+		t.Errorf("{\"limit\":1} must be advertised-valid: %v (schema %s)", err, eff)
+	}
+	dec, err = schemaval.DecodeInstance(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err == nil {
+		t.Errorf("{} must be advertised-invalid (schema %s)", eff)
+	}
+}
+
+// Codex P2 on PR #2976: pinned constraints under a negation must be
+// evaluated against the pin, not stripped. Stripping the pinned
+// requirement inside "not" leaves a properties-only schema that a
+// caller instance satisfies vacuously, so the advertised schema
+// rejected every valid call (pin tailnet="other": the negated
+// const "prod" never matches the merged pin, so the negation
+// always passes at enforcement).
+func TestEffectiveSchemaPinnedEvaluatesNegatedPins(t *testing.T) {
+	rule := `{"not":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]}}`
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	for _, tc := range []struct {
+		pin     string
+		wantErr bool // for the {} instance against the advertised schema
+	}{
+		{"other", false}, // negation always passes: {} advertised-valid
+		{"prod", true},   // negation always fails: {} advertised-invalid
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": tc.pin})
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("pin %q: effective schema does not compile: %v (%s)", tc.pin, err, eff)
+		}
+		dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != tc.wantErr {
+			t.Errorf("pin %q: validate {} error = %v, want %v (schema %s)", tc.pin, gotErr, tc.wantErr, eff)
+		}
+	}
+	// A negation reading only unpinned properties is not decided by
+	// the pins: it survives verbatim (stripping under a negation
+	// would invert the pinned names' effect).
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"not":{"properties":{"verbose":{"const":true}},"required":["verbose"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"not":{"properties":{"verbose":{"const":true}},"required":["verbose"]}`) {
+		t.Errorf("undecided negation must survive verbatim: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a subschema carrying its own $id is a
+// separate resource — references inside it resolve against that
+// resource, not the outer rule document. The inliner must decline
+// pin-decided evaluation for such shapes rather than substituting
+// the outer document's same-named definition and selecting the
+// branch enforcement does not.
+func TestEffectiveSchemaPinnedDeclinesIDCarryingConditions(t *testing.T) {
+	rule := `{"$defs":{"value":{"const":"other"}},"if":{"$id":"https://example.com/cond","$defs":{"value":{"const":"prod"}},"properties":{"tailnet":{"$ref":"#/$defs/value"}},"required":["tailnet"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"if"`) {
+		t.Errorf("a condition inside an $id-carrying resource must stay undecided, not be evaluated against the outer document: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: a oneOf whose branches are discriminated by
+// a pinned property must be projected by branch verdict, not by
+// name-stripping. Stripping the pinned requirement from every branch
+// left branches a caller matches vacuously (the pinned property is
+// hidden), so the advertised oneOf counted two matches where
+// enforcement -- which merges the pin first -- counts exactly one,
+// and rejected calls that are valid at runtime.
+func TestEffectiveSchemaPinnedDecidesOneOfBranches(t *testing.T) {
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	check := func(t *testing.T, rule, pin string, valid, invalid []string) {
+		t.Helper()
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": pin})
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+		}
+		for _, inst := range valid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err != nil {
+				t.Errorf("pin %q rule %s: %s must be advertised-valid: %v (schema %s)", pin, rule, inst, err, eff)
+			}
+		}
+		for _, inst := range invalid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err == nil {
+				t.Errorf("pin %q rule %s: %s must be advertised-invalid (schema %s)", pin, rule, inst, eff)
+			}
+		}
+	}
+
+	// The Codex example: two branches discriminated by the pinned
+	// tailnet. Exactly one matches after the pin merges, for either
+	// pin value, whatever else the caller sends.
+	discriminated := `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`
+	for _, pin := range []string{"prod", "other"} {
+		check(t, discriminated, pin, []string{`{}`, `{"limit":1}`}, nil)
+	}
+	// One decided branch plus one caller-decided branch: the caller
+	// must not also match the undecided branch.
+	mixed := `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["limit"]}]}`
+	check(t, mixed, "prod", []string{`{}`}, []string{`{"limit":1}`})
+	// Two branches the pin satisfies: exactly-one can never hold.
+	check(t, `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	// No branch the pin satisfies: oneOf and anyOf both fail, and an
+	// allOf with a decided-false branch fails with it.
+	check(t, discriminated, "third", nil, []string{`{}`})
+	check(t, `{"anyOf":[{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	check(t, `{"allOf":[{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	// An anyOf with a pin-satisfied branch constrains nothing.
+	check(t, `{"anyOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["limit"]}]}`, "prod", []string{`{}`, `{"limit":1}`}, nil)
+}
+
+// A $ref to a non-object schema (here a boolean definition) still
+// carries its siblings as same-instance constraints: returning the
+// target alone dropped a required the projection must keep (with
+// pinned names filtered as usual).
+// Codex P2 on PR #2976: a draft-07 allOf branch carrying a
+// `dependencies` constraint must not be treated as decided by the
+// pins alone. collectConditionNames ignored `dependencies`, and
+// pinnedSchemaVerdict compiled the detached branch without the
+// enclosing $schema (defaulting to 2020-12, where the keyword is
+// ignored), so pinning tailnet discarded a branch enforcement
+// still applies: the advertised schema accepted {"limit":1}
+// while enforcement rejects it because cursor is missing.
+func TestEffectiveSchemaPinnedKeepsDraft07DependenciesBranches(t *testing.T) {
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"number"},"cursor":{"type":"string"},"mode":{"type":"string"}}}`)
+
+	// Property form: the dependency fires on a caller property
+	// (limit), so the branch is not the pins' to decide -- it
+	// survives the projection and keeps its meaning.
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","allOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"],"dependencies":{"limit":["cursor"]}}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	if !strings.Contains(string(eff), `"dependencies"`) {
+		t.Errorf("the dependencies branch must survive the projection: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+		{`{"limit":1,"cursor":"c"}`, true},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+
+	// Schema form with every examined name pinned: the verdict
+	// itself must be reached under draft-07. The pinned mode
+	// violates the dependency's schema, so the branch is decided
+	// INVALID and the projection advertises unsatisfiable --
+	// under a 2020-12 compile the keyword vanishes, the branch
+	// would read valid, and it would be silently discarded.
+	set, err = CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","allOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"],"dependencies":{"tailnet":{"properties":{"mode":{"const":"strict"}},"required":["mode"]}}}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	eff = set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod", "mode": "loose"})
+	compiled, err = schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err == nil {
+		t.Errorf("the pin-decided-invalid dependencies branch must make the projection unsatisfiable: %s", eff)
+	}
+}
+
+// Codex P2 on PR #2976: reference inlining for a pin-decided
+// verdict must honor the enclosing dialect. In draft-07 a $ref's
+// siblings are ignored, but the inliner conjoined them, so an
+// `if` of {"$ref": sel, "not": {}} -- true at enforcement, where
+// the sibling is ignored -- evaluated always-false after inlining
+// and the projection advertised the else requirements instead of
+// the enforced then requirements.
+func TestEffectiveSchemaPinnedHonorsDraft07RefSiblings(t *testing.T) {
+	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"sel":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]}},"if":{"$ref":"#/definitions/sel","not":{}},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	if !strings.Contains(string(eff), `"required":["limit"]`) {
+		t.Errorf("the enforced then requirement must be advertised (the draft-07 $ref sibling is ignored at enforcement): %s", eff)
+	}
+	if strings.Contains(string(eff), `"required":["cursor"]`) {
+		t.Errorf("the else requirement must not be advertised for a condition that holds at enforcement: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{"limit":1}`, true},
+		{`{}`, false},
+		{`{"cursor":"c"}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
+// Codex P2 on PR #2976: the direct root-reference projection in
+// stripPinnedScope must honor the same draft-07 sibling semantics
+// as the verdict inliner. A draft-07 rule whose root $ref points
+// at a definition, with a sibling required, enforces only the
+// definition (the sibling is ignored); conjoining both sides
+// advertised the sibling requirement and rejected runtime-valid
+// calls. The boolean-target path takes the same rule.
+func TestEffectiveSchemaPinnedHonorsDraft07RootRefSiblings(t *testing.T) {
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"tailnet":{"type":"string"}}}`)
+	for _, tc := range []struct {
+		name string
+		rule string
+	}{
+		{"object target", `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"]}},"$ref":"#/definitions/need","required":["limit"]}`},
+		{"boolean target", `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"ok":true},"$ref":"#/definitions/ok","required":["limit"]}`},
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(tc.rule)},
+		})
+		if err != nil {
+			t.Fatalf("%s: CompileArgumentRules: %v", tc.name, err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+		if strings.Contains(string(eff), `"required":["limit"]`) {
+			t.Errorf("%s: the ignored draft-07 sibling requirement must not be advertised: %s", tc.name, eff)
+		}
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("%s: effective schema does not compile: %v (%s)", tc.name, err, eff)
+		}
+		dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := compiled.Validate(dec); err != nil {
+			t.Errorf("%s: {} is runtime-valid (pin supplies tailnet; the sibling is ignored) and must be advertised-valid: %v (schema %s)", tc.name, err, eff)
+		}
+	}
+}
+
+// Codex P2 on PR #2976: the draft-07 root-reference projection
+// must preserve the document's definitions -- the projected
+// target's nested references resolve against them, and dropping
+// them leaves the advertised schema with references
+// EffectiveSchemaPinned cannot rebase, so it fails compilation
+// despite the original rule being valid.
+func TestEffectiveSchemaPinnedDraft07RootRefKeepsDefinitions(t *testing.T) {
+	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"],"properties":{"options":{"$ref":"#/definitions/options"}}},"options":{"type":"string"}},"$ref":"#/definitions/need","required":["limit"]}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"options":{"type":"string"},"tailnet":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"options":"x"}`, true},
+		{`{"options":1}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
+// Codex P2 on PR #2976: the draft-07 root-reference projection
+// preserves the document's definitions but must also preserve
+// its $schema -- the dialect is not an assertion sibling. Dropping
+// it leaves the projected draft-07 constraints (here
+// `dependencies`) to be read under the upstream schema's dialect
+// (2020-12, where `dependencies` is not a keyword), so the
+// advertised schema accepts calls runtime enforcement of the
+// original draft-07 rule rejects.
+func TestEffectiveSchemaPinnedDraft07RootRefKeepsDialect(t *testing.T) {
+	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"],"dependencies":{"limit":["cursor"]}}},"$ref":"#/definitions/need"}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"},"tailnet":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	if !strings.Contains(string(eff), `"$schema":"http://json-schema.org/draft-07/schema#"`) {
+		t.Errorf("the projected root reference must carry the rule dialect: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1,"cursor":"c"}`, true},
+		{`{"limit":1}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
+func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("siblings of a non-object $ref target must survive projection: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+}
+
+// Codex P2 on PR #2976: the draft-07 predecessor of dependentRequired /
+// dependentSchemas, `dependencies`, fell through the pinned projection
+// unchanged. With tailnet pinned and hidden, a rule carrying
+// required:[tailnet] and dependencies:{tailnet:[limit]} advertised {}
+// as valid -- projection removed the tailnet requirement and the
+// surviving dependency never activates for a caller who cannot supply
+// the trigger -- while enforcement inserts the pin and rejects the
+// same call for the missing limit. Both forms of draft-07
+// `dependencies` must project like their modern successors: a pinned
+// trigger's array-form names promote to unconditional requirements and
+// its schema-form subschema promotes to an unconditional same-instance
+// constraint; unpinned triggers keep their entries with pinned names
+// filtered.
+func TestEffectiveSchemaPinnedProjectsDraft07Dependencies(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","required":["tailnet"],"dependencies":{"tailnet":["limit"],"verbose":["tailnet","format"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("array-form dependencies of a pinned trigger must promote to required: %s", got)
+	}
+	if !strings.Contains(got, `"dependencies":{"verbose":["format"]}`) {
+		t.Errorf("unpinned triggers keep their dependencies entry with pinned names filtered: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+
+	set2, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","dependencies":{"tailnet":{"required":["mode"]},"verbose":{"required":["format"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	got2 := string(set2.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got2, `"allOf":[{"required":["mode"]}]`) {
+		t.Errorf("schema-form dependencies of a pinned trigger must promote to an unconditional constraint: %s", got2)
+	}
+	if !strings.Contains(got2, `"dependencies":{"verbose":{"required":["format"]}}`) {
+		t.Errorf("unpinned schema-form triggers keep their dependencies entry: %s", got2)
+	}
+	if strings.Contains(got2, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got2)
+	}
+}
