@@ -7133,20 +7133,28 @@
         // (was the direct meta contributor leaf) at the same weight 1.
         // 2026-10-31 (Drew): Sonnet and DeepSeek Flash plan join the relief pool (Spark already seated).
         // 2026-10-31 (Drew): Terra leaves the relief pool for the primary seat; Gemini Flash joins here at weight 2 (the weight it carried in primary).
+        // 2026-10-31 (Drew): Antigravity OUT of the primary path. The
+        // Antigravity Gemini bucket was burning ~95 pts/day organically
+        // and projecting exhaustion a week before its reset, so both
+        // Antigravity-drawing members leave this pool: gemini-flash-plan
+        // (single-door antigravity-direct/gemini-3.8-flash — the Gemini
+        // bucket) and sonnet-plan (live door antigravity-direct/
+        // claude-sonnet-5-5, claude-code leaf dormant — the Claude/GPT
+        // bucket). workhorse-primary already seats Terra alone, so the
+        // whole workhorse stack now draws zero Antigravity. The plan
+        // routes themselves are untouched (switchboard rule): Gemini
+        // Flash and Sonnet stay seated in the deliberate tiers
+        // (specialist, summit, speed) exactly as before.
         "targets": [
           "opencode-route/haiku-plan#high",
-          "opencode-route/gemini-flash-plan#high",
           "opencode-route/spark-plan#xhigh",
-          "opencode-route/sonnet-plan#high",
           "opencode-route/deepseek-flash-plan#high"
         ],
         "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
-          "opencode-route/gemini-flash-plan": 2,
           "opencode-route/spark-plan": 1,
-          "opencode-route/sonnet-plan": 1,
           "opencode-route/deepseek-flash-plan": 1
         }
       },
