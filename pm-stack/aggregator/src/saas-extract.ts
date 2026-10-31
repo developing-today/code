@@ -446,10 +446,14 @@ const modalMetrics: MetricExtractor = (section) => {
   // Monthly console read (§2.2, #1111): the Usage bullet carries the
   // dated used figure, e.g. "$12.50 compute credits used on 2026-10-24"
   // or "used $12.50". Plan bullet holds the $30/mo grant (the limit).
+  // Percentage reads (e.g. "used 50% of monthly compute credits") are
+  // deliberately NOT numbers: no fallback below matches a bare number,
+  // so they stay null instead of masquerading as dollars (Codex P2).
   const usedMatch =
     /\$(\d+(?:\.\d+)?)\s*(?:monthly\s*)?compute\s+credits?\s*used/i.exec(usage) ??
     /(\d+(?:\.\d+)?)\s*credits?\s*used/i.exec(usage) ??
-    /used[:\s]+\$?(\d+(?:\.\d+)?)/i.exec(usage);
+    /used[:\s]+\$(\d+(?:\.\d+)?)/i.exec(usage) ??
+    /used[:\s]+(\d+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
   const used = usedMatch ? Number(usedMatch[1]) : null;
   return [
     metric({

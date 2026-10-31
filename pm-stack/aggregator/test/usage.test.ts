@@ -125,6 +125,16 @@ describe("saas extraction (Part b)", () => {
     expect(modal.measuredAt).toBe("2026-10-24");
   });
 
+  test("modal: percentage read is not mistaken for dollars", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** used 50% of monthly compute credits on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBeNull();
+  });
+
   test("modal: no used figure stays an allowance-only shell", () => {
     const modal = byId.get("modal")!;
     expect(modal.metrics.find((m) => m.id === "compute-credits")?.used).toBeNull();
