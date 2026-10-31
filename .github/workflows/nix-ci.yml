@@ -91,7 +91,7 @@ jobs:
   # continue-on-error: a dispatch failure must never change this
   # workflow's own result.
   ci-fix:
-    needs: [proxy-port-fallbacks, flake-check]
+    needs: [proxy-port-fallbacks, host-eval, flake-check]
     if: failure()
     permissions:
       id-token: write
