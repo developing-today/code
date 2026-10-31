@@ -554,3 +554,46 @@ func TestMcpNameOnTasksMethodsMustMatchTheTaskID(t *testing.T) {
 		t.Errorf("no Mcp-Name: want the unknown-task -32602, got %d:\n%s", code, w.Body)
 	}
 }
+
+// The per-requestor cap on the Asker path charges the resolved caller
+// identity from the request context, not the shared unbound bucket:
+// with a cap of one, two identified clients' first slow asked tasks
+// each start, and a second task for the same identity is refused.
+// (Codex on #2869: hard-coding unbound accounting in askTask passes
+// the anonymous tests while reintroducing cross-client refusals, so
+// this path needs its own failing-first regression.)
+func TestAskedTaskCapChargesTheResolvedIdentity(t *testing.T) {
+	// askAfter far out keeps every asked task Working (never polled
+	// done), so each holds its requestor's one slot while the next
+	// call arrives.
+	a := &timedAsker{askAfter: time.Hour}
+	s := askingServer(a, "capped_job")
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(session string) map[string]any {
+		params := callTool(extAskCaps, "capped_job")
+		params["_meta"].(map[string]any)[mcpserver.MetaSession] = session
+		return handle(t, s, "tools/call", params)
+	}
+
+	alice := resultOf(t, callAs("alice"))
+	aliceID, _ := alice["taskId"].(string)
+	if aliceID == "" {
+		t.Fatalf("want a task for alice, got %v", alice)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": aliceID}))
+
+	bob := resultOf(t, callAs("bob"))
+	bobID, _ := bob["taskId"].(string)
+	if bobID == "" {
+		t.Fatalf("want a task for bob (his own bucket), got %v", bob)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": bobID}))
+
+	second := callAs("alice")
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want alice's second call refused by the cap naming the limit, got %v", second)
+	}
+}
