@@ -307,6 +307,28 @@ describe("indentCommand with multi-block selection (#1399)", () => {
     expect(getChildTexts(newState!)).toEqual(["  a\n  b", "mid"]);
   });
 
+  it("indents a trailing empty line when the selection continues into the next block", () => {
+    // Regression (Codex, PR #2872): block1 ends in "\n", so its trailing
+    // empty line starts exactly at the clamped block end. The selection
+    // continues into block2, so that line is overlapped and indented.
+    const children = [codeBlock("a\n"), codeBlock("b")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  a\n  ", "  b"]);
+  });
+
+  it("does not indent a trailing empty line when the selection ends exactly at its line start", () => {
+    // The selection genuinely ends at block1's trailing line start
+    // (content positions 1..3), so the exclusive-boundary rule applies.
+    const children = [codeBlock("a\n"), codeBlock("b")];
+    const state = createMixedState(children, 1, 3);
+    const newState = runCommand(state, indentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["  a\n", "b"]);
+  });
+
   it("returns false when the selection overlaps no code_block", () => {
     // Selection entirely inside the paragraph
     const children = [codeBlock("x\ny"), paragraph("mid"), codeBlock("p\nq")];
@@ -339,6 +361,16 @@ describe("dedentCommand with multi-block selection (#1399)", () => {
     const newState = runCommand(state, dedentCommand);
     expect(newState).not.toBeNull();
     expect(getChildTexts(newState!)).toEqual(["a\nb", "mid"]);
+  });
+
+  it("dedents a trailing empty line when the selection continues into the next block", () => {
+    // Same clamped-end regression as indent (Codex, PR #2872).
+    const children = [codeBlock("  a\n  "), codeBlock("  b")];
+    const doc = richSchema.node("doc", null, children);
+    const state = createMixedState(children, 1, doc.content.size);
+    const newState = runCommand(state, dedentCommand);
+    expect(newState).not.toBeNull();
+    expect(getChildTexts(newState!)).toEqual(["a\n", "b"]);
   });
 
   it("returns false when the selection overlaps no code_block", () => {

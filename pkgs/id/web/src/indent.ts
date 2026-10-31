@@ -16,8 +16,12 @@ const INDENT = "  "; // 2 spaces
  * overlaps: the line containing `from` through the line containing `to`.
  * A selection ending exactly at a line start does not overlap that line
  * (the standard editor rule), unless the selection is empty.
+ * `endInclusive` overrides that rule for a caller-clamped `to`: when a
+ * multi-block selection continues past a block, the block's end is not
+ * the selection's end, so a trailing line start at the clamp point IS
+ * overlapped (Codex finding on PR #2872).
  */
-export function selectedLineStarts(lineStarts: number[], from: number, to: number): number[] {
+export function selectedLineStarts(lineStarts: number[], from: number, to: number, endInclusive = false): number[] {
   if (lineStarts.length === 0) return [];
 
   // Helper to find index of the line start containing pos via binary search
@@ -51,7 +55,7 @@ export function selectedLineStarts(lineStarts: number[], from: number, to: numbe
     return false;
   };
 
-  const endPos = to > from && isLineStart(to) ? to - 1 : to;
+  const endPos = to > from && !endInclusive && isLineStart(to) ? to - 1 : to;
   const firstIdx = lineIndexContaining(from);
   const lastIdx = lineIndexContaining(endPos);
 
@@ -135,7 +139,7 @@ export const indentCommand: Command = (state, dispatch) => {
       // Strict overlap: a selection merely touching the block's edge
       // covers none of its characters, so the block is skipped.
       if (contentStart >= to || contentEnd <= from) continue;
-      for (const lineStart of selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd))) {
+      for (const lineStart of selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd), to > contentEnd)) {
         inserts.push(lineStart);
       }
     }
@@ -181,7 +185,7 @@ export const dedentCommand: Command = (state, dispatch) => {
       const blockText = state.doc.textBetween(contentStart, contentEnd);
 
       // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
-      const linesToDedent = selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd));
+      const linesToDedent = selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd), to > contentEnd);
 
       for (const lineStart of linesToDedent) {
         // Check how many leading spaces this line has, using the
