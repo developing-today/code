@@ -394,7 +394,7 @@ func (p *Pool) guardAdopted(in *Instance) bool {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), resumeProbeTimeout)
 	defer cancel()
-	return p.refuseIfAggregate(ctx, cl, in.transport) == nil
+	return p.guardSelfConnection(ctx, cl, in.transport) == nil
 }
 
 // PoolID is the identity this pool's process definition shares with others:

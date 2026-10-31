@@ -208,6 +208,12 @@ type Server struct {
 	// ExtrasOnly is set: they describe the meta-tools, which are absent.
 	OwnInstructions string
 
+	// Instance is this server process's unique instance identity,
+	// reported to clients as serverInfo.instance (#1877). Empty means
+	// no identity is reported -- the zero value every test server and
+	// ExtrasOnly adapter keeps, so nothing about their surface changes.
+	Instance string
+
 	// PageSize caps how many items a list reply carries.
 	PageSize int
 
@@ -353,6 +359,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		Ask:                s.Ask,
 		ExtrasOnly:         s.ExtrasOnly,
 		OwnInstructions:    s.OwnInstructions,
+		Instance:           s.Instance,
 		Reactive:           s.Reactive,
 		PinnedTools:        s.PinnedTools,
 		ReactiveWorkingSet: s.ReactiveWorkingSet,
@@ -769,9 +776,20 @@ func (s *Server) envelope(req request, result any) any {
 	if meta == nil {
 		meta = map[string]any{}
 	}
-	meta[MetaServerInfo] = map[string]any{"name": s.name, "version": s.version}
+	meta[MetaServerInfo] = s.serverInfo()
 	m["_meta"] = meta
 	return m
+}
+
+// serverInfo is the identity this server reports, in initialize and in
+// the modern _meta alike: name and version, plus the process instance
+// identity when one is set (#1877).
+func (s *Server) serverInfo() map[string]any {
+	info := map[string]any{"name": s.name, "version": s.version}
+	if s.Instance != "" {
+		info["instance"] = s.Instance
+	}
+	return info
 }
 
 func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
@@ -909,7 +927,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		return reply(map[string]any{
 			"protocolVersion": version,
 			"capabilities":    caps,
-			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
+			"serverInfo":      s.serverInfo(),
 			"instructions":    s.instructions(),
 		})
 

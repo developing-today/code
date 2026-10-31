@@ -181,6 +181,11 @@ type ServerInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Title   string `json:"title,omitempty"`
+	// Instance is the serving process's unique instance identity, when
+	// it reports one (mcpx does, in serverInfo.instance; #1877). It is
+	// what lets a client tell "mcpx itself, this very daemon" apart
+	// from "a different mcpx daemon" -- the name alone cannot.
+	Instance string `json:"instance,omitempty"`
 }
 
 type initResult struct {

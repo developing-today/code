@@ -497,6 +497,7 @@ func (a *App) mcpSession() string {
 // existed.
 func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	srv := mcpserver.New(mcpBackend{app: a}, "mcpx", a.Version)
+	srv.Instance = a.InstanceID()
 	srv.Notify = daemonNotifier{app: a}
 	// The daemon's task store, when this server is the daemon's own
 	// (root.go set a.daemonStore): MCP tasks and /v1 tasks are then

@@ -47,6 +47,16 @@ var Version = "dev"
 // it is this daemon, another mcpx, or a proxy of one (#1877).
 const ownServerName = "mcpx"
 
+// OwnInstanceID is the instance identity of the MCP server this
+// process itself serves, wired by internal/cli at startup (#1877).
+// The self-connection guard compares an mcpx-claiming upstream's
+// reported instance against it: equal is this very daemon (refuse),
+// different is a distinct mcpx daemon (admit -- self-composition
+// across daemons is a topology #1877 wants made safe, not banned).
+// Empty means this process has not wired an identity, and the guard
+// falls back to convicting on the aggregate surface alone.
+var OwnInstanceID string
+
 // Trace, when set, receives a line per tool call naming the instance that
 // served it. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
@@ -663,18 +673,9 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		_ = tr.Close()
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, p.oauthWaitError(err))
 	}
-	// Self-connection loop guard (#1877): an upstream that identifies
-	// as mcpx may be mcpx itself -- this daemon's own MCP endpoint, a
-	// second mcpx, or a proxy of one -- whose catalogue contains
-	// mcpx's own tools; admitting it would grow tools/list by a proxy
-	// level on every reload, without bound. The name alone does not
-	// convict: an adapter or OpenAPI declaration may legitimately be
-	// named "mcpx", and such a server (ExtrasOnly in mcpserver) serves
-	// only its declared tools. The aggregate surface is the proof, so
-	// a claimant is refused only when its tools/list carries mcpx's
-	// meta tools; a namesake without them is admitted below.
+	// Self-connection loop guard (#1877): see guardSelfConnection.
 	if cl.ServerInfo.Name == ownServerName {
-		if err := p.refuseIfAggregate(sctx, cl, tr); err != nil {
+		if err := p.guardSelfConnection(sctx, cl, tr); err != nil {
 			return nil, err
 		}
 	}
@@ -754,6 +755,42 @@ var ownMetaTools = map[string]bool{
 // independently of which tools happen to be activated right now
 // (Codex review on PR 2975).
 var ownReactiveTools = []string{"request_tools", "batch_call"}
+
+// guardSelfConnection decides whether an upstream that identifies as
+// mcpx may be served (#1877). Identity decides first, when both sides
+// report one: an instance equal to this process's own is this daemon
+// connecting to itself -- the loop that grows tools/list on every
+// reload -- and is refused without ever listing its tools; a
+// different instance is a distinct mcpx daemon, admitted as a peer
+// (its catalogue is finite: the aggregate meta tools plus its own
+// upstreams, none of them this daemon). When either side reports no
+// instance -- an mcpx predating instance identity, or a process that
+// never wired one -- identity cannot clear the claimant, so the
+// aggregate surface decides instead (refuseIfAggregate): a claimant
+// serving mcpx's meta tools with no distinguishable identity is
+// treated as self, the safe side of the ambiguity.
+func (p *Pool) guardSelfConnection(ctx context.Context, cl *mcpclient.Client, tr mcpclient.Transport) error {
+	own, peer := OwnInstanceID, cl.ServerInfo.Instance
+	if own != "" && peer != "" {
+		if peer != own {
+			lifecycle("server.peer_mcpx_admitted", map[string]any{
+				"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+				"serverInfoVersion": cl.ServerInfo.Version, "instance": peer,
+			})
+			return nil
+		}
+		err := fmt.Errorf("server %q: refusing self-connection: upstream is this daemon itself (instance %q matches this process); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, peer)
+		lifecycle("server.self_connection_refused", map[string]any{
+			"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+			"serverInfoVersion": cl.ServerInfo.Version, "instance": peer, "via": "instance",
+		})
+		p.dropSchemas(err)
+		_ = cl.Close()
+		_ = tr.Close()
+		return err
+	}
+	return p.refuseIfAggregate(ctx, cl, tr)
+}
 
 // refuseIfAggregate lists a self-claiming upstream's tools once and
 // refuses the instance when the aggregate meta surface is among them

@@ -23,6 +23,8 @@ type selfUpstream struct {
 	*httptest.Server
 	mu        sync.Mutex
 	toolLists int
+	// instance is reported as serverInfo.instance when non-empty.
+	instance string
 }
 
 func newSelfUpstream(t *testing.T) *selfUpstream {
@@ -70,7 +72,7 @@ func (u *selfUpstream) serve(w http.ResponseWriter, r *http.Request) {
 		rpcReply(w, req.ID, map[string]any{
 			"protocolVersion": "2025-03-26",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "mcpx", "version": "dev"},
+			"serverInfo":      map[string]any{"name": "mcpx", "version": "dev", "instance": u.instance},
 		})
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
@@ -292,7 +294,7 @@ func TestPoolRefusesAdoptedSelfSession(t *testing.T) {
 		nil, nil, "", time.Now(), time.Time{}, false)
 	h := pool.InstanceHandoff{
 		ID: "inst-self", Key: "global",
-		HTTP:    &mcpclient.HTTPHandoff{SessionID: "sess-1", Negotiated: "2025-03-26"},
+		HTTP: &mcpclient.HTTPHandoff{SessionID: "sess-1", Negotiated: "2025-03-26"},
 		Session: mcpclient.Session{Era: mcpclient.EraLegacy, Negotiated: "2025-03-26",
 			ServerInfo: mcpclient.ServerInfo{Name: "mcpx", Version: "dev"}},
 	}
@@ -307,5 +309,40 @@ func TestPoolRefusesAdoptedSelfSession(t *testing.T) {
 	if _, err := p.Acquire(context.Background(), "global"); err == nil ||
 		!strings.Contains(err.Error(), "self-connection") {
 		t.Fatalf("adopted self session was published: err=%v, want a self-connection refusal", err)
+	}
+}
+
+// A DIFFERENT mcpx daemon is a peer, not a loop (#1877): its instance
+// identity differs from this process's, so the guard admits it even
+// though it serves the aggregate surface -- mcpx as another mcpx's
+// upstream is the topology the modern-client e2e test exercises.
+func TestPoolAdmitsDistinctMcpxPeerByInstance(t *testing.T) {
+	u := newSelfUpstream(t)
+	u.instance = "peer-instance"
+	pool.OwnInstanceID = "own-instance"
+	defer func() { pool.OwnInstanceID = "" }()
+	p := upstreamPool(t, u.URL)
+	lease, err := p.Acquire(context.Background(), "global")
+	if err != nil {
+		t.Fatalf("distinct mcpx peer was refused: %v", err)
+	}
+	lease.Release()
+}
+
+// An upstream reporting THIS process's instance identity is the
+// daemon connected to itself: refused on identity alone, before its
+// tools are ever listed.
+func TestPoolRefusesOwnInstanceByIdentity(t *testing.T) {
+	u := newSelfUpstream(t)
+	u.instance = "own-instance"
+	pool.OwnInstanceID = "own-instance"
+	defer func() { pool.OwnInstanceID = "" }()
+	p := upstreamPool(t, u.URL)
+	_, err := p.Acquire(context.Background(), "global")
+	if err == nil || !strings.Contains(err.Error(), "self-connection") {
+		t.Fatalf("own instance admitted or wrong error: %v", err)
+	}
+	if n := u.lists(); n != 0 {
+		t.Fatalf("identity refusal listed tools %d times; want 0 (identity decides first)", n)
 	}
 }
