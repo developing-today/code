@@ -223,7 +223,9 @@ func (l *lexer) valueEnd() bool {
 	case tIdent:
 		// A member name is a value whatever it spells: o.return ends
 		// one even though return alone opens an expression context.
-		if len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "." {
+		// The optional-chain spelling counts too: o?.return / 2
+		// divides (Codex P2 on #1644).
+		if len(l.toks) >= 2 && (l.toks[len(l.toks)-2].text == "." || l.toks[len(l.toks)-2].text == "?.") {
 			return true
 		}
 		if t.text == "const" && len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "as" {
@@ -477,8 +479,9 @@ func declaredNames(toks []lexToken) map[string]bool {
 			continue
 		}
 		if t.kind == tPunct && t.text == "(" {
-			// An arrow function's parameter list: (...) => ...
-			if close := parens[i]; close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
+			// An arrow function's parameter list: (...) => ..., or
+			// the typed spelling (...): Type => ...
+			if close := parens[i]; close >= 0 && arrowAfterParams(toks, close) {
 				if !isAnnotationTypeParen(toks, i) {
 					parseParams(toks, i, out, angles)
 				}
@@ -539,6 +542,69 @@ func declaredNames(toks []lexToken) map[string]bool {
 	return out
 }
 
+// arrowAfterParams reports whether the token just past a parameter
+// list's closing paren (index close) makes the list an arrow
+// function's: either a direct "=>", or a return-type annotation in
+// between — (demo): string => ... binds demo exactly like the
+// untyped spelling (CodeRabbit minor on #1644). The annotation walk
+// mirrors skipAnnotation's nesting, except that a "=>" at the
+// annotation's own level ends it: a function-type annotation's own
+// arrow is always parenthesised or angled, so it never sits at
+// that level.
+func arrowAfterParams(toks []lexToken, close int) bool {
+	i := close + 1
+	if i >= len(toks) {
+		return false
+	}
+	if toks[i].kind == tPunct && toks[i].text == "=>" {
+		return true
+	}
+	if toks[i].kind != tPunct || toks[i].text != ":" {
+		return false
+	}
+	depth, angle := 0, 0
+	for i++; i < len(toks); i++ {
+		t := toks[i]
+		if t.kind != tPunct {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case "<":
+			angle++
+		case ">":
+			if angle > 0 {
+				angle--
+			}
+		case ">>":
+			angle -= 2
+			if angle < 0 {
+				angle = 0
+			}
+		case ">>>":
+			angle -= 3
+			if angle < 0 {
+				angle = 0
+			}
+		case "=>":
+			if depth == 0 && angle == 0 {
+				return true
+			}
+		case ",", "=", ";":
+			if depth == 0 && angle == 0 {
+				return false
+			}
+		}
+	}
+	return false
+}
+
 // parenMatches computes, for every "(" token, the index of the token
 // that returns its bracket depth to zero, in one stack pass over the
 // stream. A bracket of any kind opens a level and any closer ends the
@@ -587,6 +653,15 @@ func skipExpr(toks []lexToken, i int, stops map[string]bool, angles []int) int {
 		}
 		t := toks[i].text
 		if depth == 0 && t == "<" && i > 0 && toks[i-1].kind == tIdent && angles[i] >= 0 && angles[i] < len(toks) && toks[angles[i]].text == "(" {
+			i = angles[i]
+			continue
+		}
+		// An uncalled instantiation expression in the expression
+		// (a parameter default above all: x = identity<string,
+		// demo>) is the same type list with no call parenthesis:
+		// jump it under the same guard skipDeclarator uses, so its
+		// commas are not expression separators (Codex P2 on #1644).
+		if depth == 0 && t == "<" && i > 0 && toks[i-1].kind == tIdent && jumpableAngleList(toks, i, angles) {
 			i = angles[i]
 			continue
 		}
@@ -864,7 +939,17 @@ func typeAliasMask(toks []lexToken) []bool {
 		}
 		if i > 0 {
 			p := toks[i-1]
-			if !(p.kind == tPunct && (p.text == ";" || p.text == "{" || p.text == "}")) {
+			if p.kind == tIdent && p.text == "export" {
+				// An exported alias (export type F = ...) is the
+				// same erased region; the modifier before it must
+				// itself sit at a statement boundary.
+				if i > 1 {
+					q := toks[i-2]
+					if !(q.kind == tPunct && (q.text == ";" || q.text == "{" || q.text == "}")) {
+						continue
+					}
+				}
+			} else if !(p.kind == tPunct && (p.text == ";" || p.text == "{" || p.text == "}")) {
 				continue
 			}
 		}

@@ -72,6 +72,9 @@ func TestReferencesFindsTheNamespacesAScriptReaches(t *testing.T) {
 		{"an arrow return type annotation is not a parameter", `type demo = string; const f = (): demo => ""; demo.echo();`, only("demo"), []string{"demo"}},
 		{"generic type arguments in an initializer do not bind", `type demo = string; const x = identity<string, demo>(""); demo.echo();`, only("demo"), []string{"demo"}},
 		{"type arguments in an instantiation expression do not bind", `type demo = string; const x = identity<string, demo>; demo.echo();`, only("demo"), []string{"demo"}},
+		{"division after an optional-chain keyword member is not a regex", `const o = {return: 4}; o?.return / 2; tools.fs.read();`, none, []string{"fs"}},
+		{"an exported type alias binds nothing", `export type F = (demo: string) => string; demo.echo();`, only("demo"), []string{"demo"}},
+		{"type arguments in a parameter default instantiation do not bind", "function f(x = identity<string, demo>) {} demo.echo();", only("demo"), []string{"demo"}},
 		{"a comparison chain across declarators still binds", `const x = a < b, demo = c > d; demo.echo();`, only("demo"), nil},
 		{"a string key spelling a brace does not close a destructuring pattern", `const { "}": x, demo: local } = obj; demo.echo();`, only("demo"), []string{"demo"}},
 		{"type-only import specifiers do not bind values", `import { type demo } from "./types"; demo.echo();`, only("demo"), []string{"demo"}},
@@ -125,6 +128,7 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 
 		{"a function parameter is declared", "function f(demo) { demo.echo(); }", only("demo"), nil},
 		{"an arrow parameter in parens is declared", "const f = (demo, other) => demo.echo();", only("demo"), nil},
+		{"a typed arrow parameter in parens is declared", "const f = (demo): string => demo.echo();", only("demo"), nil},
 		{"a lone arrow parameter is declared", "const f = demo => demo.echo();", only("demo"), nil},
 		{"a destructured parameter is declared", "function f({demo}) { demo.echo(); }", only("demo"), nil},
 		{"a plain destructured binding is declared", "const {demo} = obj; demo.echo();", only("demo"), nil},
