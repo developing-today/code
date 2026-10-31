@@ -141,6 +141,15 @@ jobs:
           # every run and the module cache was rebuilt from scratch each time.
           cache-dependency-path: pkgs/mcpx/go.sum
 
+      # Darwin compile gate (#1988): cross-compile every mcpx test
+      # package for darwin/arm64 on this ubuntu job, so a Linux-only
+      # test constant cannot reach macOS undetected (#237's break).
+      # The single exception list lives in the script; it must be
+      # emptied as #237's compile fix lands.
+      - name: Darwin compile gate
+        working-directory: pkgs/mcpx
+        run: bash scripts/darwin-compile-check.sh
+
       - name: Check go.mod and go.sum are tidy
         working-directory: pkgs/mcpx
         # dezren39/nix#436: this module drifted untidy once (wazero
@@ -380,6 +389,15 @@ jobs:
           go-version-file: pkgs/mcpx/go.mod
           cache: true
           cache-dependency-path: pkgs/mcpx/go.sum
+
+      # Darwin compile gate (#1988): cross-compile every mcpx test
+      # package for darwin/arm64 on this ubuntu job, so a Linux-only
+      # test constant cannot reach macOS undetected (#237's break).
+      # The single exception list lives in the script; it must be
+      # emptied as #237's compile fix lands.
+      - name: Darwin compile gate
+        working-directory: pkgs/mcpx
+        run: bash scripts/darwin-compile-check.sh
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
