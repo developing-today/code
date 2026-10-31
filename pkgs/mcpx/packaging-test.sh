@@ -28,7 +28,10 @@ trap 'rm -rf "$work"' EXIT
 export HOME="$work/home"
 mkdir -p "$HOME"
 # State belongs under the empty HOME, never in a developer's real one.
-unset MCPX_STATE_DIR MCPX_CACHE_DIR
+# XDG_STATE_HOME / XDG_CACHE_HOME override the HOME-based defaults in
+# the daemon's path resolution, so they go too: an inherited XDG dir
+# would leak state out of the empty HOME (Codex, PR #2994).
+unset MCPX_STATE_DIR MCPX_CACHE_DIR XDG_STATE_HOME XDG_CACHE_HOME
 
 # --version, from the store path, with no pre-existing state.
 version_out="$("$bin" --version)" || fail "mcpx --version did not run"
@@ -39,15 +42,22 @@ note "version: $version_out"
 # The wrapper's PATH, verified from inside the process: run doctor
 # with a PATH that has none of the runtimes on it. Whatever doctor
 # finds (it uses exec.LookPath in-process) arrived via the wrapper's
-# --suffix PATH from package.nix's postInstall.
-doctor_out="$(env -i HOME="$HOME" PATH=/nonexistent "$bin" doctor -v 2>&1 || true)"
+# --suffix PATH from package.nix's postInstall. Read the results
+# through doctor's JSON interface, never its human output
+# (pkgs/mcpx/AGENTS.md: "Do not parse human output; use
+# `mcpx --json <command>`" — Codex, PR #2994).
+doctor_json="$(env -i HOME="$HOME" PATH=/nonexistent "$bin" --json doctor 2>/dev/null || true)"
+[ -n "$doctor_json" ] || fail "mcpx --json doctor produced no output"
+runtime_check="$(printf '%s' "$doctor_json" | grep -o '"name":"runtime"[^}]*}' || true)"
+[ -n "$runtime_check" ] || fail "mcpx --json doctor has no runtime check: $doctor_json"
 for rt in deno bun node; do
-  printf '%s' "$doctor_out" | grep -q "$rt (/nix/store/" ||
+  printf '%s' "$runtime_check" | grep -q "$rt (/nix/store/" ||
     fail "doctor (scrubbed PATH) did not find $rt on the wrapper PATH"
 done
-printf '%s' "$doctor_out" | grep -q 'git at /nix/store/' ||
+git_check="$(printf '%s' "$doctor_json" | grep -o '"name":"git"[^}]*}' || true)"
+printf '%s' "$git_check" | grep -q 'git at /nix/store/' ||
   fail "doctor (scrubbed PATH) did not find git on the wrapper PATH"
-note "wrapper PATH reaches deno, bun, node and git (doctor, scrubbed PATH)"
+note "wrapper PATH reaches deno, bun, node and git (doctor --json, scrubbed PATH)"
 
 # Man page and completions, present in the built output, and the man
 # page's .TH line carries the built version.
