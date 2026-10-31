@@ -33,7 +33,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iroh_base::EndpointId;
 use serde::{Deserialize, Serialize};
@@ -425,16 +425,44 @@ impl PeerDiscovery {
 
     /// Updates the peer table with a new announcement.
     ///
-    /// If the peer is already known, its announcement and last-seen
-    /// timestamp are updated. If the peer is new, it is inserted.
+    /// Two checks guard the table against stale gossip, so every caller
+    /// gets them (the `serve.rs` receive loop needs no trust logic of
+    /// its own):
+    ///
+    /// - **Freshness bound.** An announcement stamped older than
+    ///   [`STALE_THRESHOLD`] relative to the local wall clock is
+    ///   refused: it neither inserts a peer nor refreshes one, so
+    ///   replaying a captured announcement cannot keep a departed peer
+    ///   live. (A stamp in the future counts as fresh; the ordering
+    ///   check still governs whether it may replace stored state.)
+    /// - **Ordering.** An announcement older than the stored one for
+    ///   the same node is dropped: out-of-order delivery never
+    ///   regresses the table. Equal timestamps are a tie, broken
+    ///   deterministically — the most recent arrival wins.
+    ///
+    /// An announcement that passes both checks replaces the stored one
+    /// (or inserts a new peer), stamped with the local arrival time.
     pub fn update(&self, announcement: PeerAnnouncement) {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if now_secs.saturating_sub(announcement.timestamp_secs) > STALE_THRESHOLD.as_secs() {
+            return;
+        }
         let node_id = announcement.node_id;
-        let info = PeerInfo {
-            announcement,
-            last_seen: Instant::now(),
-        };
         if let Ok(mut peers) = self.peers.write() {
-            peers.insert(node_id, info);
+            if let Some(existing) = peers.get(&node_id)
+                && announcement.timestamp_secs < existing.announcement.timestamp_secs
+            {
+                return;
+            }
+            peers.insert(
+                node_id,
+                PeerInfo {
+                    announcement,
+                    last_seen: Instant::now(),
+                },
+            );
         }
     }
 
@@ -540,13 +568,76 @@ mod tests {
         secret.public()
     }
 
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     fn make_announcement(byte: u8, name: Option<&str>, blob_count: u64) -> PeerAnnouncement {
+        make_announcement_at(byte, name, blob_count, now_secs())
+    }
+
+    fn make_announcement_at(
+        byte: u8,
+        name: Option<&str>,
+        blob_count: u64,
+        timestamp_secs: u64,
+    ) -> PeerAnnouncement {
         PeerAnnouncement {
             node_id: make_node_id(byte),
             name: name.map(ToOwned::to_owned),
             blob_count,
-            timestamp_secs: 1_700_000_000,
+            timestamp_secs,
         }
+    }
+
+    #[test]
+    fn test_out_of_order_announcement_does_not_overwrite_newer() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        discovery.update(make_announcement_at(1, Some("new-name"), 42, now));
+        discovery.update(make_announcement_at(1, Some("old-name"), 7, now - 60));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name, Some("new-name".to_owned()));
+        assert_eq!(peers[0].announcement.blob_count, 42);
+        assert_eq!(peers[0].announcement.timestamp_secs, now);
+    }
+
+    #[test]
+    fn test_ancient_announcement_is_refused_and_not_fresh() {
+        let discovery = PeerDiscovery::new();
+        // The probe's ghost case (#1552 case 3): stamped 1970.
+        discovery.update(make_announcement_at(1, Some("ghost"), 99, 1));
+        assert_eq!(discovery.count(), 0);
+        assert!(discovery.peers().is_empty());
+
+        // Nor does an ancient replay touch a live peer's stored state.
+        let now = now_secs();
+        discovery.update(make_announcement_at(2, Some("live"), 3, now));
+        discovery.update(make_announcement_at(2, Some("ghost"), 99, now - 3600));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name, Some("live".to_owned()));
+        assert_eq!(peers[0].announcement.blob_count, 3);
+    }
+
+    #[test]
+    fn test_in_order_announcements_still_replace_and_ties_go_to_the_latest() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        discovery.update(make_announcement_at(1, Some("first"), 1, now - 10));
+        discovery.update(make_announcement_at(1, Some("second"), 2, now));
+        let peers = discovery.peers();
+        assert_eq!(peers[0].announcement.name, Some("second".to_owned()));
+        assert_eq!(peers[0].announcement.blob_count, 2);
+        // Equal timestamps: the documented tie rule — most recent arrival wins.
+        discovery.update(make_announcement_at(1, Some("tie"), 3, now));
+        let peers = discovery.peers();
+        assert_eq!(peers[0].announcement.name, Some("tie".to_owned()));
+        assert_eq!(peers[0].announcement.blob_count, 3);
     }
 
     #[test]
