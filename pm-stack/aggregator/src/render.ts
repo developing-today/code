@@ -4729,8 +4729,15 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
     : `no run on record · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""}`;
   const coll = view.jobs.collector;
+  const drift = view.feed.checkout;
+  const driftLine =
+    drift.state === "behind"
+      ? ` · <span class="badge stale">collector checkout behind origin/main by ${drift.behindBy ?? "?"} commit(s)</span> — the collector is running old code`
+      : drift.state === "in-sync"
+        ? ` · collector checkout in sync with origin/main`
+        : ` · collector checkout drift unknown: ${esc(drift.reason ?? "no reason given")}`;
   const collLine = coll.generatedAt
-    ? `feed generated ${esc(ageMsText(coll.ageMs ?? 0))} · file written ${coll.fileMtime ? esc(coll.fileMtime) : "unknown"}`
+    ? `feed generated ${esc(ageMsText(coll.ageMs ?? 0))} · file written ${coll.fileMtime ? esc(coll.fileMtime) : "unknown"}${driftLine}`
     : "no readable fleet feed";
   const pageRows = view.pages
     .map((p) => {
