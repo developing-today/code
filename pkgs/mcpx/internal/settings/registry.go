@@ -422,8 +422,11 @@ func depsSettings() []Setting {
 				"in mcpx's own configuration directory. cwd uses the project the " +
 				"script sits in. explicit uses only what the caller asked for. " +
 				"none provides nothing and lets the runtime fail, which is what you " +
-				"want when a missing package should be loud. A script's own pinned " +
-				"specifiers and the nearest project manifest still win over this.",
+				"want when a missing package should be loud. none drops the rest " +
+				"of the chain too: neither deps.packages nor the nearest project " +
+				"manifest is provided. For every other source, a script's own " +
+				"pinned specifiers and the nearest project manifest still win " +
+				"over this.",
 		},
 		{
 			Path: "deps.manifest", Kind: KindSource, Default: "",

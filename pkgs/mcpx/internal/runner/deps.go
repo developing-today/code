@@ -558,6 +558,12 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if err := writeBytesIfChanged(filepath.Join(dir, ".npmrc"), d.NPMRC); err != nil {
 			return nil, fmt.Errorf("deps: write project .npmrc: %w", err)
 		}
+	} else {
+		// A set with no .npmrc must not inherit one an earlier set
+		// left in a reused workdir: the next install there would
+		// read the earlier project's registry and auth settings
+		// (CodeRabbit review, PR #2589).
+		_ = os.Remove(filepath.Join(dir, ".npmrc"))
 	}
 
 	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
@@ -596,6 +602,13 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if err := writeBytesIfChanged(filepath.Join(dir, name), lockContent); err != nil {
 			return nil, fmt.Errorf("deps: write lockfile: %w", err)
 		}
+	} else {
+		// No lockfile in this set: a Bun lockfile an earlier set left
+		// in a reused workdir must not survive, or a fallback/always
+		// autoInstall run installs against its pins for packages this
+		// set resolved differently (CodeRabbit review, PR #2589).
+		_ = os.Remove(filepath.Join(dir, "bun.lock"))
+		_ = os.Remove(filepath.Join(dir, "bun.lockb"))
 	}
 
 	if kind == KindDeno && len(deps) == 0 {

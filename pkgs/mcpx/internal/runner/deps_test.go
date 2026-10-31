@@ -1454,3 +1454,35 @@ func TestFrozenAdditionsInstallSeparately(t *testing.T) {
 		t.Fatalf("sidecar not consumed: %v", err)
 	}
 }
+
+// TestMaterialiseDepsRemovesStaleNPMRCAndBunLockfiles covers two
+// CodeRabbit findings on PR #2589 (runner/deps.go): in a reused workdir,
+// a set with no .npmrc must not inherit the previous set's (its registry
+// and auth settings would govern the next install), and a set with no
+// lockfile must not leave a Bun lockfile behind for a fallback/always
+// autoInstall run to install against.
+func TestMaterialiseDepsRemovesStaleNPMRCAndBunLockfiles(t *testing.T) {
+	workdir := t.TempDir()
+	with := &Deps{
+		Manifest:  `{"name":"proj","version":"1.0.0"}`,
+		NPMRC:     []byte("legacy-peer-deps=true\n"),
+		Lockfiles: []Lockfile{{Name: "bun.lock", Content: []byte("bun")}},
+	}
+	if _, err := materialiseDeps(workdir, KindBun, with, false, ""); err != nil {
+		t.Fatalf("materialise with: %v", err)
+	}
+	for _, name := range []string{".npmrc", "bun.lock"} {
+		if _, err := os.Stat(filepath.Join(workdir, name)); err != nil {
+			t.Fatalf("%s was not materialised by the first set: %v", name, err)
+		}
+	}
+	without := &Deps{Manifest: `{"name":"proj","version":"1.0.0"}`}
+	if _, err := materialiseDeps(workdir, KindBun, without, false, ""); err != nil {
+		t.Fatalf("materialise without: %v", err)
+	}
+	for _, name := range []string{".npmrc", "bun.lock", "bun.lockb"} {
+		if _, err := os.Stat(filepath.Join(workdir, name)); !os.IsNotExist(err) {
+			t.Fatalf("stale %s survived a set that has none", name)
+		}
+	}
+}

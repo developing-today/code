@@ -353,7 +353,11 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 	}
 
 	var manifest *Manifest
-	if cfg.Source != SourceExplicit {
+	// Under explicit, discovery is skipped — but a manifest the caller
+	// NAMED (deps.manifest) is not discovery: it is part of the explicit
+	// request, and honouring it is the only way its packages and its
+	// lockfile reach the run (CodeRabbit review, PR #2589).
+	if cfg.Source != SourceExplicit || cfg.Manifest != "" {
 		m, err := Find(cfg, startDir)
 		if err == nil {
 			manifest = m

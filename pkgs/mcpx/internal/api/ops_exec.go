@@ -125,6 +125,7 @@ const execOptionsSchema = `{"type":"object","properties":{
   "lockfile":{"type":"string","contentEncoding":"base64","description":"the lockfile's content (base64, as a Go []byte crosses JSON), honoured frozen and never rewritten"},
   "lockfileName":{"type":"string","description":"the filename to write the lockfile as, such as bun.lock"},
   "lockfiles":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","contentEncoding":"base64"}},"additionalProperties":false},"description":"every lockfile found beside the manifest; which one governs depends on the runtime that finally executes"},
+  "npmrc":{"type":"string","contentEncoding":"base64","description":"the project .npmrc content (base64, as a Go []byte crosses JSON), written beside the materialised manifest so the isolated install reads the project registry settings"},
   "source":{"type":"string","description":"the resolved deps.source, carried so the daemon materialises the same set the caller judged"},
   "autoInstall":{"type":"string","enum":["off","fallback","always"],"description":"the resolved deps.autoInstall"}
 },"additionalProperties":false,"description":"the script's dependency set (#1913): where its packages come from"},

@@ -85,7 +85,15 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 		out.PackageDirs = set.PackageDirs
 	}
 	if m := set.Manifest; m != nil {
-		if text, err := m.JSON(); err == nil {
+		// A manifest that cannot be read back must not silently vanish
+		// from the payload: the run would continue with only the
+		// explicit packages and no project manifest (CodeRabbit
+		// review, PR #2589).
+		text, jerr := m.JSON()
+		if jerr != nil {
+			return nil, jerr
+		}
+		if text != nil {
 			out.Manifest = string(text)
 			out.ManifestName = filepath.Base(m.Path)
 			out.ManifestDir = m.Dir

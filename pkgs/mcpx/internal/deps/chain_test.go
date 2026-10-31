@@ -766,3 +766,73 @@ func TestConflictsSpacedComparatorsAndHyphenRanges(t *testing.T) {
 		})
 	}
 }
+
+// TestExplicitSourceHonoursANamedManifest is the CodeRabbit finding on
+// PR #2589 (chain.go): under deps.source=explicit, Resolve skipped Find
+// entirely, so a manifest named by deps.manifest was never loaded — its
+// packages and lockfile never reached the run and no error was reported.
+// Discovery stays skipped: an unnamed manifest in the search path is NOT
+// picked up under explicit.
+func TestExplicitSourceHonoursANamedManifest(t *testing.T) {
+	dir := t.TempDir()
+	mpath := write(t, dir, "package.json", `{"dependencies":{"from-manifest":"1.2.3"}}`)
+	write(t, dir, "package-lock.json", `{}`)
+
+	c := cfg(t, deps.SourceExplicit, dir)
+	c.Manifest = mpath
+	set, err := deps.Resolve(c, dir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if set.Manifest == nil {
+		t.Fatal("a named manifest under explicit must be loaded")
+	}
+	found := false
+	for _, pkg := range set.Packages {
+		if pkg.Name == "from-manifest" && pkg.Version == "1.2.3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("manifest packages missing from the set: %+v", set.Packages)
+	}
+	if !set.Frozen {
+		t.Fatal("the named manifest's lockfile must mark the set frozen")
+	}
+
+	// With explicit packages added, the pin governs and the contradiction
+	// is reported as a conflict, exactly as for a discovered manifest.
+	c.Packages = []string{"from-manifest@2.0.0"}
+	set, err = deps.Resolve(c, dir)
+	if err != nil {
+		t.Fatalf("Resolve with packages: %v", err)
+	}
+	if len(set.Conflicts) != 1 || set.Conflicts[0].Name != "from-manifest" {
+		t.Fatalf("conflicts = %+v, want the from-manifest contradiction", set.Conflicts)
+	}
+
+	// No named manifest: discovery must stay off under explicit.
+	c2 := cfg(t, deps.SourceExplicit, dir)
+	set, err = deps.Resolve(c2, dir)
+	if err != nil {
+		t.Fatalf("Resolve unnamed: %v", err)
+	}
+	if set.Manifest != nil {
+		t.Fatal("explicit without deps.manifest must not discover a manifest")
+	}
+}
+
+// TestManifestNPMRCTextUnreadableIsAnError extends the .npmrc test with
+// the read-error branch (CodeRabbit review, PR #2589): an .npmrc that
+// exists but cannot be read — a directory at that path — is an error,
+// not an absence.
+func TestManifestNPMRCTextUnreadableIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".npmrc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := &deps.Manifest{Dir: dir, Path: filepath.Join(dir, "package.json")}
+	if _, err := m.NPMRCText(); err == nil {
+		t.Fatal("an unreadable .npmrc must return an error")
+	}
+}

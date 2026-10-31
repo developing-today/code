@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/execsvc"
@@ -54,5 +55,30 @@ func TestDepsSurviveANonNilSink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, "bun.lock")); !os.IsNotExist(err) {
 		t.Fatal("bun.lock materialised for a deno run")
+	}
+}
+
+// TestRunWithRejectsPinsThatContradictTheManifest is the CodeRabbit
+// finding on PR #2589 (runner/deps.go): a /v1/exec request could send
+// deps.packages contradicting deps.manifest and RunWith forwarded the
+// set with no conflict check, so the manifest version silently won.
+// The boundary every caller crosses rejects the pin naming both
+// versions, as the CLI already does.
+func TestRunWithRejectsPinsThatContradictTheManifest(t *testing.T) {
+	svc := service(t, store(t))
+	_, err := svc.RunWith(context.Background(), runner.Options{
+		Source:       `console.log("hi");`,
+		ClientSource: minimalClient,
+		Permissions:  "all",
+		WorkDir:      t.TempDir(),
+	}, execsvc.Options{
+		Runtime: "deno",
+		Deps: &execsvc.DepsOptions{
+			Packages: []string{"foo@2.0.0"},
+			Manifest: `{"dependencies":{"foo":"1.0.0"}}`,
+		},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "foo: explicit 2.0.0 contradicts manifest 1.0.0") {
+		t.Fatalf("a contradicting pin must be rejected naming both versions, got %v", err)
 	}
 }

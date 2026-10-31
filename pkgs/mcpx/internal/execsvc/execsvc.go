@@ -35,6 +35,7 @@ import (
 
 	"github.com/dezren39/mcpx/internal/artifacts"
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/deps"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/runner"
 )
@@ -642,6 +643,37 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// streaming CLI path, the daemon's execStream handler) were
 	// silently losing their dependency sets when it was nested inside
 	// `if sink == nil` (Codex review, PR #2589).
+	// A /v1 or MCP caller can send explicit pins beside a manifest text
+	// without the CLI's Resolve ever seeing the pair, so the conflict
+	// rule is enforced again at this boundary — the one every caller
+	// crosses — rather than trusting each surface to check (CodeRabbit
+	// review, PR #2589). A contradicting pin is reported, never
+	// silently resolved in the manifest's favour.
+	if opts.Deps != nil && opts.Deps.Manifest != "" && len(opts.Deps.Packages) > 0 {
+		var man struct {
+			Dependencies         map[string]any `json:"dependencies"`
+			OptionalDependencies map[string]any `json:"optionalDependencies"`
+		}
+		if err := json.Unmarshal([]byte(opts.Deps.Manifest), &man); err != nil {
+			return nil, fmt.Errorf("deps: parse transported manifest: %w", err)
+		}
+		want := map[string]string{}
+		for _, sec := range []map[string]any{man.Dependencies, man.OptionalDependencies} {
+			for name, v := range sec {
+				if s, ok := v.(string); ok {
+					want[name] = s
+				}
+			}
+		}
+		if conflicts := deps.Conflicts(opts.Deps.Packages, want); len(conflicts) > 0 {
+			var parts []string
+			for _, c := range conflicts {
+				parts = append(parts, fmt.Sprintf("%s: explicit %s contradicts manifest %s",
+					c.Name, c.Explicit, c.Manifest))
+			}
+			return nil, fmt.Errorf("deps: %s", strings.Join(parts, "; "))
+		}
+	}
 	if opts.Deps != nil && ropts.Deps == nil {
 		ropts.Deps = &runner.Deps{
 			Packages:     opts.Deps.Packages,
