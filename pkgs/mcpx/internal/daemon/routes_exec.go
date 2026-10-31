@@ -401,6 +401,19 @@ func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("ttl %q: %w", ttl, perr))
 			return
 		}
+		// A per-request ttl may shorten retention but never extend
+		// it past the operator's artifacts.ttl (#2327, rule pinned
+		// by triage task 3482): an over-ceiling ttl is a caller
+		// error and is rejected naming both values, not silently
+		// clamped — a clamp would hide the mistake and keep bytes
+		// for less time than the caller asked. A caller that needs
+		// longer retention raises artifacts.ttl in the operator
+		// configuration instead. ttl <= 0 keeps the store default,
+		// exactly as before.
+		if ceiling := store.TTL(); ceiling > 0 && d > ceiling {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ttl %s exceeds artifacts.ttl %s: a per-request ttl may shorten retention but never extend it; raise artifacts.ttl in the operator configuration for longer retention", d, ceiling))
+			return
+		}
 		put.TTL = d
 	}
 	var meta artifacts.Meta

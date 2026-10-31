@@ -130,6 +130,12 @@ func (s *Store) Close() error { return s.db.Close() }
 // Dir is the store root.
 func (s *Store) Dir() string { return s.dir }
 
+// TTL is the retention the store was opened with: the operator's
+// artifacts.ttl. It is the ceiling for any per-request ttl — the
+// daemon's artifact handler rejects a request above it rather than
+// letting one caller repeal the operator's retention setting.
+func (s *Store) TTL() time.Duration { return s.opts.TTL }
+
 // ErrTooLarge is returned when one artifact exceeds the per-artifact cap.
 type ErrTooLarge struct{ Size, Max int64 }
 
