@@ -300,7 +300,13 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 						for k, v := range m {
 							rm[k] = rebaseDenoMapping(v, cfgDir)
 						}
-						scopes[scope] = rm
+						// The scope KEY is a path prefix too: left
+						// unrebased it would point into the workdir
+						// instead of the project's directory, and the
+						// scoped mappings under it would never match
+						// an import from the project (Codex review,
+						// PR #2589).
+						scopes[rebaseDenoMapping(scope, cfgDir)] = rm
 					}
 				}
 			}
@@ -468,6 +474,47 @@ func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[st
 			return nil, nil, "", false
 		}
 	}
+}
+
+// projectDenoConfigIdentity identifies the project Deno configuration
+// a run's generated deno.json will carry -- the config's content plus
+// the directory its relative mappings resolve against. Two runs whose
+// dependency payloads are identical but whose projects contribute
+// different configurations must not share a materialised workdir:
+// the generated config is project-specific (aliases, absolute rebased
+// paths), and Deno runs take no script-directory lock, so a shared
+// directory would let one execution overwrite the config another is
+// about to read (Codex review, PR #2589). "" when the project carries
+// no readable config, matching the generated config carrying none.
+func projectDenoConfigIdentity(dir string) string {
+	imports, scopes, cfgDir, ok := loadProjectDenoConfig(dir)
+	if !ok {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "cfgdir:%s\n", cfgDir)
+	if b, err := json.Marshal(struct {
+		Imports map[string]string            `json:"imports"`
+		Scopes  map[string]map[string]string `json:"scopes"`
+	}{imports, scopes}); err == nil {
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// depsProjectDir is the directory whose project a run's dependency
+// set resolves against: a file script's own directory, or the
+// execution directory for an inline script. It is the directory
+// materialiseDeps loads the project Deno config from, so the workdir
+// identity and the materialisation must agree on it.
+func depsProjectDir(opts Options) string {
+	if opts.File != "" {
+		if abs, err := filepath.Abs(opts.File); err == nil {
+			return filepath.Dir(abs)
+		}
+		return filepath.Dir(opts.File)
+	}
+	return opts.Dir
 }
 
 // rebaseDenoMapping rewrites a project config mapping for a

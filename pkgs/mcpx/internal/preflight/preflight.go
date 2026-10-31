@@ -196,7 +196,7 @@ const (
 // scheduled, where the cost is irrelevant and a broken import at three in the
 // morning is not.
 func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration) *Report {
-	return TypeCheckResolved(ctx, runtimeBin, entry, mode, timeout, nil)
+	return TypeCheckResolved(ctx, runtimeBin, entry, mode, timeout, nil, filepath.Dir(entry))
 }
 
 // TypeCheckResolved is TypeCheck with the executing run's
@@ -205,7 +205,17 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 // config, so an import only the generated dependency map supplies
 // is not reported missing by a check that never saw the map
 // (Codex review, PR #2589).
-func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string) *Report {
+//
+// execDir is the directory the script will execute in (runner's
+// Options.Dir). It matters for the same reason it matters in
+// CheckImportsResolved: the runtime resolves a relative configuration
+// path -- `--config ./deno.json` in the declared runtime arguments --
+// against its working directory, so the check must run there too, not
+// beside the entry file, or a valid run is aborted for a config that
+// was never the one it executes under (Codex review, PR #2589). An
+// empty execDir inherits the caller's working directory, which is
+// exactly what the execution does.
+func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir string) *Report {
 	r := &Report{}
 	if mode == TypeCheckOff || mode == "" {
 		return r
@@ -235,7 +245,10 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 		defer cancel()
 	}
 	cmd := exec.CommandContext(cctx, runtimeBin, args...)
-	cmd.Dir = filepath.Dir(entry)
+	// Execute in the directory the script will execute in, not beside
+	// the entry file: relative --config paths resolve from the working
+	// directory (Codex review, PR #2589).
+	cmd.Dir = execDir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return r

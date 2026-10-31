@@ -567,9 +567,45 @@ func TestMaterialiseDepsDenoPreservesProjectConfig(t *testing.T) {
 		t.Fatalf("resolved pin did not govern over the project mapping: %v", imports)
 	}
 	scopes := dj["scopes"].(map[string]any)
-	toolScope := scopes["./tools/"].(map[string]any)
+	// The scope key is rebased against the project directory too, or
+	// it would name a directory inside the workdir and never match.
+	wantScope := "file://" + filepath.ToSlash(filepath.Join(project, "tools")) + "/"
+	toolScope, ok := scopes[wantScope].(map[string]any)
+	if !ok {
+		t.Fatalf("scope key not rebased to %q: %v", wantScope, scopes)
+	}
 	wantHelper := "file://" + filepath.ToSlash(filepath.Join(project, "helpers", "h.ts"))
 	if toolScope["helper"] != wantHelper {
 		t.Fatalf("scope mapping not preserved/rebased: %v (want %q)", scopes, wantHelper)
+	}
+}
+
+// Codex round (PR #2589): the workdir identity must cover the project
+// Deno configuration the generated config carries, or two projects
+// with identical dependency payloads would share one workdir and
+// overwrite each other's generated deno.json.
+func TestProjectDenoConfigIdentityDistinguishesProjects(t *testing.T) {
+	write := func(dir, alias string) {
+		t.Helper()
+		body := `{"imports": {"@app/": "` + alias + `"}}`
+		if err := os.WriteFile(filepath.Join(dir, "deno.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b, none := t.TempDir(), t.TempDir(), t.TempDir()
+	write(a, "./src-a/")
+	write(b, "./src-b/")
+	ida, idb := projectDenoConfigIdentity(a), projectDenoConfigIdentity(b)
+	if ida == "" || idb == "" {
+		t.Fatalf("projects with configs must have identities, got %q and %q", ida, idb)
+	}
+	if ida == idb {
+		t.Fatalf("different project configs produced one identity %q", ida)
+	}
+	if again := projectDenoConfigIdentity(a); again != ida {
+		t.Fatalf("identity not stable: %q then %q", ida, again)
+	}
+	if got := projectDenoConfigIdentity(none); got != "" {
+		t.Fatalf("a project with no config must have empty identity, got %q", got)
 	}
 }

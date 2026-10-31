@@ -204,7 +204,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// package.json / deno.json / lockfiles / node_modules from one
 		// set can never leak into another set's run -- or into a run
 		// with no set at all (Codex review, PR #2589).
-		sum := sha256.Sum256([]byte(opts.ClientSource + "\x00" + opts.Deps.fingerprint()))
+		keyMaterial := opts.ClientSource + "\x00" + opts.Deps.fingerprint()
+		if rt.Kind == KindDeno && opts.Deps != nil {
+			// The generated deno.json also carries the project's own
+			// configuration (see materialiseDeps), which the dep
+			// fingerprint does not cover: include its identity or
+			// two projects with identical payloads would share one
+			// workdir and overwrite each other's config (Codex
+			// review, PR #2589).
+			keyMaterial += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
+		}
+		sum := sha256.Sum256([]byte(keyMaterial))
 		workDir = filepath.Join(opts.WorkRoot, hex.EncodeToString(sum[:])[:16])
 		if err := os.MkdirAll(workDir, 0o700); err != nil {
 			return nil, err
@@ -281,10 +291,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// type check, because both resolve the script's imports (#1913).
 	var depsFlags []string
 	if opts.Deps != nil {
-		projectDir := opts.Dir
-		if opts.File != "" {
-			projectDir = filepath.Dir(scriptPath)
-		}
+		projectDir := depsProjectDir(opts)
 		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "", projectDir)
 		if derr != nil {
 			return nil, derr
@@ -356,7 +363,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			timeout = defaults.TypecheckTimeout
 		}
 		rep := preflight.TypeCheckResolved(ctx, rt.Bin, scriptPath, preflight.TypeCheckMode(mode), timeout,
-			append(append([]string{}, rt.ConfigArgs...), depsFlags...))
+			append(append([]string{}, rt.ConfigArgs...), depsFlags...), opts.Dir)
 		if err := rep.Err(); err != nil {
 			return nil, err
 		}
