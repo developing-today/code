@@ -60,6 +60,8 @@ function xtermColor(index: number): string | null {
 const WIDE_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x1100, 0x115f],
   [0x2329, 0x232a],
+  [0x2b1b, 0x2b1c],
+  [0x2b55, 0x2b55],
   [0x2e80, 0x303e],
   [0x3040, 0x33ff],
   [0x3400, 0x4dbf],
@@ -130,7 +132,10 @@ function isWideCodePoint(codePoint: number): boolean {
   return WIDE_RANGES.some(([low, high]) => codePoint >= low && codePoint <= high);
 }
 
-const COMBINING_MARK = /^\p{M}$/u;
+// Non-spacing and enclosing marks (Mn, Me) measure 0 under unicode-width
+// 0.2, but spacing marks (Mc, e.g. U+0903) measure 1, like a base character
+// — a blanket \p{M} rule diverged on lone spacing marks (#1581).
+const NON_SPACING_MARK = /^(?:\p{Mn}|\p{Me})$/u;
 
 /** Width of one code point under unicode-width 0.2: wide = 2, combining/zero-width = 0, else 1. */
 function codePointWidth(character: string, codePoint: number): number {
@@ -138,8 +143,12 @@ function codePointWidth(character: string, codePoint: number): number {
   // Tag characters (U+E0020..U+E007F) contribute 0: a tag sequence (e.g. the
   // England flag) measures as its base alone under unicode-width 0.2 (#1431).
   if (codePoint >= 0xe0020 && codePoint <= 0xe007f) return 0;
+  // Hangul jamo vowels and trailing jamo (U+1160..U+11FF) contribute 0:
+  // the lead jamo carries the composed syllable's width 2, so an LV/LVT
+  // cluster measures 2 in total, not per component (#1581).
+  if (codePoint >= 0x1160 && codePoint <= 0x11ff) return 0;
   if (isWideCodePoint(codePoint)) return 2;
-  if (COMBINING_MARK.test(character)) return 0;
+  if (NON_SPACING_MARK.test(character)) return 0;
   return 1;
 }
 
@@ -148,9 +157,11 @@ function codePointWidth(character: string, codePoint: number): number {
  * a ZWJ sequence containing a wide/emoji code point measures 2 in total
  * (not per component), and U+FE0F (emoji presentation) forces width 2 —
  * e.g. 😀, 𠮷, 👨‍👩‍👧 and ⚠️ are all width 2, matching the Rust validator.
- * An emoji modifier (U+1F3FB..U+1F3FF) contributes 0, so a modified emoji
- * measures as its base alone, and tag characters contribute 0 via
- * codePointWidth, so a tag sequence measures as its base (#1431).
+ * An emoji-modifier sequence (base + U+1F3FB..U+1F3FF) measures 2 as a
+ * whole under unicode-width 0.2 — even when the base alone is narrow
+ * (☝ U+261D is width 1, ☝🏻 is width 2) — and tag characters contribute
+ * 0 via codePointWidth, so a tag sequence measures as its base (#1431,
+ * #1581).
  */
 function graphemeWidth(symbol: string): number {
   const characters = Array.from(symbol);
@@ -163,7 +174,7 @@ function graphemeWidth(symbol: string): number {
   if (codePoints.some(isModifier)) {
     const base = characters.filter((_, i) => !isModifier(codePoints[i]));
     // A cluster of only modifiers falls through to the plain sum.
-    if (base.length > 0) return graphemeWidth(base.join(""));
+    if (base.length > 0) return 2;
   }
   return characters.reduce((total, character, i) => total + codePointWidth(character, codePoints[i]), 0);
 }
@@ -205,10 +216,13 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
 
   for (let index = 0; index < surface.cells.length; index++) {
     const cell = surface.cells[index];
+    // No symbol-length cap: the Rust validator imposes none — only
+    // exactly-one-grapheme and width 1–2 (checked below) — and a TS-only
+    // cap refused Rust-valid cells such as a base letter carrying many
+    // combining marks (#1581). The two validators must not disagree.
     if (
       !cell ||
       typeof cell.symbol !== "string" ||
-      cell.symbol.length > 16 ||
       Array.from(cell.symbol).some((character) => {
         const codePoint = character.codePointAt(0) ?? 0;
         return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);

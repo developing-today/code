@@ -107,6 +107,60 @@ describe("world screen presenter", () => {
     }
   });
 
+  it("measures the #1581 remainder classes like Rust unicode-width 0.2.2", () => {
+    const root = document.createElement("div");
+    const expectWide = (symbol: string) => {
+      const screen: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, screen)).toBe(true);
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+    };
+    // ⬛ U+2B1B, ⬜ U+2B1C, ⭕ U+2B55: wide in unicode-width, previously
+    // missing from WIDE_RANGES and measured 1.
+    for (const symbol of ["\u{2B1B}", "\u{2B1C}", "\u{2B55}"]) expectWide(symbol);
+    // ☝🏻 U+261D U+1F3FB: a modifier sequence measures 2 even on a
+    // narrow (width-1) base.
+    expectWide("\u{261D}\u{1F3FB}");
+    // Composed Hangul jamo: LV U+1100 U+1161 and LVT + U+11A8 measure
+    // as the precomposed syllable — 2, not the per-component sum.
+    expectWide("\u{1100}\u{1161}");
+    expectWide("\u{1100}\u{1161}\u{11A8}");
+
+    // A lone spacing mark (U+0903, category Mc) measures 1, not 0:
+    // renders in 1 column and is refused in 2.
+    expect(renderWorldSurface(root, makeScreen([{ symbol: "\u{0903}", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
+      true,
+    );
+    const markInWide: ScreenSurface = {
+      kind: "screen",
+      version: 1,
+      width: 2,
+      height: 1,
+      cells: [
+        { symbol: "\u{0903}", fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ],
+    };
+    expect(renderWorldSurface(root, markInWide)).toBe(false);
+
+    // One grapheme of 18 UTF-16 units (e + 17 combining acutes, width
+    // 1) renders: there is no symbol-length cap, matching the Rust
+    // validator.
+    const longGrapheme = `e${"\u0301".repeat(17)}`;
+    expect(longGrapheme.length).toBe(18);
+    expect(renderWorldSurface(root, makeScreen([{ symbol: longGrapheme, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(
+      true,
+    );
+  });
+
   it("measures astral-plane, ZWJ and variation-selector glyphs as width 2, like Rust unicode-width (#761)", () => {
     const root = document.createElement("div");
     // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
