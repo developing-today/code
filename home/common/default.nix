@@ -717,6 +717,14 @@ in
   # (warm-session maps, per-conversation workdirs) lives outside the
   # checkout. The scripts' default (bin/work inside ~/code) dirtied
   # the primary checkout with every session and blocked pm-git-sync.
+  #
+  # The commandcode + claude-code units additionally pin their shared
+  # key->session map via *_PROXY_SESSION_FILE to
+  # ~/.local/state/cli-proxies/sessions.json (#3067): that map was
+  # anchored to the scripts' own directory (bin/sessions.json) rather
+  # than the workroot, so the #2782 move missed it and the primary
+  # checkout kept dirtying. Both units MUST name the same file -- the
+  # two proxies share one map (mirrored key space).
 
   # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
   # Provider API rejects the Go plan, so OpenCode talks to the CLI via
@@ -750,6 +758,7 @@ in
         "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
         "COMMANDCODE_PROXY_HOST=127.0.0.1"
         "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
+        "COMMANDCODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
         "COMMANDCODE_PROXY_MAX_TURNS=1"
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
@@ -779,6 +788,7 @@ in
         "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
         "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
         "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
+        "CLAUDE_CODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
       ];
     };
     Install.WantedBy = [ "default.target" ];

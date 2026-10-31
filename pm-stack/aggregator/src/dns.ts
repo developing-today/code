@@ -6,6 +6,7 @@
 // re-worded prose section elsewhere in the file cannot corrupt it;
 // if #902's job ever emits register.json, this parser is the fallback,
 // not the competitor.
+import { addDaysYmd, chicagoYmd } from "./derive.ts";
 import type { DnsEntry, DnsSection } from "./model.ts";
 
 /** Classification from the register's "Plan / status" cell. */
@@ -75,6 +76,7 @@ export function isDnsSection(v: unknown): v is DnsSection {
   const s = v as Partial<DnsSection>;
   return (
     typeof s.generatedAt === "string" &&
+    Number.isFinite(Date.parse(s.generatedAt)) &&
     Array.isArray(s.entries) &&
     s.entries.length > 0 &&
     s.entries.every(
@@ -98,8 +100,13 @@ export interface DnsSummary {
 
 export function summarizeDns(section: DnsSection, now = new Date(), soonDays = 45): DnsSummary {
   const entries = section.entries;
-  const cutoff = new Date(now.getTime() + soonDays * 86_400_000).toISOString().slice(0, 10);
-  const today = now.toISOString().slice(0, 10);
+  // "Today" and the spend horizon are Chicago calendar days, the
+  // house convention every other surface follows (derive.ts):
+  // deriving them from toISOString() used the UTC day, so every
+  // evening from 19:00 CDT a domain renewing that Chicago day
+  // vanished from nextRenewal and renewingSoon (#1684).
+  const today = chicagoYmd(now);
+  const cutoff = addDaysYmd(today, soonDays);
   return {
     nextRenewal: entries.find((e) => e.renewal >= today) ?? entries[0] ?? null,
     active: entries.filter((e) => e.status === "active"),

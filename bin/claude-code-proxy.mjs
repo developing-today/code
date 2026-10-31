@@ -13,7 +13,8 @@
 //
 // Conversations are keyed like commandcode-proxy keys them (explicit
 // session headers / body ids, else a hash of the first user message), and
-// the key -> CLI session map persists to sessions.json in the proxy dir,
+// the key -> CLI session map persists to sessions.json in the shared
+// CLI-proxy state root (~/.local/state/cli-proxies, #3067),
 // so a proxy restart re-attaches with `--resume <sessionId>` instead of
 // re-bootstrapping. A request whose history no longer matches the mapped
 // session (diverged prefix, extra mid-history user turns, lost session)
@@ -49,7 +50,19 @@ const PROXY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKROOT = process.env.CLAUDE_CODE_PROXY_WORKDIR || path.join(PROXY_DIR, 'work');
 fs.mkdirSync(WORKROOT, { recursive: true });
 
-const SESSION_FILE = process.env.CLAUDE_CODE_PROXY_SESSION_FILE || path.join(PROXY_DIR, 'sessions.json');
+// Session map: SHARED with commandcode-proxy (mirrored key space), so
+// both proxies must resolve to the SAME path -- the shared CLI-proxy
+// state root, not the script's directory: bin/ is the tracked checkout,
+// and every write there dirtied the primary clone and blocked
+// pm-git-sync (#3067; missed by the #2782 workdir move).
+const SESSION_FILE =
+  process.env.CLAUDE_CODE_PROXY_SESSION_FILE ||
+  path.join(
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+    'cli-proxies',
+    'sessions.json'
+  );
+fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
 const MAX_LIVE_SESSIONS = 32;
 const IDLE_TTL_MS = 2 * 60 * 60 * 1000;
 const TURN_TIMEOUT_MS = 300 * 1000;

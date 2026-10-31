@@ -20,20 +20,30 @@ export const PRIORITY_NAMES: Record<string, number> = {
 const DEFAULT_PRIORITY = 40;
 
 /**
- * Resolve a request priority (number 10-90, a scale name, or absent) to a
+ * Resolve a request priority (integer 10-90, its decimal string, a scale name, or absent) to a
  * value on the queue's design scale. Off-scale integers in range snap to
  * the nearest scale value (ties snap down); anything else is a 400.
  */
 export function resolvePriority(input: unknown): number {
   if (input === undefined || input === null) return DEFAULT_PRIORITY;
   if (typeof input === "string") {
-    const v = PRIORITY_NAMES[input.trim().toLowerCase()];
-    if (v === undefined) {
+    // Own-key guard (#2757, Phase 3 of #2792): PRIORITY_NAMES is a plain
+    // object, so an unguarded lookup returns inherited members for
+    // prototype spellings - 'constructor' yielded the Object constructor
+    // function and '__proto__' Object.prototype, both non-numbers that
+    // then flowed toward Packet.priority / p_priority. Object.hasOwn
+    // restricts the lookup to the four real names; every other string
+    // takes the same documented 400 as any unknown name.
+    const key = input.trim().toLowerCase();
+    // Composite action inputs arrive as strings; use the same validation and
+    // snapping as JSON numbers without accepting JavaScript coercion syntax.
+    if (/^[+-]?\d+$/.test(key)) return resolvePriority(Number(key));
+    if (!Object.hasOwn(PRIORITY_NAMES, key)) {
       throw new ValidationError(
         `priority: unknown name ${JSON.stringify(input)} (use critical|high|normal|low or a number 10-90)`,
       );
     }
-    return v;
+    return PRIORITY_NAMES[key];
   }
   if (typeof input === "number" && Number.isInteger(input)) {
     if ((PRIORITY_SCALE as readonly number[]).includes(input)) return input;

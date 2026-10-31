@@ -577,9 +577,10 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 	if !s.admitTaskRoute(w, r) {
 		return
 	}
-	wait := s.callSettings(r).Duration("tasks.resultWait")
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()

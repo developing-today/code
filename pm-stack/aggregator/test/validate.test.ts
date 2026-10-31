@@ -242,7 +242,7 @@ describe("feed gate: isFleetFeed uses the strict date (#2577 proof consumer)", (
   const feed = (generatedAt: unknown) => ({
     version: 1,
     generatedAt,
-    quota: { pools: [] },
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
     attention: [],
   });
   test("a genuine feed passes", () => {

@@ -94,6 +94,7 @@ const runtime = (over: Record<string, unknown> = {}) =>
     discoverFn: async () => discoveryWith([candidate(socketTarget)]),
     runBinFn: async () => "from the binary",
     clientFor: () => fakeClient(),
+    assertPermission: async () => {},
     ...over,
   } as never);
 
@@ -334,5 +335,71 @@ describe("tool executors", () => {
     );
     expect(out.content).toContain("until this daemon stops answering");
     expect(storage.map.get("daemon:/work")).toBeDefined();
+  });
+});
+
+describe("daemon_select permission gate (#1858 item (2))", () => {
+  test("asserts mcpx_daemon_select with the v1 ask payload before applying", async () => {
+    const asserted: unknown[] = [];
+    const rt = runtime({
+      assertPermission: async (input: never) => void asserted.push(input),
+    });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    const out = await select.execute({ candidate: 0 } as never, { sessionID: "s1" });
+    expect(out.content).toContain("Now using");
+    expect(asserted).toEqual([
+      expect.objectContaining({
+        sessionID: "s1",
+        action: "mcpx_daemon_select",
+        resources: ["unix:///tmp/m.sock"],
+        save: ["unix:///tmp/m.sock"],
+        metadata: expect.objectContaining({
+          socket: "unix:///tmp/m.sock",
+          remember: "session",
+          stopOthers: false,
+        }),
+      }),
+    ]);
+  });
+
+  test("a rejected assert applies nothing", async () => {
+    const targets: Target[] = [];
+    const rt = runtime({
+      onTarget: (t: Target) => void targets.push(t),
+      assertPermission: async () => {
+        throw new Error("user rejected");
+      },
+    });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    await expect(
+      select.execute({ candidate: 0 } as never, { sessionID: "s1" }),
+    ).rejects.toThrow("user rejected");
+    expect(targets).toEqual([]);
+  });
+
+  test("with no permission gate wired, the choice is refused, not silently applied", async () => {
+    const rt = runtime({ assertPermission: undefined });
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    const out = await select.execute({ candidate: 0 } as never, { sessionID: "s1" });
+    expect(out.content).toContain("no permission prompt");
+    expect(out.content).not.toContain("Now using");
+  });
+});
+
+describe("setup: permission gate registration (#1858 item (2))", () => {
+  test("setup registers the evaluate hook on the permission domain", async () => {
+    const hooks: string[] = [];
+    const ctx: McpxV2Context = {
+      storage: stubStorage(),
+      directory: "/work",
+      session: { hook: () => {} },
+      tool: { hook: () => {}, transform: async () => ({}) },
+      permission: {
+        hook: async (name: string) => void hooks.push(name),
+        assert: async () => {},
+      } as never,
+    };
+    await setupMcpxV2(ctx, { tools: false, daemonTools: false });
+    expect(hooks).toEqual(["evaluate"]);
   });
 });

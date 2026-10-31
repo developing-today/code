@@ -49,8 +49,12 @@ export const MAX_COMMENTS_LIMIT = 1000;
  */
 export function parseLimit(raw: string | null, defaultLimit: number, maxLimit: number): number {
   if (raw === null) return defaultLimit;
+  // Only a decimal-digit spelling is honoured (#2971): Number() coercion
+  // re-admits every spelling it accepts ('1e2', '0x10', '5.0', '+5', ' 5'),
+  // which is the #1547 residual this gate exists to close.
+  if (!/^[0-9]+$/.test(raw)) return defaultLimit;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) return defaultLimit;
+  if (n < 1) return defaultLimit;
   return Math.min(n, maxLimit);
 }
 
