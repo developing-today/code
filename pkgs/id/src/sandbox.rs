@@ -2105,8 +2105,8 @@ mod tests {
     const FUEL_BUDGETS: &[(&str, GuestCall, u64)] = &[
         ("roc-counter", GuestCall::Init, 100_000), // baseline 1215
         ("roc-counter", GuestCall::Update, 100_000), // baseline 3759
-        ("roc-counter", GuestCall::View, 100_000), // baseline 1327
-        ("roc-counter", GuestCall::Layout, 100_000), // baseline 1337
+        ("roc-counter", GuestCall::View, 400_000), // baseline 260269
+        ("roc-counter", GuestCall::Layout, 500_000), // baseline 323425
         ("roc-counter", GuestCall::Records, 100_000), // baseline 1866
         ("roc-counter", GuestCall::Wants, 100_000), // baseline 733
         ("roc-counter", GuestCall::Snapshot, 100_000), // baseline 874

@@ -33,6 +33,7 @@ COMPLETE = {
     "researched",
     "designed",
     "planned",
+    "merged",
 }
 ACTIVE = {"running", "active", "in-progress", "in progress"}
 STATE = re.compile(r"<!-- workflow:state -->\s*(.*?)\s*<!-- /workflow:state -->", re.S)

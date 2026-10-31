@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/tasks"
 )
 
 // Timing is how long mcpx's own MCP server waits, and how many times it
@@ -47,6 +48,16 @@ type Timing struct {
 	StdioDrain time.Duration
 	// TaskPoll is the pollInterval a task this server hands out carries.
 	TaskPoll time.Duration
+	// TaskMaxTTL clamps any requested task TTL (protoTasks.maxTTL).
+	TaskMaxTTL time.Duration
+	// TaskMaxPerRequestor caps one requestor's non-terminal tasks
+	// (protoTasks.maxPerRequestor).
+	TaskMaxPerRequestor int
+	// TaskWindowPerMinute is the tasks/* admission window per requestor
+	// (protoTasks.perMinute), translated by the wiring site: the setting's
+	// 0 (disabled) arrives here as -1, because a zero Timing in tests must
+	// still mean "the store's default", not "disabled".
+	TaskWindowPerMinute int
 }
 
 func (t Timing) resolved() Timing {
@@ -79,6 +90,12 @@ func (t Timing) resolved() Timing {
 	}
 	if t.TaskPoll <= 0 {
 		t.TaskPoll = defaults.TaskPollInterval
+	}
+	if t.TaskMaxTTL <= 0 {
+		t.TaskMaxTTL = tasks.DefaultMaxTTL
+	}
+	if t.TaskMaxPerRequestor <= 0 {
+		t.TaskMaxPerRequestor = tasks.DefaultMaxPerRequestor
 	}
 	return t
 }

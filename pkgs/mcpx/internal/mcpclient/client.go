@@ -1712,6 +1712,9 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 		}
 		return nil, err
 	}
+	if err := ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read %q: invalid result from upstream: %w", uri, err)
+	}
 	return raw, nil
 }
 
