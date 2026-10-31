@@ -34,6 +34,7 @@ import {
   validatePayload,
 } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
+import { handleLaunchFailure } from "./launch_failure.ts";
 import { GitHubClient } from "./github.ts";
 import { OpenCodeClient } from "./opencode.ts";
 
@@ -158,12 +159,27 @@ async function launchSession(
   }
 
   if (issue) {
-    await github.comment(
-      req.repo,
-      issue.number,
-      `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-    );
-    await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    // Post-launch annotations are best-effort: the session is already
+    // running and the task already claimed, so a GitHub failure here
+    // must not reject the launch — callers cancel the task on a
+    // rejected launch (#2901), which would orphan a live session.
+    // Noted on the task instead, like the lane-ledger failure above.
+    try {
+      await github.comment(
+        req.repo,
+        issue.number,
+        `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
+      );
+      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    } catch (e) {
+      try {
+        await requireQueue().patchTask(task.id, {
+          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
+        });
+      } catch {
+        /* nothing more to do — the claim stands */
+      }
+    }
   }
   return session.id;
 }
@@ -224,13 +240,17 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       try {
         await launchSession(caller, body, task, issue, directory);
       } catch (e) {
-        try {
-          await requireQueue().patchTask(task.id, {
-            last_error: `dispatch launch failed: ${e instanceof Error ? e.message : String(e)}`,
-          });
-        } catch {
-          /* task row update failed too — nothing more we can do async */
-        }
+        // Mirror the wait:true failure path exactly (#2901): cancel the
+        // task and note the failure on the issue — never leave a queued
+        // task behind for a session that did not launch.
+        await handleLaunchFailure(
+          requireQueue(),
+          github,
+          body.repo,
+          task.id,
+          issue?.number ?? null,
+          e,
+        );
       }
     })();
     return json(202, {
@@ -247,24 +267,16 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
     sessionId = await launchSession(caller, body, task, issue, directory);
   } catch (e) {
     // Never leave a queued/claimed task behind for a session that did
-    // not launch: cancel it and note the failure on the issue.
-    const msg = e instanceof Error ? e.message : String(e);
-    try {
-      await requireQueue().cancelTask(task.id, `dispatch launch failed: ${msg}`);
-    } catch {
-      /* cancellation failed too — report the launch error regardless */
-    }
-    if (issue) {
-      try {
-        await github.comment(
-          body.repo,
-          issue.number,
-          `Dispatch launch FAILED and queue task #${task.id} was cancelled.\n\nError: ${msg}`,
-        );
-      } catch {
-        /* issue note is best-effort on the failure path */
-      }
-    }
+    // not launch: cancel it and note the failure on the issue (the
+    // shared handler the wait:false path also uses, #2901).
+    const msg = await handleLaunchFailure(
+      requireQueue(),
+      github,
+      body.repo,
+      task.id,
+      issue?.number ?? null,
+      e,
+    );
     return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
