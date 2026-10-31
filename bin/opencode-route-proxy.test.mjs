@@ -7,7 +7,7 @@
 // purely by routing, and every attempt must land in the fixture
 // route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
@@ -49,6 +49,7 @@ const makeLeaf = (name, expectedKey) => {
         body = JSON.parse(raw || "{}");
       } catch {}
       leaf.last = { headers: req.headers, body, url: req.url };
+      if (leaf.mode === "slow") return;
       if (req.headers.authorization !== `Bearer ${expectedKey}`) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
@@ -124,7 +125,7 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   quota text, tokens_estimated integer, error_body text, hedged integer,
   cost_usd real)`;
 
-const startProxy = async () => {
+const startProxy = async (timeout = "15000") => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -182,7 +183,7 @@ const startProxy = async () => {
     OPENCODE_ROUTE_PROXY_PORT: String(port),
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
-    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
   };
   const child = spawn(
     process.execPath,
@@ -229,6 +230,34 @@ const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+test("invalid timeout exits at startup with a useful diagnostic", () => {
+  for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
+    const result = spawnSync(process.execPath, [path.join(binDir, "opencode-route-proxy.mjs")], {
+      env: { ...process.env, OPENCODE_ROUTE_PROXY_PORT: "18750", OPENCODE_ROUTE_PROXY_TIMEOUT_MS: raw },
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.includes("OPENCODE_ROUTE_PROXY_TIMEOUT_MS"));
+    assert.ok(result.stderr.includes(`"${raw}"`));
+    assert.doesNotMatch(result.stdout, /listening/i);
+  }
+});
+
+test("configured deadline aborts a slow leaf", async () => {
+  const p = await startProxy("150");
+  try {
+    p.leafA.mode = "slow";
+    const start = Date.now();
+    const res = await p.post({ model: "opencode-route/t-variant", messages: MSGS });
+    assert.ok(res.status >= 500, `unexpected status ${res.status}`);
+    assert.ok(Date.now() - start < 3000, "deadline did not abort the slow leaf promptly");
+    assert.equal(p.leafA.hits, 1);
+    assert.equal(p.attempts()[0].outcome, "timeout");
+  } finally {
+    await p.cleanup();
+  }
+});
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
