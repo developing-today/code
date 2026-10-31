@@ -495,6 +495,25 @@ fn is_html_block_start(stripped: &str) -> bool {
     HTML_BLOCK_TAGS.contains(&tag_name.as_str())
 }
 
+/// Whether a stripped line is an ordered list marker whose
+/// start number cannot interrupt a paragraph: CommonMark lets
+/// only a list starting at 1 do that, so `2. text` after a
+/// paragraph line is its lazy continuation, not a new block
+/// (Codex P2 on #1565's thirteenth cut).
+fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
+    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || digits > 9 {
+        return false;
+    }
+    if !matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')')) {
+        return false;
+    }
+    if !matches!(stripped.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t')) {
+        return false;
+    }
+    stripped[..digits].parse::<u64>().ok() != Some(1)
+}
+
 fn starts_new_block(stripped: &str) -> bool {
     // A link reference definition is deliberately NOT here: it
     // cannot interrupt a paragraph, so a reference-shaped line
@@ -507,7 +526,8 @@ fn starts_new_block(stripped: &str) -> bool {
         || stripped.starts_with("```")
         || stripped.starts_with("~~~")
         || is_thematic_break(stripped)
-        || strip_container_prefixes(stripped) != stripped
+        || (strip_container_prefixes(stripped) != stripped
+            && !is_non_interrupting_ordered_marker(stripped))
         || is_html_block_start(stripped)
 }
 
@@ -4796,6 +4816,21 @@ mod tests {
             "escaped-label reference resolves to a link: {first:?}"
         );
         assert_eq!(first, second, "escaped label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_ordered_list_marker_two_continues_footnote_paragraph() {
+        // #1565 thirteenth cut (Codex P2): an ordered list can
+        // interrupt a paragraph only when it starts at 1, so
+        // `2. ...` after a footnote definition's first line is a
+        // lazy continuation of the definition, not a new block.
+        let original = "[^a]: First line.\n2. second line.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("second line."),
+            "non-1 ordered marker continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "ordered continuation is a fixpoint");
     }
 
     #[test]
