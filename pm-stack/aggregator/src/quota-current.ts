@@ -24,6 +24,7 @@ import type {
   GathererSummary,
   PoolFreshness,
   QuotaCurrentEntry,
+  QuotaCredentialRow,
   QuotaCurrentFile,
   QuotaPool,
   QuotaView,
@@ -123,6 +124,39 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   return true;
 }
 
+/**
+ * Per-credential rows for one pool's entries (#1113): the newest
+ * entry per credential identity (credentialLabel, else providerId).
+ * Rows are returned only when they genuinely differ — in state or in
+ * percent windows — so two logins sharing one pool read stay a
+ * single headline row, while two logins with distinct quotas (or one
+ * read failing while the other succeeds) each get a row.
+ */
+function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCredentialRow[] | undefined {
+  const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+  const byCred = new Map<string, QuotaCurrentEntry>();
+  for (const e of newest) {
+    const key = e.credentialLabel ?? e.providerId;
+    if (!byCred.has(key)) byCred.set(key, e);
+  }
+  if (byCred.size < 2) return undefined;
+  const rows: QuotaCredentialRow[] = [...byCred.values()].map((e) => {
+    const state = entryState(e, nowMs);
+    const freshness: PoolFreshness = { measuredAt: e.measuredAt, source: e.source, state };
+    if (state === "error") freshness.error = errorText(e);
+    return {
+      label: e.credentialLabel ?? e.providerName ?? e.providerId,
+      providerId: e.providerId,
+      windows: state === "ok" ? pctWindows(e) : [],
+      freshness,
+    };
+  });
+  const sig = (r: QuotaCredentialRow): string =>
+    r.freshness.state + "|" + r.windows.map((w) => `${w.name}:${w.percent}:${w.resetsAt ?? ""}`).join(",");
+  if (rows.every((r) => sig(r) === sig(rows[0]))) return undefined;
+  return rows;
+}
+
 function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
   return {
     generatedAt: file.generatedAt,
@@ -167,6 +201,8 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
       .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
     if (freshOk.length > 0) {
       if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
+      const rows = credentialRows(entries, nowMs);
+      if (rows) pool.credentials = rows;
       return pool;
     }
     const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];

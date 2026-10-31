@@ -363,3 +363,97 @@ describe("overlayTursoUsage (#1049)", () => {
     ).toBe(arr);
   });
 });
+
+describe("per-credential quota rows (#1113)", () => {
+  const twoLogins = (aPct: number, bPct: number, bMeasured = iso(2 * 60_000)) =>
+    file([
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialLabel: "OpenAI",
+        windows: [win("weekly", aPct, iso(5 * 60_000))],
+      }),
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-second",
+        credentialLabel: "OpenAI 2",
+        measuredAt: bMeasured,
+        windows: [win("weekly", bPct, bMeasured)],
+      }),
+    ]);
+
+  test("two logins with genuinely differing quotas split into rows; headline stays the newest read", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([80]);
+    expect(pool.credentials).toHaveLength(2);
+    const byLabel = new Map(pool.credentials!.map((c) => [c.label, c]));
+    expect(byLabel.get("OpenAI")!.windows.map((w) => w.percent)).toEqual([30]);
+    expect(byLabel.get("OpenAI 2")!.windows.map((w) => w.percent)).toEqual([80]);
+    expect(byLabel.get("OpenAI 2")!.freshness.state).toBe("ok");
+  });
+
+  test("two logins sharing one pool read do not split", () => {
+    const out = overlayQuotaCurrent(baseView(), twoLogins(42, 42), NOW);
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toBeUndefined();
+  });
+
+  test("a credential whose newest read is an error surfaces as an error row beside the ok one", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-second",
+          credentialLabel: "OpenAI 2",
+          state: "error",
+          measuredAt: iso(1 * 60_000),
+          error: "Sign in with ChatGPT only",
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.windows.map((w) => w.percent)).toEqual([30]); // headline from the ok login
+    const err = pool.credentials!.find((c) => c.label === "OpenAI 2")!;
+    expect(err.freshness.state).toBe("error");
+    expect(err.freshness.error).toContain("Sign in with ChatGPT");
+    expect(err.windows).toEqual([]);
+  });
+
+  test("a single credential never produces rows", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("pool card renders one line per credential row", async () => {
+    const { renderQuota } = await import("../src/render.ts");
+    const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
+    const prov = {
+      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "",
+      attention: "", orchestration: "", dns: "", registry: "", aa: "",
+    };
+    const html = renderQuota(out, prov);
+    expect(html).toContain("credential OpenAI:");
+    expect(html).toContain("credential OpenAI 2:");
+    expect(html).toContain("weekly 80%");
+  });
+});
