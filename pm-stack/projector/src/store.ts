@@ -24,6 +24,13 @@ export function openDb(env: DbEnv): Client {
 
 /** Run schema.sql. DDL is idempotent and data migrations use INSERT OR IGNORE. */
 export async function migrate(db: Client, schemaPath?: string): Promise<void> {
+  const columns = await db.execute("PRAGMA table_info(pmp_comments)");
+  if (columns.rows.length > 0) {
+    const pk = columns.rows.filter((row) => Number(row.pk) > 0).sort((a, b) => Number(a.pk) - Number(b.pk));
+    if (pk.length !== 2 || pk[0].name !== "id" || pk[1].name !== "kind") {
+      throw new Error("Legacy pmp_comments schema: rebuild the comment projection before starting; preserve pmp_links and other tables. See the projector README.");
+    }
+  }
   const path = schemaPath ?? new URL("../schema.sql", import.meta.url).pathname;
   const sql = await Bun.file(path).text();
   // libSQL executes one statement per call. Strip full-line comments first,
@@ -282,7 +289,7 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
             line, diff_hunk, review_state, submitted_at, commit_id, deleted,
             source_updated_at, fetched_at
           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET
+          ON CONFLICT(id, kind) DO UPDATE SET
             ref = excluded.ref,
             kind = excluded.kind,
             author = excluded.author,
@@ -331,7 +338,7 @@ export async function markCommentDeleted(db: Client, c: Omit<CommentRow, "fetche
             line, diff_hunk, review_state, submitted_at, commit_id, deleted,
             source_updated_at, fetched_at
           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET
+          ON CONFLICT(id, kind) DO UPDATE SET
             deleted = 1,
             fetched_at = excluded.fetched_at`,
     args: [
