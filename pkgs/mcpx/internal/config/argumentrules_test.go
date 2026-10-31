@@ -830,3 +830,83 @@ func TestEffectiveSchemaPinnedResolvesLocalRefRequirements(t *testing.T) {
 		t.Errorf("unprojected referenced requirement must not survive outside $defs: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: a condition the pins decide must be projected
+// by its decided branch, not by name-stripping. With tailnet pinned to
+// "other", enforcement merges the pin, the rule's if (tailnet const
+// "prod") is false, and the else branch requires cursor. Stripping
+// the pinned name from the if's required made the advertised if
+// succeed for a caller who omits tailnet, advertising the then branch
+// (limit required) instead -- advertised-valid calls were rejected
+// and runtime-valid calls failed advertised validation.
+func TestEffectiveSchemaPinnedDecidesPinDeterminedConditions(t *testing.T) {
+	rule := `{"if":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	for _, tc := range []struct {
+		pin       string
+		valid     []string
+		invalid   []string
+		branchReq string
+	}{
+		// Pin "other": the condition is false at enforcement, so the
+		// else requirement (cursor) is what callers must satisfy.
+		{"other", []string{`{"cursor":"c"}`}, []string{`{}`, `{"limit":1}`}, `"required":["cursor"]`},
+		// Pin "prod": the condition holds, so the then requirement
+		// (limit) applies and cursor alone no longer suffices.
+		{"prod", []string{`{"limit":1}`}, []string{`{}`, `{"cursor":"c"}`}, `"required":["limit"]`},
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": tc.pin})
+		if strings.Contains(string(eff), `"if"`) {
+			t.Errorf("pin %q: the decided condition must not survive in the projection: %s", tc.pin, eff)
+		}
+		if !strings.Contains(string(eff), tc.branchReq) {
+			t.Errorf("pin %q: decided branch requirement %s must be advertised: %s", tc.pin, tc.branchReq, eff)
+		}
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("pin %q: effective schema does not compile: %v (%s)", tc.pin, err, eff)
+		}
+		for _, inst := range tc.valid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err != nil {
+				t.Errorf("pin %q: %s must be advertised-valid: %v (schema %s)", tc.pin, inst, err, eff)
+			}
+		}
+		for _, inst := range tc.invalid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err == nil {
+				t.Errorf("pin %q: %s must be advertised-invalid (schema %s)", tc.pin, inst, eff)
+			}
+		}
+	}
+}
+
+// A condition that also reads a caller-supplied property is NOT
+// decided by the pins: it stays a condition in the projection (with
+// the pinned names stripped as before), because the caller still
+// controls its outcome.
+func TestEffectiveSchemaPinnedKeepsUndecidedConditions(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"if":{"properties":{"tailnet":{"const":"prod"},"verbose":{"const":true}},"required":["tailnet","verbose"]},"then":{"required":["limit"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"verbose":{"type":"boolean"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"if"`) {
+		t.Errorf("a condition reading unpinned properties must stay conditional: %s", got)
+	}
+}

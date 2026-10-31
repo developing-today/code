@@ -208,14 +208,10 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 // from the rules' required and dependentRequired lists in the
 // advertised projection only; enforcement is unchanged.
 func (s *ArgumentRuleSet) EffectiveSchemaPinned(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
-	set := make(map[string]bool, len(pinned))
-	for name := range pinned {
-		set[name] = true
-	}
-	return s.effectiveSchema(tool, upstream, set)
+	return s.effectiveSchema(tool, upstream, pinned)
 }
 
-func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]bool) json.RawMessage {
+func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
 	matching := s.Matching(tool)
 	if len(matching) == 0 {
 		return upstream
@@ -826,7 +822,7 @@ func compactJSON(raw json.RawMessage) string {
 // PR #2976). A schema that does not decode is returned unchanged:
 // the projection is presentation, and a malformed rule keeps its
 // verbatim meaning rather than a guessed one.
-func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMessage {
+func projectPinnedRule(raw json.RawMessage, pinned map[string]any) json.RawMessage {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var doc any
@@ -842,9 +838,13 @@ func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMess
 
 // stripPinnedRequirements projects one schema at its own instance
 // scope; see projectPinnedRule for the contract.
-func stripPinnedRequirements(v any, pinned map[string]bool) any {
+func stripPinnedRequirements(v any, pinned map[string]any) any {
 	root, _ := v.(map[string]any)
-	return stripPinnedScope(v, pinned, root, map[string]bool{})
+	set := make(map[string]bool, len(pinned))
+	for name := range pinned {
+		set[name] = true
+	}
+	return stripPinnedScope(v, set, pinned, root, map[string]bool{})
 }
 
 // conjoinRefProjection combines the projections of a $ref target and
@@ -886,7 +886,7 @@ func conjoinRefProjection(target, siblings any) any {
 // siblings as a same-instance conjunction; a requirement reached
 // only through a reference must not survive the projection
 // unexamined (Codex P2 on PR #2976).
-func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolving map[string]bool) any {
+func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
@@ -909,12 +909,37 @@ func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolv
 					}
 				}
 				resolving[ref] = true
-				projectedTarget := stripPinnedScope(tm, pinned, root, resolving)
-				projectedSiblings := stripPinnedScope(siblings, pinned, root, resolving)
+				projectedTarget := stripPinnedScope(tm, pinned, pinVals, root, resolving)
+				projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
 				delete(resolving, ref)
 				return conjoinRefProjection(projectedTarget, projectedSiblings)
 			}
 			return target
+		}
+	}
+	// A condition the pins decide outright must not survive as a
+	// condition: projecting it by name-stripping alone removes the
+	// pinned requirement that made it decidable, so the advertised
+	// "if" evaluates against a caller who cannot supply the pinned
+	// property and picks the branch enforcement -- which merges the
+	// pin first -- does not (Codex P2 on PR #2976). Fold the decided
+	// branch in as an unconditional conjunct instead.
+	if _, hasIf := m["if"]; hasIf {
+		if branch, decided := pinDecidedBranch(m, pinned, pinVals, root, resolving); decided {
+			folded := make(map[string]any, len(m))
+			for k, val := range m {
+				if k != "if" && k != "then" && k != "else" {
+					folded[k] = val
+				}
+			}
+			if branch != nil {
+				if subs, ok := folded["allOf"].([]any); ok {
+					folded["allOf"] = append(append([]any{}, subs...), branch)
+				} else {
+					folded["allOf"] = []any{branch}
+				}
+			}
+			m = folded
 		}
 	}
 	out := make(map[string]any, len(m))
@@ -972,14 +997,14 @@ func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolv
 			if subs, ok := val.([]any); ok {
 				projected := make([]any, len(subs))
 				for i, sub := range subs {
-					projected[i] = stripPinnedScope(sub, pinned, root, resolving)
+					projected[i] = stripPinnedScope(sub, pinned, pinVals, root, resolving)
 				}
 				out[k] = projected
 			} else {
 				out[k] = val
 			}
 		case "not", "if", "then", "else":
-			out[k] = stripPinnedScope(val, pinned, root, resolving)
+			out[k] = stripPinnedScope(val, pinned, pinVals, root, resolving)
 		case "dependentSchemas":
 			if subs, ok := val.(map[string]any); ok {
 				projected := make(map[string]any, len(subs))
@@ -989,7 +1014,7 @@ func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolv
 				}
 				sort.Strings(triggers)
 				for _, prop := range triggers {
-					sub := stripPinnedScope(subs[prop], pinned, root, resolving)
+					sub := stripPinnedScope(subs[prop], pinned, pinVals, root, resolving)
 					if pinned[prop] {
 						// The pin always supplies the trigger, so
 						// the projected dependent schema applies
@@ -1052,6 +1077,234 @@ func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolv
 		}
 	}
 	return out
+}
+
+// pinDecidedBranch reports whether the map's "if" condition is
+// decided by the pinned values alone, and if so returns the branch
+// ("then" for true, "else" for false; nil when that branch is absent)
+// the condition selects at enforcement time. A condition is decidable
+// only when every property it examines is pinned -- the pin merge
+// fixes those properties' values before enforcement, so the
+// condition's truth is already determined -- and the condition
+// evaluates cleanly against an instance carrying just the pins.
+// Anything else (a condition reading a caller-supplied property, a
+// whole-instance or name-pattern keyword, an unresolvable or
+// recursive reference, a condition that fails to compile) is left
+// for the ordinary name-stripping projection.
+func pinDecidedBranch(m map[string]any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (any, bool) {
+	cond, ok := m["if"]
+	if !ok {
+		return nil, false
+	}
+	if b, isBool := cond.(bool); isBool {
+		if b {
+			return m["then"], true
+		}
+		return m["else"], true
+	}
+	names := map[string]bool{}
+	if !collectConditionNames(cond, root, resolving, names) || len(names) == 0 {
+		return nil, false
+	}
+	inst := make(map[string]any, len(names))
+	for name := range names {
+		if !pinned[name] {
+			return nil, false
+		}
+		inst[name] = pinVals[name]
+	}
+	inlined, ok := inlineLocalRefs(cond, root, resolving)
+	if !ok {
+		return nil, false
+	}
+	condRaw, err := json.Marshal(inlined)
+	if err != nil {
+		return nil, false
+	}
+	compiled, err := schemaval.Compile(condRaw)
+	if err != nil {
+		return nil, false
+	}
+	instRaw, err := json.Marshal(inst)
+	if err != nil {
+		return nil, false
+	}
+	dec, err := schemaval.DecodeInstance(instRaw)
+	if err != nil {
+		return nil, false
+	}
+	if compiled.Validate(dec) == nil {
+		return m["then"], true
+	}
+	return m["else"], true
+}
+
+// collectConditionNames gathers the property names a condition schema
+// examines at its own instance scope: the keys of its properties, its
+// required entries, and the triggers and dependencies of its
+// dependent* keywords, followed through the same-instance applicators
+// (allOf/anyOf/oneOf/not/if/then/else, dependentSchemas values, local
+// references). It reports false for shapes whose truth can depend on
+// more than the examined properties' values -- whole-instance
+// comparisons (const/enum), property counting, name patterns, or a
+// reference that cannot be resolved -- so the caller treats those as
+// undecidable. Nested instance scopes (a property's own subschema)
+// are not entered: the validator judges those against the pin value
+// itself.
+func collectConditionNames(v any, root map[string]any, resolving map[string]bool, names map[string]bool) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return true // a boolean subschema examines nothing
+	}
+	for k, val := range m {
+		switch k {
+		case "properties":
+			props, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for name := range props {
+				names[name] = true
+			}
+		case "required":
+			list, ok := val.([]any)
+			if !ok {
+				return false
+			}
+			for _, e := range list {
+				name, ok := e.(string)
+				if !ok {
+					return false
+				}
+				names[name] = true
+			}
+		case "dependentRequired":
+			deps, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, depVal := range deps {
+				names[trigger] = true
+				list, ok := depVal.([]any)
+				if !ok {
+					return false
+				}
+				for _, e := range list {
+					name, ok := e.(string)
+					if !ok {
+						return false
+					}
+					names[name] = true
+				}
+			}
+		case "dependentSchemas":
+			subs, ok := val.(map[string]any)
+			if !ok {
+				return false
+			}
+			for trigger, sub := range subs {
+				names[trigger] = true
+				if !collectConditionNames(sub, root, resolving, names) {
+					return false
+				}
+			}
+		case "allOf", "anyOf", "oneOf":
+			subs, ok := val.([]any)
+			if !ok {
+				return false
+			}
+			for _, sub := range subs {
+				if !collectConditionNames(sub, root, resolving, names) {
+					return false
+				}
+			}
+		case "not", "if", "then", "else":
+			if !collectConditionNames(val, root, resolving, names) {
+				return false
+			}
+		case "$ref":
+			ref, ok := val.(string)
+			if !ok || resolving[ref] {
+				return false
+			}
+			target, ok := resolveLocalPointer(root, ref)
+			if !ok {
+				return false
+			}
+			resolving[ref] = true
+			ok = collectConditionNames(target, root, resolving, names)
+			delete(resolving, ref)
+			if !ok {
+				return false
+			}
+		case "additionalProperties":
+			if b, isBool := val.(bool); !isBool || !b {
+				return false
+			}
+		case "patternProperties", "propertyNames", "unevaluatedProperties",
+			"const", "enum", "minProperties", "maxProperties", "$dynamicRef":
+			return false
+		}
+	}
+	return true
+}
+
+// inlineLocalRefs returns a copy of a schema with every resolvable
+// local $ref replaced by the conjunction of its target and its
+// siblings, recursively, so the result stands alone for compilation.
+// It reports false when a reference cannot be resolved or is
+// recursive.
+func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		if ref, ok := t["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+			if resolving[ref] {
+				return nil, false
+			}
+			target, ok := resolveLocalPointer(root, ref)
+			if !ok {
+				return nil, false
+			}
+			resolving[ref] = true
+			inTarget, okT := inlineLocalRefs(target, root, resolving)
+			siblings := make(map[string]any, len(t))
+			for k, val := range t {
+				if k != "$ref" {
+					siblings[k] = val
+				}
+			}
+			inSiblings, okS := inlineLocalRefs(siblings, root, resolving)
+			delete(resolving, ref)
+			if !okT || !okS {
+				return nil, false
+			}
+			if sm, isMap := inSiblings.(map[string]any); isMap && len(sm) == 0 {
+				return inTarget, true
+			}
+			return map[string]any{"allOf": []any{inTarget, inSiblings}}, true
+		}
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			inlined, ok := inlineLocalRefs(val, root, resolving)
+			if !ok {
+				return nil, false
+			}
+			out[k] = inlined
+		}
+		return out, true
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			inlined, ok := inlineLocalRefs(e, root, resolving)
+			if !ok {
+				return nil, false
+			}
+			out[i] = inlined
+		}
+		return out, true
+	default:
+		return v, true
+	}
 }
 
 // resolveLocalPointer resolves a local JSON Pointer reference ("#"
