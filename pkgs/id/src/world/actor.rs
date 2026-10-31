@@ -503,6 +503,23 @@ impl WorldActor {
             if !self.active_subs.insert(sub.clone()) {
                 continue;
             }
+            // The tick floor is a hard limit, not a grant question: a
+            // sub-floor tick is refused like a denied subscription (once
+            // per spec) and never armed, however it was granted.
+            if let Subscription::Tick(ms) = sub
+                && *ms < self.core.limits.min_tick_ms
+            {
+                let spec = sub.spec();
+                if self.denied_subs.insert(spec.clone()) {
+                    let error = crate::world_caps::CapError::bad_args_with(format!(
+                        "time.tick interval {ms}ms is below the world minimum {}ms",
+                        self.core.limits.min_tick_ms
+                    ));
+                    self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        .await;
+                }
+                continue;
+            }
             match self.core.ledger.decide(sub.cap()) {
                 Decision::Allow => self.arm(sub),
                 Decision::AllowAndGrant => {
@@ -529,8 +546,10 @@ impl WorldActor {
     }
 
     /// Arm a granted subscription's timer, if any and if anyone is present.
+    /// A tick below the world's `min_tick_ms` floor is never armed.
     fn arm(&mut self, sub: &Subscription) {
         if let Subscription::Tick(ms) = sub
+            && *ms >= self.core.limits.min_tick_ms
             && !self.presence.is_empty()
             && !self.ticks.contains_key(ms)
         {
@@ -804,7 +823,12 @@ impl WorldActor {
                 .active_subs
                 .iter()
                 .filter_map(|sub| match sub {
-                    Subscription::Tick(ms) if self.core.ledger.is_granted(sub.cap()) => Some(*ms),
+                    Subscription::Tick(ms)
+                        if *ms >= self.core.limits.min_tick_ms
+                            && self.core.ledger.is_granted(sub.cap()) =>
+                    {
+                        Some(*ms)
+                    }
                     _ => None,
                 })
                 .collect();
