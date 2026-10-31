@@ -73,6 +73,10 @@ impl WorldCore {
             limits.snapshot_bytes > 0,
             "world snapshot limit must be nonzero"
         );
+        ensure!(
+            limits.min_tick_ms > 0,
+            "world minimum tick interval must be nonzero"
+        );
         let server_caps: Vec<String> = limits.server_caps.iter().cloned().collect();
         crate::world_caps::validate_ceiling_names(&server_caps)
             .context("server capability ceiling")?;
