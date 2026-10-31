@@ -173,7 +173,17 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
 
   // -- read: joined subject ---------------------------------------------------
   if (path.startsWith("/subjects/") && method === "GET") {
-    const subject = decodeURIComponent(path.slice("/subjects/".length));
+    // A malformed percent-encoding is a 400, never a 500: an unguarded
+    // decodeURIComponent throws URIError out of the handler (#2693,
+    // design #2747 Phase 2; same guard as #2720 in cf-container-hello).
+    // Only the decode is guarded \u2014 a well-formed subject still
+    // resolves (or 404s) exactly as before.
+    let subject: string;
+    try {
+      subject = decodeURIComponent(path.slice("/subjects/".length));
+    } catch {
+      return jsonResponse(400, { error: "malformed percent-encoding in subject" });
+    }
     const view = await store.getSubject(db, subject);
     if (!view) return jsonResponse(404, { error: "subject_not_found" });
     return jsonResponse(200, view);
