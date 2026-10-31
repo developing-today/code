@@ -33,6 +33,13 @@ function b64url(data: Buffer | string): string {
   return Buffer.from(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+export interface IssueInfo {
+  number: number;
+  state: string;
+  isPullRequest: boolean;
+  url: string;
+}
+
 export class GitHubClient {
   private installationIdCache = new Map<string, number>();
   private tokenCache = new Map<string, { token: string; expiresAt: number }>();
@@ -181,6 +188,64 @@ export class GitHubClient {
     const m = /\/issues\/(\d+)$/.exec(url);
     if (!m) throw new GitHubError(`gh issue create returned an unparseable URL: ${url.slice(0, 120)}`);
     return { number: Number(m[1]), url };
+  }
+
+  /**
+   * Look up an issue by number (issue #3007). Returns null on a
+   * definitive 404; throws GitHubError for any other failure so callers
+   * can distinguish an invalid target from a lookup failure. The GitHub
+   * issues API also returns pull requests — `isPullRequest` exposes the
+   * `pull_request` marker so callers can reject PR numbers.
+   */
+  async getIssue(repo: string, issueNumber: number): Promise<IssueInfo | null> {
+    let appError: unknown = null;
+    if (this.appConfigured) {
+      try {
+        const token = await this.installationToken(repo);
+        const res = await this.appApi("GET", `/repos/${repo}/issues/${issueNumber}`, token);
+        if (res.status === 404) return null;
+        if (!res.ok) throw new GitHubError(`github issue lookup failed (HTTP ${res.status})`);
+        const data = (await res.json()) as {
+          number: number;
+          state: string;
+          html_url: string;
+          pull_request?: unknown;
+        };
+        return {
+          number: data.number,
+          state: data.state,
+          isPullRequest: Boolean(data.pull_request),
+          url: data.html_url,
+        };
+      } catch (e) {
+        appError = e;
+        /* fall through to gh, mirroring createIssue */
+      }
+    }
+    try {
+      const out = await this.gh(["api", `repos/${repo}/issues/${issueNumber}`]);
+      const data = JSON.parse(out) as {
+        number: number;
+        state: string;
+        html_url: string;
+        pull_request?: unknown;
+      };
+      return {
+        number: data.number,
+        state: data.state,
+        isPullRequest: Boolean(data.pull_request),
+        url: data.html_url,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/\b404\b|Not Found/i.test(msg)) return null;
+      if (appError) {
+        throw new GitHubError(
+          `issue lookup failed via app (${appError instanceof Error ? appError.message : String(appError)}) and via gh (${msg})`,
+        );
+      }
+      throw e;
+    }
   }
 
   async addLabels(repo: string, issueNumber: number, labels: string[]): Promise<void> {

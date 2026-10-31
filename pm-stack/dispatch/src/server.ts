@@ -264,6 +264,76 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
 }
 
 // ---------------------------------------------------------------------------
+// Attach-target verification (issue #3007)
+// ---------------------------------------------------------------------------
+
+export interface AttachTargetInfo {
+  state: string;
+  isPullRequest: boolean;
+}
+
+export type AttachVerification =
+  | { outcome: "verified" }
+  | { outcome: "unverified"; warning: string }
+  | { outcome: "reject"; status: number; error: string }
+  | { outcome: "lookup_failed"; status: 502; error: string };
+
+/**
+ * Verify an issue_number attach target BEFORE anything is enqueued:
+ * the number must exist in the repo, be an issue (not a PR), and be
+ * open. Invalid targets reject with a 4xx and enqueue nothing; GitHub
+ * lookup failures are a retryable 502, never conflated with invalid
+ * targets. Where the GitHub App is not installed the target cannot be
+ * verified — the caller proceeds (the task is the tracking record) but
+ * the unverified state is explicit in the response, never silent.
+ */
+export async function verifyAttachTarget(args: {
+  appInstalled: boolean;
+  repo: string;
+  issueNumber: number;
+  lookup: () => Promise<AttachTargetInfo | null>;
+}): Promise<AttachVerification> {
+  if (!args.appInstalled) {
+    return {
+      outcome: "unverified",
+      warning: `github app is not installed on ${args.repo}; attach target #${args.issueNumber} was NOT verified (it may not exist, may be a pull request, or may be closed)`,
+    };
+  }
+  let info: AttachTargetInfo | null;
+  try {
+    info = await args.lookup();
+  } catch (e) {
+    return {
+      outcome: "lookup_failed",
+      status: 502,
+      error: `attach target verification failed for ${args.repo}#${args.issueNumber}: ${e instanceof Error ? e.message : String(e)}; nothing was enqueued — retry later`,
+    };
+  }
+  if (!info) {
+    return {
+      outcome: "reject",
+      status: 404,
+      error: `issue #${args.issueNumber} not found in ${args.repo}; nothing was enqueued`,
+    };
+  }
+  if (info.isPullRequest) {
+    return {
+      outcome: "reject",
+      status: 422,
+      error: `#${args.issueNumber} in ${args.repo} is a pull request, not an issue; nothing was enqueued`,
+    };
+  }
+  if (info.state !== "open") {
+    return {
+      outcome: "reject",
+      status: 422,
+      error: `issue #${args.issueNumber} in ${args.repo} is ${info.state}, not open; nothing was enqueued`,
+    };
+  }
+  return { outcome: "verified" };
+}
+
+// ---------------------------------------------------------------------------
 // POST /v1/tasks
 // ---------------------------------------------------------------------------
 
@@ -287,6 +357,31 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     }
   } else if (body.issue) {
     issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
+  }
+
+  // Verify the attach target before enqueueing (#3007): a nonexistent
+  // number, a PR number, or a closed issue must not silently attach.
+  let attachVerified: boolean | null = null;
+  if (body.issueNumber !== undefined && issue) {
+    const verification = await verifyAttachTarget({
+      appInstalled: APP_INSTALLED_REPOS.has(body.repo),
+      repo: body.repo,
+      issueNumber: body.issueNumber,
+      lookup: async () => {
+        const info = await github.getIssue(body.repo, body.issueNumber!);
+        return info ? { state: info.state, isPullRequest: info.isPullRequest } : null;
+      },
+    });
+    if (verification.outcome === "reject" || verification.outcome === "lookup_failed") {
+      return json(verification.status, {
+        error: verification.error,
+        issue_number: issue.number,
+        issue_url: issue.url,
+        ...(warnings.length ? { warnings } : {}),
+      });
+    }
+    if (verification.outcome === "unverified") warnings.push(verification.warning);
+    attachVerified = verification.outcome === "verified";
   }
 
   const dedupeKey =
@@ -351,7 +446,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
   return json(201, {
     task_id: task.id,
     issue_number: issue?.number ?? null,
-    ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
+    ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url, attach_verified: attachVerified } : {}),
     queue: REPO_QUEUES[body.repo],
     ...(warnings.length ? { warnings } : {}),
   });
