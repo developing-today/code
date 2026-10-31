@@ -102,3 +102,50 @@ func TestCheckIntegerPrecisionPermutations(t *testing.T) {
 		t.Errorf("Values(42.0) header = %q, want %q", got[ParamPrefix+"n"], "42")
 	}
 }
+
+// TestCheckRejectsNonNumberHeaders pins the Codex findings on
+// PR 2955: the numeric fallback must validate the ENTIRE header as a
+// JSON number literal. A quoted string, or a number with trailing
+// junk, is not the same numeric value.
+func TestCheckRejectsNonNumberHeaders(t *testing.T) {
+	params := []Param{{Name: "n", Path: []string{"n"}}}
+	for _, hdr := range []string{`"42"`, "42]", "42}", "42 ", " 42", "4/2", "0x2A", "42e", "042", "+42", ".42", ""} {
+		h := func(string) (string, bool) { return hdr, true }
+		if err := Check(params, json.RawMessage(`{"n": 42}`), h); err == nil {
+			t.Errorf("Check(header %q) = nil, want a mismatch error", hdr)
+		}
+	}
+}
+
+// TestCheckExponentCancellingMantissa pins the second Codex finding:
+// the exponent bound applies AFTER the mantissa is normalised, so a
+// literal whose zeros cancel its exponent is judged on its value.
+func TestCheckExponentCancellingMantissa(t *testing.T) {
+	params := []Param{{Name: "n", Path: []string{"n"}}}
+	for _, hdr := range []string{
+		"1" + strings.Repeat("0", 513) + "e-513",
+		"0." + strings.Repeat("0", 512) + "1e513",
+	} {
+		h := func(string) (string, bool) { return hdr, true }
+		if err := Check(params, json.RawMessage(`{"n": 1}`), h); err != nil {
+			t.Errorf("Check(header %.20q...) = %v, want nil", hdr, err)
+		}
+	}
+}
+
+// TestCheckHugeIntegerLiteralBounded pins the third Codex finding: a
+// huge integer literal with no exponent is classified out-of-range
+// without materialising it in arbitrary precision.
+func TestCheckHugeIntegerLiteralBounded(t *testing.T) {
+	params := []Param{{Name: "n", Path: []string{"n"}}}
+	h := func(string) (string, bool) { return "1", true }
+	for _, body := range []string{
+		`{"n": ` + strings.Repeat("9", 5000) + `}`,
+		`{"n": ` + strings.Repeat("9", 5000) + `.0}`,
+	} {
+		err := Check(params, json.RawMessage(body), h)
+		if err == nil || !strings.Contains(err.Error(), "outside the JavaScript safe-integer range") {
+			t.Errorf("Check(huge body) = %v, want safe-range error", err)
+		}
+	}
+}
