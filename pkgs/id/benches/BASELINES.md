@@ -56,7 +56,12 @@ journals; 32 fan-out clients x 100 rounds; 5 reps each) and prints one
 per benchmark. To re-baseline: replace the four `bench` lines in
 `baseline.txt`, update the machine/date header there and the runs
 above, and say why in the commit message (hardware change, deliberate
-performance change, or harness change). `--quick` shrinks every
+performance change, or harness change). A harness change that
+alters a benchmark's `unit=` is a re-baseline event too: until
+`baseline.txt` is updated, `id-bench-compare.sh` reports that
+benchmark as incomparable (unit changed) with no percent and no
+verdict, rather than comparing medians across units (#1619).
+`--quick` shrinks every
 workload to a smoke size — never commit `--quick` numbers as
 baselines.
 
