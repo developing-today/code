@@ -574,7 +574,7 @@ the tool call for a script that expects to ask.
   `requestState` and holds across the retries; it used to restart at zero on
   every one (#201).
 - `proto.stateTTL` (30m) — how long a `requestState` may be resumed with.
-- `proto.askTTL` (15m) — how long the daemon keeps the call and its result.
+- `proto.askTTL` (15m) — two clocks for a parked `/v1/call`: the waiting deadline (a call still waiting for an answer after 15m is cancelled) and, once the call finishes, how long its result is kept, measured from when it finishes.
 - `pool.callTimeout` pauses while a question is pending on the instance
   (#229). It used to kill a call while a person was answering it, which made
   the three settings above promises the pool did not keep. The precedence of
