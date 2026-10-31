@@ -533,12 +533,12 @@ const startMetaStub = async (mode) => {
         try { parsed = JSON.parse(body || '{}'); } catch { /* keep empty */ }
         if (parsed.stream) {
           res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-          res.end(mode === 'shell' ? RESPONSES_SSE_FIXTURE.replaceAll('get_weather', 'run_command') : RESPONSES_SSE_FIXTURE);
+          res.end(['shell', 'terminal'].includes(mode) ? RESPONSES_SSE_FIXTURE.replaceAll('get_weather', mode === 'shell' ? 'run_command' : 'terminal') : RESPONSES_SSE_FIXTURE);
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(mode === 'shell'
-          ? JSON.stringify(RESPONSES_FIXTURE).replaceAll('get_weather', 'run_command')
+        res.end(['shell', 'terminal'].includes(mode)
+          ? JSON.stringify(RESPONSES_FIXTURE).replaceAll('get_weather', mode === 'shell' ? 'run_command' : 'terminal')
           : JSON.stringify(RESPONSES_FIXTURE));
         return;
       }
@@ -887,3 +887,40 @@ test('direct mode: contributor ids reach upstream verbatim, effort suffix parses
   assert.deepEqual(sent[1].reasoning, { effort: 'high' });
   assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
 });
+
+// A real tool with an alias-shaped name must not be renamed on return, even
+// when another tool in the same request is translated.
+for (const [upstreamName, blockedName] of [['run_command', 'shell'], ['terminal', 'bash']]) {
+  for (const route of ['chat', 'responses']) {
+    for (const stream of [false, true]) {
+      for (const collision of [false, true]) {
+        test(`direct ${route} ${stream ? 'stream' : 'json'} preserves ${upstreamName}${collision ? ' with collision' : ''}`, async (t) => {
+          const meta = await startMetaStub(upstreamName === 'terminal' ? 'terminal' : 'shell');
+          t.after(() => meta.close());
+          const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+          t.after(stop);
+          writeStubAuth(home);
+          const names = [upstreamName, ...(collision ? [blockedName] : []), upstreamName === 'terminal' ? 'shell' : 'bash'];
+          const tools = names.map(name => route === 'chat'
+            ? { type: 'function', function: { name, parameters: { type: 'object' } } }
+            : { type: 'function', name, parameters: { type: 'object' } });
+          const payload = route === 'chat'
+            ? { model: 'muse-spark-1.3', stream, messages: [{ role: 'user', content: 'hi' }], tools }
+            : { model: 'muse-spark-1.3', stream, input: [{ role: 'user', content: 'hi' }], tools };
+          const res = await fetch(`http://127.0.0.1:${port}/v1/${route === 'chat' ? 'chat/completions' : 'responses'}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+          });
+          assert.equal(res.status, 200);
+          const text = await res.text();
+          assert.match(text, new RegExp(`"name"\\s*:\\s*"${upstreamName}"`));
+          const sent = JSON.parse(meta.requests.find(r => r.url === '/v1/responses').body);
+          assert.ok(sent.tools.some(tool => tool.name === upstreamName));
+          if (collision) {
+            assert.ok(!sent.tools.some(tool => tool.name === blockedName));
+            assert.ok(sent.tools.some(tool => tool.name === `${upstreamName}_2`));
+          }
+        });
+      }
+    }
+  }
+}
