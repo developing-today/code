@@ -200,7 +200,25 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	chars := []rune(src)
 	n := len(chars)
 
-	for i := 0; i < n; i++ {
+	// A hashbang line (#!/...) at the very start of a script is a
+	// comment, not tokens: its slashes are path separators, not
+	// regex openers (Codex P2 on #1659: #!/usr/bin/env -S deno run
+	// --allow-read=/tmp opened a phantom regex at the '=' slash).
+	// Skip to its newline; the newline itself is scanned normally
+	// so line numbers stay exact. No newline means the whole input
+	// is the hashbang line and there is nothing to scan.
+	scanStart := 0
+	if n >= 2 && chars[0] == '#' && chars[1] == '!' {
+		scanStart = n
+		for j := 0; j < n; j++ {
+			if chars[j] == '\n' {
+				scanStart = j
+				break
+			}
+		}
+	}
+
+	for i := scanStart; i < n; i++ {
 		ch := chars[i]
 
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
@@ -448,7 +466,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// switch/catch/with) opens a control header: its ')'
 			// returns to expression position, so a following '/'
 			// opens a regex (Codex P2 on #1659: if (true) /a+/.test(..)).
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControlKeyword(lastIdent) && lastIdentPrev != '.'})
+			// A 'for await (' header reaches this point with
+			// lastIdent == "await" (prevIdent == "for"): it is a
+			// control header too, whose ')' returns to expression
+			// position (Codex P2 on #1659: for await (const x of
+			// [1]) /a+/.test(..)).
+			isControl := isControlKeyword(lastIdent) || (lastIdent == "await" && prevIdent == "for")
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControl && lastIdentPrev != '.'})
 			lastIdent = ""
 			lastIdentPrev = 0
 		case '{':
@@ -469,6 +493,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			if pendingStmtColon {
 				exprAfter = true
 				pendingStmtColon = false
+			}
+			if inTypeAssert {
+				// A '{' opening an as/satisfies TYPE is a type
+				// literal: its '}' completes the asserted operand,
+				// so a '/' after it divides, not opens a regex
+				// (Codex P2 on #1659: 4 as { toFixed(): string } / 2).
+				exprAfter = false
 			}
 			if expectFuncClassBody && expectFuncClassParenDepth == 0 {
 				exprAfter = false

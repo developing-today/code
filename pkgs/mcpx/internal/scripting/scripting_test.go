@@ -167,6 +167,10 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after object literal following division", "const q = 4 / {} / 2;\n"},
 		{"regex after generic class declaration", "class C<T> {} /a+/.test(\"aa\");\n"},
 		{"regex after generic interface declaration", "interface C<T> {} /a+/.test(\"aa\");\n"},
+		{"division after structural as assertion", "const q = 4 as { toFixed(): string } / 2;\n"},
+		{"division after structural satisfies assertion", "const q = 4 satisfies { toFixed(): string } / 2;\n"},
+		{"regex after for-await header", "async function f() { for await (const x of [1]) /a+/.test(\"aa\"); }\n"},
+		{"hashbang line before script", "#!/usr/bin/env -S deno run --allow-read=/tmp\nconst re = /a+/;\nconst ok = re.test(\"aa\");\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
