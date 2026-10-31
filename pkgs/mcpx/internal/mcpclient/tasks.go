@@ -286,16 +286,48 @@ func (c *Client) callToolAsLegacyTask(ctx context.Context, name string, args any
 // CreateTaskResult a tools/call answers (resultType "task") and the
 // DetailedTask tasks/get answers, which inlines a terminal task's
 // result or error.
+//
+// ttlMs arrives in three wire shapes with three meanings (TASK-06:
+// number | null, MAY change over the task's lifetime): omitted keeps
+// the last known value, an explicit null means unlimited (clear the
+// deadline), and a number restates it. TTLMsPresent/TTLMsUnlimited
+// preserve that distinction past decoding, where a bare int64 would
+// collapse omitted and null into the same zero.
 type modernTaskResult struct {
 	ResultType     string          `json:"resultType"`
 	TaskID         string          `json:"taskId"`
 	Status         string          `json:"status"`
 	StatusMessage  string          `json:"statusMessage,omitempty"`
 	CreatedAt      string          `json:"createdAt,omitempty"`
-	TTLMs          int64           `json:"ttlMs"`
+	TTLMs          int64           `json:"-"`
+	TTLMsPresent   bool            `json:"-"`
+	TTLMsUnlimited bool            `json:"-"`
 	PollIntervalMs int64           `json:"pollIntervalMs"`
 	Result         json.RawMessage `json:"result,omitempty"`
 	Error          *rpcError       `json:"error,omitempty"`
+}
+
+// UnmarshalJSON decodes a modernTaskResult, keeping the omitted vs
+// explicit-null distinction for ttlMs that a plain int64 field would
+// lose (both decode to zero).
+func (m *modernTaskResult) UnmarshalJSON(data []byte) error {
+	type plain modernTaskResult
+	var v struct {
+		plain
+		RawTTLMs json.RawMessage `json:"ttlMs"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*m = modernTaskResult(v.plain)
+	m.TTLMsPresent = v.RawTTLMs != nil
+	m.TTLMsUnlimited = string(v.RawTTLMs) == "null"
+	if len(v.RawTTLMs) > 0 && !m.TTLMsUnlimited {
+		if err := json.Unmarshal(v.RawTTLMs, &m.TTLMs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // isTaskResult reports whether a modern tools/call result is a task
@@ -364,9 +396,19 @@ func (c *Client) finishModernTask(ctx context.Context, name string, raw json.Raw
 		if snap.PollIntervalMs <= 0 {
 			snap.PollIntervalMs = task.PollIntervalMs
 		}
-		if snap.TTLMs <= 0 {
-			snap.TTLMs = task.TTLMs
-		} else if snap.TTLMs != task.TTLMs {
+		switch {
+		case !snap.TTLMsPresent:
+			// The snapshot did not restate the TTL; keep the last
+			// known value and its deadline.
+			snap.TTLMs, snap.TTLMsPresent, snap.TTLMsUnlimited =
+				task.TTLMs, task.TTLMsPresent, task.TTLMsUnlimited
+		case snap.TTLMsUnlimited || snap.TTLMs <= 0:
+			// An explicit null (unlimited per TASK-06) clears the
+			// deadline: a task restated unlimited must not be
+			// cancelled at its superseded expiry.
+			snap.TTLMs, snap.TTLMsUnlimited = 0, true
+			deadline = time.Time{}
+		case snap.TTLMs != task.TTLMs:
 			// A modern upstream may restate a task's TTL as it works
 			// (TASK-06); the deadline follows the new value instead of
 			// cancelling a live task at its original expiry. TTL is

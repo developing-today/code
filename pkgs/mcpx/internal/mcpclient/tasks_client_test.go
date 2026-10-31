@@ -686,3 +686,92 @@ func TestLegacyTaskTTLBoundsTheWait(t *testing.T) {
 		t.Fatalf("TTL wait took %v, want it bounded near the 40ms TTL", elapsed)
 	}
 }
+
+// TestModernTaskTTLRestatedUnlimited: a modern upstream may restate a
+// finite ttlMs as null (unlimited per TASK-06) as the task works. The
+// client must clear the deadline instead of cancelling the live task
+// at its superseded expiry (Codex P2 on aa11638cd: decoding null into
+// the int64 field produced zero, which the keep-old branch then
+// replaced with the previous finite TTL).
+func TestModernTaskTTLRestatedUnlimited(t *testing.T) {
+	f := &taskFake{}
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "server/discover":
+			return modernDiscover(params)
+		case "tools/list":
+			out := toolList()
+			out["resultType"] = "complete"
+			return out
+		case "tools/call":
+			return map[string]any{"resultType": "task", "taskId": "mu",
+				"status": "working", "pollIntervalMs": 1, "ttlMs": 200}
+		case "tasks/get":
+			f.mu.Lock()
+			f.gets++
+			n := f.gets
+			f.mu.Unlock()
+			if n < 2 {
+				// First poll restates the TTL as unlimited.
+				return map[string]any{"taskId": "mu", "status": "working",
+					"pollIntervalMs": 1, "ttlMs": nil}
+			}
+			// Lands after the original 200ms expiry: only a cleared
+			// deadline lets this poll finish the task.
+			time.Sleep(300 * time.Millisecond)
+			return map[string]any{"taskId": "mu", "status": "completed",
+				"pollIntervalMs": 1, "ttlMs": nil,
+				"result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "unlimited-done"}}}}
+		}
+		return nil
+	})
+	c := dialModern(t, s, mcpclient.Options{})
+	listFirst(t, c)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := c.CallTool(ctx, "req", map[string]any{})
+	if err != nil {
+		t.Fatalf("err = %v, want the task to outlive its restated TTL", err)
+	}
+	if !strings.Contains(string(raw), "unlimited-done") {
+		t.Fatalf("result = %s, want the DetailedTask's inlined result", raw)
+	}
+}
+
+// TestModernTaskTTLOmittedKeepsDeadline: a snapshot that omits ttlMs
+// restates nothing, so the task keeps its last known TTL and still
+// times out at it. Omitted must stay distinguishable from explicit
+// null (which clears the deadline); both decode to zero without the
+// wire-shape tracking.
+func TestModernTaskTTLOmittedKeepsDeadline(t *testing.T) {
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "server/discover":
+			return modernDiscover(params)
+		case "tools/list":
+			out := toolList()
+			out["resultType"] = "complete"
+			return out
+		case "tools/call":
+			return map[string]any{"resultType": "task", "taskId": "mk",
+				"status": "working", "pollIntervalMs": 1, "ttlMs": 150}
+		case "tasks/get":
+			return map[string]any{"taskId": "mk", "status": "working", "pollIntervalMs": 1}
+		case "tasks/cancel":
+			return map[string]any{"taskId": "mk", "status": "cancelled", "pollIntervalMs": 1}
+		}
+		return nil
+	})
+	c := dialModern(t, s, mcpclient.Options{})
+	listFirst(t, c)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := c.CallTool(ctx, "req", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "did not finish within its TTL") {
+		t.Fatalf("err = %v, want the TTL error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("TTL wait took %v, want it bounded near the 150ms TTL", elapsed)
+	}
+}
