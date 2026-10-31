@@ -18,6 +18,7 @@
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
+import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
 import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
@@ -160,6 +161,10 @@ export interface HealthView {
     generatedAt: string | null;
     fileMtime: string | null;
     ageMs: number | null;
+    /** #1116 item 3: the collector checkout's drift vs origin/main,
+     *  as reported in the feed; "unknown" with a reason when the feed
+     *  carries no report — never a silently invented state. */
+    checkout: CheckoutDrift;
     sections: FeedSectionHealth[];
   };
   jobs: {
@@ -355,9 +360,12 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     });
   }
 
+  const checkout = feed?.checkout ?? unreportedCheckoutDrift();
   const degraded =
     inputs.mode === "live" &&
-    (services.some((s) => s.ok === false) || (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS));
+    (services.some((s) => s.ok === false) ||
+      (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS) ||
+      checkout.state === "behind");
 
   return {
     status: "ok",
@@ -371,6 +379,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       generatedAt: feed?.generatedAt ?? null,
       fileMtime: inputs.feedFileMtimeMs !== null ? new Date(inputs.feedFileMtimeMs).toISOString() : null,
       ageMs: feedAgeMs,
+      checkout,
       sections: feedSections(feed, now),
     },
     jobs: {
