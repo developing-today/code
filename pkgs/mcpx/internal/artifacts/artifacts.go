@@ -59,8 +59,51 @@ type Meta struct {
 	Session string    `json:"session,omitempty"`
 	Created time.Time `json:"created"`
 	Expires time.Time `json:"expires"`
+	// ExpiresAt is Expires under the shared TTL vocabulary
+	// (docs/decisions/0006-ttl-touch-on-read.md): every expiring
+	// representation carries expiresAt in RFC 3339, lastTouched and
+	// ttlRemainingMs, so a reader never has to do clock arithmetic --
+	// or guess which of two clocks -- to know how long is left. It is
+	// the same instant as Expires, which stays for existing readers.
+	ExpiresAt time.Time `json:"expiresAt"`
+	// LastTouched is when the artifact was last touched: its creation,
+	// or the latest item read that renewed it under the opt-in
+	// artifacts.idleTtl. With the opt-in off it stays at creation.
+	LastTouched time.Time `json:"lastTouched"`
+	// TTLRemainingMs is Expires minus the moment this representation
+	// was produced, in milliseconds, never negative.
+	TTLRemainingMs int64 `json:"ttlRemainingMs"`
 	// URI is the MCP resource form, mcpx://artifacts/<id>.
 	URI string `json:"uri"`
+}
+
+// TTLRemaining is how long is left, never negative.
+func (m Meta) TTLRemaining() time.Duration {
+	d := time.Until(m.Expires)
+	if d < 0 {
+		return 0
+	}
+	return d
+}
+
+// refreshTTLRemaining restamps TTLRemainingMs against now.
+func (m *Meta) refreshTTLRemaining(now time.Time) {
+	ms := m.Expires.Sub(now).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	m.TTLRemainingMs = ms
+}
+
+// deadline is the effective expiry under the touch-on-read convention:
+// the earlier of the idle deadline (lastTouched + idleTtl) and the
+// absolute ceiling (created + maxAge).
+func deadline(created, lastTouched time.Time, idleTtl, maxAge time.Duration) time.Time {
+	d := lastTouched.Add(idleTtl)
+	if ceiling := created.Add(maxAge); ceiling.Before(d) {
+		d = ceiling
+	}
+	return d
 }
 
 // Options configure a store. Every value comes from the settings registry;
@@ -70,6 +113,18 @@ type Options struct {
 	Dir string
 	// TTL is how long an artifact is kept before GC may remove it.
 	TTL time.Duration
+	// IdleTTL is the opt-in touch-on-read renewal window
+	// (artifacts.idleTtl): when positive, an item read renews the
+	// artifact's deadline to lastTouched + IdleTTL, bounded by
+	// MaxAge from creation. Zero is the default and keeps the
+	// absolute expiry at TTL exactly as before.
+	IdleTTL time.Duration
+	// MaxAge is the absolute ceiling on a renewed artifact's life
+	// (artifacts.maxAge): renewal can never push the deadline past
+	// Created + MaxAge. It only has effect when IdleTTL is set; a
+	// non-positive value with IdleTTL set falls back to
+	// defaults.ArtifactMaxAge at Open.
+	MaxAge time.Duration
 	// MaxBytes is the ceiling for one artifact. Zero means no ceiling.
 	MaxBytes int64
 	// Quota is the ceiling for the whole store. Zero means no ceiling.
@@ -93,7 +148,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
   run     TEXT NOT NULL DEFAULT '',
   session TEXT NOT NULL DEFAULT '',
   created INTEGER NOT NULL,
-  expires INTEGER NOT NULL
+  expires INTEGER NOT NULL,
+  last_touched INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS artifacts_run ON artifacts(run);
 CREATE INDEX IF NOT EXISTS artifacts_session ON artifacts(session);
@@ -121,7 +177,66 @@ func Open(opts Options) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("artifacts schema: %w", err)
 	}
+	if err := ensureLastTouched(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("artifacts schema: %w", err)
+	}
+	if opts.IdleTTL > 0 && opts.MaxAge <= 0 {
+		opts.MaxAge = defaults.ArtifactMaxAge
+	}
 	return &Store{opts: opts, db: db, dir: opts.Dir}, nil
+}
+
+// ensureLastTouched adds the last_touched column to a store written
+// before the touch-on-read opt-in. Rows that predate it read back with
+// a zero stamp, which scan renders as their creation time -- the
+// correct anchor, since creation is the one touch they have had.
+func ensureLastTouched(db *sql.DB) error {
+	// Concurrent openers (the daemon and a local CLI first opening the
+	// same legacy store) can both observe the column absent and both
+	// ALTER: the loser's ALTER fails with "duplicate column name" even
+	// though the schema is now exactly right, and the daemon caches an
+	// Open error from that race until restart. So: check, alter, and
+	// on failure loop back to the check -- success is the column
+	// existing, whoever added it; only an alteration that keeps
+	// failing with the column still absent is a real error.
+	var alterErr error
+	for range 50 {
+		has, err := hasLastTouchedColumn(db)
+		if err != nil {
+			return err
+		}
+		if has {
+			return nil
+		}
+		if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN last_touched INTEGER NOT NULL DEFAULT 0`); err == nil {
+			return nil
+		} else {
+			alterErr = err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return alterErr
+}
+
+func hasLastTouchedColumn(db *sql.DB) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(artifacts)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == "last_touched" {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // Close releases the index handle.
@@ -316,28 +431,31 @@ func (s *Store) register(hash string, size int64, p PutOptions) (Meta, error) {
 	}
 	now := time.Now()
 	m := Meta{
-		ID:      NewID(),
-		Name:    SanitizeName(p.Name),
-		Mime:    p.Mime,
-		Size:    size,
-		SHA256:  hash,
-		Run:     p.Run,
-		Session: p.Session,
-		Created: now,
-		Expires: now.Add(ttl),
+		ID:          NewID(),
+		Name:        SanitizeName(p.Name),
+		Mime:        p.Mime,
+		Size:        size,
+		SHA256:      hash,
+		Run:         p.Run,
+		Session:     p.Session,
+		Created:     now,
+		Expires:     now.Add(ttl),
+		ExpiresAt:   now.Add(ttl),
+		LastTouched: now,
 	}
 	if m.Mime == "" {
 		m.Mime = MimeForName(m.Name)
 	}
 	m.URI = URI(m.ID)
 	_, err := s.db.Exec(
-		`INSERT INTO artifacts (id,hash,name,mime,size,run,session,created,expires)
-		 VALUES (?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO artifacts (id,hash,name,mime,size,run,session,created,expires,last_touched)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		m.ID, m.SHA256, m.Name, m.Mime, m.Size, m.Run, m.Session,
-		m.Created.UnixMilli(), m.Expires.UnixMilli())
+		m.Created.UnixMilli(), m.Expires.UnixMilli(), m.LastTouched.UnixMilli())
 	if err != nil {
 		return Meta{}, err
 	}
+	m.refreshTTLRemaining(now)
 	return m, nil
 }
 
@@ -397,7 +515,7 @@ type Filter struct {
 
 // List returns matching artifacts, newest first.
 func (s *Store) List(f Filter) ([]Meta, error) {
-	q := `SELECT id,hash,name,mime,size,run,session,created,expires FROM artifacts WHERE 1=1`
+	q := `SELECT id,hash,name,mime,size,run,session,created,expires,last_touched FROM artifacts WHERE 1=1`
 	var args []any
 	if f.Run != "" {
 		q += " AND run = ?"
@@ -434,13 +552,23 @@ type scanner interface {
 
 func scan(r scanner) (Meta, error) {
 	var m Meta
-	var created, expires int64
+	var created, expires, lastTouched int64
 	if err := r.Scan(&m.ID, &m.SHA256, &m.Name, &m.Mime, &m.Size,
-		&m.Run, &m.Session, &created, &expires); err != nil {
+		&m.Run, &m.Session, &created, &expires, &lastTouched); err != nil {
 		return Meta{}, err
 	}
 	m.Created = time.UnixMilli(created)
 	m.Expires = time.UnixMilli(expires)
+	m.ExpiresAt = m.Expires
+	// The sentinel is the integer, checked before conversion:
+	// time.UnixMilli(0) is 1970, not the zero Time, so an IsZero
+	// check after conversion would never fire for a migrated row.
+	if lastTouched <= 0 {
+		m.LastTouched = m.Created
+	} else {
+		m.LastTouched = time.UnixMilli(lastTouched)
+	}
+	m.refreshTTLRemaining(time.Now())
 	m.URI = URI(m.ID)
 	return m, nil
 }
@@ -453,15 +581,82 @@ func (e ErrNotFound) Error() string {
 	return "no artifact " + e.ID + "; it may have expired"
 }
 
-// Get returns one artifact's metadata.
+// Get returns one artifact's metadata. An item read is use: when the
+// store opted in with artifacts.idleTtl, a live artifact is touched --
+// its lastTouched becomes now and its deadline renews under the
+// convention (see touch). Collection reads (List) do not touch:
+// listing what exists must not keep it alive. With the opt-in off, Get
+// is exactly the absolute-expiry read it always was.
 func (s *Store) Get(id string) (Meta, error) {
+	m, err := s.get(id)
+	if err != nil {
+		return Meta{}, err
+	}
+	if s.opts.IdleTTL > 0 {
+		if terr := s.touch(&m, time.Now()); terr != nil {
+			return Meta{}, terr
+		}
+	}
+	m.refreshTTLRemaining(time.Now())
+	return m, nil
+}
+
+// get returns one artifact's metadata without touching it. The
+// store's own machinery (Delete on GC's behalf) reads through here: a
+// sweep enforcing the deadline must not renew the deadline it
+// enforces, and an expired artifact must never be revived by a read.
+func (s *Store) get(id string) (Meta, error) {
 	row := s.db.QueryRow(
-		`SELECT id,hash,name,mime,size,run,session,created,expires FROM artifacts WHERE id = ?`, id)
+		`SELECT id,hash,name,mime,size,run,session,created,expires,last_touched FROM artifacts WHERE id = ?`, id)
 	m, err := scan(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Meta{}, ErrNotFound{ID: id}
 	}
 	return m, err
+}
+
+// touch renews a live artifact after an item read: lastTouched becomes
+// now and the deadline becomes min(created+maxAge,
+// lastTouched+idleTtl). Touch never shortens a deadline -- an artifact
+// registered with an explicit lifetime (PutOptions.TTL) keeps it,
+// creation being the one place an explicit lifetime is honoured --
+// and never revives one whose deadline has already passed.
+func (s *Store) touch(m *Meta, now time.Time) error {
+	if now.After(m.Expires) {
+		return nil
+	}
+	expires := deadline(m.Created, now, s.opts.IdleTTL, s.opts.MaxAge)
+	if expires.Before(m.Expires) {
+		expires = m.Expires
+	}
+	// The update is monotonic in SQL, not just in this caller's view:
+	// two concurrent item reads can interleave read-compute-write, and
+	// an earlier reader that pauses must not overwrite a later
+	// reader's already-committed renewal with an older deadline --
+	// GC would collect the artifact before the latest reader's
+	// promised deadline.
+	// MAX on both columns: a concurrent store configured with a
+	// different idleTtl can compute a smaller renewal than one
+	// already persisted (or a larger one with an earlier
+	// last_touched). Neither column may ever move backwards,
+	// whatever order the touches commit in.
+	_, err := s.db.Exec(`UPDATE artifacts SET last_touched=MAX(last_touched, ?), expires=MAX(expires, ?)
+		WHERE id=? AND (expires < ? OR last_touched < ?)`,
+		now.UnixMilli(), expires.UnixMilli(), m.ID,
+		expires.UnixMilli(), now.UnixMilli())
+	if err != nil {
+		return err
+	}
+	// Return what is actually persisted rather than this caller's
+	// computation: a concurrent renewal may have persisted a
+	// deadline (or last-touch) at least as new as this one, and
+	// the MAX update above keeps that newer state.
+	fresh, gerr := s.get(m.ID)
+	if gerr != nil {
+		return gerr
+	}
+	*m = fresh
+	return nil
 }
 
 // OpenBody returns the artifact's bytes alongside its metadata.
@@ -494,7 +689,7 @@ func (s *Store) Bytes(id string) ([]byte, Meta, error) {
 
 // Delete removes one registration, and the blob when nothing else uses it.
 func (s *Store) Delete(id string) error {
-	m, err := s.Get(id)
+	m, err := s.get(id)
 	if err != nil {
 		return err
 	}
@@ -541,11 +736,39 @@ func (s *Store) GC(now time.Time) (int, error) {
 	}
 	n := 0
 	for _, id := range ids {
-		if err := s.Delete(id); err == nil {
+		if gone, err := s.deleteExpired(id, now); err == nil && gone {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// deleteExpired removes one registration only if it is STILL expired
+// at the moment of deletion, and reports whether it removed anything.
+// The expiry recheck lives in the DELETE itself: GC selects expired
+// ids up front, and with touch-on-read enabled a Get can renew one of
+// them before GC reaches it -- an unconditional delete would remove
+// the renewed registration (and sweep its blob) despite the reader's
+// promised new deadline. The blob is swept only when the conditional
+// delete actually removed the row.
+func (s *Store) deleteExpired(id string, now time.Time) (bool, error) {
+	m, err := s.get(id)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.Exec(`DELETE FROM artifacts WHERE id = ? AND expires <= ?`,
+		id, now.UnixMilli())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	return true, s.sweepBlob(m.SHA256)
 }
 
 // Export places an artifact in a directory the caller named.

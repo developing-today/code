@@ -176,6 +176,8 @@
   },
   "artifacts": {
     "ttl": "24h",
+    "idleTtl": "0s",
+    "maxAge": "168h",
     "maxBytes": "64MiB",
     "quota": "1GiB",
     "inlineMaxBytes": "1MiB",

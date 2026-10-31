@@ -6,6 +6,9 @@ package settings
 // Two groups in one file because they are one feature: an artifact only
 // exists because a script produced it, and every question about delivery is a
 // question about how the run reports back.
+
+import "github.com/dezren39/mcpx/internal/defaults"
+
 func execSettings() []Setting {
 	return append(execRunSettings(), artifactSettings()...)
 }
@@ -101,6 +104,30 @@ func artifactSettings() []Setting {
 			Path: "artifacts.ttl", Scope: ScopeDaemon, Kind: KindDuration, Default: "24h",
 			Name:  "Artifact retention",
 			Short: "how long an artifact is kept before it is collected",
+		},
+		{
+			Path: "artifacts.idleTtl", Scope: ScopeDaemon, Kind: KindDuration, Default: defaults.Builtin().Artifacts.IdleTTL,
+			Name:  "Artifact idle time to live (opt-in renewal)",
+			Short: "when set, reading an artifact renews it for this long; off keeps absolute expiry",
+			Long: "The opt-in half of the touch-on-read convention " +
+				"(docs/decisions/0006-ttl-touch-on-read.md) for artifacts. " +
+				"Zero -- the default -- is off: an artifact expires " +
+				"artifacts.ttl after it is stored, exactly as before. When " +
+				"set, an item read of a live artifact renews its deadline " +
+				"to now plus this long, bounded by artifacts.maxAge from " +
+				"its creation. Listing artifacts is a collection read and " +
+				"does not renew them, and a read never revives an expired " +
+				"artifact or shortens an explicit per-artifact lifetime.",
+		},
+		{
+			Path: "artifacts.maxAge", Scope: ScopeDaemon, Kind: KindDuration, Default: defaults.Builtin().Artifacts.MaxAge,
+			Name:  "Artifact maximum age",
+			Short: "the absolute ceiling on a renewed artifact's life, however often it is read",
+			Long: "Touch-on-read renewal (artifacts.idleTtl) can never push " +
+				"an artifact's deadline past its creation plus this long. " +
+				"The ceiling is what keeps an artifact somebody keeps " +
+				"fetching from living forever. It has no effect while " +
+				"artifacts.idleTtl is off.",
 		},
 		{
 			Path: "artifacts.maxBytes", Scope: ScopeDaemon, Kind: KindBytes, Default: "64MiB",
