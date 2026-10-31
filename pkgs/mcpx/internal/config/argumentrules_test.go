@@ -706,3 +706,32 @@ func TestEffectiveSchemaUnevaluatedDependentSchemas(t *testing.T) {
 		}
 	}
 }
+
+// EffectiveSchemaPinned: a rule requirement on a property the view
+// pins is satisfied by the pin (pins merge before enforcement), so
+// the advertised projection must not demand it from the caller —
+// with the property hidden and additionalProperties:false upstream,
+// the verbatim rule would advertise an unsatisfiable schema (Codex
+// P2 on PR #2976).
+func TestEffectiveSchemaPinnedDropsPinnedRequirements(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"required":["tailnet","limit"],"dependentRequired":{"verbose":["tailnet"]},"allOf":[{"required":["tailnet","limit"]}]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("unpinned requirements must still be advertised: %s", got)
+	}
+	// The un-projected path is untouched: enforcement-facing schema
+	// generation still carries the full rule.
+	full := string(set.EffectiveSchema("list_devices", upstream))
+	if !strings.Contains(full, "tailnet") {
+		t.Errorf("EffectiveSchema must keep the verbatim rule: %s", full)
+	}
+}

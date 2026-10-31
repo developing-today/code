@@ -7,6 +7,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1149,7 +1150,15 @@ func originsOf(c *Config, path string) map[string]string {
 func parse(b []byte) (*Config, error) {
 	c := &Config{}
 	stripped := stripComments(b)
-	if err := json.Unmarshal(stripped, c); err != nil {
+	// UseNumber: a tool view's pin (#1933) is forwarded verbatim on
+	// every call through the view, and the caller cannot override it.
+	// Decoding an integer pin past the exact float64 range through
+	// float64 would silently forward a different value on every call
+	// (9007199254740993 would arrive as 9007199254740992), so numbers
+	// in free-form values stay exact.
+	dec := json.NewDecoder(bytes.NewReader(stripped))
+	dec.UseNumber()
+	if err := dec.Decode(c); err != nil {
 		return nil, err
 	}
 	if err := checkKeys(stripped, c); err != nil {

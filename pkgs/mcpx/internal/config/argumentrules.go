@@ -194,6 +194,28 @@ func (s *ArgumentRuleSet) Check(tool string, args any) *ArgumentRuleViolation {
 // scopedSchemaMember), so a rule's local references keep their own
 // scope no matter what the root already defines.
 func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage) json.RawMessage {
+	return s.effectiveSchema(tool, upstream, nil)
+}
+
+// EffectiveSchemaPinned is EffectiveSchema for a tool reached through
+// a declared tool view (#1933): the view's pinned arguments are
+// merged over the caller's before rules are enforced, so a rule
+// requirement on a pinned property is satisfied by the pin itself.
+// Projecting the rule verbatim would advertise a requirement the
+// caller cannot meet for a property the view pins (and usually
+// hides): against an upstream additionalProperties:false, that is a
+// schema no caller can satisfy. Pinned names are therefore dropped
+// from the rules' required and dependentRequired lists in the
+// advertised projection only; enforcement is unchanged.
+func (s *ArgumentRuleSet) EffectiveSchemaPinned(tool string, upstream json.RawMessage, pinned map[string]any) json.RawMessage {
+	set := make(map[string]bool, len(pinned))
+	for name := range pinned {
+		set[name] = true
+	}
+	return s.effectiveSchema(tool, upstream, set)
+}
+
+func (s *ArgumentRuleSet) effectiveSchema(tool string, upstream json.RawMessage, pinned map[string]bool) json.RawMessage {
 	matching := s.Matching(tool)
 	if len(matching) == 0 {
 		return upstream
@@ -231,7 +253,11 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 		for name := range defs {
 			taken[name] = true
 		}
-		member, scoped := scopedSchemaMemberTaken(r.Schema, fmt.Sprintf("argumentrule%d", i), taken)
+		schema := r.Schema
+		if len(pinned) > 0 {
+			schema = projectPinnedRule(schema, pinned)
+		}
+		member, scoped := scopedSchemaMemberTaken(schema, fmt.Sprintf("argumentrule%d", i), taken)
 		for name, def := range scoped {
 			defs[name] = def
 		}
@@ -782,4 +808,78 @@ func compactJSON(raw json.RawMessage) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+// projectPinnedRule returns the rule schema with pinned property
+// names removed from every required / dependentRequired list, at any
+// depth. A schema that does not decode is returned unchanged: the
+// projection is presentation, and a malformed rule keeps its
+// verbatim meaning rather than a guessed one.
+func projectPinnedRule(raw json.RawMessage, pinned map[string]bool) json.RawMessage {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(stripPinnedRequirements(doc, pinned))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func stripPinnedRequirements(v any, pinned map[string]bool) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			switch k {
+			case "required":
+				if names, ok := val.([]any); ok {
+					if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
+						out[k] = kept
+					}
+					continue
+				}
+			case "dependentRequired":
+				if deps, ok := val.(map[string]any); ok {
+					keptDeps := map[string]any{}
+					for prop, depVal := range deps {
+						if names, ok := depVal.([]any); ok {
+							if kept := filterPinnedNames(names, pinned); len(kept) > 0 {
+								keptDeps[prop] = kept
+							}
+						} else {
+							keptDeps[prop] = depVal
+						}
+					}
+					if len(keptDeps) > 0 {
+						out[k] = keptDeps
+					}
+					continue
+				}
+			}
+			out[k] = stripPinnedRequirements(val, pinned)
+		}
+		return out
+	case []any:
+		for i, el := range t {
+			t[i] = stripPinnedRequirements(el, pinned)
+		}
+		return t
+	default:
+		return v
+	}
+}
+
+func filterPinnedNames(names []any, pinned map[string]bool) []any {
+	kept := make([]any, 0, len(names))
+	for _, n := range names {
+		if name, ok := n.(string); ok && pinned[name] {
+			continue
+		}
+		kept = append(kept, n)
+	}
+	return kept
 }

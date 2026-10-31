@@ -236,3 +236,32 @@ func TestAdvertisedViewSchemaUsesRuleTargetIdentity(t *testing.T) {
 		}
 	}
 }
+
+// The advertised schema for a view tool must not demand the pinned
+// property a rule requires: the pin satisfies it, the caller cannot
+// set it, and the upstream additionalProperties:false leaves them no
+// legal call at all (Codex P2 on PR #2976, both catalog paths go
+// through effectiveViewSchema).
+func TestAdvertisedViewSchemaDropsPinnedRuleRequirements(t *testing.T) {
+	view := tailscaleView(t)
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test config", Schema: json.RawMessage(`{"required":["tailnet"]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	view.ArgumentRules = set
+	all := []mcpclient.Tool{
+		{Name: "list_devices", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"number"}}}`)},
+		{Name: "list_tailnets", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+	}
+	for _, tool := range visibleTools(view, all) {
+		advertised := string(effectiveViewSchema(view, tool.Name, tool.InputSchema))
+		if tool.Name == "listHostnames" && strings.Contains(advertised, "tailnet") {
+			t.Errorf("advertised view schema must not mention the pinned+hidden property: %s", advertised)
+		}
+		if tool.Name == "listHostnames" && strings.Contains(advertised, `"required"`) {
+			t.Errorf("advertised view schema must not carry the satisfied requirement: %s", advertised)
+		}
+	}
+}

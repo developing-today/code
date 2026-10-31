@@ -417,6 +417,23 @@ func ruleToolName(view *config.Resolved, name string) string {
 	return name
 }
 
+// effectiveViewSchema is the inputSchema a surface should advertise
+// for a listed tool: the argument rules for the tool's real name
+// (ruleToolName), projected for the view when the tool is reached
+// through a declared tool view — the view's pins satisfy rule
+// requirements on pinned properties, so those requirements are not
+// advertised to a caller who cannot set them (#1933, Codex P2 on
+// PR #2976).
+func effectiveViewSchema(view *config.Resolved, name string, schema json.RawMessage) json.RawMessage {
+	if view == nil {
+		return schema
+	}
+	if tv, ok := view.ToolViews[name]; ok && len(tv.Pin) > 0 {
+		return view.ArgumentRules.EffectiveSchemaPinned(ruleToolName(view, name), schema, tv.Pin)
+	}
+	return view.ArgumentRules.EffectiveSchema(ruleToolName(view, name), schema)
+}
+
 func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 	byName := make(map[string]mcpclient.Tool, len(all))
 	for _, t := range all {
@@ -878,7 +895,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  view.ArgumentRules.EffectiveSchema(ruleToolName(view, t.Name), t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -1291,7 +1308,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  view.ArgumentRules.EffectiveSchema(ruleToolName(view, t.Name), t.InputSchema),
+				InputSchema:  effectiveViewSchema(view, t.Name, t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}
