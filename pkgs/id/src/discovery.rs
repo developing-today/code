@@ -439,8 +439,13 @@ impl PeerDiscovery {
     ///   [`STALE_THRESHOLD`] relative to the local wall clock is
     ///   refused: it neither inserts a peer nor refreshes one, so
     ///   replaying a captured announcement cannot keep a departed peer
-    ///   live. (A stamp in the future counts as fresh; the ordering
-    ///   check still governs whether it may replace stored state.)
+    ///   live. The bound is symmetric: a stamp more than
+    ///   [`STALE_THRESHOLD`] in the future is also refused, so a forged
+    ///   far-future stamp (e.g. `u64::MAX`) can never enter the table
+    ///   and poison the ordering watermark against every later genuine
+    ///   announcement. Stamps within the bound — past or future —
+    ///   count as fresh; the ordering check then governs whether they
+    ///   may replace stored state.
     /// - **Ordering.** An announcement older than the stored one for
     ///   the same node is dropped: out-of-order delivery never
     ///   regresses the table. Equal timestamps are a tie, broken
@@ -452,7 +457,9 @@ impl PeerDiscovery {
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        if now_secs.saturating_sub(announcement.timestamp_secs) > STALE_THRESHOLD.as_secs() {
+        if now_secs.saturating_sub(announcement.timestamp_secs) > STALE_THRESHOLD.as_secs()
+            || announcement.timestamp_secs.saturating_sub(now_secs) > STALE_THRESHOLD.as_secs()
+        {
             return;
         }
         let node_id = announcement.node_id;
@@ -644,6 +651,48 @@ mod tests {
         let peers = discovery.peers();
         assert_eq!(peers[0].announcement.name, Some("tie".to_owned()));
         assert_eq!(peers[0].announcement.blob_count, 3);
+    }
+
+    #[test]
+    fn test_far_future_announcement_is_refused_and_cannot_poison_ordering() {
+        let discovery = PeerDiscovery::new();
+        // A forged stamp at the end of time never enters the table.
+        discovery.update(make_announcement_at(1, Some("forged"), 99, u64::MAX));
+        assert_eq!(discovery.count(), 0);
+        assert!(discovery.peers().is_empty());
+
+        // Nor does a far-future stamp overwrite a live peer's stored
+        // state, and the peer's genuine announcements keep updating it
+        // afterwards (no ordering-watermark lockout).
+        let now = now_secs();
+        discovery.update(make_announcement_at(2, Some("live"), 3, now));
+        discovery.update(make_announcement_at(
+            2,
+            Some("forged"),
+            99,
+            now + STALE_THRESHOLD.as_secs() + 1,
+        ));
+        discovery.update(make_announcement_at(2, Some("live-2"), 4, now));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name, Some("live-2".to_owned()));
+        assert_eq!(peers[0].announcement.blob_count, 4);
+        assert_eq!(peers[0].announcement.timestamp_secs, now);
+    }
+
+    #[test]
+    fn test_near_future_announcement_within_skew_bound_is_accepted() {
+        let discovery = PeerDiscovery::new();
+        let now = now_secs();
+        discovery.update(make_announcement_at(
+            1,
+            Some("skewed"),
+            5,
+            now + STALE_THRESHOLD.as_secs(),
+        ));
+        let peers = discovery.peers();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].announcement.name, Some("skewed".to_owned()));
     }
 
     #[test]
