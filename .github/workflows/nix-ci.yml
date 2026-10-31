@@ -36,10 +36,14 @@ jobs:
   # .opencode/opencode.jsonc) must match the single definitions in
   # home/common/default.nix, or a non-shell launch silently dials
   # the wrong — or an empty — port (#434, #435). Pure bash/grep: no
-  # Nix needed, runs on every PR. This job used to also run the
-  # treefmt format check; formatting is no longer a merge gate —
-  # it is auto-fixed on main by .github/workflows/auto-format.yml
-  # (see .github/ci-policy.md).
+  # Nix needed, runs on every PR. The same job runs the openclaw unit
+  # Wants guard (#2581): generated proxy units must not carry a proxy
+  # `Wants` that #2092 deliberately removed, and a clean merge must not
+  # be able to put it back unnoticed. Its self-test pins the failure
+  # mode by driving the real guard against resurrected fixtures.
+  # This job used to also run the treefmt format check; formatting is
+  # no longer a merge gate — it is auto-fixed on main by
+  # .github/workflows/auto-format.yml (see .github/ci-policy.md).
   proxy-port-fallbacks:
     name: "basic: proxy port fallbacks"
     runs-on: ubuntu-latest
@@ -48,6 +52,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check proxy port fallbacks match their definitions
         run: .github/scripts/check-proxy-port-fallbacks.sh
+      - name: Check generated openclaw units carry no undeclared proxy Wants
+        run: .github/scripts/check-openclaw-unit-wants.sh
+      - name: Self-test the openclaw unit Wants guard
+        run: .github/scripts/check-openclaw-unit-wants.test.sh
 
   flake-check:
     name: "full (main tier): Nix flake evaluation"
