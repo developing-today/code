@@ -967,6 +967,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_token_trailing_bit_alias_refused() {
+        // #1840 at the token level: respelling a real issued token by
+        // setting the final character's unused trailing bits must not
+        // verify, while the canonical spelling still does. The token
+        // byte length fixes the final group: %4==3 chars -> low 2 bits
+        // unused, %4==2 chars -> low 4 bits unused.
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let store = IdentityStore::new_ephemeral();
+        let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
+        assert!(store.verify_token(&token).await.is_some());
+        let mask: u32 = match token.len() % 4 {
+            3 => 0b01,
+            2 => 0b0001,
+            other => panic!("issued token should end in a partial group, got len%4={other}"),
+        };
+        let mut bytes = token.as_bytes().to_vec();
+        let last = bytes.len() - 1;
+        let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+        assert_eq!(value & mask, 0, "canonical spelling zeroes the trailing bits");
+        bytes[last] = ALPHABET[(value | mask) as usize];
+        let alias = String::from_utf8(bytes).unwrap();
+        assert_ne!(alias, token);
+        assert!(store.verify_token(&alias).await.is_none());
+        assert!(store.verify_token_client_id(&alias).is_none());
+    }
+
+    #[tokio::test]
     async fn test_invalid_token() {
         let store = IdentityStore::new_ephemeral();
 
