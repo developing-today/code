@@ -1000,6 +1000,63 @@ let
       ))
     ];
 
+  # Flake checks for the laptop-backups shell suites (#1841): the seven
+  # suites in nixos/home drive the real backup and watchdog scripts with
+  # stubbed systemctl/bws/journalctl/rclone, so each is a runCommandLocal
+  # that copies nixos/home somewhere writable and runs one suite. Until
+  # this wiring they ran only by hand on the laptop, so a regression in
+  # the backup scripts reached CI only when somebody remembered to run
+  # them. inputs.self is copied, not run in place: the store path is
+  # read-only and the suites write beside themselves.
+  make-laptop-backups-checks = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      suites = [
+        "laptop-backups-watchdog"
+        "pm-dashboard-backup"
+        "pm-dashboard-backup-copy"
+        "pm-dashboard-backup-date"
+        "pm-dashboard-backup-manifest"
+        "pm-dashboard-backup-prune"
+        "pm-dashboard-backup-record"
+      ];
+    in
+    {
+      checks = builtins.listToAttrs (
+        map (suite: {
+          name = "laptop-backups-${suite}";
+          value =
+            pkgs.runCommandLocal "check-laptop-backups-${suite}"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.coreutils
+                  pkgs.diffutils
+                  pkgs.findutils
+                  pkgs.gnugrep
+                  pkgs.gnused
+                  pkgs.gnutar
+                  pkgs.gzip
+                  pkgs.jq
+                  pkgs.python3
+                  pkgs.util-linux
+                  pkgs.zstd
+                ];
+              }
+              ''
+                cp -r ${inputs.self}/nixos/home home
+                chmod -R u+w home
+                cd home
+                bash ${suite}.test.sh
+                mkdir -p $out
+                echo "${suite} suite passed" > $out/result.txt
+              '';
+        }) suites
+      );
+    }
+  );
+
   make-mcpx-overlay = {
     overlays = {
       default = final: prev: {
@@ -1055,6 +1112,7 @@ let
         make-root-apps
         make-id
         make-mcpx-overlay
+        make-laptop-backups-checks
         ;
     }
   ];
