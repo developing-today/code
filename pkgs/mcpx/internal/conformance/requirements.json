@@ -7246,7 +7246,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes on stdio; on HTTP it also POSTs `notifications/cancelled`, which 2026 says is \"not required or expected\" and whose headers \"are not defined by this revision\" (streamable-http note)",
+      "client": "yes on stdio; on legacy-era HTTP it also POSTs `notifications/cancelled`; on a 2026-07-28 HTTP upstream it sends none — `cancelled()` returns early for an HTTP transport with a meta version set (internal/mcpclient/modern.go:582) and closing the response stream is the cancellation signal, which 2026 calls the expected behaviour for that transport",
       "server": "n/a"
     }
   },
