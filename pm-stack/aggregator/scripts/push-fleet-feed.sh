@@ -32,7 +32,6 @@ export PATH
 
 cd "$(dirname "$0")/.."
 PKG="$PWD"
-FEED="$PKG/fleet-feed.json"
 LAPTOP=user@100.99.113.103
 DEST_DIR="~/pm-stack/aggregator"
 KNOWN_HOSTS="${PUSH_FLEET_FEED_KNOWN_HOSTS:-$PKG/scripts/laptop_known_hosts}"
@@ -59,9 +58,18 @@ print(m.group(1) if m else "")' 2>/dev/null || true)"
 fi
 export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost,100.99.113.103}" no_proxy="${no_proxy:-127.0.0.1,localhost,100.99.113.103}"
 
+# Serialize the read/publish/confirm transaction for this state file. A
+# standalone collection never confirms anything. Each push owns its feed, so
+# another collector cannot replace the bytes being sent or acknowledged.
+STATE="${CHARGES_SURFACED_STATE_PATH:-$HOME/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json}"
+mkdir -p "$(dirname "$STATE")"
+exec 9>"$STATE.lock"
+flock 9
+FEED="$(mktemp "$PKG/.fleet-feed.XXXXXXXX.json")"
+trap 'rm -f "$FEED"' EXIT
 bun run scripts/collect-fleet-feed.ts --out "$FEED"
 
-exec python3 - "$FEED" "$LAPTOP" "$DEST_DIR" "$KNOWN_HOSTS" <<'PYEOF'
+python3 - "$FEED" "$LAPTOP" "$DEST_DIR" "$KNOWN_HOSTS" <<'PYEOF'
 import base64, os, re, socket, subprocess, sys, threading, urllib.parse
 
 feed, laptop, dest_dir, known_hosts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -182,18 +190,20 @@ ssh_opts = [
     "-o", "ControlMaster=no",
 ]
 dest = f"{laptop.split('@', 1)[0]}@127.0.0.1"
+remote_tmp = f"{dest_dir}/{os.path.basename(feed)}.tmp"
 try:
     subprocess.run(
         ["scp", "-P", str(local_port), *ssh_opts, feed,
-         f"{dest}:{dest_dir}/fleet-feed.json.tmp"],
+         f"{dest}:{remote_tmp}"],
         check=True,
     )
     subprocess.run(
         ["ssh", "-p", str(local_port), *ssh_opts, dest,
-         f"mv {dest_dir}/fleet-feed.json.tmp {dest_dir}/fleet-feed.json"],
+         f"mv {remote_tmp} {dest_dir}/fleet-feed.json"],
         check=True,
     )
 finally:
     listener.close()
 print("push-fleet-feed: feed pushed to laptop")
 PYEOF
+bun run scripts/confirm-charges-surfaced.ts "$FEED"

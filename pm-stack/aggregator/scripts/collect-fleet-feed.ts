@@ -445,13 +445,9 @@ async function main(): Promise<void> {
       } catch {
         /* no state yet: everything unmatched is new */
       }
-      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      const { fresh } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
       if (fresh.length) {
         chargesAttention = fresh;
-        await writeFile(
-          chargesSurfacedStatePath,
-          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
-        );
       }
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
