@@ -51,6 +51,16 @@ func TestReferencesFindsTheNamespacesAScriptReaches(t *testing.T) {
 		{"a bare configured namespace is a reference", `await demo.echo({})`, only("demo"), []string{"demo"}},
 		{"a bare unconfigured name is not", `await other.echo({})`, only("demo"), nil},
 		{"a bare name the script declares is a local", "const demo = {x: 1};\ndemo.echo();", only("demo"), nil},
+
+		// Codex round on PR #3042: scanner edge shapes that manufactured
+		// phantom declarations or swallowed real references.
+		{"division after a postfix increment is not a regex", `let n = 2; n++ / 2; tools.fs.read();`, none, []string{"fs"}},
+		{"division after a keyword member is not a regex", `const o = {return: 4}; o.return / 2; tools.fs.read();`, none, []string{"fs"}},
+		{"a comma string in a default is not a delimiter", `function f(x = "," + demo.echo()) {}`, only("demo"), []string{"demo"}},
+		{"declaration keywords as object keys bind nothing", `const o = { let: 1, demo: 2 }; demo.echo();`, only("demo"), []string{"demo"}},
+		{"a typescript annotation is not a binding", `function f(x: typeof demo) {} demo.echo();`, only("demo"), []string{"demo"}},
+		{"a typescript generic annotation is not a binding", `function f(x: Map<string, demo>) {} demo.echo();`, only("demo"), []string{"demo"}},
+		{"declaration scanning stops at an ASI boundary", "const x = 1\na(), demo.echo();", only("demo"), []string{"demo"}},
 		{"an imported name is declared too", `import { demo } from "./lib.ts"; demo.echo();`, only("demo"), nil},
 		{"an aliased import declares the alias", `import { x as demo } from "./lib.ts"; demo.echo();`, only("demo"), nil},
 		{"a bare name inside a string is not", `const s = "demo.echo()";`, only("demo"), nil},

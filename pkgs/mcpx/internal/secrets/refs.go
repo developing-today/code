@@ -78,6 +78,10 @@ type lexToken struct {
 	// plain, for tString, reports the literal had no escape, so its text
 	// is exactly the name it spells.
 	plain bool
+	// nl reports a newline appeared in the whitespace (or a block
+	// comment) before this token — the raw material of automatic
+	// semicolon insertion.
+	nl bool
 }
 
 // exprKeywords are the identifiers after which a value can start, so a
@@ -91,9 +95,10 @@ var exprKeywords = map[string]bool{
 }
 
 type lexer struct {
-	src  string
-	pos  int
-	toks []lexToken
+	src       string
+	pos       int
+	toks      []lexToken
+	pendingNL bool
 }
 
 func lex(src string) []lexToken {
@@ -103,7 +108,8 @@ func lex(src string) []lexToken {
 }
 
 func (l *lexer) emit(kind tokKind, text string, plain bool) {
-	l.toks = append(l.toks, lexToken{kind: kind, text: text, plain: plain})
+	l.toks = append(l.toks, lexToken{kind: kind, text: text, plain: plain, nl: l.pendingNL})
+	l.pendingNL = false
 }
 
 // valueEnd reports whether the last emitted token can end a value, which
@@ -117,9 +123,15 @@ func (l *lexer) valueEnd() bool {
 	case tString, tNumber, tTemplate, tRegex:
 		return true
 	case tIdent:
+		// A member name is a value whatever it spells: o.return ends
+		// one even though return alone opens an expression context.
+		if len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "." {
+			return true
+		}
 		return !exprKeywords[t.text]
 	case tPunct:
-		return t.text == ")" || t.text == "]" || t.text == "}"
+		return t.text == ")" || t.text == "]" || t.text == "}" ||
+			t.text == "++" || t.text == "--"
 	}
 	return false
 }
@@ -132,11 +144,20 @@ func (l *lexer) code(untilBrace bool) {
 		c := l.src[l.pos]
 		switch {
 		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if c == '\n' {
+				l.pendingNL = true
+			}
 			l.pos++
 		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/':
 			l.pos = l.lineEnd(l.pos)
 		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '*':
-			l.pos = l.blockEnd(l.pos)
+			end := l.blockEnd(l.pos)
+			for _, ch := range l.src[l.pos:end] {
+				if ch == '\n' {
+					l.pendingNL = true
+				}
+			}
+			l.pos = end
 		case c == '/':
 			if l.valueEnd() {
 				l.emit(tPunct, "/", false)
@@ -328,6 +349,12 @@ func declaredNames(toks []lexToken) map[string]bool {
 		}
 		switch t.text {
 		case "const", "let", "var":
+			// A property key is not a declaration: { let: 1, demo: 2 }
+			// binds nothing, and entering parseDeclarators here would
+			// record the sibling keys as bindings.
+			if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].text == ":" {
+				continue
+			}
 			parseDeclarators(toks, i+1, out)
 		case "function":
 			j := i + 1
@@ -359,6 +386,9 @@ func declaredNames(toks []lexToken) map[string]bool {
 func matchParen(toks []lexToken, open int) int {
 	depth := 0
 	for j := open; j < len(toks); j++ {
+		if toks[j].kind != tPunct {
+			continue
+		}
 		switch toks[j].text {
 		case "(", "[", "{":
 			depth++
@@ -380,6 +410,13 @@ func matchParen(toks []lexToken, open int) int {
 func skipExpr(toks []lexToken, i int, stops map[string]bool) int {
 	depth := 0
 	for i < len(toks) {
+		// Only punctuation delimits: a literal whose text happens to
+		// spell a delimiter (the string ",", a template, a regex) is
+		// expression content, never structure.
+		if toks[i].kind != tPunct {
+			i++
+			continue
+		}
 		t := toks[i].text
 		if depth == 0 && stops[t] {
 			return i
@@ -482,10 +519,58 @@ func parseParams(toks []lexToken, i int, out map[string]bool) {
 			i++
 		}
 		i = parseTarget(toks, i, out)
+		if i < len(toks) && toks[i].kind == tPunct && toks[i].text == ":" {
+			// A TypeScript annotation is not more bindings:
+			// f(x: typeof demo) binds x alone.
+			i = skipAnnotation(toks, i+1)
+		}
 		if i < len(toks) && toks[i].text == "=" {
 			i = skipExpr(toks, i+1, map[string]bool{",": true, ")": true})
 		}
 	}
+}
+
+// skipAnnotation advances past a TypeScript type annotation, stopping
+// before the token that ends it at its own level: a comma, the closing
+// paren, or a default's "=". Brackets and generic angle brackets nest.
+func skipAnnotation(toks []lexToken, i int) int {
+	depth, angle := 0, 0
+	for i < len(toks) {
+		t := toks[i]
+		if t.kind == tPunct {
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				if depth == 0 {
+					return i
+				}
+				depth--
+			case "<":
+				angle++
+			case ">":
+				if angle > 0 {
+					angle--
+				}
+			case ">>":
+				angle -= 2
+				if angle < 0 {
+					angle = 0
+				}
+			case ">>>":
+				angle -= 3
+				if angle < 0 {
+					angle = 0
+				}
+			case ",", "=":
+				if depth == 0 && angle == 0 {
+					return i
+				}
+			}
+		}
+		i++
+	}
+	return i
 }
 
 // parseDeclarators records the bindings of a const/let/var statement
@@ -493,13 +578,74 @@ func parseParams(toks []lexToken, i int, out map[string]bool) {
 func parseDeclarators(toks []lexToken, i int, out map[string]bool) {
 	for i < len(toks) {
 		i = parseTarget(toks, i, out)
-		i = skipExpr(toks, i, map[string]bool{",": true, ";": true})
+		i = skipDeclarator(toks, i)
 		if i < len(toks) && toks[i].text == "," {
 			i++
 			continue
 		}
 		return
 	}
+}
+
+// skipDeclarator advances past one declarator's initialiser, stopping
+// before a depth-0 comma or semicolon — or at an automatic-semicolon
+// boundary: a newline after a value-ending token, before a token that
+// can only start a new statement. Without that stop, semicolon-free
+// code (const x = 1\na(), demo.echo()) lets the next statement's
+// comma pose as a declaration separator and its first name as a
+// binding.
+func skipDeclarator(toks []lexToken, i int) int {
+	depth := 0
+	for i < len(toks) {
+		t := toks[i]
+		if depth == 0 && t.nl && i > 0 && endsValue(toks[i-1]) && startsStatement(t) {
+			return i
+		}
+		if t.kind != tPunct {
+			i++
+			continue
+		}
+		if depth == 0 && (t.text == "," || t.text == ";") {
+			return i
+		}
+		switch t.text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+		i++
+	}
+	return i
+}
+
+// endsValue reports whether a token can end a statement's value, for
+// the ASI boundary test in skipDeclarator.
+func endsValue(t lexToken) bool {
+	switch t.kind {
+	case tString, tNumber, tTemplate, tRegex:
+		return true
+	case tIdent:
+		return !exprKeywords[t.text]
+	case tPunct:
+		return t.text == ")" || t.text == "]" || t.text == "}" ||
+			t.text == "++" || t.text == "--"
+	}
+	return false
+}
+
+// startsStatement reports whether a token can only begin a new
+// statement (never continue the previous expression), for the ASI
+// boundary test in skipDeclarator.
+func startsStatement(t lexToken) bool {
+	switch t.kind {
+	case tIdent, tString, tNumber, tTemplate, tRegex:
+		return true
+	}
+	return false
 }
 
 // parseImport records the local names an import statement binds.
