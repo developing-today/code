@@ -49,7 +49,7 @@ const startProxy = async (extraEnv = {}) => {
     if (Date.now() > deadline) throw new Error(`proxy did not start: ${log}`);
     await new Promise(r => setTimeout(r, 50));
   }
-  return { child, base: `http://127.0.0.1:${port}` };
+  return { child, base: `http://127.0.0.1:${port}`, tmp };
 };
 
 test('clef-proxy local error handling', async (t) => {
@@ -156,5 +156,77 @@ test('clef-proxy upstream guard (#690/#692)', async (t) => {
     const data = await res.json();
     assert.deepEqual(data.answers, { q1: 'answer one' });
     assert.match(stubPaths.at(-1), /\/workers-ai\/run\//);
+  });
+});
+
+// The mtime credential cache (#768, contract per #782): config files
+// are re-read only when their mtime changes. The token reaches the
+// stub gateway as the Authorization header, so the stub sees exactly
+// which token each request presented. No Authorization header is sent
+// by the client here: the file is the only token source.
+test('clef-proxy config cache contract (#782)', async (t) => {
+  const seenAuth = [];
+  const stub = http.createServer((req, res) => {
+    seenAuth.push(req.headers.authorization || '');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, result: { answers: { q1: 'ok' } } }));
+  });
+  const stubPort = await freePort();
+  await new Promise((resolve) => stub.listen(stubPort, '127.0.0.1', resolve));
+  t.after(() => { stub.close(); });
+
+  const { child, base, tmp } = await startProxy({
+    CLEF_PROXY_GATEWAY_BASE: `http://127.0.0.1:${stubPort}/v1`,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  t.after(() => { child.kill('SIGTERM'); });
+
+  const cfgDir = path.join(tmp, '.config', 'cloudflare');
+  fs.mkdirSync(cfgDir, { recursive: true });
+  const tokenFile = path.join(cfgDir, 'ai-inference-token');
+  // Controlled mtimes (fs.utimesSync) — no reliance on wall-clock
+  // mtime granularity when the file is rewritten.
+  const T1 = new Date('2026-01-01T00:00:00.000Z');
+  const T2 = new Date('2026-01-02T00:00:00.000Z');
+  const writeToken = (value, mtime) => {
+    fs.writeFileSync(tokenFile, value);
+    fs.utimesSync(tokenFile, mtime, mtime);
+  };
+  const ask = () => fetch(`${base}/v1/systemone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: {}, questions: { q1: 'question one' } })
+  });
+
+  await t.test('first request reads the token from the config file', async () => {
+    writeToken('token-one', T1);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    assert.equal(seenAuth.at(-1), 'Bearer token-one');
+  });
+
+  await t.test('changed contents with an unchanged mtime are not re-read', async () => {
+    writeToken('token-two', T1);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    // The cache serves the value keyed to T1: a re-read would have
+    // presented token-two.
+    assert.equal(seenAuth.at(-1), 'Bearer token-one');
+  });
+
+  await t.test('changed contents with a new mtime are re-read (rotation picked up)', async () => {
+    writeToken('token-three', T2);
+    const res = await ask();
+    assert.equal(res.status, 200);
+    assert.equal(seenAuth.at(-1), 'Bearer token-three');
+  });
+
+  await t.test('a missing token file yields the fallback (401, gateway not called)', async () => {
+    fs.unlinkSync(tokenFile);
+    const callsBefore = seenAuth.length;
+    const res = await ask();
+    assert.equal(res.status, 401);
+    assert.equal(seenAuth.length, callsBefore);
   });
 });
