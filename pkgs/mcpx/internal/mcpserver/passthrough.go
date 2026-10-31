@@ -143,6 +143,9 @@ func (s *Server) allAvailableTools(ctx context.Context) ([]Tool, error) {
 // then every gateway tool whose name no upstream took. In reactive mode, it
 // offers request_tools, batch_call, pinned tools, and active retained tools.
 func (s *Server) surface(ctx context.Context) ([]Tool, error) {
+	if rawToolsRequested(ctx) {
+		return s.rawSurface(ctx)
+	}
 	if s.Reactive {
 		return s.reactiveSurface(ctx)
 	}

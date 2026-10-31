@@ -1531,6 +1531,33 @@ func (a *App) uriOwner(ctx context.Context, pass []string, u string) string {
 	return ""
 }
 
+// RawTools lists every visible namespace's tools under their owners'
+// names, for the raw surface a ?codemode=false request to /mcp asks for
+// (mcpserver.RawToolsBackend). One namespace that cannot be listed fails
+// the whole list, as it does in pass-through mode: a partial catalogue
+// would have a client trust that the missing server has no tools.
+func (b mcpBackend) RawTools(ctx context.Context) ([]mcpserver.NamespacedTool, error) {
+	c, err := b.app.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nss, err := c.Namespaces(ctx, b.app.Profile)
+	if err != nil {
+		return nil, err
+	}
+	var out []mcpserver.NamespacedTool
+	for _, n := range nss {
+		ts, err := b.UpstreamTools(ctx, n.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range ts {
+			out = append(out, mcpserver.NamespacedTool{Namespace: n.Namespace, Tool: t})
+		}
+	}
+	return out, nil
+}
+
 // UpstreamTools lists one namespace's tools under their own names, for
 // pass-through mode. A namespace outside the profile has none.
 func (b mcpBackend) UpstreamTools(ctx context.Context, ns string) ([]mcpserver.Tool, error) {
