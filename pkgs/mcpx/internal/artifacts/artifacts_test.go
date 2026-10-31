@@ -1,6 +1,7 @@
 package artifacts_test
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/artifacts"
+	_ "modernc.org/sqlite"
 )
 
 func open(t *testing.T, opts artifacts.Options) *artifacts.Store {
@@ -369,5 +371,41 @@ func TestTouchNeverShortensOrRevives(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("GC should still collect the expired artifact, collected %d", n)
+	}
+}
+
+// A store written before the touch-on-read opt-in has last_touched = 0
+// on its rows. That sentinel must render as the creation time, not as
+// 1970: time.UnixMilli(0) is not the zero Time.
+func TestMigratedRowsReportCreationAsLastTouched(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, artifacts.Options{Dir: dir})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(dir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE artifacts SET last_touched = 0 WHERE id = ?`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := open(t, artifacts.Options{Dir: dir})
+	list, err := s2.List(artifacts.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("want 1 artifact, got %d", len(list))
+	}
+	if list[0].LastTouched.UnixMilli() != m.Created.UnixMilli() {
+		t.Errorf("migrated row lastTouched = %v, want creation %v", list[0].LastTouched, m.Created)
 	}
 }

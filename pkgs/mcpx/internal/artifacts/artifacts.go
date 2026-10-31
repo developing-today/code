@@ -527,9 +527,13 @@ func scan(r scanner) (Meta, error) {
 	m.Created = time.UnixMilli(created)
 	m.Expires = time.UnixMilli(expires)
 	m.ExpiresAt = m.Expires
-	m.LastTouched = time.UnixMilli(lastTouched)
-	if m.LastTouched.IsZero() {
+	// The sentinel is the integer, checked before conversion:
+	// time.UnixMilli(0) is 1970, not the zero Time, so an IsZero
+	// check after conversion would never fire for a migrated row.
+	if lastTouched <= 0 {
 		m.LastTouched = m.Created
+	} else {
+		m.LastTouched = time.UnixMilli(lastTouched)
 	}
 	m.refreshTTLRemaining(time.Now())
 	m.URI = URI(m.ID)
@@ -592,9 +596,29 @@ func (s *Store) touch(m *Meta, now time.Time) error {
 	if expires.Before(m.Expires) {
 		expires = m.Expires
 	}
-	if _, err := s.db.Exec(`UPDATE artifacts SET last_touched=?, expires=? WHERE id=?`,
-		now.UnixMilli(), expires.UnixMilli(), m.ID); err != nil {
+	// The update is monotonic in SQL, not just in this caller's view:
+	// two concurrent item reads can interleave read-compute-write, and
+	// an earlier reader that pauses must not overwrite a later
+	// reader's already-committed renewal with an older deadline --
+	// GC would collect the artifact before the latest reader's
+	// promised deadline.
+	res, err := s.db.Exec(`UPDATE artifacts SET last_touched=?, expires=?
+		WHERE id=? AND (expires < ? OR last_touched < ?)`,
+		now.UnixMilli(), expires.UnixMilli(), m.ID,
+		expires.UnixMilli(), now.UnixMilli())
+	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		// A concurrent renewal already persisted a deadline at
+		// least as new as this one. Return what is actually
+		// persisted rather than this caller's staler computation.
+		fresh, gerr := s.get(m.ID)
+		if gerr != nil {
+			return gerr
+		}
+		*m = fresh
+		return nil
 	}
 	m.LastTouched = now
 	m.Expires = expires
