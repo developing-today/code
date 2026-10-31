@@ -41,8 +41,10 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			// whatever was true when the daemon started.
 			// Through Pool, which holds r.mu: this runs on an upstream
 			// client's goroutine, any time, and Reload replaces r.pools.
+			var changedPool *pool.Pool
 			if p, ok := r.Pool(server); ok {
 				p.Invalidate()
+				changedPool = p
 			}
 			k := map[string]events.Kind{
 				"tools": events.ToolsChanged, "resources": events.ResourcesChanged,
@@ -52,9 +54,11 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 				r.publish(events.Event{Kind: k, Server: server})
 			}
 			// A changed catalog can orphan an argument rule (#1986):
-			// re-check this server's rules against what is now cached.
+			// re-check this server's rules -- against the refreshed
+			// catalog, not the just-invalidated cache, which still
+			// holds the previous tool list.
 			if kind == "tools" {
-				r.warnDeadArgumentRulesFor(server)
+				r.warnDeadArgumentRulesAfterRefresh(server, changedPool)
 			}
 		},
 		OnResourceUpdated: func(server, uri string) {

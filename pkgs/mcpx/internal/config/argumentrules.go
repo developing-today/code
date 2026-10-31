@@ -131,6 +131,16 @@ func (s *ArgumentRuleSet) Check(tool string, args any) *ArgumentRuleViolation {
 		return nil
 	}
 	raw, err := json.Marshal(args)
+	if err == nil && string(raw) == "null" {
+		// A caller can send "args": null (the daemon decodes it to a
+		// nil map). Object keywords -- required, properties -- do not
+		// reject JSON null, so the call would sail past rules written
+		// exactly like the documented examples and only become the
+		// empty object the client actually sends upstream afterwards.
+		// Judge the value that will be sent: no arguments at all is
+		// the empty object.
+		raw = []byte("{}")
+	}
 	if err != nil {
 		// Arguments that will not marshal cannot be validated; refuse
 		// rather than wave an unchecked call through.
@@ -168,27 +178,146 @@ func (s *ArgumentRuleSet) Check(tool string, args any) *ArgumentRuleViolation {
 }
 
 // EffectiveSchema returns the inputSchema a surface should advertise
-// for tool: the upstream schema with every matching rule folded in as
-// allOf, so what a caller reads is the constraint the call will
-// actually be judged against. With no matching rules the upstream
-// schema is returned unchanged, byte for byte.
+// for tool: the upstream schema with every matching rule folded in, so
+// what a caller reads is the constraint the call will actually be
+// judged against. With no matching rules the upstream schema is
+// returned unchanged, byte for byte.
+//
+// The upstream schema stays at the root, never nested under allOf:
+// the MCP schemas require inputSchema.type to be "object" at the root
+// itself, header annotations (x-mcp-header) are only reachable where
+// the upstream schema put them -- composition keywords hide them from
+// mcpheaders.ToolParams -- and the upstream document's own local
+// references keep resolving against the root they were written for.
+// Each rule joins as an allOf member that is a bare $ref into a
+// namespaced copy of the rule kept in the root $defs (see
+// scopedSchemaMember), so a rule's local references keep their own
+// scope no matter what the root already defines.
 func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage) json.RawMessage {
 	matching := s.Matching(tool)
 	if len(matching) == 0 {
 		return upstream
 	}
-	parts := make([]json.RawMessage, 0, len(matching)+1)
+	root := map[string]any{}
 	if len(upstream) > 0 {
-		parts = append(parts, upstream)
+		dec := json.NewDecoder(bytes.NewReader(upstream))
+		dec.UseNumber()
+		var doc any
+		if err := dec.Decode(&doc); err != nil {
+			return upstream
+		}
+		obj, ok := doc.(map[string]any)
+		if !ok {
+			// A non-object upstream schema cannot carry the root
+			// this composition needs; advertise it unchanged
+			// rather than a shape that misstates it.
+			return upstream
+		}
+		root = obj
 	}
-	for _, r := range matching {
-		parts = append(parts, r.Schema)
+	// The protocol's structural requirement, at the root where a
+	// validating client looks for it.
+	root["type"] = "object"
+	defs, _ := root["$defs"].(map[string]any)
+	if defs == nil {
+		defs = map[string]any{}
 	}
-	out, err := json.Marshal(map[string]any{"allOf": parts})
+	var allOf []any
+	if existing, ok := root["allOf"].([]any); ok {
+		allOf = existing
+	}
+	for i, r := range matching {
+		member, scoped := scopedSchemaMember(r.Schema, fmt.Sprintf("argumentrule%d", i))
+		for name, def := range scoped {
+			defs[name] = def
+		}
+		allOf = append(allOf, member)
+	}
+	if len(defs) > 0 {
+		root["$defs"] = defs
+	}
+	root["allOf"] = allOf
+	out, err := json.Marshal(root)
 	if err != nil {
 		return upstream
 	}
 	return out
+}
+
+// scopedSchemaMember prepares one schema document for composition
+// into another document's allOf. The document is copied into the host
+// document's $defs under "<prefix>$doc" and every local reference in
+// the copy ("#", "#/$defs/...", any "#/..." pointer) is rewritten to
+// resolve within that copy, so the copy means exactly what the
+// document meant standalone. The returned member is a bare $ref to
+// the copy; a document with no local references needs no copy and is
+// returned as itself with no defs.
+func scopedSchemaMember(raw json.RawMessage, prefix string) (member any, defs map[string]any) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return json.RawMessage(raw), nil
+	}
+	if !hasLocalRef(doc) {
+		return doc, nil
+	}
+	name := prefix + "$doc"
+	scoped := rewriteLocalRefs(doc, "#/$defs/"+name)
+	return map[string]any{"$ref": "#/$defs/" + name}, map[string]any{name: scoped}
+}
+
+// hasLocalRef reports whether a decoded schema document contains a
+// $ref pointing inside itself.
+func hasLocalRef(v any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if k == "$ref" {
+				if ref, ok := val.(string); ok && strings.HasPrefix(ref, "#") {
+					return true
+				}
+			}
+			if hasLocalRef(val) {
+				return true
+			}
+		}
+	case []any:
+		for _, e := range t {
+			if hasLocalRef(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rewriteLocalRefs returns a copy of a decoded schema document with
+// every local $ref re-based at base: "#" becomes base itself and
+// "#/..." becomes base + "/...".
+func rewriteLocalRefs(v any, base string) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if k == "$ref" {
+				if ref, ok := val.(string); ok && strings.HasPrefix(ref, "#") {
+					out[k] = base + strings.TrimPrefix(ref, "#")
+					continue
+				}
+			}
+			out[k] = rewriteLocalRefs(val, base)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = rewriteLocalRefs(e, base)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // DeadRules returns the rules that match none of the known tool names:
@@ -251,14 +380,39 @@ func mergeArgumentRules(near, far map[string]json.RawMessage) map[string]json.Ra
 	}
 	for k, v := range near {
 		if fv, dup := out[k]; dup {
-			if combined, err := json.Marshal(map[string]any{
-				"allOf": []json.RawMessage{fv, v},
-			}); err == nil {
+			if combined := composeSchemas(fv, v); combined != nil {
 				out[k] = combined
 				continue
 			}
 		}
 		out[k] = v
+	}
+	return out
+}
+
+// composeSchemas combines two layered schemas written for the same
+// rule key into one document that means both (allOf), keeping each
+// side's local references in their own scope via scopedSchemaMember:
+// nesting the two documents under allOf without that moves their
+// $defs but leaves "#/$defs/..." pointing at the combined root, and a
+// rule that compiled standalone fails to compile merged.
+func composeSchemas(far, near json.RawMessage) json.RawMessage {
+	farMember, farDefs := scopedSchemaMember(far, "far")
+	nearMember, nearDefs := scopedSchemaMember(near, "near")
+	root := map[string]any{"allOf": []any{farMember, nearMember}}
+	if len(farDefs)+len(nearDefs) > 0 {
+		defs := make(map[string]any, len(farDefs)+len(nearDefs))
+		for n, d := range farDefs {
+			defs[n] = d
+		}
+		for n, d := range nearDefs {
+			defs[n] = d
+		}
+		root["$defs"] = defs
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil
 	}
 	return out
 }

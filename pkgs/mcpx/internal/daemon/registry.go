@@ -63,6 +63,11 @@ type Registry struct {
 	// dead rule warns once per registry lifetime instead of on every
 	// catalog observation.
 	deadRuleWarned sync.Map
+	// deadRuleRefresh records servers whose post-list_changed
+	// catalog refresh (for the dead-rule re-check) is already in
+	// flight, so a burst of notifications coalesces into one
+	// refresh per server.
+	deadRuleRefresh sync.Map
 
 	sessMu sync.Mutex
 	leases map[string]*leaseState
@@ -290,6 +295,34 @@ func (r *Registry) warnDeadArgumentRulesFor(name string) {
 			r.deadRuleWarned.Delete(name + "\x00" + rule.Key)
 		}
 	}
+}
+
+// warnDeadArgumentRulesAfterRefresh re-checks a server's argument
+// rules against its CHANGED catalog (#1986). The check must not read
+// the cache the list_changed handler just invalidated: Invalidate
+// only forgets the timestamps, so CachedSchemas still returns the
+// previous tool list and a newly orphaned rule would look alive.
+// Refresh first, and only warn against a catalog the refresh
+// actually produced; a failed refresh leaves the rule unchecked
+// until the next catalog observation (load, Warm, or the next
+// list_changed), never warned against stale data. Refreshes are
+// coalesced per server: a burst of list_changed notifications
+// starts one refresh, and later notifications observe the catalog
+// it fetched.
+func (r *Registry) warnDeadArgumentRulesAfterRefresh(name string, p *pool.Pool) {
+	if p == nil {
+		return
+	}
+	if _, flying := r.deadRuleRefresh.LoadOrStore(name, true); flying {
+		return
+	}
+	go func() {
+		defer r.deadRuleRefresh.Delete(name)
+		if _, _, err := p.RefreshSchemas(context.Background()); err != nil {
+			return
+		}
+		r.warnDeadArgumentRulesFor(name)
+	}()
 }
 
 // ConfigHash fingerprints the server definitions.

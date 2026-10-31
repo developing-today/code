@@ -968,7 +968,20 @@ func LoadFrom(explicit, wd string) (*Config, error) {
 // taken, so nearer always wins without needing to know which fields exist.
 func mergeInto(near, far *Config, farPath string) {
 	for name, s := range far.MCPServers {
-		if _, taken := near.MCPServers[name]; taken {
+		if existing, taken := near.MCPServers[name]; taken {
+			// The nearer file's server definition wins, as for
+			// every other field -- but argument rules are the one
+			// exception, by their own guarantee (#1986): rules
+			// only tighten, so a nearer file that repeats a server
+			// without restating its rules must not silently drop
+			// the farther file's. Compose them into the surviving
+			// definition, as mergeExtras does for the pool block.
+			if s.Mcpx != nil && len(s.Mcpx.ArgumentRules) > 0 {
+				if existing.Mcpx == nil {
+					existing.Mcpx = &Extras{}
+				}
+				existing.Mcpx.ArgumentRules = mergeArgumentRules(existing.Mcpx.ArgumentRules, s.Mcpx.ArgumentRules)
+			}
 			continue
 		}
 		near.MCPServers[name] = s
