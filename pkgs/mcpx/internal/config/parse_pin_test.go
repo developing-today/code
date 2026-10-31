@@ -43,3 +43,23 @@ func TestParsePreservesPinNumberPrecision(t *testing.T) {
 		t.Errorf("string pin changed: %v", pin["name"])
 	}
 }
+
+// Trailing data after the first JSON document -- garbage or a whole
+// second document -- is an error, not a silent truncation (Codex,
+// PR #2976): parse decodes with a Decoder (for UseNumber), and a lone
+// Decode stops at the first document's end.
+func TestParseRejectsTrailingData(t *testing.T) {
+	doc := `{"mcpServers":{"a":{"command":"x"}}}`
+	for _, in := range []string{
+		doc + " garbage",
+		doc + "\n" + doc,
+		doc + "{}",
+	} {
+		if _, err := parse([]byte(in)); err == nil {
+			t.Errorf("parse(%q) succeeded, want a trailing-data error", in)
+		}
+	}
+	if _, err := parse([]byte(doc + "\n\n")); err != nil {
+		t.Errorf("trailing whitespace only: parse failed: %v", err)
+	}
+}

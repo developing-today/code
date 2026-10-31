@@ -15,6 +15,7 @@ import (
 	"github.com/dezren39/mcpx/internal/codegen"
 	"github.com/dezren39/mcpx/internal/mcpauth"
 	"github.com/dezren39/mcpx/internal/settings"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1160,6 +1161,14 @@ func parse(b []byte) (*Config, error) {
 	dec.UseNumber()
 	if err := dec.Decode(c); err != nil {
 		return nil, err
+	}
+	// A single Decode stops at the end of the first document, so
+	// trailing garbage or a concatenated second document would be
+	// silently dropped -- and checkKeys, whose own Unmarshal fails on
+	// the same bytes, assumes this decode validated the whole file.
+	// Require EOF instead (Codex, PR #2976).
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("config has data after the first JSON document")
 	}
 	if err := checkKeys(stripped, c); err != nil {
 		return nil, err
