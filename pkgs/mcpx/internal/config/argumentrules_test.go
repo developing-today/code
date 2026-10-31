@@ -1022,3 +1022,88 @@ func TestEffectiveSchemaPinnedDeclinesIDCarryingConditions(t *testing.T) {
 		t.Errorf("a condition inside an $id-carrying resource must stay undecided, not be evaluated against the outer document: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: a oneOf whose branches are discriminated by
+// a pinned property must be projected by branch verdict, not by
+// name-stripping. Stripping the pinned requirement from every branch
+// left branches a caller matches vacuously (the pinned property is
+// hidden), so the advertised oneOf counted two matches where
+// enforcement -- which merges the pin first -- counts exactly one,
+// and rejected calls that are valid at runtime.
+func TestEffectiveSchemaPinnedDecidesOneOfBranches(t *testing.T) {
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	check := func(t *testing.T, rule, pin string, valid, invalid []string) {
+		t.Helper()
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": pin})
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+		}
+		for _, inst := range valid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err != nil {
+				t.Errorf("pin %q rule %s: %s must be advertised-valid: %v (schema %s)", pin, rule, inst, err, eff)
+			}
+		}
+		for _, inst := range invalid {
+			dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compiled.Validate(dec); err == nil {
+				t.Errorf("pin %q rule %s: %s must be advertised-invalid (schema %s)", pin, rule, inst, eff)
+			}
+		}
+	}
+
+	// The Codex example: two branches discriminated by the pinned
+	// tailnet. Exactly one matches after the pin merges, for either
+	// pin value, whatever else the caller sends.
+	discriminated := `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`
+	for _, pin := range []string{"prod", "other"} {
+		check(t, discriminated, pin, []string{`{}`, `{"limit":1}`}, nil)
+	}
+	// One decided branch plus one caller-decided branch: the caller
+	// must not also match the undecided branch.
+	mixed := `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["limit"]}]}`
+	check(t, mixed, "prod", []string{`{}`}, []string{`{"limit":1}`})
+	// Two branches the pin satisfies: exactly-one can never hold.
+	check(t, `{"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	// No branch the pin satisfies: oneOf and anyOf both fail, and an
+	// allOf with a decided-false branch fails with it.
+	check(t, discriminated, "third", nil, []string{`{}`})
+	check(t, `{"anyOf":[{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	check(t, `{"allOf":[{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`, "prod", nil, []string{`{}`})
+	// An anyOf with a pin-satisfied branch constrains nothing.
+	check(t, `{"anyOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"required":["limit"]}]}`, "prod", []string{`{}`, `{"limit":1}`}, nil)
+}
+
+// A $ref to a non-object schema (here a boolean definition) still
+// carries its siblings as same-instance constraints: returning the
+// target alone dropped a required the projection must keep (with
+// pinned names filtered as usual).
+func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("siblings of a non-object $ref target must survive projection: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+}

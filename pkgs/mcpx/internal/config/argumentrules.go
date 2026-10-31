@@ -914,7 +914,24 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 				delete(resolving, ref)
 				return conjoinRefProjection(projectedTarget, projectedSiblings)
 			}
-			return target
+			// A non-object target (a boolean schema) has no scope of
+			// its own to project, but its siblings are still
+			// same-instance constraints: dropping them advertises a
+			// schema enforcement does not hold. Conjoin them the
+			// same way when any exist.
+			siblings := make(map[string]any, len(m)-1)
+			for k, val := range m {
+				if k != "$ref" {
+					siblings[k] = val
+				}
+			}
+			if len(siblings) == 0 {
+				return target
+			}
+			resolving[ref] = true
+			projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
+			delete(resolving, ref)
+			return conjoinRefProjection(target, projectedSiblings)
 		}
 	}
 	// A condition the pins decide outright must not survive as a
@@ -945,6 +962,7 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 	out := make(map[string]any, len(m))
 	var promoted []string
 	var promotedSubs []any
+	var unsatisfiable bool
 	for k, val := range m {
 		switch k {
 		case "required":
@@ -994,14 +1012,66 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 				out[k] = keptDeps
 			}
 		case "allOf", "anyOf", "oneOf":
-			if subs, ok := val.([]any); ok {
-				projected := make([]any, len(subs))
-				for i, sub := range subs {
-					projected[i] = stripPinnedScope(sub, pinned, pinVals, root, resolving)
-				}
-				out[k] = projected
-			} else {
+			subs, ok := val.([]any)
+			if !ok {
 				out[k] = val
+				continue
+			}
+			// A branch the pins decide outright must be counted by
+			// its verdict, not name-stripped: stripping a oneOf
+			// branch decided by a pinned discriminator leaves a
+			// branch a caller who cannot supply the pin both
+			// matches and cannot match as enforcement counts it,
+			// so the advertised oneOf rejects calls the merged
+			// arguments pass (Codex P2 on PR #2976). A decided
+			// branch's truth depends only on the pins, so caller
+			// input cannot change it: a valid one always matches,
+			// an invalid one never does.
+			kept := make([]any, 0, len(subs))
+			decidedValid := 0
+			for _, sub := range subs {
+				if valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, root, resolving); decided {
+					if valid {
+						decidedValid++
+					} else if k == "allOf" {
+						unsatisfiable = true
+					}
+					continue
+				}
+				kept = append(kept, stripPinnedScope(sub, pinned, pinVals, root, resolving))
+			}
+			switch k {
+			case "allOf":
+				if len(kept) > 0 {
+					out[k] = kept
+				}
+			case "anyOf":
+				if decidedValid > 0 {
+					// One branch always matches: the disjunction
+					// constrains nothing.
+				} else if len(kept) == 0 {
+					unsatisfiable = true
+				} else {
+					out[k] = kept
+				}
+			case "oneOf":
+				if decidedValid > 1 {
+					// Two branches always match: exactly-one can
+					// never hold.
+					unsatisfiable = true
+				} else if decidedValid == 1 {
+					// The decided branch is the one match, so the
+					// caller must match none of the rest.
+					if len(kept) > 0 {
+						promotedSubs = append(promotedSubs, map[string]any{
+							"not": map[string]any{"anyOf": kept},
+						})
+					}
+				} else if len(kept) == 0 {
+					unsatisfiable = true
+				} else {
+					out[k] = kept
+				}
 			}
 		case "not":
 			// A negation inverts the effect of the schemas inside
@@ -1095,6 +1165,12 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 			wrapped = append(wrapped, existing)
 			out["allOf"] = append(wrapped, promotedSubs...)
 		}
+	}
+	if unsatisfiable {
+		// A pin-decided branch already settles this schema against
+		// every caller: advertise that verdict directly instead of
+		// a combinator no caller input can satisfy.
+		out["not"] = true
 	}
 	return out
 }

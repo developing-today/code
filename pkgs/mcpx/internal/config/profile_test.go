@@ -213,4 +213,8 @@ func TestToolViewsValidation(t *testing.T) {
 		"v": {From: "t", Hide: []string{"a"}}}}, true).Resolve("view"); err == nil {
 		t.Error("hide of an unpinned property should be rejected")
 	}
+	if _, err := base(&config.Extras{ToolViews: map[string]config.ToolView{
+		"": {From: "t"}}}, true).Resolve("view"); err == nil {
+		t.Error("an empty toolView name should be rejected")
+	}
 }

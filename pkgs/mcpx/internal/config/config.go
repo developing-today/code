@@ -827,6 +827,9 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		sort.Strings(viewNames)
 		for _, vn := range viewNames {
 			tv := ex.ToolViews[vn]
+			if vn == "" {
+				return nil, fmt.Errorf("server %q: toolView name must not be empty", name)
+			}
 			if tv.From == "" {
 				return nil, fmt.Errorf("server %q: toolView %q: from is required", name, vn)
 			}
