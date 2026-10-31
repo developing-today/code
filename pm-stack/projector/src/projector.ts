@@ -8,7 +8,7 @@ import type { upsertItem, upsertComment, markCommentDeleted, recordPush, ItemRow
 export interface ProjectorStore {
   upsertItem(i: Omit<ItemRow, "fetched_at">): Promise<void>;
   upsertComment(c: Omit<CommentRow, "fetched_at">): Promise<void>;
-  markCommentDeleted(id: string): Promise<void>;
+  markCommentDeleted(id: string, kind: CommentRow["kind"]): Promise<void>;
   recordPush(p: {
     deliveryId: string;
     repo: string;
@@ -156,7 +156,7 @@ export async function applyEvent(
     await store.upsertItem(fromIssueOrPr(repo, issue, issueIsPr(issue) ? "pr" : "issue"));
     addRef(itemRef(repo, issue.number));
     if (event === "issue_comment" && payload.action === "deleted") {
-      await store.markCommentDeleted(String(comment.id));
+      await store.markCommentDeleted(String(comment.id), "issue_comment");
     } else {
       await store.upsertComment(commentCommon(comment, repo, itemRef(repo, issue.number), "issue_comment"));
     }
@@ -210,7 +210,7 @@ export async function applyEvent(
         base.line = typeof comment.line === "number" ? comment.line : null;
         base.diff_hunk = iso(comment.diff_hunk);
         if (payload.action === "deleted") {
-          await store.markCommentDeleted(String(comment.id));
+          await store.markCommentDeleted(String(comment.id), "review_comment");
         } else {
           await store.upsertComment(base);
         }
