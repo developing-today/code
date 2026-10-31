@@ -84,6 +84,7 @@ import type {
   SessionRecord,
 } from "../src/model.ts";
 import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
@@ -434,7 +435,7 @@ async function main(): Promise<void> {
     if (candidates.length) {
       const auto = matchCharges(
         candidates,
-        (saas ?? []).map((s) => ({ name: s.name })),
+        chargeServiceCatalog(saas ?? [], pools),
       );
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
@@ -445,13 +446,9 @@ async function main(): Promise<void> {
       } catch {
         /* no state yet: everything unmatched is new */
       }
-      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      const { fresh } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
       if (fresh.length) {
         chargesAttention = fresh;
-        await writeFile(
-          chargesSurfacedStatePath,
-          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
-        );
       }
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,

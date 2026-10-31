@@ -155,6 +155,20 @@ function isNotChargeSubject(subject: string): boolean {
   );
 }
 
+/** Body amount for a receipt whose subject carried none. Explicit
+ * paid/charged labels win; a standalone "total" label is next — word-
+ * boundaried, so the "total" inside "Subtotal" can never match it
+ * (#3121: a Subtotal-first body recorded the subtotal as the charge,
+ * and the wrong amount then defeated cross-source dedupe); any $
+ * amount in the body is the last resort. */
+export function amountFromBody(text: string): string | undefined {
+  return (
+    /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    AMOUNT_RE.exec(text)?.[1]
+  );
+}
+
 async function gmailCandidates(
   start: string,
   end: string,
@@ -204,10 +218,7 @@ async function gmailCandidates(
           maxBuffer: 16 * 1024 * 1024,
         });
         const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
-        amount ??=
-          /(?:amount paid|amount charged|total charged|transaction amount|total)[:\s]*\$([\d,]+\.\d{2})/i.exec(
-            text,
-          )?.[1] ?? AMOUNT_RE.exec(text)?.[1];
+        amount ??= amountFromBody(text);
         merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
       } catch {
         /* unreadable body: counted as skipped below */
@@ -257,4 +268,4 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) await main();
