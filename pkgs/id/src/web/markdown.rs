@@ -624,10 +624,18 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
         // `[^real]: note` -- the scanner kept the fence open and
         // skipped the real definition).
+        // A fence opened inside a list item ends the same way
+        // (fourteenth cut): a non-blank line at column zero carrying
+        // no container prefix is outside the item, so the fence is
+        // over even without a closing delimiter (`- ``` ` / `  code`
+        // / blank / `[^real]: note` -- the scanner kept the
+        // list-scoped fence open and skipped the real definition).
         if fence.in_fence()
-            && fence_prefix.contains('>')
+            && !fence_prefix.is_empty()
             && !stripped.starts_with(&fence_prefix)
             && strip_container_prefixes(stripped) == stripped
+            && (fence_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -906,10 +914,18 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
         // `[^real]: note` -- the scanner kept the fence open and
         // skipped the real definition).
+        // A fence opened inside a list item ends the same way
+        // (fourteenth cut): a non-blank line at column zero carrying
+        // no container prefix is outside the item, so the fence is
+        // over even without a closing delimiter (`- ``` ` / `  code`
+        // / blank / `[^real]: note` -- the scanner kept the
+        // list-scoped fence open and skipped the real definition).
         if fence.in_fence()
-            && fence_prefix.contains('>')
+            && !fence_prefix.is_empty()
             && !stripped.starts_with(&fence_prefix)
             && strip_container_prefixes(stripped) == stripped
+            && (fence_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
         {
             fence.reset();
             fence_prefix.clear();
@@ -955,16 +971,71 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         } else {
             container_stripped
         };
-        if at_block_start && !in_footnote_block && is_link_reference_definition_start(def_stripped) {
+        // A reference label may itself span lines (fourteenth
+        // cut): `[long\nlabel]: https://example.com` is a valid
+        // definition whose label normalizes to `long label`, but
+        // the single-line shape check sees only `[long` and
+        // rejects it before the continuation logic can run, so the
+        // definition never reaches the synthesis context and a
+        // recovered footnote's `[target][long label]` saves as
+        // literal brackets instead of a hyperlink. When neither
+        // stripped form closes a label on this line, accumulate
+        // lines until the closing `]:` arrives.
+        let multiline_start: Option<(Vec<&str>, String, usize)> =
+            if is_link_reference_definition_start(def_stripped) {
+                None
+            } else {
+                let candidate = if stripped.starts_with('[') {
+                    stripped
+                } else {
+                    container_stripped
+                };
+                if !candidate.starts_with('[')
+                    || candidate.starts_with("[^")
+                    || find_label_close(candidate).is_some()
+                {
+                    None
+                } else {
+                    let mut text = candidate.to_string();
+                    let mut j = i + 1;
+                    let mut found = None;
+                    while j < lines.len() && text.len() < 1000 {
+                        let next = lines[j].trim_start_matches(' ');
+                        if next.trim().is_empty() {
+                            break;
+                        }
+                        text.push('\n');
+                        text.push_str(next);
+                        if let Some(close) = find_label_close(&text) {
+                            if text[close + 1..].starts_with(':') {
+                                found = Some((
+                                    lines[i..=j].to_vec(),
+                                    text[close + 2..].to_string(),
+                                    j + 1,
+                                ));
+                            }
+                            break;
+                        }
+                        j += 1;
+                    }
+                    found
+                }
+            };
+        let single_start = is_link_reference_definition_start(def_stripped).then(|| {
             let close = find_label_close(def_stripped).expect("start shape checked");
+            (vec![line], def_stripped[close + 2..].to_string(), i + 1)
+        });
+        if at_block_start
+            && !in_footnote_block
+            && (single_start.is_some() || multiline_start.is_some())
+        {
+            let (mut block, mut after, mut j) =
+                single_start.or(multiline_start).expect("start checked");
             // Collect the COMPLETE definition block: the destination
             // or the title may sit on following lines, and collecting
             // only the opening line degraded the reference to literal
             // text or silently dropped its title (Codex P2 on
             // #1565's seventh cut).
-            let mut block: Vec<&str> = vec![line];
-            let mut after = def_stripped[close + 2..].to_string();
-            let mut j = i + 1;
             while j < lines.len() {
                 let next = lines[j];
                 let next_stripped = next.trim_start_matches(' ');
@@ -1049,8 +1120,32 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                 || (is_setext_underline(c) && !at_block_start)
                 || starts_new_block(c)
         });
+        // A list item line's eligibility follows its CONTENT too
+        // (fourteenth cut): `- Body` is paragraph text inside the
+        // item, so an indented definition-shaped line continuing
+        // it (`  [url]: ...`) is paragraph text, not a reference
+        // definition -- the older rule left every container line
+        // block-eligible and promoted it into the synthesis
+        // context. Only item content that itself ends or starts a
+        // block leaves the next line eligible, mirroring the
+        // blockquote rule above.
+        let list_eligible = if quote_eligible.is_none()
+            && strip_container_prefixes(stripped) != stripped
+        {
+            let c = container_stripped;
+            Some(
+                c.trim().is_empty()
+                    || is_atx_heading(c)
+                    || is_thematic_break(c)
+                    || (is_setext_underline(c) && !at_block_start)
+                    || starts_new_block(c),
+            )
+        } else {
+            None
+        };
         at_block_start = is_atx_heading(stripped)
             || quote_eligible
+                .or(list_eligible)
                 .unwrap_or_else(|| strip_container_prefixes(stripped) != stripped)
             || is_thematic_break(stripped)
             || setext_ends_paragraph;
@@ -1092,8 +1187,18 @@ fn preserve_unreferenced_footnote_definitions(
     // orphans.
     let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
     let mut synthesized = Vec::new();
+    // Duplicate labels (fourteenth cut): the scanner keeps every
+    // source block, but synthesis resolves one node per label, so
+    // appending per block cloned the same node for each duplicate
+    // and overwrote the later bodies on save. Append the resolved
+    // definition once per label -- the first definition wins,
+    // matching how the document itself resolves duplicates.
+    let mut seen_labels = std::collections::HashSet::new();
     for block in &orphans {
-        if let Some(mut node) = recovered.get(&block.label) {
+        if !seen_labels.insert(block.label.clone()) {
+            continue;
+        }
+        if let Some(node) = recovered.get(&block.label) {
             let mut node = node.clone();
             // The probe parsed the PROTECTED source, whose link
             // destinations carry the newline placeholder token; the
@@ -4735,6 +4840,92 @@ mod tests {
             "definitions-only document keeps its definition: {first:?}"
         );
         assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_reference_label_resolves_in_recovered_footnote() {
+        // #1565 fourteenth cut (Codex P2): a link reference
+        // definition's label may span lines (`[long\nlabel]:`);
+        // the collector's single-line eligibility check rejected
+        // it, so the recovered footnote's [target][long label]
+        // saved as literal brackets instead of a hyperlink.
+        let original =
+            "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[target](https://example.com)"),
+            "multiline-label reference resolves into a link: {first:?}"
+        );
+        assert_eq!(first, second, "multiline-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_duplicate_footnote_definitions_appended_once() {
+        // #1565 fourteenth cut (Codex P2): two orphan blocks with
+        // the same label resolved to ONE synthesized node, which
+        // the append loop cloned for both blocks -- both saved
+        // definitions carried the same body and one original body
+        // was overwritten. The resolved definition is appended
+        // once per label (first definition wins).
+        let original = "[^a]: First.\n\n[^a]: Second.\n";
+        let doc = markdown_to_prosemirror(original);
+        let defs: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .collect();
+        assert_eq!(defs.len(), 1, "duplicate label yields one definition node");
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[^a]:").count(),
+            1,
+            "duplicate definition saved once: {first:?}"
+        );
+        assert!(
+            first.contains("First."),
+            "first definition body wins: {first:?}"
+        );
+        assert_eq!(first, second, "duplicate-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_list_paragraph_line_is_not_a_reference_definition() {
+        // #1565 fourteenth cut (Codex P2): `  [url]: ...`
+        // continuing a list item's paragraph is paragraph text,
+        // not a link reference definition, so the orphan
+        // footnote's literal [target][url] must NOT resolve into
+        // a hyperlink.
+        let original =
+            "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            !first.contains("](https://example.com)")
+                && first.contains("\\[target\\]"),
+            "list-continued reference stays literal (no link formed): {first:?}"
+        );
+        assert_eq!(first, second, "list-paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definition_after_list_scoped_fence_survives() {
+        // #1565 fourteenth cut (Codex P2): an unterminated fence
+        // inside a list item ends when the item ends; the
+        // top-level definition after it is a real definition, not
+        // fence interior.
+        let original = "- ```\n  code\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after list fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "list-fence round-trip is a fixpoint");
     }
 
     #[test]
