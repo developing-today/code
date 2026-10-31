@@ -296,6 +296,10 @@ export function isSnapshotRecord(v: unknown): v is SnapshotRecord {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SnapshotRecord>;
   if (typeof r.ts !== "string" || Number.isNaN(Date.parse(r.ts))) return false;
+  // The store routes by ts.slice(0, 7) and readAll only reads
+  // usage-YYYY-MM.jsonl (or rollups): a ts that does not route to such
+  // a file would be written where readAll can never return it.
+  if (!FILE_RE.test(snapshotFileFor(r.ts))) return false;
   if (typeof r.serviceId !== "string" || r.serviceId === "") return false;
   if (typeof r.metricId !== "string" || r.metricId === "") return false;
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
@@ -304,7 +308,16 @@ export function isSnapshotRecord(v: unknown): v is SnapshotRecord {
   if (typeof r.value === "number") return Number.isFinite(r.value);
   if (typeof r.value === "object" && r.value !== null) {
     const p = r.value as { low?: unknown; high?: unknown };
-    return typeof p.low === "number" && typeof p.high === "number";
+    // Pairs must round-trip: non-finite endpoints serialize to null
+    // and readAll drops them, and an inverted pair is never produced
+    // by the writers — mirror the scalar branch's finiteness.
+    return (
+      typeof p.low === "number" &&
+      typeof p.high === "number" &&
+      Number.isFinite(p.low) &&
+      Number.isFinite(p.high) &&
+      p.low <= p.high
+    );
   }
   return false;
 }
