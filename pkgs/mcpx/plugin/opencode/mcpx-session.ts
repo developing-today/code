@@ -717,8 +717,20 @@ export default (async ({ directory, worktree, project, client }, options) => {
         put(e, "MCPX_SESSION_VERSION", s.version)
         put(e, "MCPX_SESSION_DEPTH", String(s.depth))
         if (s.created) {
-          put(e, "MCPX_SESSION_CREATED", new Date(s.created).toISOString())
-          put(e, "MCPX_SESSION_AGE_MS", String(Date.now() - s.created))
+          // The cached value is the server's verbatim stamp and the
+          // conversion lives here, at its single consumer (#2355):
+          // an out-of-range or non-finite stamp (8640000000000001,
+          // 1e16, Infinity) makes toISOString() throw RangeError out
+          // of the hook, suppressing even MCPX_TRACE_IDS. Omit both
+          // vars instead. A valid-but-future stamp is a true
+          // conversion, so CREATED is set — but a negative age is a
+          // clock-skew artifact, not a duration, so AGE_MS is omitted.
+          const createdDate = new Date(s.created)
+          if (Number.isFinite(s.created) && !Number.isNaN(createdDate.getTime())) {
+            put(e, "MCPX_SESSION_CREATED", createdDate.toISOString())
+            const ageMs = Date.now() - s.created
+            if (ageMs >= 0) put(e, "MCPX_SESSION_AGE_MS", String(ageMs))
+          }
         }
         if (s.parentID) trace.push(["parent_session_id", s.parentID])
         if (s.ancestry.length) trace.push(["ancestry", ...s.ancestry])
