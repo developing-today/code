@@ -624,7 +624,18 @@ impl FindArgs<'_> {
 /// - `--last [N]`: Return only last N matches (default 1)
 /// - `--count`: Print count instead of matches
 /// - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
-fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a> {
+fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && (!value.starts_with('-') || *value == "-"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
+fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<FindArgs<'a>> {
     let mut args = FindArgs {
         queries: Vec::new(),
         prefer_name: false,
@@ -654,18 +665,24 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         } else if arg == "--file" {
             args.to_file = true;
         } else if let Some(path) = arg.strip_prefix('>') {
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
             args.output_file = Some(path);
             args.to_file = true;
+        } else if arg == "-o" || arg == "--output" {
+            args.output_file = Some(required_value(rest, &mut i)?);
+            args.to_file = true;
         } else if arg == "--dir" {
-            if i + 1 < rest.len() {
-                args.dir = Some(rest[i + 1]);
-                i += 1;
-            }
+            args.dir = Some(required_value(rest, &mut i)?);
         } else if arg == "--format" {
-            if i + 1 < rest.len() {
-                args.format = rest[i + 1];
-                i += 1;
-            }
+            let value = required_value(rest, &mut i)?;
+            anyhow::ensure!(
+                matches!(value, "tag" | "group" | "union"),
+                "invalid --format value '{value}' (expected: tag, group, union)"
+            );
+            args.format = value;
         } else if arg == "--tag" {
             args.format = "tag";
         } else if arg == "--group" {
@@ -699,16 +716,15 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         } else if arg == "--count" {
             args.count = true;
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
-        } else if !arg.starts_with('-') {
+            args.exclude.push(required_value(rest, &mut i)?);
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             args.queries.push(arg);
         }
         i += 1;
     }
-    args
+    Ok(args)
 }
 
 /// Handle the `find` command in the REPL.
@@ -730,7 +746,7 @@ async fn handle_find_command(
     rl: &mut DefaultEditor,
     rest: &[&str],
 ) -> Result<()> {
-    let args = parse_find_args(rest, "union");
+    let args = parse_find_args(rest, "union")?;
 
     if args.queries.is_empty() {
         println!(
@@ -791,7 +807,7 @@ async fn handle_find_command(
 /// Lists blobs matching the queries without outputting content by default.
 /// With `--all` or `--file`, also retrieves the matching files.
 async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
-    let args = parse_find_args(rest, "union");
+    let args = parse_find_args(rest, "union")?;
 
     if args.queries.is_empty() {
         println!(
@@ -843,7 +859,7 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
 /// Searches for blobs matching the queries and outputs their content
 /// to stdout (or file with -o).
 async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
-    let args = parse_find_args(rest, "union");
+    let args = parse_find_args(rest, "union")?;
 
     if args.queries.is_empty() {
         println!(
@@ -891,7 +907,7 @@ async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()>
 ///
 /// Searches for blobs and shows a preview with configurable head/tail lines.
 async fn handle_peek_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
-    let (args, peek_opts) = parse_peek_args(rest);
+    let (args, peek_opts) = parse_peek_args(rest)?;
 
     if args.queries.is_empty() {
         println!(
@@ -1159,7 +1175,7 @@ async fn select_and_output_matches_filtered(
 }
 
 /// Parse peek command arguments.
-fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
+fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> {
     let mut find_args = FindArgs {
         queries: Vec::new(),
         prefer_name: false,
@@ -1183,10 +1199,9 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
         } else if arg == "--all" {
             find_args.all = true;
         } else if arg == "-o" || arg == "--output" {
-            if i + 1 < rest.len() {
-                find_args.output_file = Some(rest[i + 1]);
-                i += 1;
-            }
+            find_args.output_file = Some(required_value(rest, &mut i)?);
+        } else if arg == ">" {
+            anyhow::bail!("redirect > requires a non-empty output path");
         } else if arg == "--first" {
             if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
                 if let Ok(n) = rest[i + 1].parse::<usize>() {
@@ -1210,17 +1225,14 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
                 find_args.last = Some(1);
             }
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                find_args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
+            find_args.exclude.push(required_value(rest, &mut i)?);
         } else if arg == "--lines" || arg == "-n" {
-            if i + 1 < rest.len()
-                && let Ok(n) = rest[i + 1].parse::<usize>()
-            {
-                peek_opts.lines = n;
-                i += 1;
-            }
+            let value = required_value(rest, &mut i)?;
+            peek_opts.lines = value.parse::<usize>().map_err(|_| {
+                anyhow::anyhow!(
+                    "invalid value '{value}' for {arg}: expected a non-negative integer"
+                )
+            })?;
         } else if arg == "--head-only" || arg == "--head" {
             peek_opts.head_only = true;
         } else if arg == "--tail-only" || arg == "--tail" {
@@ -1231,13 +1243,15 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
             peek_opts.words = true;
         } else if arg == "--quiet" || arg == "-q" {
             peek_opts.quiet = true;
-        } else if !arg.starts_with('-') {
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             find_args.queries.push(arg);
         }
         i += 1;
     }
 
-    (find_args, peek_opts)
+    Ok((find_args, peek_opts))
 }
 
 /// Fetch content for peek preview.
@@ -1492,7 +1506,7 @@ mod tests {
     #[test]
     fn test_parse_find_args_basic() {
         let rest = vec!["query1", "query2"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.queries, vec!["query1", "query2"]);
         assert!(!args.prefer_name);
         assert!(!args.all);
@@ -1500,9 +1514,56 @@ mod tests {
     }
 
     #[test]
+    fn test_find_rejects_malformed_flags_and_redirects() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "--dir"], "--dir"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--format"], "--format"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output", "--all"], "--output"),
+            (vec!["report", ">"], ">"),
+            (vec!["report", "--format", "yaml"], "yaml"),
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        let error = parse_find_args(&["report", "--format", "yaml"], "union")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("tag, group, union"));
+        assert_eq!(
+            parse_find_args(&["report", "-o", "out"], "union")
+                .unwrap()
+                .output_file,
+            Some("out")
+        );
+    }
+
+    #[test]
+    fn test_peek_rejects_malformed_flags_and_missing_values() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output"], "--output"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--lines"], "--lines"),
+            (vec!["report", "-n", "--quiet"], "-n"),
+            (vec!["report", "--lines", "wrong"], "wrong"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+    }
+
+    #[test]
     fn test_parse_find_args_with_flags() {
         let rest = vec!["query", "--name", "--all", "--format", "tag"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.queries, vec!["query"]);
         assert!(args.prefer_name);
         assert!(args.all);
@@ -1512,7 +1573,7 @@ mod tests {
     #[test]
     fn test_parse_find_args_with_output_file() {
         let rest = vec!["query", ">output.txt"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.queries, vec!["query"]);
         assert!(args.to_file);
         assert_eq!(args.output_file, Some("output.txt"));
@@ -1521,7 +1582,7 @@ mod tests {
     #[test]
     fn test_parse_find_args_with_dir() {
         let rest = vec!["query", "--dir", "/tmp/out"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.queries, vec!["query"]);
         assert_eq!(args.dir, Some("/tmp/out"));
     }
@@ -1529,22 +1590,22 @@ mod tests {
     #[test]
     fn test_parse_find_args_shorthand_formats() {
         let rest = vec!["query", "--tag"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.format, "tag");
 
         let rest = vec!["query", "--group"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.format, "group");
 
         let rest = vec!["query", "--union"];
-        let args = parse_find_args(&rest, "tag");
+        let args = parse_find_args(&rest, "tag").unwrap();
         assert_eq!(args.format, "union");
     }
 
     #[test]
     fn test_parse_find_args_first_with_number() {
         let rest = vec!["query", "--first", "5"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.first, Some(5));
         assert_eq!(args.last, None);
     }
@@ -1552,14 +1613,14 @@ mod tests {
     #[test]
     fn test_parse_find_args_first_without_number() {
         let rest = vec!["query", "--first"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.first, Some(1)); // defaults to 1
     }
 
     #[test]
     fn test_parse_find_args_last_with_number() {
         let rest = vec!["query", "--last", "3"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.last, Some(3));
         assert_eq!(args.first, None);
     }
@@ -1567,21 +1628,21 @@ mod tests {
     #[test]
     fn test_parse_find_args_count() {
         let rest = vec!["query", "--count"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert!(args.count);
     }
 
     #[test]
     fn test_parse_find_args_exclude() {
         let rest = vec!["query", "--exclude", ".bak", "--exclude", ".tmp"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.exclude, vec![".bak", ".tmp"]);
     }
 
     #[test]
     fn test_parse_find_args_combined_filters() {
         let rest = vec!["query", "--first", "10", "--exclude", ".bak", "--name"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.first, Some(10));
         assert_eq!(args.exclude, vec![".bak"]);
         assert!(args.prefer_name);
@@ -1590,7 +1651,7 @@ mod tests {
     #[test]
     fn test_parse_peek_args_basic() {
         let rest = vec!["readme"];
-        let (find_args, peek_opts) = parse_peek_args(&rest);
+        let (find_args, peek_opts) = parse_peek_args(&rest).unwrap();
         assert_eq!(find_args.queries, vec!["readme"]);
         assert_eq!(peek_opts.lines, 5); // default
         assert!(!peek_opts.head_only);
@@ -1600,14 +1661,14 @@ mod tests {
     #[test]
     fn test_parse_peek_args_with_lines() {
         let rest = vec!["readme", "--lines", "10"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert_eq!(peek_opts.lines, 10);
     }
 
     #[test]
     fn test_parse_peek_args_head_only() {
         let rest = vec!["readme", "--head-only"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert!(peek_opts.head_only);
         assert!(!peek_opts.tail_only);
     }
@@ -1615,7 +1676,7 @@ mod tests {
     #[test]
     fn test_parse_peek_args_tail_only() {
         let rest = vec!["readme", "--tail-only"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert!(!peek_opts.head_only);
         assert!(peek_opts.tail_only);
     }
@@ -1623,7 +1684,7 @@ mod tests {
     #[test]
     fn test_parse_peek_args_chars() {
         let rest = vec!["readme", "--chars"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert!(peek_opts.chars);
         assert!(!peek_opts.words);
     }
@@ -1631,7 +1692,7 @@ mod tests {
     #[test]
     fn test_parse_peek_args_words() {
         let rest = vec!["readme", "--words"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert!(!peek_opts.chars);
         assert!(peek_opts.words);
     }
@@ -1639,21 +1700,21 @@ mod tests {
     #[test]
     fn test_parse_peek_args_quiet() {
         let rest = vec!["readme", "-q"];
-        let (_, peek_opts) = parse_peek_args(&rest);
+        let (_, peek_opts) = parse_peek_args(&rest).unwrap();
         assert!(peek_opts.quiet);
     }
 
     #[test]
     fn test_parse_peek_args_output_file() {
         let rest = vec!["readme", "-o", "out.txt"];
-        let (find_args, _) = parse_peek_args(&rest);
+        let (find_args, _) = parse_peek_args(&rest).unwrap();
         assert_eq!(find_args.output_file, Some("out.txt"));
     }
 
     #[test]
     fn test_find_args_to_search_options() {
         let rest = vec!["query", "--first", "5", "--exclude", ".bak"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         let opts = args.to_search_options();
         assert_eq!(opts.first, Some(5));
         assert_eq!(opts.exclude, vec![".bak".to_owned()]);
