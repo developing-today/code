@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "description": "github-backup configuration: owners, tier rules, exclusions. Adding an owner/org is an edit to this file plus the commands in docs/RUNBOOK.md \u2014 never a code change.",
+  "backup_root": "~/backups/github",
+  "owners": [
+    "3d0d",
+    "Cloistered",
+    "Clustered-Computing",
+    "IDEXX-UTDesign",
+    "NixOS",
+    "SpongeScribe",
+    "chip-rom",
+    "chiplox",
+    "developing-today",
+    "developing-today-fork",
+    "developing-today-forks",
+    "dezren3",
+    "dezren39",
+    "dezren39-dev",
+    "drewry-pope",
+    "sleep-atomic",
+    "twitter-base"
+  ],
+  "owner_notes": {
+    "vertexinc": "GAP: org enforces SAML SSO; the token cannot enumerate it. Nothing under it is mirrored.",
+    "NixOS": "Member-only org: mirrored by the sweep (readable), but the backup GitHub App cannot be installed here \u2014 no webhook coverage.",
+    "dezren39/edsebooks": "GAP: GitHub returns HTTP 451 (repository access blocked). Cannot be fetched."
+  },
+  "tier_rules": {
+    "include_nonforks": true,
+    "fork_max_size_mb": 500,
+    "skip_zero_commit_repos": true,
+    "force_include": [
+      "dezren39/opencode",
+      "dezren39/Quake_4_Alpha",
+      "dezren39/nixpkgs",
+      "developing-today-forks/nixpkgs",
+      "NixOS/nixpkgs"
+    ],
+    "force_include_reasons": {
+      "dezren39/opencode": "502 MB but the live chain parent of developing-today/opencode.",
+      "dezren39/Quake_4_Alpha": "1.35 GB, Drew's own recent work (not a passive mirror).",
+      "dezren39/nixpkgs": "nixpkgs family member (pool).",
+      "developing-today-forks/nixpkgs": "nixpkgs family member (pool).",
+      "NixOS/nixpkgs": "nixpkgs family ANCHOR (non-fork, included anyway)."
+    },
+    "new_giant_forks": "pending-drew-review",
+    "families": "Forks sharing an upstream (parent) with >=2 included copies, or whose parent is itself included, are cloned with git alternates against the family anchor (first/full mirror of that history). Anchors are recorded in FAMILIES.md in the backup tree."
+  },
+  "exclusions": [
+    {
+      "repo": "developing-today-forks/nerd-fonts",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant (21.2 GB), upstream is the backup."
+    },
+    {
+      "repo": "Clustered-Computing/linux",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    },
+    {
+      "repo": "dezren39/cockroach",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    },
+    {
+      "repo": "dezren39/sipeed_wiki",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    },
+    {
+      "repo": "dezren39/weaviate",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    },
+    {
+      "repo": "dezren39/installer",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    },
+    {
+      "repo": "developing-today-forks/dgraph",
+      "reason": "Excluded by Drew's ruling 2026-10-31 \u2014 passive giant, upstream is the backup."
+    }
+  ],
+  "gaps": [
+    {
+      "repo": "dezren39/edsebooks",
+      "reason": "HTTP 451 \u2014 repository access blocked by GitHub."
+    },
+    {
+      "repo": "vertexinc/*",
+      "reason": "Org enforces SAML SSO; cannot enumerate or fetch."
+    }
+  ],
+  "app": {
+    "name": "hatch-repo-backup",
+    "owner": "dezren39",
+    "permissions": {
+      "metadata": "read",
+      "contents": "read"
+    },
+    "events": [
+      "push",
+      "repository"
+    ],
+    "bitwarden_secret_names": {
+      "app_id": "github-app.backup-app-id",
+      "client_id": "github-app.backup-client-id",
+      "client_secret": "github-app.backup-client-secret",
+      "private_key": "github-app.backup-private-key",
+      "webhook_secret": "github-app.backup-webhook-secret",
+      "worker_bearer": "github-app.backup-worker-bearer",
+      "worker_url": "github-app.backup-worker-url"
+    }
+  },
+  "worker": {
+    "name": "hatch-repo-backup-webhook",
+    "queue_poll_path": "/queue",
+    "webhook_path": "/github"
+  },
+  "timers": {
+    "fetch": "daily, mirrors fetched <12h ago are skipped",
+    "reconcile": "weekly",
+    "drain": "every 5 min, per-repo fetch coalescing 15 min"
+  }
+}

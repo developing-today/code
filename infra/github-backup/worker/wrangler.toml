@@ -1,0 +1,14 @@
+name = "hatch-repo-backup-webhook"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Queue of webhook events awaiting the laptop drainer.
+# Create with: wrangler kv namespace create GHB_EVENTS
+# then paste the id here (ids are not secrets; they name the namespace).
+[[kv_namespaces]]
+binding = "GHB_EVENTS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Secrets (never in this file):
+#   wrangler secret put GITHUB_WEBHOOK_SECRET   # same value as on the App
+#   wrangler secret put DRAIN_BEARER            # laptop drainer authenticates with this
