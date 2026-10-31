@@ -7,9 +7,13 @@ Prints one JSON object:
     "candidates": [ {id, queue, priority, worker_id, lease_until,
                      issue_number} ... ],   # claimed, progress.lane ==
                                               # "opencode", no session_id
-    "live_root_sessions": int | null,        # null = server unreadable
+    "live_root_sessions": int | null,        # all root sessions;
+                                              # null = server unreadable
+    "active_root_sessions": int | null,      # roots still active
+                                              # (see is_active_root)
     "cap": 12,
-    "cap_room": int | null                   # null when count unknown
+    "cap_room": int | null                   # CAP - active roots;
+                                              # null when count unknown
   }
 
 Read-only by construction: it issues only PostgREST GETs (through the
@@ -22,6 +26,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import urllib.request
 import base64
 
@@ -32,6 +37,37 @@ QUEUES = [
     "repo-health-nix-pilot",
 ]
 CAP = 12
+# A root session counts toward the cap only while it is active: no
+# terminal marker and recent activity. GET /api/session returns every
+# finished-but-unarchived session forever (50 roots at the #3026 gate
+# check, 46 of them finished), so counting all roots pins cap_room at
+# 0 and deadlocks the claimant. A finished session carries time.idle
+# and an outcome; a running one carries neither. A marker-less session
+# silent longer than this window is indistinguishable from a zombie
+# whose client died mid-run, so it stops counting too — the claimant
+# fires every 10 min and a working session updates far more often.
+ACTIVE_WINDOW_MS = 30 * 60 * 1000
+
+
+def is_root_session(s):
+    return isinstance(s, dict) and not s.get("parentID") \
+        and not s.get("parent_id")
+
+
+def is_active_root(s, now_ms):
+    if not is_root_session(s):
+        return False
+    t = s.get("time") or {}
+    if t.get("idle") or s.get("outcome"):
+        return False
+    updated = t.get("updated") or t.get("created") or 0
+    return now_ms - updated < ACTIVE_WINDOW_MS
+
+
+def count_active_roots(sessions, now_ms):
+    return sum(1 for s in sessions if is_active_root(s, now_ms))
+
+
 HELPER = os.environ.get(
     "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py"))
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
@@ -47,7 +83,7 @@ def load_helper():
     return mod
 
 
-def live_root_sessions():
+def fetch_sessions():
     try:
         with open(AUTH_FILE) as f:
             password = json.load(f)["password"]
@@ -65,10 +101,7 @@ def live_root_sessions():
         data = data["data"]
     if not isinstance(data, list):
         return None
-    roots = [s for s in data
-             if isinstance(s, dict) and not s.get("parentID")
-             and not s.get("parent_id")]
-    return len(roots)
+    return data
 
 
 def main():
@@ -98,10 +131,18 @@ def main():
         out["candidates"].extend(cands)
     out["candidates"].sort(key=lambda c: (c["priority"] is None,
                                           c["priority"] or 0))
-    count = live_root_sessions()
-    out["live_root_sessions"] = count
+    sessions = fetch_sessions()
     out["cap"] = CAP
-    out["cap_room"] = None if count is None else max(0, CAP - count)
+    if sessions is None:
+        out["live_root_sessions"] = None
+        out["active_root_sessions"] = None
+        out["cap_room"] = None
+    else:
+        roots = [s for s in sessions if is_root_session(s)]
+        active = count_active_roots(roots, int(time.time() * 1000))
+        out["live_root_sessions"] = len(roots)
+        out["active_root_sessions"] = active
+        out["cap_room"] = max(0, CAP - active)
     print(json.dumps(out, indent=1))
     return 0
 
