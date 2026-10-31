@@ -745,6 +745,16 @@ var ownMetaTools = map[string]bool{
 	"mcpx_status": true, "mcpx_batch": true,
 }
 
+// ownReactiveTools are the activation pair mcpx's reactive surface
+// (mcpserver.reactiveSurface) exposes before any tool is activated:
+// request_tools searches and activates the aggregate's tools, and
+// batch_call executes across them. A reactive aggregate initially
+// lists neither the mcpx_* tools nor its upstreams' tools, so the
+// pair -- both names together, never either alone -- is its identity
+// independently of which tools happen to be activated right now
+// (Codex review on PR 2975).
+var ownReactiveTools = []string{"request_tools", "batch_call"}
+
 // refuseIfAggregate lists a self-claiming upstream's tools once and
 // refuses the instance when the aggregate meta surface is among them
 // (#1877). It also drops any cached catalogue for this server: an
@@ -757,10 +767,23 @@ func (p *Pool) refuseIfAggregate(ctx context.Context, cl *mcpclient.Client, tr m
 	tools, lerr := cl.ListTools(ctx)
 	meta := ""
 	if lerr == nil {
+		names := make(map[string]bool, len(tools))
 		for _, t := range tools {
-			if ownMetaTools[t.Name] {
+			names[t.Name] = true
+			if ownMetaTools[t.Name] && meta == "" {
 				meta = t.Name
-				break
+			}
+		}
+		if meta == "" {
+			reactive := true
+			for _, n := range ownReactiveTools {
+				if !names[n] {
+					reactive = false
+					break
+				}
+			}
+			if reactive {
+				meta = "request_tools+batch_call (reactive surface)"
 			}
 		}
 		if meta == "" {

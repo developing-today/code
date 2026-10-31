@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/dezren39/mcpx/internal/pool"
 )
 
 // selfUpstream is a legacy MCP endpoint that identifies as mcpx
@@ -225,5 +226,86 @@ func TestPoolRefusalDropsCachedSchemas(t *testing.T) {
 	}
 	if cached, _, _ := p.CachedSchemas(); len(cached) != 0 {
 		t.Fatalf("refusal left %d cached tools advertised", len(cached))
+	}
+}
+
+// reactiveSelfUpstream identifies as mcpx and serves only the
+// reactive surface's activation pair (request_tools + batch_call):
+// a genuine aggregate in --mode reactive before any tool has been
+// activated. Its mcpx_* tools exist but are not yet listed.
+type reactiveSelfUpstream struct{ *httptest.Server }
+
+func newReactiveSelfUpstream(t *testing.T) *reactiveSelfUpstream {
+	t.Helper()
+	u := &reactiveSelfUpstream{}
+	u.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "server/discover":
+			rpcError(w, req.ID, -32601, "method not found")
+		case "initialize":
+			rpcReply(w, req.ID, map[string]any{
+				"protocolVersion": "2025-03-26",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "mcpx", "version": "dev"},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			rpcReply(w, req.ID, map[string]any{"tools": []map[string]any{
+				{"name": "request_tools", "inputSchema": map[string]any{"type": "object"}},
+				{"name": "batch_call", "inputSchema": map[string]any{"type": "object"}},
+			}})
+		default:
+			rpcReply(w, req.ID, map[string]any{})
+		}
+	}))
+	t.Cleanup(u.Close)
+	return u
+}
+
+// The guard must convict a reactive-mode aggregate on its activation
+// pair, independently of the currently activated tools (Codex review
+// on PR 2975): request_tools can activate the mcpx_* surface later,
+// and refreshes on a reused instance never re-run the start check.
+func TestPoolRefusesReactiveSelfConnection(t *testing.T) {
+	u := newReactiveSelfUpstream(t)
+	p := upstreamPool(t, u.URL)
+	_, err := p.Acquire(context.Background(), "global")
+	if err == nil || !strings.Contains(err.Error(), "self-connection") {
+		t.Fatalf("reactive self-connection: err=%v, want a self-connection refusal", err)
+	}
+}
+
+// A daemon upgraded while a self entry is already connected hands
+// the live session to its successor: the guard must run on the
+// adopted session before it is published, not only on fresh starts
+// (Codex review on PR 2975).
+func TestPoolRefusesAdoptedSelfSession(t *testing.T) {
+	u := newSelfUpstream(t)
+	p := upstreamPool(t, u.URL)
+	p.SetSchemas([]mcpclient.Tool{{Name: "mcpx_namespaces"}, {Name: "proxied_0"}},
+		nil, nil, "", time.Now(), time.Time{}, false)
+	h := pool.InstanceHandoff{
+		ID: "inst-self", Key: "global",
+		HTTP:    &mcpclient.HTTPHandoff{SessionID: "sess-1", Negotiated: "2025-03-26"},
+		Session: mcpclient.Session{Era: mcpclient.EraLegacy, Negotiated: "2025-03-26",
+			ServerInfo: mcpclient.ServerInfo{Name: "mcpx", Version: "dev"}},
+	}
+	ads, err := p.AdoptSessions([]pool.InstanceHandoff{h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Attach(ads, 1)
+	if cached, _, _ := p.CachedSchemas(); len(cached) != 0 {
+		t.Fatalf("adopted self session left %d cached tools advertised", len(cached))
+	}
+	if _, err := p.Acquire(context.Background(), "global"); err == nil ||
+		!strings.Contains(err.Error(), "self-connection") {
+		t.Fatalf("adopted self session was published: err=%v, want a self-connection refusal", err)
 	}
 }
