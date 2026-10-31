@@ -92,6 +92,11 @@ var exprKeywords = map[string]bool{
 	"throw": true, "else": true, "do": true, "await": true, "yield": true,
 	"var": true, "let": true, "const": true, "function": true,
 	"class": true, "import": true, "extends": true, "default": true,
+	// Statement-only keywords: nothing can follow them on their own
+	// statement but a label or a terminator, so a "/" after one (the
+	// next statement's first token, via ASI) opens a regex, never
+	// divides: debugger\n/x*/.test(s), break\n/y/.test(z).
+	"debugger": true, "break": true, "continue": true,
 }
 
 // controlKeywords are the statement-opening keywords whose following
@@ -383,6 +388,7 @@ func (l *lexer) blockEnd(i int) int {
 func declaredNames(toks []lexToken) map[string]bool {
 	out := map[string]bool{}
 	typeOnly := typeAliasMask(toks)
+	forHead := forHeadDecls(toks)
 	for i, t := range toks {
 		if typeOnly[i] {
 			// A type alias is erased at runtime: nothing inside it
@@ -424,7 +430,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 			if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].text == ":" {
 				continue
 			}
-			parseDeclarators(toks, i+1, out, inForHead(toks, i))
+			parseDeclarators(toks, i+1, out, forHead[i])
 		case "function":
 			j := i + 1
 			if j < len(toks) && toks[j].text == "*" {
@@ -646,34 +652,48 @@ func skipAnnotation(toks []lexToken, i int) int {
 	return i
 }
 
-// inForHead reports whether the declaration keyword at decl opens a
-// for statement's head: the unmatched "(" before it belongs to a
-// "for". In a for head, "in"/"of" at the head's own level separates
+// forHeadDecls marks every const/let/var keyword that opens a for
+// statement's head, in ONE forward pass over the token stream: a
+// declaration qualifies when the innermost unmatched "(" around it
+// belongs to a "for" and no ";" has closed the head's first part
+// yet. In a for head, "in"/"of" at the head's own level separates
 // the bindings from the iterated expression — it never continues an
 // initialiser — so declarator collection must stop there:
 // for (const x in {}, demo.echo()) binds x alone, and the comma in
 // the right-hand expression is not a declaration separator.
-func inForHead(toks []lexToken, decl int) bool {
-	depth := 0
-	for j := decl - 1; j >= 0; j-- {
-		t := toks[j]
-		if t.kind != tPunct {
+// (A per-declaration backward rescan here was quadratic on
+// declaration-heavy scripts — Codex round 5 on PR #3042.)
+func forHeadDecls(toks []lexToken) []bool {
+	out := make([]bool, len(toks))
+	type paren struct {
+		isFor bool
+		semi  bool
+	}
+	var stack []paren
+	for i, t := range toks {
+		if t.kind == tPunct {
+			switch t.text {
+			case "(":
+				isFor := i > 0 && toks[i-1].kind == tIdent && toks[i-1].text == "for" &&
+					(i < 2 || toks[i-2].text != ".")
+				stack = append(stack, paren{isFor: isFor})
+			case ")":
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+			case ";":
+				if len(stack) > 0 {
+					stack[len(stack)-1].semi = true
+				}
+			}
 			continue
 		}
-		switch t.text {
-		case ")":
-			depth++
-		case "(":
-			if depth == 0 {
-				return j > 0 && toks[j-1].kind == tIdent && toks[j-1].text == "for" &&
-					(j < 2 || toks[j-2].text != ".")
-			}
-			depth--
-		case "{", "}":
-			return false
+		if t.kind == tIdent && (t.text == "const" || t.text == "let" || t.text == "var") &&
+			len(stack) > 0 && stack[len(stack)-1].isFor && !stack[len(stack)-1].semi {
+			out[i] = true
 		}
 	}
-	return false
+	return out
 }
 
 // isAnnotationTypeParen reports whether the parenthesised list at i,
@@ -759,7 +779,7 @@ func typeAliasMask(toks []lexToken) []bool {
 		if j >= len(toks) || toks[j].text != "=" {
 			continue
 		}
-		depth := 0
+		depth, angle := 0, 0
 		end := len(toks)
 		for k := i; k < len(toks); k++ {
 			t := toks[k]
@@ -767,7 +787,14 @@ func typeAliasMask(toks []lexToken) []bool {
 				end = k
 				break
 			}
-			if k > i && depth == 0 && t.nl && endsValue(toks[k-1]) && startsStatement(t) {
+			// ASI boundary: a newline after a token that can end the
+			// alias's type — a value token, or the ">" closing a
+			// generic (type F = Array<string>\nconst demo = ...) —
+			// before a token that can only start a new statement.
+			// Inside "<...>" a newline is just type layout, never a
+			// boundary, so the check requires angle == 0.
+			if k > i && depth == 0 && angle == 0 && t.nl && startsStatement(t) &&
+				(endsValue(toks[k-1]) || toks[k-1].text == ">" || toks[k-1].text == ">>" || toks[k-1].text == ">>>") {
 				end = k
 				break
 			}
@@ -779,6 +806,14 @@ func typeAliasMask(toks []lexToken) []bool {
 				depth++
 			case ")", "]", "}":
 				depth--
+			case "<":
+				angle++
+			case ">":
+				angle--
+			case ">>":
+				angle -= 2
+			case ">>>":
+				angle -= 3
 			case ";":
 				if depth == 0 {
 					end = k + 1
@@ -876,6 +911,17 @@ func skipDeclarator(toks []lexToken, i int, forHead bool) int {
 		// Jump the whole list when it has the call shape.
 		if depth == 0 && t.text == "<" && i > 0 && toks[i-1].kind == tIdent {
 			if end := skipTypeArgs(toks, i); end >= 0 {
+				i = end
+				continue
+			}
+		}
+		// A type assertion's arguments have no call parenthesis —
+		// {} as Record<string, demo>, {} satisfies Map<string,
+		// demo> — but the type is still not bindings: jump any
+		// "<...>" whose type name follows as/satisfies.
+		if depth == 0 && t.text == "<" && i > 1 && toks[i-1].kind == tIdent &&
+			toks[i-2].kind == tIdent && (toks[i-2].text == "as" || toks[i-2].text == "satisfies") {
+			if end := skipAngles(toks, i); end >= 0 {
 				i = end
 				continue
 			}

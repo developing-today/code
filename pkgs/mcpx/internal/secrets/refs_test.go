@@ -2,6 +2,8 @@ package secrets
 
 import (
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -141,6 +143,11 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"division after a non-null assertion is not a regex", "let n: number | undefined = 2; n! / 2; tools.fs.read();", none, []string{"fs"}},
 		{"a regex after a prefix negation is not code", "const ok = !/demo.echo/.test(s);", only("demo"), nil},
 		{"a for-in right-hand call is not a declaration", "for (const x in {}, demo.echo()) {}", only("demo"), []string{"demo"}},
+		{"a generic assertion type in an initializer does not bind", "type demo = string; const x = {} as Record<string, demo>; demo.echo();", only("demo"), []string{"demo"}},
+		{"a generic satisfies type in an initializer does not bind", "const x = {} satisfies Map<string, demo>; demo.echo();", only("demo"), []string{"demo"}},
+		{"a semicolon-free generic alias ends before the next declaration", "type F = Array<string>\nconst demo = {echo() {}}; demo.echo();", only("demo"), nil},
+		{"a regex after a debugger statement is not division", "debugger\n/x*/.test(\"x\"); tools.fs.read();", none, []string{"fs"}},
+		{"a regex after a break statement is not division", "while (x) { break\n/y/.test(z); } tools.fs.read();", none, []string{"fs"}},
 		{"a for-in binding is still declared", "for (const demo in obj) { demo.echo(); }", only("demo"), nil},
 		{"a for-of binding is still declared", "for (const demo of items) { demo.echo(); }", only("demo"), nil},
 	}
@@ -157,5 +164,22 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 				t.Errorf("References(%q) = %v; want %v", c.src, got, c.want)
 			}
 		})
+	}
+}
+
+func TestReferencesManyDeclarationsStayCorrect(t *testing.T) {
+	// Perf-guard companion (Codex round 5): for-head context is
+	// computed in one forward pass, so declaration-heavy scripts stay
+	// correct — and linear — at scale.
+	var b strings.Builder
+	for i := 0; i < 2000; i++ {
+		b.WriteString("const v")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteString(" = 1;\n")
+	}
+	b.WriteString("for (const x in {}, demo.echo()) {}\n")
+	got := References(b.String(), only("demo"))
+	if len(got) != 1 || got[0] != "demo" {
+		t.Fatalf("References(2000 declarations + for-in) = %v; want [demo]", got)
 	}
 }
