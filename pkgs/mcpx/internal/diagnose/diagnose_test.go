@@ -257,6 +257,42 @@ func TestAFieldNamedOnlyInsideAnotherWordIsNotBlamed(t *testing.T) {
 	}
 }
 
+func TestAnEmptyPropNameIsIgnoredAndNeverPanics(t *testing.T) {
+	// Codex P2 on PR #3041: a schema declaring an empty property name
+	// made fieldNamed scan forever (strings.Index matches "" at every
+	// offset) and panic past the end of the message. The empty name
+	// must be skipped; a genuinely named field still wins.
+	cat := diagnose.Catalog{
+		Tools: []diagnose.Tool{
+			{
+				Namespace: "demo", Name: "update_record", Func: "update_record",
+				Shape: diagnose.Shape{
+					Props: map[string]string{"": "string", "id": "string"},
+				},
+			},
+		},
+	}
+	ds := diagnose.CallError(diagnose.CallErrorInput{
+		Namespace: "demo", Tool: "update_record",
+		Code:    diagnose.InvalidParams,
+		Message: "invalid",
+	}, cat)
+	if len(ds) != 1 {
+		t.Fatalf("expected one diagnostic, got %+v", ds)
+	}
+	if ds[0].Field != "" {
+		t.Errorf("field = %q, want empty (the empty prop names nothing)", ds[0].Field)
+	}
+	ds = diagnose.CallError(diagnose.CallErrorInput{
+		Namespace: "demo", Tool: "update_record",
+		Code:    diagnose.InvalidParams,
+		Message: "invalid value for id",
+	}, cat)
+	if len(ds) != 1 || ds[0].Field != "id" {
+		t.Errorf("expected field id alongside the empty prop, got %+v", ds)
+	}
+}
+
 func TestASeparatorVariantDoesNotNameTheUnderscoredProp(t *testing.T) {
 	// Contract point 4 in isolation: with only user_id declared, the
 	// hyphenated spelling in the message must not be folded into it.

@@ -583,6 +583,12 @@ func fieldInMessage(msg string, shape Shape) string {
 	best := ""
 	bestQuoted := false
 	for name := range shape.Props {
+		if name == "" {
+			// An empty property name names nothing, and scanning for
+			// it never terminates on token boundaries: strings.Index
+			// matches it at every offset. Skip it (Codex P2 on #3041).
+			continue
+		}
 		quoted := fieldNamedQuoted(msg, name)
 		if !quoted && !fieldNamed(msg, name) {
 			continue
@@ -601,6 +607,9 @@ func fieldInMessage(msg string, shape Shape) string {
 
 // fieldNamed reports whether name occurs in msg as a standalone token.
 func fieldNamed(msg, name string) bool {
+	if name == "" {
+		return false
+	}
 	for at := 0; ; {
 		i := strings.Index(msg[at:], name)
 		if i < 0 {
@@ -619,6 +628,9 @@ func fieldNamed(msg, name string) bool {
 // wrapping characters are not name characters, so a quoted occurrence
 // is always a standalone token too.
 func fieldNamedQuoted(msg, name string) bool {
+	if name == "" {
+		return false
+	}
 	for _, q := range []string{"\"", "'", "`"} {
 		if strings.Contains(msg, q+name+q) {
 			return true
