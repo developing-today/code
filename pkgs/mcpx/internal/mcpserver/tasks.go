@@ -74,8 +74,22 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 // The store is one per server, and over HTTP one server answers every
 // client: without an owner, any client could list -- and then read -- the
 // results of every other client's calls.
-func (s *Server) startTask(owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
-	t, err := s.tasks().Start(owner, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+//
+// The store's accounting key is NOT the owner. A modern client deliberately
+// gets an empty owner -- its tasks keep bearer-access semantics -- but its
+// resolved identity still names who is asking, and the per-requestor cap
+// must charge that identity: keying the cap by the owner alone put every
+// modern client in the one unbound bucket, so a single client could hold
+// every slot (Codex on #2869, round 3). An owner, when there is one, is
+// already the connection's identity, so it stays the key; with no owner
+// the request's IdentityFrom key charges, and only a request with neither
+// falls into the store's unbound bucket.
+func (s *Server) startTask(ctx context.Context, owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
+	requestor := owner
+	if requestor == "" {
+		requestor = IdentityFrom(ctx).Key
+	}
+	t, err := s.tasks().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)
 		if err != nil {
 			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data}
@@ -254,7 +268,7 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
 				Message: "this tool does not support task-augmented execution (execution.taskSupport is forbidden)"}}
 		}
-		t, terr := s.startTask(c.id, ttl, s.runInner(c, req))
+		t, terr := s.startTask(ctx, c.id, ttl, s.runInner(c, req))
 		if terr != nil {
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
 		}
@@ -286,7 +300,7 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if eager {
 		after = tm.TaskEager
 	}
-	t, terr := s.startTask("", tasks.DefaultTTL(), s.runInner(c, req))
+	t, terr := s.startTask(ctx, "", tasks.DefaultTTL(), s.runInner(c, req))
 	if terr != nil {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
 	}

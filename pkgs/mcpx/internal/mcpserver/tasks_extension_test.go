@@ -494,6 +494,46 @@ func TestRefusedAskedTaskAbandonsTheCall(t *testing.T) {
 	handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": id}))
 }
 
+// The per-requestor cap charges a modern client's resolved identity, not
+// its (deliberately empty) task owner: two clients naming distinct
+// sessions each get their own bucket, so with a cap of one, Alice's slow
+// task does not refuse Bob's first call -- but Alice's second is refused.
+// (Codex on #2869, round 3: accounting identity is not ownership.)
+func TestModernTaskCapChargesTheResolvedIdentity(t *testing.T) {
+	u := &taskUpstream{fakeBackend: newBackend(), delay: 2 * time.Second,
+		tools: map[string][]mcpserver.Tool{"tasks": {supportTool("slow_compute", "optional")}}}
+	s := taskServer(u, "tasks")
+	s.Timing.TaskEager = 50 * time.Millisecond
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(session string) map[string]any {
+		params := callTool(extCaps, "slow_compute")
+		params["_meta"].(map[string]any)[mcpserver.MetaSession] = session
+		return handle(t, s, "tools/call", params)
+	}
+
+	alice := resultOf(t, callAs("alice"))
+	aliceID, _ := alice["taskId"].(string)
+	if aliceID == "" {
+		t.Fatalf("want a task for alice, got %v", alice)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": aliceID}))
+
+	bob := resultOf(t, callAs("bob"))
+	bobID, _ := bob["taskId"].(string)
+	if bobID == "" {
+		t.Fatalf("want a task for bob (his own bucket), got %v", bob)
+	}
+	defer handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": bobID}))
+
+	second := callAs("alice")
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want alice's second call refused by the cap naming the limit, got %v", second)
+	}
+}
+
 // tasks-request-headers / sep-2663-server-rejects-mismatched-mcp-name-on-tasks-get:
 // Mcp-Name on tasks/get mirrors the taskId, and one that contradicts it is
 // -32020. One left out is tolerated: SEP-2243 does not name the tasks
