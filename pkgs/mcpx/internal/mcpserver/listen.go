@@ -371,7 +371,7 @@ func (c *Conn) announceEnd(l *listenStream) {
 			"resultType": "complete",
 			"_meta": map[string]any{
 				MetaSubscriptionID: l.id,
-				MetaServerInfo:     map[string]any{"name": c.s.name, "version": c.s.version},
+				MetaServerInfo:     c.s.serverInfo(),
 			},
 		}})
 	}

@@ -187,6 +187,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 
 	svc := &execsvc.Service{
 		Calls:    s.callRegistry(),
@@ -253,6 +254,12 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc := s.ExecService()
+	// exec.maxOutputBytes is call-scoped (settings/exec.go), so a value the
+	// client sent for this one request (--exec-max-output-bytes, forwarded
+	// via X-Mcpx-Settings) must govern this execution. ExecService builds
+	// from the daemon's cached startup settings and cannot see it; apply
+	// the request-resolved value to the service this request runs through.
+	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long
@@ -394,6 +401,19 @@ func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 		d, perr := time.ParseDuration(ttl)
 		if perr != nil {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("ttl %q: %w", ttl, perr))
+			return
+		}
+		// A per-request ttl may shorten retention but never extend
+		// it past the operator's artifacts.ttl (#2327, rule pinned
+		// by triage task 3482): an over-ceiling ttl is a caller
+		// error and is rejected naming both values, not silently
+		// clamped — a clamp would hide the mistake and keep bytes
+		// for less time than the caller asked. A caller that needs
+		// longer retention raises artifacts.ttl in the operator
+		// configuration instead. ttl <= 0 keeps the store default,
+		// exactly as before.
+		if ceiling := store.TTL(); ceiling > 0 && d > ceiling {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("ttl %s exceeds artifacts.ttl %s: a per-request ttl may shorten retention but never extend it; raise artifacts.ttl in the operator configuration for longer retention", d, ceiling))
 			return
 		}
 		put.TTL = d

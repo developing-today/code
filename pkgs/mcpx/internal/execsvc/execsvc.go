@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dezren39/mcpx/internal/artifacts"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -356,17 +357,21 @@ type LogRecord struct {
 
 // Result is the structured answer.
 type Result struct {
-	RunID      string            `json:"runId"`
-	Result     any               `json:"result,omitempty"`
-	Emits      []json.RawMessage `json:"emits"`
-	Logs       []LogRecord       `json:"logs"`
-	Stdout     string            `json:"stdout"`
-	Artifacts  []Artifact        `json:"artifacts"`
-	ExitCode   int               `json:"exitCode"`
-	DurationMs int64             `json:"durationMs"`
-	Runtime    string            `json:"runtime,omitempty"`
-	TimedOut   bool              `json:"timedOut,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	RunID  string            `json:"runId"`
+	Result any               `json:"result,omitempty"`
+	Emits  []json.RawMessage `json:"emits"`
+	Logs   []LogRecord       `json:"logs"`
+	Stdout string            `json:"stdout"`
+	// StdoutTruncated is set when Stdout was capped at
+	// Limits.StdoutLimit (exec.maxOutputBytes, CODE-16); the end of
+	// Stdout itself carries the marker naming the dropped byte count.
+	StdoutTruncated bool       `json:"stdoutTruncated,omitempty"`
+	Artifacts       []Artifact `json:"artifacts"`
+	ExitCode        int        `json:"exitCode"`
+	DurationMs      int64      `json:"durationMs"`
+	Runtime         string     `json:"runtime,omitempty"`
+	TimedOut        bool       `json:"timedOut,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 // Source supplies the generated client the script is run against.
@@ -401,6 +406,8 @@ type Limits struct {
 	InlineMaxBytes   int64
 	ChunkBytes       int64
 	InterceptImages  bool
+	// StdoutLimit caps the stdout a Result returns (bytes); <= 0 is no cap.
+	StdoutLimit int64
 }
 
 // DefaultLimits are the built-in values, before any configuration.
@@ -414,6 +421,7 @@ func DefaultLimits() Limits {
 		InlineMaxBytes:  defaults.ArtifactInlineMaxBytes,
 		ChunkBytes:      defaults.ArtifactChunkBytes,
 		InterceptImages: defaults.ArtifactInterceptImages,
+		StdoutLimit:     int64(defaults.ExecStdoutLimit),
 	}
 }
 
@@ -798,11 +806,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 
 	// A script whose stdout is JSON almost always means it as its answer, so
 	// it is offered parsed as well as raw. The same rule `mcpx --json run`
-	// has always followed, kept identical so the two agree.
+	// has always followed, kept identical so the two agree. The parsed
+	// value is remembered so the truncation below can tell a
+	// stdout-derived Result from a hook replacement.
+	var stdoutParsed any
+	haveStdoutParsed := false
 	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			stdoutParsed, haveStdoutParsed = parsed, true
 		}
 	}
 
@@ -870,6 +883,30 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// pay nothing for artifacts it does not want.
 	if deliveryOf(opts, s.Limits) == DeliveryStream {
 		s.streamBodies(res, opts, emitFrame)
+	}
+
+	// CODE-16 (#1937): the Result boundary is where returned stdout is
+	// capped, so every surface that returns a run -- CLI, /v1, MCP --
+	// sees the same capped stdout. Internal consumers above (the JSON
+	// answer parse, hooks) worked on the full text; only what is
+	// handed back is bounded. Full output is unchanged wherever a
+	// full record already exists.
+	if capped, truncated := truncateStdout(res.Stdout, s.Limits.StdoutLimit); truncated {
+		res.Stdout = capped
+		res.StdoutTruncated = true
+		// A Result that is still the stdout parse must not survive
+		// as a side channel around the cap: renderers (renderExec)
+		// treat a Result that no longer matches stdout as a hook
+		// replacement and re-present it in full. A hook replacement
+		// -- a value that differs from the stdout parse -- is the
+		// hook's own answer and is preserved.
+		if haveStdoutParsed && res.Result != nil {
+			if rb, err := json.Marshal(res.Result); err == nil {
+				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
+					res.Result = nil
+				}
+			}
+		}
 	}
 	return res, sinkErr
 }
@@ -1145,6 +1182,65 @@ func ArtifactsDirFor(cwd, dir string) string {
 //
 // The tail rather than the head: a stack trace ends with the line that
 // matters, and a script that floods stderr floods it from the start.
+// truncateStdout caps s at limit bytes, keeping the head and ending
+// with a marker that names the dropped byte count, so truncation is
+// visible, never silent. The returned string is at most limit bytes
+// for EVERY positive limit, including one smaller than the marker
+// itself (then the marker prefix alone fills the budget). A limit
+// <= 0, or a string that already fits, is returned unchanged with
+// truncated=false. The cut backs off to a UTF-8 rune boundary so it
+// never splits a multi-byte rune.
+func truncateStdout(s string, limit int64) (string, bool) {
+	if limit <= 0 || int64(len(s)) <= limit {
+		return s, false
+	}
+	marker := func(kept int) string {
+		return fmt.Sprintf("\n[mcpx: stdout truncated -- kept %d of %d bytes, dropped %d bytes; raise exec.maxOutputBytes to see more]", kept, len(s), len(s)-kept)
+	}
+	// The limit is a hard bound: when it cannot hold even the marker
+	// (kept = 0 is the shortest form), the marker's own prefix is the
+	// most informative thing that fits.
+	if int(limit) <= len(marker(0)) {
+		return marker(0)[:int(limit)], true
+	}
+	kept := int(limit) - len(marker(int(limit)))
+	// The marker's own length depends on kept's digit count; settle
+	// it. Each step is O(1): runeBoundary inspects only the last few
+	// bytes (see below), never the whole prefix.
+	for i := 0; i < 8; i++ {
+		kept = runeBoundary(s, kept)
+		want := int(limit) - len(marker(kept))
+		if want == kept {
+			break
+		}
+		kept = want
+	}
+	kept = runeBoundary(s, kept)
+	for kept > 0 && kept+len(marker(kept)) > int(limit) {
+		kept = runeBoundary(s, kept-1)
+	}
+	return s[:kept] + marker(kept), true
+}
+
+// runeBoundary returns kept, reduced by at most a few bytes so the
+// cut does not split a multi-byte rune at the end of s[:kept]. It
+// decodes only the last rune: an invalid byte EARLIER in s must not
+// drag the cut back over the whole prefix (validating the shrinking
+// prefix per dropped byte is quadratic on the arbitrary non-UTF-8
+// bytes a subprocess can emit).
+func runeBoundary(s string, kept int) int {
+	for i := 0; i < utf8.UTFMax && kept > 0; i++ {
+		if s[kept-1] < utf8.RuneSelf {
+			break // ASCII: the cut is already on a boundary
+		}
+		if _, size := utf8.DecodeLastRuneInString(s[:kept]); size > 1 {
+			break // the last rune is complete (or a real U+FFFD)
+		}
+		kept-- // split rune or stray byte: retreat one byte
+	}
+	return kept
+}
+
 type tailBuffer struct {
 	limit int
 	buf   []byte

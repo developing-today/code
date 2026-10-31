@@ -17,6 +17,10 @@
 // content: serving by hash would mean anyone who knows what a file looks
 // like can read yours.
 //
+// Blobs are never linked to or from files outside the store: PutFile
+// copies in and Export copies out (#1660), so no outside file shares a
+// blob's inode in either direction.
+//
 // An index beside it. Name, mime, run, session, expiry -- everything that is
 // about this particular registration rather than about the bytes. SQLite
 // because it is already a dependency and because "list the artifacts of this
@@ -241,6 +245,12 @@ func (s *Store) Close() error { return s.db.Close() }
 // Dir is the store root.
 func (s *Store) Dir() string { return s.dir }
 
+// TTL is the retention the store was opened with: the operator's
+// artifacts.ttl. It is the ceiling for any per-request ttl — the
+// daemon's artifact handler rejects a request above it rather than
+// letting one caller repeal the operator's retention setting.
+func (s *Store) TTL() time.Duration { return s.opts.TTL }
+
 // ErrTooLarge is returned when one artifact exceeds the per-artifact cap.
 type ErrTooLarge struct{ Size, Max int64 }
 
@@ -367,14 +377,15 @@ func (s *Store) PutFile(path string, p PutOptions) (Meta, error) {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return Meta{}, err
 		}
-		if lerr := os.Link(path, dest); lerr != nil {
-			// A different device, or a filesystem with no links. Copy.
-			if _, serr := f.Seek(0, io.SeekStart); serr != nil {
-				return Meta{}, serr
-			}
-			if cerr := copyInto(dest, f); cerr != nil {
-				return Meta{}, cerr
-			}
+		// Copy, never link (#1660): a blob must not share an inode
+		// with the caller's file — rewriting that file in place
+		// would silently rewrite the stored bytes under their
+		// original hash.
+		if _, serr := f.Seek(0, io.SeekStart); serr != nil {
+			return Meta{}, serr
+		}
+		if cerr := copyInto(dest, f); cerr != nil {
+			return Meta{}, cerr
 		}
 	}
 	if p.Name == "" {
@@ -403,9 +414,8 @@ func copyInto(dest string, r io.Reader) error {
 func (s *Store) adopt(tmp, hash string) error {
 	dest := s.blobPath(hash)
 	if _, err := os.Stat(dest); err == nil {
-		// Already stored. Identical content by definition, so keep the one
-		// that is there: it may already be hardlinked into a caller's
-		// directory, and replacing it would break that link's meaning.
+		// Already stored. Identical content by definition, so keep
+		// the one that is there.
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
@@ -763,10 +773,9 @@ func (s *Store) deleteExpired(id string, now time.Time) (bool, error) {
 
 // Export places an artifact in a directory the caller named.
 //
-// A hardlink first, because the local case should not copy megabytes to hand
-// a file to something that can already see the disk it is on. A copy when
-// the link fails, which is what a different device or a foreign filesystem
-// looks like.
+// Always a copy, never a link (#1660): a blob must not share an inode
+// with a file outside the store — editing the exported file in place
+// would silently rewrite the stored bytes under their original hash.
 //
 // The name is sanitised and collisions are resolved by suffixing, never by
 // overwriting: a script that emits two files called "shot.png" has produced
@@ -780,9 +789,6 @@ func (s *Store) Export(m Meta, dir string) (string, error) {
 		return "", err
 	}
 	src := s.blobPath(m.SHA256)
-	if err := os.Link(src, dest); err == nil {
-		return dest, nil
-	}
 	f, err := os.Open(src)
 	if err != nil {
 		return "", err

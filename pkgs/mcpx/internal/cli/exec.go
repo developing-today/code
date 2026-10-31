@@ -181,6 +181,7 @@ func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Servi
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 	return &execsvc.Service{
 		Store: store,
 		// The script runs in this process's machine, and the daemon whose

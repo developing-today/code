@@ -904,7 +904,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		cfgPath = cfg.Path
 	}
 	writeJSON(w, 200, map[string]any{
-		"version":  s.version,
+		"version": s.version,
+		// #1877: this daemon's instance identity, so an `mcpx serve`
+		// shim backed by this daemon can report the DAEMON's identity
+		// (not the shim process's) to its host.
+		"instance": pool.OwnInstanceID,
 		"pid":      os.Getpid(),
 		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
 		"endpoint": s.endpoint,
@@ -1467,6 +1471,25 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	// A present-but-unparseable cursor is a client error, not a
+	// position (#1679): the discarded ParseUint error used to coerce
+	// "banana" to 0 (replay everything retained) and an out-of-range
+	// value to MaxUint64 (replay nothing, no gap), both silently and
+	// both indistinguishable from a deliberate choice. Reject either
+	// parameter, naming it, before any stream headers are written.
+	// Absent stays live-only; explicit 0 stays replay-all-retained.
+	for _, v := range r.Header.Values("Last-Event-ID") {
+		if _, err := strconv.ParseUint(v, 10, 64); err != nil {
+			http.Error(w, "invalid Last-Event-ID value "+strconv.Quote(v)+": must be an unsigned integer", http.StatusBadRequest)
+			return
+		}
+	}
+	if q.Has("since") {
+		if _, err := strconv.ParseUint(q.Get("since"), 10, 64); err != nil {
+			http.Error(w, "invalid since value "+strconv.Quote(q.Get("since"))+": must be an unsigned integer", http.StatusBadRequest)
+			return
+		}
+	}
 	f := events.Filter{
 		Kinds:   splitCSV(q.Get("kinds")),
 		Session: q.Get("session"),
@@ -1478,6 +1501,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	f.URIs, watch = s.watchResources(r.Context(), f.Server, splitCSV(q.Get("uri")))
 	defer watch.release()
 	raw := firstNonEmptyStr(r.Header.Get("Last-Event-ID"), q.Get("since"))
+	// Cannot fail: a present cursor was validated above, and an
+	// absent one leaves raw empty, which is the live-only case.
 	since, _ := strconv.ParseUint(raw, 10, 64)
 	// Present-but-zero replays everything retained; absent is live only.
 	sub, gap := s.Events.SubscribeFrom(f, since, raw != "")

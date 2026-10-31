@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { isProjectPoolSection, poolFromFeed, projectPoolSectionProblem } from "../src/feed.ts";
+import { isFleetFeed, isProjectPoolSection, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView } from "../src/feed.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
+import type { QuotaPool, QuotaView, QuotaWindow } from "../src/model.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
 // shape must validate cleanly — absence is data, not an error).
@@ -118,5 +122,118 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(pool.length).toBe(2);
     expect(isProjectPoolSection(pool)).toBe(true);
     expect(poolFromFeed({ projects: pool }).length).toBe(2);
+  });
+});
+
+describe("isFleetFeed generatedAt stamps (#2578 Phase 2, #2242)", () => {
+  const feed = (generatedAt: string) => ({
+    version: 1,
+    generatedAt,
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+  });
+
+  test("a past real stamp validates; an impossible date does not", () => {
+    expect(isFleetFeed(feed("2026-10-01T00:00:00Z"))).toBe(true);
+    expect(isFleetFeed(feed("2026-02-30T00:00:00Z"))).toBe(false);
+  });
+
+  test("a stamp far in the future is invalid, not maximally fresh", () => {
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    expect(isFleetFeed(feed(future))).toBe(false);
+  });
+});
+
+describe("feed quota section gate + sanitization (#2429)", () => {
+  const WINDOW: QuotaWindow = { name: "5h", unit: "tokens", limit: 1000, used: 250, resetsAt: "2026-10-29T05:00:00Z", percent: 25 };
+  const POOL: QuotaPool = { id: "opencode-go", provider: "opencode", plan: "go", state: "healthy", windows: [WINDOW] };
+  const CHOICES = { hasHeadroom: ["opencode-go"], burnBeforeReset: [], doNotStart: [] };
+  const feedWith = (quota: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota,
+    attention: [],
+  });
+  const quotaWith = (pools: unknown, extra: Record<string, unknown> = {}) => ({
+    pools,
+    burn: [],
+    choices: CHOICES,
+    ...extra,
+  });
+
+  test("a feed missing burn or choices is rejected whole (old-collector shape)", () => {
+    expect(isFleetFeed(feedWith({ pools: [] }))).toBe(false);
+    expect(isFleetFeed(feedWith({ pools: [], burn: [] }))).toBe(false);
+    expect(isFleetFeed(feedWith(quotaWith([])))).toBe(true);
+  });
+
+  test("pools: [null] drops the pool, keeps the feed", () => {
+    const out = sanitizeQuotaView(quotaWith([null, POOL]) as never);
+    expect(out.droppedPools).toBe(1);
+    expect(out.view.pools).toEqual([POOL]);
+  });
+
+  test("a pool missing windows drops; a non-array windows is never iterated", () => {
+    const noWindows = { id: "a", provider: "p", plan: "x", state: "near" };
+    const stringWindows = { ...POOL, id: "b", windows: "soon" };
+    const out = sanitizeQuotaView(quotaWith([noWindows, stringWindows, POOL]) as never);
+    expect(out.droppedPools).toBe(2);
+    expect(out.view.pools).toEqual([POOL]);
+  });
+
+  test("windows: [null] drops the bad window, keeps pool and good windows", () => {
+    const pool = { ...POOL, windows: [null, WINDOW, { bogus: true }] };
+    const out = sanitizeQuotaView(quotaWith([pool]) as never);
+    expect(out.droppedPools).toBe(0);
+    expect(out.droppedWindows).toBe(2);
+    expect(out.view.pools[0]?.windows).toEqual([WINDOW]);
+  });
+
+  test("malformed burn segments drop individually", () => {
+    const seg = { provider: "opencode", pool: "go", from: "2026-10-01T00:00:00Z", to: "2026-10-01T01:00:00Z", tokens: 42 };
+    const out = sanitizeQuotaView(quotaWith([POOL], { burn: [seg, null, { provider: "x" }] }) as never);
+    expect(out.droppedBurn).toBe(2);
+    expect(out.view.burn).toEqual([seg]);
+  });
+
+  test("a fully well-formed quota view is unchanged", () => {
+    const q = quotaWith([POOL], { burn: [] }) as unknown as QuotaView;
+    const out = sanitizeQuotaView(q);
+    expect(out.droppedPools + out.droppedWindows + out.droppedBurn).toBe(0);
+    expect(out.view).toEqual(q);
+  });
+
+  test("choices are reconciled to surviving pools with usable windows", () => {
+    const noWindows = { ...POOL, windows: [null] };
+    const out = sanitizeQuotaView(quotaWith([noWindows]) as never);
+    expect(out.view.pools.length).toBe(1);
+    expect(out.view.choices).toEqual({ hasHeadroom: [], burnBeforeReset: [], doNotStart: [] });
+    expect(out.view.dropped).toEqual({ pools: 0, windows: 1, burn: 0 });
+  });
+
+  test("a dropped pool leaves the retained choices and surfaces dropped on the view", () => {
+    const out = sanitizeQuotaView(quotaWith([null, POOL]) as never);
+    expect(out.view.choices.hasHeadroom).toEqual(["opencode-go"]);
+    expect(out.view.dropped).toEqual({ pools: 1, windows: 0, burn: 0 });
+  });
+
+  test("loadFeed returns the sanitized remainder with drop counts attached", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-quota-"));
+    const file = join(dir, "feed.json");
+    const pool = { ...POOL, windows: [WINDOW, null] };
+    writeFileSync(file, JSON.stringify(feedWith(quotaWith([null, pool]))));
+    const loaded = await loadFeed(file);
+    expect(loaded).not.toBeNull();
+    expect(loaded?.quota.pools.length).toBe(1);
+    expect(loaded?.quota.pools[0]?.windows).toEqual([WINDOW]);
+    expect(loaded?.quotaDropped).toEqual({ pools: 1, windows: 1, burn: 0 });
+    expect(loaded?.quota.dropped).toEqual({ pools: 1, windows: 1, burn: 0 });
+  });
+
+  test("loadFeed rejects a feed missing burn/choices (fixture-fallback path)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-quota-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWith({ pools: [POOL] })));
+    expect(await loadFeed(file)).toBeNull();
   });
 });

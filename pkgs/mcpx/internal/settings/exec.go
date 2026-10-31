@@ -39,6 +39,21 @@ func execRunSettings() []Setting {
 				"artifacts it does not want.",
 		},
 		{
+			Path: "exec.maxOutputBytes", Scope: ScopeCall, Hot: true, Commands: runCommands, Kind: KindBytes, Default: "64KiB",
+			Name:  "Max returned stdout bytes",
+			Short: "cap the stdout a run returns, with a truncation marker",
+			Long: "Applied at the execsvc Result boundary, so the CLI, /v1/exec " +
+				"and the MCP tool all return the same capped stdout. When a " +
+				"run's stdout exceeds the cap, the returned stdout keeps the " +
+				"first bytes that fit and ends with a marker naming how many " +
+				"bytes were dropped, and the result sets stdoutTruncated. " +
+				"The full output is unchanged wherever a full record already " +
+				"exists (run record / artifacts). 0 disables the cap. Stdout " +
+				"is the script's answer; one chatty script must not be able " +
+				"to dump unbounded output into the caller's context, which " +
+				"is the exact cost code mode exists to avoid (CODE-16).",
+		},
+		{
 			Path: "exec.where", Scope: ScopeCall, Hot: true, Commands: runCommands, Kind: KindEnum, Default: "auto",
 			Enum:  []string{"auto", "local", "remote"},
 			Name:  "Where a script runs",

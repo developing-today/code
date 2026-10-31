@@ -199,6 +199,17 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     ]);
   });
 
+  test("subscriptions: a non-calendar renews date is null, a leap day is kept (#2206)", () => {
+    const wispr = (date: string) =>
+      extractSubscriptions(`### Wispr Flow
+- **Plan:** Flow Pro annual $151.91/yr charged; renews ${date}.`).find((s) => s.name === "Wispr Flow");
+    expect(wispr("2026-02-30")?.renewsAt).toBeNull();
+    expect(wispr("2026-04-31")?.renewsAt).toBeNull();
+    expect(wispr("2026-13-01")?.renewsAt).toBeNull();
+    expect(wispr("2024-02-29")?.renewsAt).toBe("2024-02-29");
+    expect(wispr("2027-10-09")?.renewsAt).toBe("2027-10-09");
+  });
+
   test("subscriptions strip is renewal-only rows from the records", () => {
     const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
     expect(subs).toEqual([
@@ -319,6 +330,29 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: date-only stamps age by the Chicago calendar day (#1629)", () => {
+    // 19:30 CDT on 2026-10-25 is already 2026-10-26 in UTC. A read
+    // dated today (Chicago) is 0 days old for the whole Chicago day;
+    // the UTC-day age called it 1d old -- and stale at cadence 0 --
+    // from 19:00 Chicago onward.
+    const cdtEvening = new Date("2026-10-26T00:30:00Z");
+    expect(freshness("2026-10-25", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-25", 0, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-24", 7, cdtEvening)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-24", 0, cdtEvening)).toEqual({ stale: true, ageDays: 1 });
+    // Still today at 23:59 Chicago.
+    expect(freshness("2026-10-25", 7, new Date("2026-10-26T04:59:00Z"))).toEqual({
+      stale: false,
+      ageDays: 0,
+    });
+    // The CST evening of the same shape: 19:00 CST on 2026-01-14 is
+    // 2026-01-15 in UTC.
+    const cstEvening = new Date("2026-01-15T01:00:00Z");
+    expect(freshness("2026-01-14", 7, cstEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-01-13", 7, cstEvening)).toEqual({ stale: false, ageDays: 1 });
+    // Tomorrow's Chicago date is still within the future tolerance.
+    expect(freshness("2026-10-26", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
   });
   test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
     const now = new Date("2026-10-26T12:00:00Z");

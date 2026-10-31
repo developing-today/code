@@ -17,6 +17,7 @@
 // (service, metric, ts, value), so an unchanged read re-derives the
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
+import { parseIsoDate } from "./validate.ts";
 import type {
   DnsSection,
   PaygLine,
@@ -38,9 +39,11 @@ export function tsFor(measuredAt: string): string {
   return measuredAt.length <= 10 ? dayTs(measuredAt.slice(0, 10)) : measuredAt;
 }
 
-/** The freshest ISO date in a text, or null. */
+/** The freshest ISO date in a text, or null. Only REAL calendar
+ * dates compete (#2264): an impossible date like 2026-02-30 or
+ * 2026-13-01 in prose must not win the freshness comparison. */
 export function freshestDate(text: string): string | null {
-  const ds = [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  const ds = [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
   return ds.length ? ds[ds.length - 1] : null;
 }
 

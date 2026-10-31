@@ -138,7 +138,7 @@ func TestQuotaRefusesNewContentButNotDuplicates(t *testing.T) {
 	}
 }
 
-func TestPutFileHardlinksRatherThanCopies(t *testing.T) {
+func TestPutFileCopiesRatherThanLinks(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "shot.png")
 	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
@@ -152,8 +152,104 @@ func TestPutFileHardlinksRatherThanCopies(t *testing.T) {
 	if m.Name != "shot.png" {
 		t.Errorf("the name should default to the file's, got %q", m.Name)
 	}
-	if !sameInode(t, src, s.BodyPath(m)) {
-		t.Error("a file on the same filesystem should be linked, not copied")
+	// #1660: the blob must never share an inode with the source file,
+	// or rewriting the source in place would rewrite the stored bytes.
+	if sameInode(t, src, s.BodyPath(m)) {
+		t.Error("the blob should be a copy with its own inode, not a link to the source")
+	}
+}
+
+// #1660 regression: rewriting a PutFile source in place afterwards
+// must leave the stored bytes — and their agreement with the
+// registered hash — untouched.
+func TestPutFileSourceRewrittenInPlaceLeavesStoredBytesAlone(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := open(t, artifacts.Options{})
+	m, err := s.PutFile(src, artifacts.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, got, err := s.Bytes(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("stored bytes followed the source rewrite: %q", body)
+	}
+	if got.SHA256 != m.SHA256 || int64(len(body)) != got.Size {
+		t.Errorf("served bytes disagree with the registration: sha %s vs %s, size %d vs %d",
+			got.SHA256, m.SHA256, len(body), got.Size)
+	}
+}
+
+// #1660 regression: editing an exported copy in place must leave the
+// stored bytes untouched — the export is a copy, not a link.
+func TestExportEditedInPlaceLeavesStoredBytesAlone(t *testing.T) {
+	s := open(t, artifacts.Options{})
+	m, err := s.Put(strings.NewReader("PNGDATA"), artifacts.PutOptions{Name: "shot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	dest, err := s.Export(m, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameInode(t, dest, s.BodyPath(m)) {
+		t.Fatal("the export should be a copy with its own inode, not a link to the blob")
+	}
+	if err := os.WriteFile(dest, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, _, err := s.Bytes(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("stored bytes followed the export edit: %q", body)
+	}
+}
+
+// #1660 regression: after a mutation attempt on the source, putting
+// the original content again still serves the original bytes (the
+// content address was never poisoned).
+func TestRePutOfOriginalContentAfterMutationServesOriginal(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(src, []byte("PNGDATA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := open(t, artifacts.Options{})
+	first, err := s.PutFile(src, artifacts.PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("FORGED!!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutFile(src, artifacts.PutOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Put(strings.NewReader("PNGDATA"), artifacts.PutOptions{Name: "shot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SHA256 != first.SHA256 {
+		t.Fatalf("the original content should keep its address: %s vs %s", again.SHA256, first.SHA256)
+	}
+	body, _, err := s.Bytes(again.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "PNGDATA" {
+		t.Errorf("the original registration serves %q, not the original bytes", body)
 	}
 }
 

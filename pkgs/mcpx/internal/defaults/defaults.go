@@ -189,6 +189,7 @@ type Defaults struct {
 		Programs     int    `json:"programs"`
 		Entries      int    `json:"entries"`
 		StderrLimit  int    `json:"stderrLimit"`
+		StdoutLimit  int    `json:"stdoutLimit"`
 		Output       string `json:"output"`
 		RemoteOutput string `json:"remoteOutput"`
 		Delivery     string `json:"delivery"`
@@ -681,6 +682,11 @@ var (
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.
 	ExecStderrLimit = builtin.Exec.StderrLimit
+	// ExecStdoutLimit bounds how much of a run's stdout the returned
+	// Result carries (CODE-16, #1937). The full output still exists in
+	// the run record/artifacts where one is kept; this bounds only what
+	// is handed back into a caller's context.
+	ExecStdoutLimit = builtin.Exec.StdoutLimit
 	// ExecWorkDirs bounds how many content-addressed client directories are
 	// kept. One per distinct catalogue; without a bound it grows forever.
 	ExecWorkDirs = builtin.Exec.WorkDirs

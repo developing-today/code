@@ -298,8 +298,11 @@ func (p *Pool) Attach(ads []*Adopted, seq int) {
 			continue
 		}
 		in := p.resumeInstance(a)
-		p.instances = append(p.instances, in)
 		in.Client.Activate()
+		if !p.guardAdopted(in) {
+			continue
+		}
+		p.instances = append(p.instances, in)
 	}
 	if seq > p.seq {
 		p.seq = seq
@@ -363,6 +366,9 @@ func (p *Pool) attachSession(a *Adopted) {
 		})
 		return
 	}
+	if !p.guardAdopted(in) {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -371,6 +377,24 @@ func (p *Pool) attachSession(a *Adopted) {
 	}
 	p.instances = append(p.instances, in)
 	p.cond.Broadcast()
+}
+
+// guardAdopted runs the self-connection guard (#1877) over a resumed
+// session before Attach publishes it. Adoption bypasses startLane --
+// the session was handshaken by a predecessor, possibly one predating
+// the guard -- so an aggregate self upstream adopted across an
+// upgrade would otherwise keep serving and re-caching its proxied
+// catalogue without ever being checked (Codex review on PR 2975).
+// It reports whether the instance may be served; a refusal has
+// already closed the client and dropped the cached schemas.
+func (p *Pool) guardAdopted(in *Instance) bool {
+	cl := in.Client
+	if cl.ServerInfo.Name != ownServerName {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), resumeProbeTimeout)
+	defer cancel()
+	return p.guardSelfConnection(ctx, cl, in.transport) == nil
 }
 
 // PoolID is the identity this pool's process definition shares with others:

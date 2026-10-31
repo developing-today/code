@@ -386,3 +386,105 @@ func TestARelativeURLWithNoHTTPSourceSaysWhatToDo(t *testing.T) {
 		t.Errorf("the remedy should be named: %v", err)
 	}
 }
+
+// #1669: a path-level parameter redeclared at operation level is ONE
+// parameter (identity is the (name, in) pair), the operation's version
+// wins, and the generated schema must not list it twice in required --
+// a duplicated required entry is not valid JSON Schema.
+func TestOperationParameterOverridesPathLevel(t *testing.T) {
+	spec, err := openapi.Parse([]byte(`{
+	  "openapi": "3.0.0",
+	  "info": { "title": "Override", "version": "1" },
+	  "servers": [{ "url": "https://api.example.com" }],
+	  "paths": {
+	    "/things/{id}": {
+	      "parameters": [
+	        { "name": "id", "in": "path", "required": true,
+	          "description": "the path-level declaration",
+	          "schema": { "type": "string" } }
+	      ],
+	      "get": {
+	        "operationId": "getThing",
+	        "parameters": [
+	          { "name": "id", "in": "path", "required": true,
+	            "description": "the operation-level declaration",
+	            "schema": { "type": "integer" } }
+	        ]
+	      }
+	    }
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := openapi.Build(spec, openapi.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(api.Tools) != 1 {
+		t.Fatalf("tools: %v", names(api))
+	}
+	tool := api.Tools[0]
+	if len(tool.Params) != 1 {
+		t.Fatalf("the override must resolve to one parameter, got %+v", tool.Params)
+	}
+	if got := tool.Params[0].Description; got != "the operation-level declaration" {
+		t.Errorf("the operation-level declaration wins, got %q", got)
+	}
+	var schema struct {
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(tool.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, r := range schema.Required {
+		if r == "id" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("required lists id %d times (%v); it must appear exactly once", count, schema.Required)
+	}
+	if _, ok := schema.Properties["id"]; !ok {
+		t.Errorf("schema properties missing id: %v", schema.Properties)
+	}
+}
+
+// #1669: the same name in two different locations cannot be one flat
+// argument -- the schema would describe one property while Call sent
+// the value to both places -- so Build refuses it, naming the tool,
+// the parameter and both locations.
+func TestSameNameTwoLocationsIsABuildError(t *testing.T) {
+	spec, err := openapi.Parse([]byte(`{
+	  "openapi": "3.0.0",
+	  "info": { "title": "Collision", "version": "1" },
+	  "servers": [{ "url": "https://api.example.com" }],
+	  "paths": {
+	    "/things": {
+	      "parameters": [
+	        { "name": "key", "in": "query", "schema": { "type": "string" } }
+	      ],
+	      "get": {
+	        "operationId": "listThings",
+	        "parameters": [
+	          { "name": "key", "in": "header", "schema": { "type": "string" } }
+	        ]
+	      }
+	    }
+	  }
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = openapi.Build(spec, openapi.Options{})
+	if err == nil {
+		t.Fatal("a same-name parameter in two locations must fail Build")
+	}
+	for _, want := range []string{"listthings", `"key"`, "query", "header"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error must name %s, got: %v", want, err)
+		}
+	}
+}

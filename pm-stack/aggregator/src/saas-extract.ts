@@ -13,12 +13,14 @@
 
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
+import { parseIsoDate } from "./validate.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
-  return [...text.matchAll(DATE_RE)].map((m) => m[0]).sort();
+  // Real calendar dates only (#2264), mirroring snapshot-records.ts.
+  return [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
 }
 
 /** The freshest ISO date in a text, or null. */
@@ -1057,7 +1059,9 @@ export function extractSubscriptions(doc: string): { name: string; plan: string;
     out.push({
       name: "Wispr Flow",
       plan: price ? `Pro $${price[1]}/yr` : "Pro (annual)",
-      renewsAt: renews ? renews[1] : null,
+      // Real calendar dates only (#2206): a non-calendar date is no
+      // renewal date at all, never a verbatim renewsAt.
+      renewsAt: renews && parseIsoDate(renews[1]) !== null ? renews[1] : null,
     });
   }
   return out;

@@ -45,6 +45,28 @@ const sessions = [
     location: { directory: "/work/d" },
   },
   {
+    // #2286: out-of-range updated stamp — must not earn freshness
+    // inclusion and must not throw the whole server away.
+    id: "ses_bad_updated",
+    title: "bad updated",
+    model: { id: "gpt-5.6-sol", providerID: "openai" },
+    tokens: { input: 1, output: 1, reasoning: 0 },
+    outcome: null,
+    time: { created: recent - 10_000, updated: 1e16 },
+    location: { directory: "/work/e" },
+  },
+  {
+    // #2286: out-of-range created stamp, fresh updated — included
+    // via freshness, with a null createdAt instead of a throw.
+    id: "ses_bad_created",
+    title: "bad created",
+    model: { id: "gpt-5.6-sol", providerID: "openai" },
+    tokens: { input: 1, output: 1, reasoning: 0 },
+    outcome: null,
+    time: { created: 1e16, updated: recent },
+    location: { directory: "/work/f" },
+  },
+  {
     id: "ses_child",
     title: "explore child",
     parentID: "ses_active",
@@ -82,6 +104,8 @@ const messages: Record<string, unknown[]> = {
   ses_question: [{ id: "m1", type: "user", time: { created: recent }, text: "go" }],
   ses_stale: [{ id: "m1", type: "user", time: { created: old }, text: "go" }],
   ses_child: [{ id: "m1", type: "user", time: { created: recent }, text: "explore" }],
+  ses_bad_updated: [{ id: "m1", type: "user", time: { created: recent }, text: "go" }],
+  ses_bad_created: [{ id: "m1", type: "user", time: { created: 1e16 }, text: "go" }],
 };
 
 let server: ReturnType<typeof Bun.serve>;
@@ -140,6 +164,21 @@ describe("opencode v2 mapper", () => {
     expect(child.agent).toBe("explore");
     expect(child.outcome).toBe("interrupted");
     expect(child.createdAt).toBeTruthy();
+  });
+
+  test("out-of-range stamps do not drop the server's sessions (#2286)", async () => {
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW);
+    expect(mapped).not.toBeNull();
+    const byId = new Map(mapped!.entries.map((e) => [e.sessionId, e]));
+    // The good sessions survive.
+    expect(byId.has("ses_active")).toBe(true);
+    // 1e16 updated earns no freshness inclusion.
+    expect(byId.has("ses_bad_updated")).toBe(false);
+    // 1e16 created maps with a null stamp, not a RangeError.
+    const badCreated = byId.get("ses_bad_created")!;
+    expect(badCreated).toBeTruthy();
+    expect(badCreated.createdAt ?? null).toBeNull();
+    expect(badCreated.lastActivityAt).toBeTruthy();
   });
 
   test("stamps the entry source when asked", async () => {
