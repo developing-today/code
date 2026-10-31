@@ -199,6 +199,17 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     ]);
   });
 
+  test("subscriptions: a non-calendar renews date is null, a leap day is kept (#2206)", () => {
+    const wispr = (date: string) =>
+      extractSubscriptions(`### Wispr Flow
+- **Plan:** Flow Pro annual $151.91/yr charged; renews ${date}.`).find((s) => s.name === "Wispr Flow");
+    expect(wispr("2026-02-30")?.renewsAt).toBeNull();
+    expect(wispr("2026-04-31")?.renewsAt).toBeNull();
+    expect(wispr("2026-13-01")?.renewsAt).toBeNull();
+    expect(wispr("2024-02-29")?.renewsAt).toBe("2024-02-29");
+    expect(wispr("2027-10-09")?.renewsAt).toBe("2027-10-09");
+  });
+
   test("subscriptions strip is renewal-only rows from the records", () => {
     const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
     expect(subs).toEqual([
