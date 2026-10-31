@@ -22,7 +22,7 @@ import {
   type SessionRequest,
   type TaskRequest,
 } from "./validate.ts";
-import { buildPacket, canonicalDedupeKey, describeCaller, dispatchDedupeKey, validatePayload } from "./packet.ts";
+import { buildPacket, canonicalDedupeKey, describeCaller, dispatchDedupeKey, randomDispatchSuffix, validatePayload } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
 import { handleLaunchFailure } from "./launch_failure.ts";
 import { GitHubClient } from "./github.ts";
@@ -264,10 +264,98 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
 }
 
 // ---------------------------------------------------------------------------
+// Pre-existing enqueue rows (issue #2677)
+// ---------------------------------------------------------------------------
+
+/** Queue statuses after which a task will never run again. */
+export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
+
+/**
+ * The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
+ * ones and returns the pre-existing row as-is. A returned row is
+ * pre-existing when it was created before this request started, or when
+ * its status is already terminal — it is never the task this request
+ * just queued.
+ */
+export function isPreExistingTaskRow(row: TaskRow, requestStartedAt: Date): boolean {
+  if (TERMINAL_TASK_STATUSES.has(row.status)) return true;
+  const createdAt = row.created_at;
+  if (typeof createdAt === "string") {
+    const parsed = Date.parse(createdAt);
+    if (!Number.isNaN(parsed)) return parsed < requestStartedAt.getTime();
+  }
+  return false;
+}
+
+export interface EnqueueDispatchOutcome {
+  task: TaskRow;
+  /** The final reported task is a pre-existing row, not newly queued. */
+  preExisting: boolean;
+  /** A dispatch-scoped retry was attempted (attach flow only). */
+  retried: boolean;
+  warnings: string[];
+}
+
+/**
+ * Enqueue with pre-existing-row handling (issue #2677):
+ * - attach flow (issue_number) with the CANONICAL key: a pre-existing
+ *   canonical row means the caller's distinct dispatch gets its own task
+ *   via a dispatch-scoped suffix key; if the retry also returns a
+ *   pre-existing row, warn explicitly instead of a silent 201-as-new.
+ * - any other flow (incl. a caller-supplied dedupe_key repeat — also
+ *   when combined with issue_number: the caller explicitly chose that
+ *   key, so a repeat is an intentional dedupe, never a retry): return
+ *   the existing task WITH a warning naming its actual status.
+ */
+export async function enqueueDispatchTask(args: {
+  enqueue: (dedupeKey: string) => Promise<TaskRow>;
+  dedupeKey: string;
+  attach: boolean;
+  callerSuppliedKey: boolean;
+  requestStartedAt: Date;
+}): Promise<EnqueueDispatchOutcome> {
+  const first = await args.enqueue(args.dedupeKey);
+  if (!isPreExistingTaskRow(first, args.requestStartedAt)) {
+    return { task: first, preExisting: false, retried: false, warnings: [] };
+  }
+  if (!args.attach || args.callerSuppliedKey) {
+    return {
+      task: first,
+      preExisting: true,
+      retried: false,
+      warnings: [
+        `dedupe key already in use: task #${first.id} already exists with status "${first.status}"; returning the existing task — no new task was queued`,
+      ],
+    };
+  }
+  const retryKey = `${args.dedupeKey}:dispatch:${randomDispatchSuffix()}`;
+  const second = await args.enqueue(retryKey);
+  if (!isPreExistingTaskRow(second, args.requestStartedAt)) {
+    return {
+      task: second,
+      preExisting: false,
+      retried: true,
+      warnings: [
+        `task #${first.id} already exists for this issue with status "${first.status}"; this dispatch was queued as a distinct task #${second.id} with a dispatch-scoped dedupe key`,
+      ],
+    };
+  }
+  return {
+    task: second,
+    preExisting: true,
+    retried: true,
+    warnings: [
+      `task #${first.id} already exists for this issue with status "${first.status}", and the dispatch-scoped retry also returned a pre-existing task #${second.id} with status "${second.status}"; no new task was queued`,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // POST /v1/tasks
 // ---------------------------------------------------------------------------
 
 async function handleTasks(req: Request, caller: CallerIdentity): Promise<Response> {
+  const requestStartedAt = new Date();
   const body: TaskRequest = parseTaskRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
@@ -293,28 +381,40 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     body.dedupeKey ??
     (issue ? canonicalDedupeKey(body.kind, body.repo, issue.number) : null) ??
     dispatchDedupeKey(body.repo);
-  const packet = buildPacket(
-    {
-      repo: body.repo,
-      kind: body.kind,
-      title: body.title,
-      prompt: body.prompt,
-      priority: body.priority,
-      caller,
-      model: body.model,
-      directory,
-      issue,
-    },
-    dedupeKey,
-  );
+  const packetInput = {
+    repo: body.repo,
+    kind: body.kind,
+    title: body.title,
+    prompt: body.prompt,
+    priority: body.priority,
+    caller,
+    model: body.model,
+    directory,
+    issue,
+  };
+  const packet = buildPacket(packetInput, dedupeKey);
   const payloadErrors = validatePayload(packet.payload);
   if (payloadErrors.length) {
     return json(500, { error: `internal packet validation failed: ${payloadErrors.join("; ")}` });
   }
-  let task: TaskRow;
+  let outcome: EnqueueDispatchOutcome;
   try {
-    task = await requireQueue().enqueue(packet, body.repo);
+    outcome = await enqueueDispatchTask({
+      enqueue: async (key) => {
+        const p = key === dedupeKey ? packet : buildPacket(packetInput, key);
+        const errs = validatePayload(p.payload);
+        if (errs.length) throw new QueueError(`internal packet validation failed: ${errs.join("; ")}`);
+        return requireQueue().enqueue(p, body.repo);
+      },
+      dedupeKey,
+      attach: body.issueNumber !== undefined,
+      callerSuppliedKey: body.dedupeKey !== undefined,
+      requestStartedAt,
+    });
   } catch (e) {
+    if (e instanceof QueueError && e.message.startsWith("internal packet validation failed")) {
+      return json(500, { error: e.message });
+    }
     return json(502, {
       error: e instanceof Error ? e.message : String(e),
       issue_number: issue?.number ?? null,
@@ -322,6 +422,8 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       ...(warnings.length ? { warnings } : {}),
     });
   }
+  const task: TaskRow = outcome.task;
+  warnings.push(...outcome.warnings);
 
   if (issue) {
     // Attach is skipped where the GitHub App is not installed (warning
@@ -329,16 +431,19 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     // exists precisely because the app route worked there.
     const attachSkipped = body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
     if (!attachSkipped) {
+      const statusLine = outcome.preExisting
+        ? `- Status: already existing (status: ${task.status}) — this dispatch did not create a new task`
+        : `- Status: queued`;
       try {
         await github.comment(
           body.repo,
           issue.number,
-          `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n- Status: queued`,
+          `Filed by pm-dispatch (${describeCaller(caller)}).\n\n- Queue task: #${task.id} (${REPO_QUEUES[body.repo]}, kind: ${body.kind}, priority: ${body.priority})\n${statusLine}`,
         );
       } catch (e) {
         warnings.push(`issue agent-note comment failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (body.issueNumber !== undefined) {
+      if (body.issueNumber !== undefined && !outcome.preExisting) {
         try {
           await github.addLabels(body.repo, issue.number, ["queue/queued", "source/dispatch"]);
         } catch (e) {
@@ -353,6 +458,8 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     issue_number: issue?.number ?? null,
     ...(body.issueNumber !== undefined && issue ? { issue_url: issue.url } : {}),
     queue: REPO_QUEUES[body.repo],
+    ...(outcome.preExisting ? { pre_existing: true, task_status: task.status } : {}),
+    ...(outcome.retried ? { retried: true } : {}),
     ...(warnings.length ? { warnings } : {}),
   });
 }
