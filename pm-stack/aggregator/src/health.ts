@@ -222,7 +222,24 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
   if (!feed) return [];
   const from = (generatedAt: string | undefined, present: boolean, note?: string): Partial<FeedSectionHealth> => {
     const ts = generatedAt ?? feed.generatedAt;
-    return { present, generatedAt: ts, ageMs: Math.max(0, now - Date.parse(ts)), ...(note ? { note } : {}) };
+    const parsed = Date.parse(ts);
+    // Section stamps get the same validation as the top-level one
+    // (#2242, mirroring #1564): an unparseable stamp must not render
+    // as ageMs NaN/null, and a stamp beyond the future-skew bound
+    // must not render as ageMs 0 (maximally fresh) for as long as
+    // the skew lasts. Either way the section reports absent with a
+    // legible note instead of a fabricated age.
+    if (!Number.isFinite(parsed)) {
+      return { present: false, generatedAt: ts, note: `invalid generatedAt (${ts})` };
+    }
+    if (parsed - now > GENERATED_AT_FUTURE_SKEW_MS) {
+      return {
+        present: false,
+        generatedAt: ts,
+        note: `generatedAt (${ts}) is ${ageMsText(parsed - now)} in the future — never fresh`,
+      };
+    }
+    return { present, generatedAt: ts, ageMs: Math.max(0, now - parsed), ...(note ? { note } : {}) };
   };
   const aa = feed.aa;
   const aaNote =

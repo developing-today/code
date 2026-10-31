@@ -529,3 +529,40 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
     expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
   });
 });
+
+describe("stale-path newest pick is finite-gated (#2253)", () => {
+  const staleRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+
+  test("a garbage measuredAt listed first does not shadow the real stale read", () => {
+    const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a garbage measuredAt listed last gives the same winner (order independence)", () => {
+    const out = overlayQuotaCurrent(baseView(), file([staleRead(), garbageRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a +30d future entry does not outrank a real 1h-old stale read", () => {
+    const future = entry({
+      serviceId: "meta:high-usage",
+      measuredAt: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
+      source: "future-src",
+      windows: [],
+    });
+    const real = entry({ serviceId: "meta:high-usage", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
+    const out = overlayQuotaCurrent(baseView(), file([future, real]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("parseQuotaCurrent still accepts a document carrying a garbage entry (lenient parse)", () => {
+    const doc = file([garbageRead(), staleRead()]);
+    expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
+  });
+});

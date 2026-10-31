@@ -86,6 +86,7 @@ var EffectExemptions = map[string]string{
 	"script.onError":                     "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"script.suffix":                      "script launcher pipeline: its effect needs a runtime, profile, or launcher fixture exercising that exact stage, which the harness script fixtures do not yet provide",
 	"exec.timeout":                       "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
+	"exec.maxOutputBytes":                "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.output":                        "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.where":                         "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"artifacts.enabled":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -249,7 +250,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 182 // raised by one for policy.write (#1979), in the elicitation-flow exemption style of elicit.confirmDestructive
+const EffectExemptionPin = 183 // raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,
