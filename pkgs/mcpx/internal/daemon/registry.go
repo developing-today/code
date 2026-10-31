@@ -484,7 +484,7 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 	if err := dec.Decode(&m); err != nil {
 		return schema
 	}
-	hidePropsAtScope(m, hide)
+	hidePropsAtScope(m, m, hide, map[string]bool{})
 	out, err := json.Marshal(m)
 	if err != nil {
 		return schema
@@ -494,17 +494,20 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 
 // hidePropsAtScope removes the hidden properties from one schema
 // object's properties and required lists, and recurses into its
-// allOf members, which constrain the same instance: a member's
+// allOf members and the targets of its local references, which
+// constrain the same instance: a member's or referenced schema's
 // requirement on a hidden property would otherwise survive the root
 // projection, and against additionalProperties:false with the
 // property's declaration deleted it advertises a schema no caller
 // can satisfy, even though calls succeed because pins merge before
-// forwarding (Codex P2 on PR #2976). Disjunctive applicators
-// (anyOf/oneOf) are not projected: a branch requiring the hidden
-// property stays satisfiable through the merged pin at call time,
-// and weakening a branch would misstate the choice the schema
-// offers.
-func hidePropsAtScope(m map[string]any, hide []string) {
+// forwarding (Codex P2 on PR #2976). A referenced schema is projected
+// in place: the decoded document shares the referenced map, so the
+// projection is exactly the schema the reference advertises.
+// Disjunctive applicators (anyOf/oneOf) are not projected: a branch
+// requiring the hidden property stays satisfiable through the merged
+// pin at call time, and weakening a branch would misstate the choice
+// the schema offers.
+func hidePropsAtScope(m, root map[string]any, hide []string, resolving map[string]bool) {
 	if props, ok := m["properties"].(map[string]any); ok {
 		for _, h := range hide {
 			delete(props, h)
@@ -534,7 +537,16 @@ func hidePropsAtScope(m map[string]any, hide []string) {
 	if subs, ok := m["allOf"].([]any); ok {
 		for _, sub := range subs {
 			if sm, ok := sub.(map[string]any); ok {
-				hidePropsAtScope(sm, hide)
+				hidePropsAtScope(sm, root, hide, resolving)
+			}
+		}
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
+		if target, ok := resolveSchemaPointer(root, ref); ok {
+			if tm, ok := target.(map[string]any); ok {
+				resolving[ref] = true
+				hidePropsAtScope(tm, root, hide, resolving)
+				delete(resolving, ref)
 			}
 		}
 	}

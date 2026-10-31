@@ -305,6 +305,23 @@ func TestAdvertisedViewSchemaConjoinsRefSiblingRequirements(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: a requirement on a hidden property can also
+// reach the advertised schema through an upstream local $ref: the
+// root $ref to a $defs entry requiring the hidden property survives
+// the hide, while the property declaration is deleted -- against
+// additionalProperties:false the advertised schema is unsatisfiable
+// even though calls succeed because pins merge before forwarding.
+func TestHideSchemaPropsProjectsRefRequirements(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"$defs":{"need":{"required":["tailnet","limit"]}},"$ref":"#/$defs/need"}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	if strings.Contains(string(out), "tailnet") {
+		t.Errorf("hidden property must be projected out of referenced constraints too: %s", out)
+	}
+	if !strings.Contains(string(out), `"required":["limit"]`) {
+		t.Errorf("unhidden requirements must survive in the referenced schema: %s", out)
+	}
+}
+
 func TestHideSchemaPropsProjectsAllOfRequirements(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"required":["limit"],"allOf":[{"required":["tailnet","limit"]}]}`)
 	out := hideSchemaProps(schema, []string{"tailnet"})
