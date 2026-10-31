@@ -324,10 +324,10 @@ C21. **Header name casing drift.** 2025-03-26..2025-06-18 `Mcp-Session-Id`; 2025
 - Consequence for a dual-era server (mcpx): `conn.go:265` (cancel own timed-out `elicitation/create`) must stay reachable only on legacy-era connections. It is today, because a modern connection never gets a wire request.
 
 **C3 — 2026-07-28 client cancellation on HTTP (spec-internal).**
-- **Disposition:** Recorded reading — mcpx follows the cancellation page's intro SHOULD: as a client it POSTs `notifications/cancelled` on HTTP too (see the item text), rather than treating stream close as the only signal.
+- **Disposition:** Recorded reading — era-split in code: as a client mcpx POSTs `notifications/cancelled` on stdio and legacy-era HTTP, but for a 2026-07-28 HTTP upstream it sends no notification — `cancelled()` returns early when the transport is an HTTPTransport with a meta version set (internal/mcpclient/modern.go:582), so closing the response stream is the cancellation signal there, as the transport section describes; notification cancellation remains for the other transports and eras. `TestModernHTTPCancellationClosesTheStream` (internal/mcpclient/http_conformance_test.go) verifies no cancellation notification is POSTed for a modern HTTP upstream.
 - "A client **SHOULD** send a cancellation notification to indicate that a request it previously issued should be terminated." https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation
 - vs "**Streamable HTTP**: Closing the SSE response stream is the cancellation signal. … No `notifications/cancelled` message is required or expected." …#transport-specific-cancellation, and the streamable-http note that notification POST header requirements "are not defined by this revision".
-- The intro SHOULD is unqualified; the transport section contradicts it on HTTP. mcpx as client POSTs `notifications/cancelled` on HTTP too.
+- The intro SHOULD is unqualified; the transport section contradicts it on HTTP. mcpx's code splits by era: no notification on a 2026-07-28 HTTP upstream (stream close carries the cancellation, internal/mcpclient/modern.go:582); the notification POST remains for stdio and legacy-era HTTP.
 
 **C4 — HTTP disconnect meaning: "not cancellation" (SHOULD NOT) 2025-03-26..2025-11-25 → "is cancellation" (MUST) 2026-07-28.**
 - **Disposition:** Peer-settled — same era split as section B item C6 / headline 3 (internal/mcpserver/server.go, session disconnect block).
