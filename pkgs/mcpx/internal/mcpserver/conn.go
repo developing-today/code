@@ -343,22 +343,38 @@ func (q Question) carriesMultiSelect() bool {
 		return false
 	}
 	var schema struct {
-		Properties map[string]struct {
-			Type  string                     `json:"type"`
-			Items map[string]json.RawMessage `json:"items"`
-		} `json:"properties"`
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if json.Unmarshal(m["requestedSchema"], &schema) != nil {
 		return false
 	}
-	for _, prop := range schema.Properties {
-		if prop.Type != "array" {
+	for _, raw := range schema.Properties {
+		var prop map[string]json.RawMessage
+		if json.Unmarshal(raw, &prop) != nil {
 			continue
 		}
-		if _, ok := prop.Items["enum"]; ok {
+		var typ string
+		var types []string
+		array := json.Unmarshal(prop["type"], &typ) == nil && typ == "array"
+		if !array && json.Unmarshal(prop["type"], &types) == nil {
+			for _, t := range types {
+				if t == "array" {
+					array = true
+					break
+				}
+			}
+		}
+		if !array {
+			continue
+		}
+		var items map[string]json.RawMessage
+		if json.Unmarshal(prop["items"], &items) != nil {
+			continue
+		}
+		if _, ok := items["enum"]; ok {
 			return true
 		}
-		if _, ok := prop.Items["anyOf"]; ok {
+		if _, ok := items["anyOf"]; ok {
 			return true
 		}
 	}
