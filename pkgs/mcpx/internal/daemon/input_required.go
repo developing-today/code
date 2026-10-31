@@ -80,7 +80,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	defer r.endAsk(id)
 	res, err := p.Call(ctx, key, effTool, effArgs)
 	if err != nil {
-		return nil, r.explainCall(ctx, server, effTool, effArgs, err)
+		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
 	return res, nil
 }

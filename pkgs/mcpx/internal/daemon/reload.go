@@ -72,6 +72,10 @@ func (r *Registry) Reload(cfg *config.Config) (added, removed []string, err erro
 	}
 	sort.Strings(order)
 
+	if err := validateViews(order, views, pools); err != nil {
+		return nil, nil, err
+	}
+
 	// Anything whose process definition is gone is stopped. Done after the
 	// new map is built so a failure above leaves the daemon exactly as it
 	// was rather than half-reloaded.

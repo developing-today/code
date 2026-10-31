@@ -105,3 +105,82 @@ func callErr(r *Registry, ctx context.Context, server, tool string, cc config.Ca
 	_, err := r.Call(ctx, server, tool, cc, map[string]any{})
 	return err
 }
+
+func TestViewToolsRespectsExclude(t *testing.T) {
+	view := tailscaleView(t)
+	deny, err := config.CompileToolPatterns(append([]string{}, "list_tailnets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	view.ExcludeTools = deny
+	all := []mcpclient.Tool{
+		{Name: "list_tailnets", Description: "tailnets", InputSchema: json.RawMessage(`{"type":"object","properties":{"format":{"type":"string"}}}`)},
+		{Name: "list_devices", Description: "devices", InputSchema: json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"number"}},"required":["tailnet"]}`)},
+	}
+	out := visibleTools(view, all)
+	if len(out) != 1 || out[0].Name != "listHostnames" {
+		t.Fatalf("excluding target list_tailnets should hide listTailnet view: %+v", out)
+	}
+
+	view2 := tailscaleView(t)
+	deny2, err := config.CompileToolPatterns([]string{"listHostnames"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view2.ExcludeTools = deny2
+	out2 := visibleTools(view2, all)
+	if len(out2) != 1 || out2[0].Name != "listTailnet" {
+		t.Fatalf("excluding view name listHostnames should hide it: %+v", out2)
+	}
+}
+
+func TestReloadValidatesViewsAgainstCachedSchemas(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"srv": {Name: "srv", Command: "echo"},
+		"v": {Name: "v", AliasOf: "srv", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"peek": {From: "tool_a"},
+		}}},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: dir, Cache: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cache schemas on the pool so validateViews has something to check against.
+	r.pools["srv"].SetSchemas([]mcpclient.Tool{
+		{Name: "tool_a", InputSchema: json.RawMessage(`{"type":"object","properties":{"arg1":{"type":"string"}}}`)},
+	}, nil, nil, "", time.Now(), time.Now().Add(10*time.Minute), false)
+
+	// Valid reload passes
+	if _, _, err := r.Reload(cfg); err != nil {
+		t.Fatalf("expected valid reload to pass, got %v", err)
+	}
+
+	// Reload with unknown target tool fails
+	badCfg := &config.Config{MCPServers: map[string]*config.Server{
+		"srv": {Name: "srv", Command: "echo"},
+		"v": {Name: "v", AliasOf: "srv", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"peek": {From: "nonexistent"},
+		}}},
+	}}
+	if _, _, err := r.Reload(badCfg); err == nil {
+		t.Fatal("expected reload with unknown target to fail")
+	}
+
+	// Reload with invalid pin fails
+	badPinCfg := &config.Config{MCPServers: map[string]*config.Server{
+		"srv": {Name: "srv", Command: "echo"},
+		"v": {Name: "v", AliasOf: "srv", Mcpx: &config.Extras{ToolViews: map[string]config.ToolView{
+			"peek": {From: "tool_a", Pin: map[string]any{"invalid_arg": 123}},
+		}}},
+	}}
+	if _, _, err := r.Reload(badPinCfg); err == nil {
+		t.Fatal("expected reload with invalid pin to fail")
+	}
+
+	// Verify registry still works and holds original configuration
+	if r.views["v"].ToolViews["peek"].From != "tool_a" {
+		t.Errorf("registry state was corrupted after failed reload")
+	}
+}

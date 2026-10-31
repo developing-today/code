@@ -301,6 +301,9 @@ func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 	sort.Strings(names)
 	out := make([]mcpclient.Tool, 0, len(names))
 	for _, name := range names {
+		if !view.VisibleTool(name) {
+			continue
+		}
 		tv := view.ToolViews[name]
 		t, ok := byName[tv.From]
 		if !ok {
@@ -384,13 +387,17 @@ func schemaProps(schema json.RawMessage) map[string]bool {
 // error naming the view -- never a silent no-op. A server whose
 // schemas are not cached yet cannot be checked and is skipped; the
 // listing path invents nothing for a missing target either way.
-func (r *Registry) validateViews() error {
-	for _, name := range r.order {
-		view := r.views[name]
+func validateViews(order []string, views map[string]*config.Resolved, pools map[string]*pool.Pool) error {
+	for _, name := range order {
+		view := views[name]
 		if len(view.ToolViews) == 0 {
 			continue
 		}
-		all, _, _ := r.pools[name].CachedSchemas()
+		p, ok := pools[name]
+		if !ok || p == nil {
+			continue
+		}
+		all, _, _ := p.CachedSchemas()
 		if len(all) == 0 {
 			continue
 		}
@@ -423,6 +430,10 @@ func (r *Registry) validateViews() error {
 		}
 	}
 	return nil
+}
+
+func (r *Registry) validateViews() error {
+	return validateViews(r.order, r.views, r.pools)
 }
 
 // mergePinnedArgs returns the call arguments with a view's pinned
@@ -1261,7 +1272,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	defer r.joinAsk(ctx, server, key)()
 	res, err := p.Call(ctx, key, effTool, effArgs)
 	if err != nil {
-		return nil, r.explainCall(ctx, server, effTool, effArgs, err)
+		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
 	return res, nil
 }

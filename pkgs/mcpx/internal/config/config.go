@@ -595,7 +595,7 @@ func (r *Resolved) VisibleTool(name string) bool {
 		if !ok {
 			return false
 		}
-		if r.ExcludeTools.Match(tv.From) {
+		if r.ExcludeTools.Match(tv.From) || r.ExcludeTools.Match(name) {
 			return false
 		}
 		if ok, _ := r.PassesPreconditions(tv.From, nil); !ok {
