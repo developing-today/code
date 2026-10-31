@@ -103,7 +103,11 @@ console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
 function createDeployment(versionId) {
   const versions = JSON.stringify([{ version_id: versionId, percentage: 100 }]);
   console.log(`creating deployment at version ${versionId} (100%)`);
-  runCf(["workers", "deployments", "create", "--worker", WORKER, "--versions", versions], { stdio: "inherit" });
+  // cf requires --strategy explicitly in non-interactive runs.
+  runCf(
+    ["workers", "deployments", "create", "--worker", WORKER, "--strategy", "percentage", "--versions", versions],
+    { stdio: "inherit" },
+  );
 }
 
 // The versions/deployments research pre-check: the API can filter the
