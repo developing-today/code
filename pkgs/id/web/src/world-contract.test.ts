@@ -71,6 +71,18 @@ describe("shell contract validator", () => {
     expect(checkServerFrame(contract, { type: "records", sequence: 2 ** 53, records: {} }).ok).toBe(true);
   });
 
+  it("rejects u64 values provably above u64::MAX, like the Rust checker (#1441)", () => {
+    const seed = (value: number) =>
+      checkClientFrame(contract, { type: "install_begin", admin_token: "a", total_bytes: 1, seed: value }, "opening");
+    // 2^64 is the rounded wire form of u64::MAX itself: ambiguous, accepted.
+    expect(seed(2 ** 64).ok).toBe(true);
+    const over64 = seed(2 ** 65);
+    expect(over64.ok).toBe(false);
+    if (!over64.ok) expect(over64.error).toContain("18446744073709551615");
+    expect(seed(1e100).ok).toBe(false);
+    expect(checkServerFrame(contract, { type: "view", sequence: 2 ** 65, data: "x", surface: null }).ok).toBe(false);
+  });
+
   it("still enforces the u64 bounds JS can check exactly (#1441)", () => {
     const begin = (patch: Record<string, unknown>) =>
       checkClientFrame(
