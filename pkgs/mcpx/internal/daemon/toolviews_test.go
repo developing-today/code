@@ -272,6 +272,39 @@ func TestAdvertisedViewSchemaDropsPinnedRuleRequirements(t *testing.T) {
 // the hide deleted -- makes the advertised schema unsatisfiable
 // against additionalProperties:false, even though calls succeed
 // because pins merge before forwarding.
+// Codex P2 on PR #2976 (third round): a rule whose local $ref carries
+// sibling constraints is a conjunction, not a merge. The sibling
+// "required":["tailnet"] must not overwrite the referenced
+// "required":["limit"]: tailnet is pinned (projected away), limit is
+// not, and the advertised schema must still demand it -- the merged
+// projection accepted {} while enforcement of the original rule
+// rejects it.
+func TestAdvertisedViewSchemaConjoinsRefSiblingRequirements(t *testing.T) {
+	view := tailscaleView(t)
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test config", Schema: json.RawMessage(`{"$defs":{"need":{"required":["limit"]}},"$ref":"#/$defs/need","required":["tailnet"]}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	view.ArgumentRules = set
+	all := []mcpclient.Tool{
+		{Name: "list_devices", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"number"}}}`)},
+	}
+	for _, tool := range visibleTools(view, all) {
+		advertised := string(effectiveViewSchema(view, tool.Name, tool.InputSchema))
+		if tool.Name != "listHostnames" {
+			continue
+		}
+		if !strings.Contains(advertised, `"required":["limit"]`) {
+			t.Errorf("referenced requirement must survive as a conjunct: %s", advertised)
+		}
+		if strings.Contains(advertised, "tailnet") {
+			t.Errorf("pinned+hidden property must not be advertised: %s", advertised)
+		}
+	}
+}
+
 func TestHideSchemaPropsProjectsAllOfRequirements(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"required":["limit"],"allOf":[{"required":["tailnet","limit"]}]}`)
 	out := hideSchemaProps(schema, []string{"tailnet"})

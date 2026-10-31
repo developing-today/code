@@ -847,17 +847,45 @@ func stripPinnedRequirements(v any, pinned map[string]bool) any {
 	return stripPinnedScope(v, pinned, root, map[string]bool{})
 }
 
+// conjoinRefProjection combines the projections of a $ref target and
+// its sibling schema as conjuncts under allOf. $defs is inert without
+// a reference and other schemas may still point into it by
+// document-absolute pointer, so it stays at the level where the
+// reference sat rather than inside the conjunction. With no sibling
+// constraints left, the target alone is the projection.
+func conjoinRefProjection(target, siblings any) any {
+	sm, ok := siblings.(map[string]any)
+	if !ok {
+		return target
+	}
+	defs, hasDefs := sm["$defs"]
+	delete(sm, "$defs")
+	tm, tok := target.(map[string]any)
+	if len(sm) == 0 {
+		if hasDefs && tok {
+			if _, clash := tm["$defs"]; !clash {
+				tm["$defs"] = defs
+			}
+		}
+		return target
+	}
+	out := map[string]any{"allOf": []any{target, sm}}
+	if hasDefs {
+		out["$defs"] = defs
+	}
+	return out
+}
+
 // stripPinnedScope is stripPinnedRequirements with the rule document's
 // root available for resolving local references and a set of the
 // references currently being resolved, so a self-referential
 // definition cannot recurse forever. A local $ref applies its target
 // at the very instance scope where the reference sits -- a definition
 // referenced from the root is a root constraint, not a nested scope
-// -- so a resolvable reference is inlined (target keys merged under
-// the referencing schema's own keys) and projected like any other
-// same-instance schema; a requirement reached only through a
-// reference must not survive the projection unexamined (Codex P2 on
-// PR #2976).
+// -- so a resolvable reference is projected together with its
+// siblings as a same-instance conjunction; a requirement reached
+// only through a reference must not survive the projection
+// unexamined (Codex P2 on PR #2976).
 func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolving map[string]bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -866,19 +894,25 @@ func stripPinnedScope(v any, pinned map[string]bool, root map[string]any, resolv
 	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
 		if target, ok := resolveLocalPointer(root, ref); ok {
 			if tm, ok := target.(map[string]any); ok {
-				merged := make(map[string]any, len(tm)+len(m))
-				for k, val := range tm {
-					merged[k] = val
-				}
+				// A $ref and its siblings are a conjunction, not a
+				// merge: copying sibling keys over the target's drops
+				// constraints both sides carry (a sibling "required"
+				// replacing the referenced list, which the projection
+				// then strips as pinned, advertises a schema that
+				// accepts calls enforcement rejects). Project each
+				// side on its own and conjoin them (Codex P2 on
+				// PR #2976).
+				siblings := make(map[string]any, len(m)-1)
 				for k, val := range m {
 					if k != "$ref" {
-						merged[k] = val
+						siblings[k] = val
 					}
 				}
 				resolving[ref] = true
-				out := stripPinnedScope(merged, pinned, root, resolving)
+				projectedTarget := stripPinnedScope(tm, pinned, root, resolving)
+				projectedSiblings := stripPinnedScope(siblings, pinned, root, resolving)
 				delete(resolving, ref)
-				return out
+				return conjoinRefProjection(projectedTarget, projectedSiblings)
 			}
 			return target
 		}
