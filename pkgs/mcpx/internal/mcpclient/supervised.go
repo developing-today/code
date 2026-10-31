@@ -412,12 +412,41 @@ func (s *supervisor) pumpStdout() {
 					// it still points at this same writer, so a
 					// newer attach is never cleared by a stale
 					// pump error.
-					s.buf.Write(data)
+					//
+					// The recovery is coordinated with attach
+					// drain/publication (Codex P2 on PR #2861):
+					// the current writer is snapshotted under
+					// s.mu, and when there is no replacement the
+					// tail-buffer append also happens under
+					// s.mu — atomic with the next attach's
+					// drain, as in the unattached path above.
+					// When a newer writer has already replaced
+					// w, the chunk belongs to the live stream:
+					// it is routed to that writer (outside
+					// s.mu, serialised on the writer's mutex,
+					// behind its initial flush) instead of
+					// being stranded in the buffer behind the
+					// live chunks that follow.
 					s.mu.Lock()
-					if s.attached == w {
+					cur := s.attached
+					if cur == w {
 						s.attached = nil
 					}
+					if cur == nil || cur == w {
+						s.buf.Write(data)
+					}
 					s.mu.Unlock()
+					if cur != nil && cur != w {
+						if _, rerr := cur.Write(data); rerr != nil {
+							s.buf.Write(data)
+							s.mu.Lock()
+							if s.attached == cur {
+								s.attached = nil
+							}
+							s.mu.Unlock()
+							cur.Close()
+						}
+					}
 					w.Close()
 					s.signal()
 				}
