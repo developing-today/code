@@ -74,3 +74,53 @@ func TestReferencesFindsTheNamespacesAScriptReaches(t *testing.T) {
 		})
 	}
 }
+
+func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
+	cases := []struct {
+		name       string
+		src        string
+		configured func(string) bool
+		want       []string
+	}{
+		{"a regex literal in assignment is not code", "const r = /tools.fs.read/;", none, nil},
+		{"a regex holding a bare reach is not code", "const r = /demo.echo/;", only("demo"), nil},
+		{"a regex returned is not code", "function f() { return /demo.echo/; }", only("demo"), nil},
+		{"a regex passed as an argument is not code", "check(/demo.echo/);", only("demo"), nil},
+		{"a regex in a test condition is not code", "if (/demo.echo/.test(s)) { x(); }", only("demo"), nil},
+		{"a slash inside a character class does not end the regex", "const r = /[/]demo.echo/;", only("demo"), nil},
+		{"an escaped slash does not end the regex", "const r = /demo\\/x.echo/;", only("demo"), nil},
+		{"division after an identifier is not a regex", "const x = a / b; demo.echo();", only("demo"), []string{"demo"}},
+		{"division after a number is not a regex", "const x = 10 / 2; tools.fs.read();", none, []string{"fs"}},
+		{"a real reach after a regex still counts", "const r = /x/; demo.echo();", only("demo"), []string{"demo"}},
+
+		{"a function parameter is declared", "function f(demo) { demo.echo(); }", only("demo"), nil},
+		{"an arrow parameter in parens is declared", "const f = (demo, other) => demo.echo();", only("demo"), nil},
+		{"a lone arrow parameter is declared", "const f = demo => demo.echo();", only("demo"), nil},
+		{"a destructured parameter is declared", "function f({demo}) { demo.echo(); }", only("demo"), nil},
+		{"a plain destructured binding is declared", "const {demo} = obj; demo.echo();", only("demo"), nil},
+		{"a renamed destructured binding is declared", "const {x: demo} = obj; demo.echo();", only("demo"), nil},
+		{"an array destructured binding is declared", "const [demo] = arr; demo.echo();", only("demo"), nil},
+		{"a catch binding is declared", "try { x(); } catch (demo) { demo.echo(); }", only("demo"), nil},
+		{"a var destructured binding is declared", "var {demo} = obj; demo.echo();", only("demo"), nil},
+
+		{"a declaration in a line comment declares nothing", "// const demo = {};\ndemo.echo();", only("demo"), []string{"demo"}},
+		{"a declaration in a block comment declares nothing", "/* let demo */ demo.echo();", only("demo"), []string{"demo"}},
+		{"a declaration in a string declares nothing", "const s = \"let demo\"; demo.echo();", only("demo"), []string{"demo"}},
+		{"a declaration in template text declares nothing", "const s = `const demo`; demo.echo();", only("demo"), []string{"demo"}},
+		{"a parameter shape in a comment declares nothing", "// function f(demo) {}\ndemo.echo();", only("demo"), []string{"demo"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := References(c.src, c.configured)
+			if got == nil {
+				t.Fatal("References must never return nil: it serialises as null")
+			}
+			if len(got) == 0 && len(c.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("References(%q) = %v; want %v", c.src, got, c.want)
+			}
+		})
+	}
+}

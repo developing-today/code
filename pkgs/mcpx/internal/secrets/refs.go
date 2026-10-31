@@ -1,9 +1,7 @@
 package secrets
 
 import (
-	"regexp"
 	"sort"
-	"strings"
 )
 
 // References returns the namespaces a script names, sorted and without
@@ -12,227 +10,544 @@ import (
 // <ns>.<tool> for a namespace configured here, which mcpx binds as a global in
 // every script it runs.
 //
-// The scan is static and nothing is evaluated. Strings and comments are
-// skipped, and the inside of a template literal's ${...} is read, because a
-// call there is still a call. A name the script declares itself is not a
-// namespace, so a local called like one is not counted. A reference assembled
-// at run time, or a bare use of the tools object, is invisible here; the check
-// made when the call happens is what catches those.
+// The scan is static and nothing is evaluated. One lexical pass tokenises
+// the source: strings, comments, template text and regex literals are
+// skipped (the inside of a template literal's ${...} is read, because a
+// call there is still a call), and the declared names are collected from
+// that same token stream — declarations, function and arrow parameters,
+// destructured bindings and catch bindings — so text inside a comment,
+// string, template or regex can never declare a name either. A name the
+// script declares itself is not a namespace, so a local called like one
+// is not counted. A reference assembled at run time, or a bare use of
+// the tools object, is invisible here; the check made when the call
+// happens is what catches those.
+//
+// Known blind spots, kept deliberately: binding is source-global (a name
+// bound anywhere counts as declared everywhere, with no block-scoped
+// shadowing precision); a "/" directly after a value-closing "}" is read
+// as division, so a regex literal starting a statement right after a
+// block may be scanned as code; parameters of method shorthand and
+// destructuring assignments without a declaration keyword are not
+// collected as bindings.
 func References(src string, configured func(string) bool) []string {
-	s := &refScan{
-		src:        src,
-		configured: configured,
-		declared:   declaredNames(src),
-		found:      map[string]bool{},
+	toks := lex(src)
+	declared := declaredNames(toks)
+	found := map[string]bool{}
+	for i, t := range toks {
+		if t.kind != tIdent {
+			continue
+		}
+		if i > 0 && toks[i-1].kind == tPunct && (toks[i-1].text == "." || toks[i-1].text == "?.") {
+			// A member of something else is not a namespace spelling.
+			continue
+		}
+		if t.text == "tools" {
+			if i+2 < len(toks) && toks[i+1].text == "." && toks[i+2].kind == tIdent {
+				found[toks[i+2].text] = true
+			} else if i+3 < len(toks) && toks[i+1].text == "[" && toks[i+2].kind == tString && toks[i+2].plain && toks[i+3].text == "]" {
+				found[toks[i+2].text] = true
+			}
+			continue
+		}
+		if configured(t.text) && !declared[t.text] && i+1 < len(toks) && toks[i+1].text == "." {
+			found[t.text] = true
+		}
 	}
-	s.code(0, false)
-	out := make([]string, 0, len(s.found))
-	for ns := range s.found {
+	out := make([]string, 0, len(found))
+	for ns := range found {
 		out = append(out, ns)
 	}
 	sort.Strings(out)
 	return out
 }
 
-type refScan struct {
-	src        string
-	configured func(string) bool
-	declared   map[string]bool
-	found      map[string]bool
+type tokKind int
+
+const (
+	tIdent tokKind = iota
+	tString
+	tNumber
+	tTemplate
+	tRegex
+	tPunct
+)
+
+type lexToken struct {
+	kind tokKind
+	text string
+	// plain, for tString, reports the literal had no escape, so its text
+	// is exactly the name it spells.
+	plain bool
 }
 
-// code scans program text from i. With untilBrace it stops at the } that
-// closes a ${...} and returns the index after it; otherwise it scans to the
-// end of the source.
-func (s *refScan) code(i int, untilBrace bool) int {
-	depth := 0
-	for i < len(s.src) {
-		c := s.src[i]
-		switch {
-		case c == '/' && i+1 < len(s.src) && s.src[i+1] == '/':
-			i = s.lineEnd(i)
-		case c == '/' && i+1 < len(s.src) && s.src[i+1] == '*':
-			i = s.blockEnd(i)
-		case c == '\'' || c == '"':
-			i = s.quoteEnd(i)
-		case c == '`':
-			i = s.template(i)
-		case c == '{':
-			depth++
-			i++
-		case c == '}':
-			if untilBrace && depth == 0 {
-				return i + 1
-			}
-			depth--
-			i++
-		case isIdentStart(c):
-			name, next := s.ident(i)
-			if !s.afterDot(i) {
-				s.reference(name, next)
-			}
-			i = next
-		default:
-			i++
-		}
-	}
-	return i
+// exprKeywords are the identifiers after which a value can start, so a
+// "/" following one opens a regex literal rather than dividing.
+var exprKeywords = map[string]bool{
+	"return": true, "typeof": true, "case": true, "in": true, "of": true,
+	"instanceof": true, "new": true, "delete": true, "void": true,
+	"throw": true, "else": true, "do": true, "await": true, "yield": true,
+	"var": true, "let": true, "const": true, "function": true,
+	"class": true, "import": true, "extends": true, "default": true,
 }
 
-// reference looks at what follows an identifier that is not a member of
-// something else.
-func (s *refScan) reference(name string, next int) {
-	k := s.skipSpace(next)
-	if name == "tools" {
-		if k < len(s.src) && s.src[k] == '.' {
-			if ns, _ := s.ident(s.skipSpace(k + 1)); ns != "" {
-				s.found[ns] = true
-			}
-			return
-		}
-		if k < len(s.src) && s.src[k] == '[' {
-			j := s.skipSpace(k + 1)
-			if j < len(s.src) && (s.src[j] == '"' || s.src[j] == '\'') {
-				if ns, ok := s.literal(j); ok {
-					s.found[ns] = true
-				}
-			}
-		}
-		return
-	}
-	if s.configured(name) && !s.declared[name] && k < len(s.src) && s.src[k] == '.' {
-		s.found[name] = true
-	}
+type lexer struct {
+	src  string
+	pos  int
+	toks []lexToken
 }
 
-// afterDot reports whether the identifier at i is the tail of a longer chain,
-// such as the fs in a.tools.fs or x?.fs.
-func (s *refScan) afterDot(i int) bool {
-	for j := i - 1; j >= 0; j-- {
-		switch s.src[j] {
-		case ' ', '\t', '\n', '\r':
-			continue
-		case '.':
-			return true
-		default:
-			return false
-		}
+func lex(src string) []lexToken {
+	l := &lexer{src: src}
+	l.code(false)
+	return l.toks
+}
+
+func (l *lexer) emit(kind tokKind, text string, plain bool) {
+	l.toks = append(l.toks, lexToken{kind: kind, text: text, plain: plain})
+}
+
+// valueEnd reports whether the last emitted token can end a value, which
+// is what makes a following "/" a division operator instead of a regex.
+func (l *lexer) valueEnd() bool {
+	if len(l.toks) == 0 {
+		return false
+	}
+	t := l.toks[len(l.toks)-1]
+	switch t.kind {
+	case tString, tNumber, tTemplate, tRegex:
+		return true
+	case tIdent:
+		return !exprKeywords[t.text]
+	case tPunct:
+		return t.text == ")" || t.text == "]" || t.text == "}"
 	}
 	return false
 }
 
-func (s *refScan) ident(i int) (string, int) {
-	if i >= len(s.src) || !isIdentStart(s.src[i]) {
-		return "", i
+// code scans program text. With untilBrace it stops just after the }
+// that closes a ${...}; otherwise it scans to the end of the source.
+func (l *lexer) code(untilBrace bool) {
+	depth := 0
+	for l.pos < len(l.src) {
+		c := l.src[l.pos]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			l.pos++
+		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '/':
+			l.pos = l.lineEnd(l.pos)
+		case c == '/' && l.pos+1 < len(l.src) && l.src[l.pos+1] == '*':
+			l.pos = l.blockEnd(l.pos)
+		case c == '/':
+			if l.valueEnd() {
+				l.emit(tPunct, "/", false)
+				l.pos++
+			} else {
+				l.regex()
+			}
+		case c == '\'' || c == '"':
+			l.quoted()
+		case c == '`':
+			l.template()
+		case c == '{':
+			depth++
+			l.emit(tPunct, "{", false)
+			l.pos++
+		case c == '}':
+			l.emit(tPunct, "}", false)
+			l.pos++
+			if untilBrace && depth == 0 {
+				return
+			}
+			depth--
+		case c >= '0' && c <= '9':
+			j := l.pos
+			for j < len(l.src) && (isIdentByte(l.src[j]) || (l.src[j] == '.' && j+1 < len(l.src) && l.src[j+1] >= '0' && l.src[j+1] <= '9')) {
+				j++
+			}
+			l.emit(tNumber, l.src[l.pos:j], false)
+			l.pos = j
+		case isIdentStart(c):
+			j := l.pos
+			for j < len(l.src) && isIdentByte(l.src[j]) {
+				j++
+			}
+			l.emit(tIdent, l.src[l.pos:j], false)
+			l.pos = j
+		default:
+			l.punct()
+		}
 	}
-	j := i
-	for j < len(s.src) && isIdentByte(s.src[j]) {
-		j++
-	}
-	return s.src[i:j], j
 }
 
-func (s *refScan) skipSpace(i int) int {
-	for i < len(s.src) && (s.src[i] == ' ' || s.src[i] == '\t' || s.src[i] == '\n' || s.src[i] == '\r') {
+// regex consumes a regex literal opening at l.pos, honouring escapes and
+// character classes, plus any flags after the closing slash.
+func (l *lexer) regex() {
+	j := l.pos + 1
+	inClass := false
+	for j < len(l.src) {
+		switch l.src[j] {
+		case '\\':
+			j += 2
+			continue
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				j++
+				for j < len(l.src) && isIdentByte(l.src[j]) {
+					j++
+				}
+				l.emit(tRegex, l.src[l.pos:j], false)
+				l.pos = j
+				return
+			}
+		case '\n':
+			l.emit(tRegex, l.src[l.pos:j], false)
+			l.pos = j
+			return
+		}
+		j++
+	}
+	l.emit(tRegex, l.src[l.pos:], false)
+	l.pos = len(l.src)
+}
+
+// quoted consumes a '...' or "..." literal, emitting its raw inner text.
+func (l *lexer) quoted() {
+	q := l.src[l.pos]
+	plain := true
+	for j := l.pos + 1; j < len(l.src); j++ {
+		switch l.src[j] {
+		case '\\':
+			plain = false
+			j++
+		case q:
+			l.emit(tString, l.src[l.pos+1:j], plain)
+			l.pos = j + 1
+			return
+		case '\n':
+			// An unterminated quote ends at its line, as the language does.
+			l.emit(tString, l.src[l.pos+1:j], plain)
+			l.pos = j
+			return
+		}
+	}
+	l.emit(tString, l.src[l.pos+1:], plain)
+	l.pos = len(l.src)
+}
+
+// template consumes a template literal, lexing the program inside each
+// ${...} as code between synthetic { } tokens.
+func (l *lexer) template() {
+	l.pos++
+	for l.pos < len(l.src) {
+		switch l.src[l.pos] {
+		case '\\':
+			l.pos += 2
+		case '`':
+			l.pos++
+			l.emit(tTemplate, "", false)
+			return
+		case '$':
+			if l.pos+1 < len(l.src) && l.src[l.pos+1] == '{' {
+				l.emit(tPunct, "{", false)
+				l.pos += 2
+				l.code(true)
+				continue
+			}
+			l.pos++
+		default:
+			l.pos++
+		}
+	}
+	l.emit(tTemplate, "", false)
+}
+
+var puncts = []string{
+	"...", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=", ">>>",
+	"=>", "==", "!=", "<=", ">=", "&&", "||", "??", "?.", "++", "--",
+	"+=", "-=", "*=", "/=", "%=", "**", "<<", ">>", "&=", "|=", "^=",
+}
+
+func (l *lexer) punct() {
+	rest := l.src[l.pos:]
+	for _, p := range puncts {
+		if len(rest) >= len(p) && rest[:len(p)] == p {
+			l.emit(tPunct, p, false)
+			l.pos += len(p)
+			return
+		}
+	}
+	l.emit(tPunct, rest[:1], false)
+	l.pos++
+}
+
+func (l *lexer) lineEnd(i int) int {
+	for j := i; j < len(l.src); j++ {
+		if l.src[j] == '\n' {
+			return j
+		}
+	}
+	return len(l.src)
+}
+
+func (l *lexer) blockEnd(i int) int {
+	for j := i + 2; j+1 < len(l.src); j++ {
+		if l.src[j] == '*' && l.src[j+1] == '/' {
+			return j + 2
+		}
+	}
+	return len(l.src)
+}
+
+// declaredNames collects the names the source binds for itself from the
+// token stream: declaration keywords, function and arrow parameters,
+// destructured bindings (plain and renamed) and catch bindings. A bare
+// use of one of them is a local, whatever namespace it shares a name with.
+func declaredNames(toks []lexToken) map[string]bool {
+	out := map[string]bool{}
+	for i, t := range toks {
+		if t.kind == tPunct && t.text == "(" {
+			// An arrow function's parameter list: (...) => ...
+			if close := matchParen(toks, i); close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
+				parseParams(toks, i, out)
+			}
+			continue
+		}
+		if t.kind != tIdent {
+			continue
+		}
+		if i > 0 && toks[i-1].kind == tPunct && (toks[i-1].text == "." || toks[i-1].text == "?.") {
+			continue
+		}
+		// A lone identifier before => is an arrow parameter.
+		if i+1 < len(toks) && toks[i+1].text == "=>" {
+			out[t.text] = true
+		}
+		switch t.text {
+		case "const", "let", "var":
+			parseDeclarators(toks, i+1, out)
+		case "function":
+			j := i + 1
+			if j < len(toks) && toks[j].text == "*" {
+				j++
+			}
+			if j < len(toks) && toks[j].kind == tIdent {
+				out[toks[j].text] = true
+				j++
+			}
+			if j < len(toks) && toks[j].text == "(" {
+				parseParams(toks, j, out)
+			}
+		case "class":
+			if i+1 < len(toks) && toks[i+1].kind == tIdent {
+				out[toks[i+1].text] = true
+			}
+		case "import":
+			parseImport(toks, i+1, out)
+		case "catch":
+			if i+2 < len(toks) && toks[i+1].text == "(" {
+				parseTarget(toks, i+2, out)
+			}
+		}
+	}
+	return out
+}
+
+func matchParen(toks []lexToken, open int) int {
+	depth := 0
+	for j := open; j < len(toks); j++ {
+		switch toks[j].text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			depth--
+			if depth == 0 {
+				if toks[j].text == ")" {
+					return j
+				}
+				return -1
+			}
+		}
+	}
+	return -1
+}
+
+// skipExpr advances past an expression, stopping before a token in stops
+// (or a closing bracket) at the expression's own nesting depth.
+func skipExpr(toks []lexToken, i int, stops map[string]bool) int {
+	depth := 0
+	for i < len(toks) {
+		t := toks[i].text
+		if depth == 0 && stops[t] {
+			return i
+		}
+		switch t {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
 		i++
 	}
 	return i
 }
 
-// literal reads a plain string literal opening at i. An escape makes it not a
-// name this scan can be sure of, so it is refused rather than guessed at.
-func (s *refScan) literal(i int) (string, bool) {
-	q := s.src[i]
-	for j := i + 1; j < len(s.src); j++ {
-		switch s.src[j] {
-		case '\\', '\n':
-			return "", false
-		case q:
-			return s.src[i+1 : j], s.src[i+1:j] != ""
+// parseTarget reads one binding target at i — an identifier or a
+// destructuring pattern — recording every name it binds, and returns the
+// index just past it.
+func parseTarget(toks []lexToken, i int, out map[string]bool) int {
+	if i >= len(toks) {
+		return i
+	}
+	switch {
+	case toks[i].kind == tIdent:
+		out[toks[i].text] = true
+		return i + 1
+	case toks[i].text == "{":
+		i++
+		for i < len(toks) && toks[i].text != "}" {
+			switch {
+			case toks[i].text == ",":
+				i++
+			case toks[i].text == "...":
+				i++
+				if i < len(toks) && toks[i].kind == tIdent {
+					out[toks[i].text] = true
+					i++
+				}
+			case toks[i].text == "[":
+				// A computed key: skip it, then the target after ':'.
+				i = skipExpr(toks, i, map[string]bool{":": true})
+				if i < len(toks) && toks[i].text == ":" {
+					i = parseTarget(toks, i+1, out)
+				}
+			case toks[i].kind == tIdent || toks[i].kind == tString || toks[i].kind == tNumber:
+				key := toks[i]
+				i++
+				if i < len(toks) && toks[i].text == ":" {
+					i = parseTarget(toks, i+1, out)
+				} else if key.kind == tIdent {
+					// Shorthand: the key is the binding.
+					out[key.text] = true
+				}
+			default:
+				i++
+			}
+			if i < len(toks) && toks[i].text == "=" {
+				i = skipExpr(toks, i+1, map[string]bool{",": true, "}": true})
+			}
 		}
-	}
-	return "", false
-}
-
-func (s *refScan) lineEnd(i int) int {
-	if j := strings.IndexByte(s.src[i:], '\n'); j >= 0 {
-		return i + j
-	}
-	return len(s.src)
-}
-
-func (s *refScan) blockEnd(i int) int {
-	if j := strings.Index(s.src[i+2:], "*/"); j >= 0 {
-		return i + 2 + j + 2
-	}
-	return len(s.src)
-}
-
-func (s *refScan) quoteEnd(i int) int {
-	q := s.src[i]
-	for j := i + 1; j < len(s.src); j++ {
-		switch s.src[j] {
-		case '\\':
-			j++
-		case q:
-			return j + 1
-		case '\n':
-			// An unterminated quote ends at its line, as the language does.
-			return j
+		if i < len(toks) {
+			i++
 		}
-	}
-	return len(s.src)
-}
-
-// template skips a template literal, reading the program inside each ${...}.
-func (s *refScan) template(i int) int {
-	for j := i + 1; j < len(s.src); {
-		switch s.src[j] {
-		case '\\':
-			j += 2
-		case '`':
-			return j + 1
-		case '$':
-			if j+1 < len(s.src) && s.src[j+1] == '{' {
-				j = s.code(j+2, true)
+		return i
+	case toks[i].text == "[":
+		i++
+		for i < len(toks) && toks[i].text != "]" {
+			if toks[i].text == "," {
+				i++
 				continue
 			}
-			j++
-		default:
-			j++
+			if toks[i].text == "..." {
+				i++
+			}
+			i = parseTarget(toks, i, out)
+			if i < len(toks) && toks[i].text == "=" {
+				i = skipExpr(toks, i+1, map[string]bool{",": true, "]": true})
+			}
 		}
+		if i < len(toks) {
+			i++
+		}
+		return i
 	}
-	return len(s.src)
+	return i + 1
 }
 
-var (
-	declRe        = regexp.MustCompile(`\b(?:const|let|var|function|class|import)\s+([A-Za-z_$][\w$]*)`)
-	importNamedRe = regexp.MustCompile(`import\s*\{([^}]*)\}`)
-	importStarRe  = regexp.MustCompile(`import\s*\*\s*as\s+([A-Za-z_$][\w$]*)`)
-)
-
-// declaredNames are the names the source binds for itself. A bare use of one
-// of them is a local, whatever namespace it happens to share a name with.
-func declaredNames(src string) map[string]bool {
-	out := map[string]bool{}
-	for _, m := range declRe.FindAllStringSubmatch(src, -1) {
-		out[m[1]] = true
-	}
-	for _, m := range importStarRe.FindAllStringSubmatch(src, -1) {
-		out[m[1]] = true
-	}
-	for _, m := range importNamedRe.FindAllStringSubmatch(src, -1) {
-		for _, part := range strings.Split(m[1], ",") {
-			part = strings.TrimSpace(part)
-			if i := strings.LastIndex(part, " as "); i >= 0 {
-				part = part[i+len(" as "):]
-			}
-			if part != "" {
-				out[strings.TrimSpace(part)] = true
-			}
+// parseParams records the bindings of the parameter list opening at i.
+func parseParams(toks []lexToken, i int, out map[string]bool) {
+	i++
+	for i < len(toks) && toks[i].text != ")" {
+		if toks[i].text == "," {
+			i++
+			continue
+		}
+		if toks[i].text == "..." {
+			i++
+		}
+		i = parseTarget(toks, i, out)
+		if i < len(toks) && toks[i].text == "=" {
+			i = skipExpr(toks, i+1, map[string]bool{",": true, ")": true})
 		}
 	}
-	return out
+}
+
+// parseDeclarators records the bindings of a const/let/var statement
+// whose first declarator starts at i.
+func parseDeclarators(toks []lexToken, i int, out map[string]bool) {
+	for i < len(toks) {
+		i = parseTarget(toks, i, out)
+		i = skipExpr(toks, i, map[string]bool{",": true, ";": true})
+		if i < len(toks) && toks[i].text == "," {
+			i++
+			continue
+		}
+		return
+	}
+}
+
+// parseImport records the local names an import statement binds.
+func parseImport(toks []lexToken, i int, out map[string]bool) {
+	if i >= len(toks) || toks[i].text == "(" || toks[i].kind == tString {
+		return
+	}
+	if toks[i].kind == tIdent {
+		out[toks[i].text] = true
+		i++
+		if i < len(toks) && toks[i].text == "," {
+			i++
+		}
+	}
+	if i < len(toks) && toks[i].text == "*" {
+		i++
+		if i < len(toks) && toks[i].text == "as" {
+			i++
+		}
+		if i < len(toks) && toks[i].kind == tIdent {
+			out[toks[i].text] = true
+		}
+		return
+	}
+	if i < len(toks) && toks[i].text == "{" {
+		i++
+		for i < len(toks) && toks[i].text != "}" {
+			if toks[i].text == "," {
+				i++
+				continue
+			}
+			if toks[i].kind == tIdent || toks[i].kind == tString {
+				key := toks[i]
+				i++
+				if i < len(toks) && toks[i].text == "as" {
+					i++
+					if i < len(toks) && toks[i].kind == tIdent {
+						out[toks[i].text] = true
+						i++
+					}
+				} else if key.kind == tIdent {
+					out[key.text] = true
+				}
+				continue
+			}
+			i++
+		}
+	}
 }
 
 func isIdentStart(b byte) bool {
