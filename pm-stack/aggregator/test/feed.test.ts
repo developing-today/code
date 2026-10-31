@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isProjectPoolSection, poolFromFeed, projectPoolSectionProblem } from "../src/feed.ts";
+import { isFleetFeed, isProjectPoolSection, poolFromFeed, projectPoolSectionProblem } from "../src/feed.ts";
 import { isProjectPoolItem, parseProjectItems } from "../src/projects.ts";
 
 // Minimal valid pool item: edges entirely absent (the missing-edge
@@ -118,5 +118,24 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(pool.length).toBe(2);
     expect(isProjectPoolSection(pool)).toBe(true);
     expect(poolFromFeed({ projects: pool }).length).toBe(2);
+  });
+});
+
+describe("isFleetFeed generatedAt stamps (#2578 Phase 2, #2242)", () => {
+  const feed = (generatedAt: string) => ({
+    version: 1,
+    generatedAt,
+    quota: { pools: [] },
+    attention: [],
+  });
+
+  test("a past real stamp validates; an impossible date does not", () => {
+    expect(isFleetFeed(feed("2026-10-01T00:00:00Z"))).toBe(true);
+    expect(isFleetFeed(feed("2026-02-30T00:00:00Z"))).toBe(false);
+  });
+
+  test("a stamp far in the future is invalid, not maximally fresh", () => {
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    expect(isFleetFeed(feed(future))).toBe(false);
   });
 });
