@@ -138,6 +138,7 @@ var EffectExemptions = map[string]string{
 	"proto.askTTL":                       "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
 	"proto.stateTTL":                     "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
 	"proto.sessionIdle":                  "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
+	"transport.bearerToken":              "auth gate (#1975): the with/without difference is proven at the daemon HTTP layer (internal/daemon bearer tests: unset passes, wrong token 401, correct token passes), but no e2e probe yet starts a token'd daemon and drives a caller against it; replace this exemption with that probe",
 	"transport.allowedOrigins":           "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
 	"transport.sessionMetaKeys":          "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
 	"transport.sseKeepAlive":             "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
@@ -152,6 +153,7 @@ var EffectExemptions = map[string]string{
 	"elicit.disambiguate":                "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.disambiguateDefault":         "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.confirmDestructive":          "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
+	"policy.write":                       "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; daemon unit tests cover the gate, not an e2e with/without probe",
 	"elicit.askTimeout":                  "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.ttl":                         "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.maxAge":                      "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
@@ -252,7 +254,12 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 181
+// Pin history: 181 on the #1913 branch (deps probes landed), 182 on
+// main (raised by one for policy.write, #1979). The merged exemption
+// map is the union of both sides and counts 183, so the pin takes
+// the merged count — neither side grew past its own pin; this is a
+// merge reconciliation, recorded here per the ratchet rule.
+const EffectExemptionPin = 183
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

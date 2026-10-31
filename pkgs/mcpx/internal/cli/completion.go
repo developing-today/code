@@ -74,6 +74,9 @@ func bashCompletion(cmds []Command, sch *settings.Schema, names []string, versio
 				flags = append(flags, "--"+a)
 			}
 		}
+		for _, n := range handFlagNames(c.Name) {
+			flags = append(flags, "--"+n)
+		}
 		sort.Strings(flags)
 		fmt.Fprintf(&b, "    %s) COMPREPLY=( $(compgen -W %q -- \"$cur\") ) ;;\n",
 			c.Name, strings.Join(flags, " "))
@@ -100,7 +103,9 @@ func zshCompletion(cmds []Command, sch *settings.Schema, version string) string 
 	b.WriteString("  case \"${words[2]}\" in\n")
 	for _, c := range cmds {
 		fmt.Fprintf(&b, "    %s)\n      _arguments \\\n", c.Name)
+		emitted := map[string]bool{}
 		for _, s := range flagsFor(sch, c.Name) {
+			emitted[s.FlagName()] = true
 			// The description is carried into the completion, so the shell
 			// explains a flag at the point of typing it rather than sending
 			// the reader to --help.
@@ -115,6 +120,15 @@ func zshCompletion(cmds []Command, sch *settings.Schema, version string) string 
 			}
 			fmt.Fprintf(&b, "        '--%s=[%s]:value:_files' \\\n",
 				s.FlagName(), zshEscape(s.Short))
+		}
+		for _, g := range handFlagGroups(c.Name) {
+			for _, f := range g.Flags {
+				if emitted[f.Name] {
+					continue
+				}
+				emitted[f.Name] = true
+				fmt.Fprintf(&b, "        '--%s[%s]' \\\n", f.Name, zshEscape(f.Usage))
+			}
 		}
 		b.WriteString("        '*:file:_files'\n      ;;\n")
 	}
@@ -141,6 +155,12 @@ func fishCompletion(cmds []Command, sch *settings.Schema, version string) string
 				line += " -r"
 			}
 			b.WriteString(line + "\n")
+		}
+		for _, g := range handFlagGroups(c.Name) {
+			for _, f := range g.Flags {
+				fmt.Fprintf(&b, "complete -c mcpx -n '__fish_seen_subcommand_from %s' -l %s -d %s\n",
+					c.Name, f.Name, fishQuote(f.Usage))
+			}
 		}
 	}
 	return b.String()

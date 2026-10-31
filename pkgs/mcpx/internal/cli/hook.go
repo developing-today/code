@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -77,18 +76,5 @@ func (a *App) CmdHook(ctx context.Context, args []string) error {
 // machine -- the check that turns "the hook never fired" from a mystery
 // into a line of output.
 func hookReady(h hooks.Hook) string {
-	switch h.Executor {
-	case hooks.ExecRun:
-		if len(h.Run) == 0 {
-			return "no: empty run"
-		}
-		if _, err := exec.LookPath(h.Run[0]); err != nil {
-			return "no: " + h.Run[0] + " not on PATH"
-		}
-	case hooks.ExecModuleJS, hooks.ExecModulePython:
-		if _, err := os.Stat(h.Module); err != nil {
-			return "no: module file missing"
-		}
-	}
-	return "yes"
+	return hooks.Ready(h)
 }

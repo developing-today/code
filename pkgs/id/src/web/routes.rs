@@ -162,10 +162,16 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     }
 
     // Check for archive: "{name}.archive.{unix_timestamp}"
+    // Only an archive when the suffix actually parses as a unix
+    // timestamp (#2793) — the same rule #809 applied to the "auto-"
+    // prefix above. An ordinary file that merely contains ".archive."
+    // (notes.archive.txt) is Primary. No producer mints a non-numeric
+    // suffix: free_archive_name always formats a u64.
     if let Some(pos) = name.rfind(".archive.") {
         let ts_str = &name[pos + ".archive.".len()..];
-        let ts = ts_str.parse::<u64>().ok();
-        return (FileKind::Archive, ts);
+        if let Ok(ts) = ts_str.parse::<u64>() {
+            return (FileKind::Archive, Some(ts));
+        }
     }
 
     (FileKind::Primary, None)
@@ -3140,10 +3146,21 @@ mod tests {
 
     #[test]
     fn test_classify_tag_archive_no_timestamp() {
-        // Even without a valid timestamp, .archive. pattern is recognized
-        let (kind, ts) = classify_tag("notes.md.archive.notanumber");
-        assert_eq!(kind, FileKind::Archive);
-        assert!(ts.is_none());
+        // Regression (#2793): an ordinary file that merely contains
+        // ".archive." is not an archive — only ".archive.{unix_timestamp}"
+        // is, mirroring test_classify_tag_auto_prefix_non_date_is_primary.
+        for name in [
+            "notes.md.archive.notanumber",
+            "notes.archive.txt",
+            "meeting.archive.notes",
+            "backup.archive.draft",
+            "x.archive.",
+            "photo.archive.2024-01-01",
+        ] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
     }
 
     #[test]

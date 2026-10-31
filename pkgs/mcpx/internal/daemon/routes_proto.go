@@ -299,7 +299,7 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	// the table before the upstream request goes out, so it is registered
 	// between the two. The guard's own questions are mcpx's, not the
 	// server's, and are never attributed through the table.
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc)
+	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
@@ -900,6 +900,14 @@ func (r *Registry) upstreamHooks(h *pool.Hooks) {
 		h.Protocol = mcpclient.Preference(r.set.String("upstream.protocol"))
 		h.ProbeTimeout = r.set.Duration("upstream.probeTimeout")
 		cache = r.set.Bool("upstream.eraCache")
+		h.RequestLimits = mcpclient.RequestLimits{
+			SamplingPerServer:    r.set.Int("proto.samplingPerMinute"),
+			SamplingPerSession:   r.set.Int("proto.samplingSessionPerMinute"),
+			ElicitationPerServer: r.set.Int("proto.elicitationPerMinute"),
+		}
+		// Read from settings, so the values are the operator's --
+		// an all-zero set is a deliberate "disabled", not an omission.
+		h.RequestLimitsSet = true
 	}
 	if cache && r.paths.State != "" {
 		h.Eras = pool.OpenEraFile(filepath.Join(r.paths.State, defaults.UpstreamEraFile))

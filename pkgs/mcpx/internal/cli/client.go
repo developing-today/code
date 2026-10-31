@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,13 @@ type Client struct {
 	resolveSocket bool
 	// set is this process's resolved configuration.
 	set *settings.Set
+	// authToken, when authResolved is true, is the bearer token of THIS
+	// client's target daemon, resolved from the target's own
+	// configuration (targetBearerToken). Record-targeted clients
+	// (stop --all, daemons) talk to daemons other projects configured;
+	// their token is that daemon's, not the invoking project's.
+	authToken    string
+	authResolved bool
 	// callSettings is the JSON header carrying whatever call-scoped settings
 	// this invocation actually chose. Computed once: it cannot change within
 	// a run, and recomputing it per request would put a schema walk on the
@@ -119,6 +127,95 @@ func callHeader(set *settings.Set) string {
 	return string(b)
 }
 
+// authorize attaches the configured daemon bearer token to a request
+// (#1975): the same transport.bearerToken setting the daemon checks,
+// resolved from this client's own settings (environment or config), so
+// a caller and its daemon agree by construction. Unset, no header --
+// the request is byte-for-byte what it was before the setting existed.
+func (c *Client) authorize(req *http.Request) {
+	tok := daemon.BearerToken(c.set)
+	if c.authResolved {
+		tok = c.authToken
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
+// targetBearerToken resolves the bearer token of the daemon a client
+// targets through configPath (#1975, Codex on PR #2711). Clients built
+// for a recorded daemon -- stop --all, daemons -- construct through
+// NewClientAt with that daemon's config path, but a token resolved
+// from the invoking project's settings is the wrong credential for
+// another project's daemon: the probe 401s, stop silently skips a
+// live daemon, and daemons reports it stopped.
+//
+// Resolution mirrors the daemon's own: the target's configuration
+// CHAIN, then the environment. The chain matters: a daemon started
+// with ordinary discovery inherits the setting from a parent or user
+// config when its nearest file does not carry it, so resolving only
+// the recorded file would miss the inherited token and 401 the
+// daemon's own ordinary clients (Codex on PR #2711, round on
+// d02a018d). An invocation-scoped token in the client's own settings
+// (environment, preset, flag or runtime layer -- anything but a
+// file) still wins: it is the token this process was told to use. A
+// token only the invoking project's file carries is NOT sent: the
+// target daemon never saw it.
+//
+// Best effort by design: an unreadable target file resolves to no
+// token rather than failing a fleet-wide listing or stop.
+func targetBearerToken(configPath string, own *settings.Set) (string, bool) {
+	if v, ok := own.Value(daemon.BearerTokenSetting); ok &&
+		v.Origin.Layer != settings.LayerFile && v.Origin.Layer != settings.LayerDefault {
+		return v.Raw, true
+	}
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		return "", false
+	}
+	set := settings.NewSet(sch)
+	files := targetConfigFiles(configPath)
+	for i, path := range files {
+		doc, rerr := readJSONFile(path)
+		if rerr != nil {
+			continue
+		}
+		if aerr := sch.ApplyFile(set, doc, path, i); aerr != nil {
+			return "", false
+		}
+	}
+	if eerr := sch.ApplyEnv(set, settings.Environ()); eerr != nil {
+		return "", false
+	}
+	return daemon.BearerToken(set), true
+}
+
+// targetConfigFiles is the farthest-first file list a target daemon's
+// settings resolve from: the discovery chain of the recorded file's
+// directory (the walk the daemon itself was found by), with the
+// recorded file appended as the nearest layer when discovery cannot
+// see it (an MCPX_CONFIG bypass names a file outside the walk).
+func targetConfigFiles(configPath string) []string {
+	var files []string
+	if chain, _, err := config.ResolveChainFrom(filepath.Dir(configPath)); err == nil {
+		for i := len(chain) - 1; i >= 0; i-- {
+			if _, serr := os.Stat(chain[i]); serr == nil {
+				files = append(files, chain[i])
+			}
+		}
+	}
+	found := false
+	for _, f := range files {
+		if f == configPath {
+			found = true
+		}
+	}
+	if !found {
+		files = append(files, configPath)
+	}
+	return files
+}
+
 // NewClient builds a socket-backed API client.
 func NewClient(paths daemon.Paths, configPath string) *Client {
 	return NewClientAt(paths, configPath, "")
@@ -139,6 +236,9 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	c := &Client{paths: paths, cfg: configPath, set: set,
 		callSettings: callHeader(set),
 		endpoint:     strings.TrimRight(endpoint, "/")}
+	if configPath != "" {
+		c.authToken, c.authResolved = targetBearerToken(configPath, set)
+	}
 	timeout := set.Duration("http.requestTimeout")
 	idle := set.Duration("http.idleConnTimeout")
 
@@ -372,6 +472,7 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 	if v := mcpclient.CallerVersionFrom(ctx); v != "" {
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
+	c.authorize(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -1117,6 +1218,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			return err
 		}
 		req.Header.Set("Accept", "text/event-stream")
+		c.authorize(req)
 		// No timeout on a stream; the context bounds it instead. The
 		// client's ordinary timeout would cut a healthy stream off.
 		streamClient := &http.Client{Transport: c.hc.Transport}

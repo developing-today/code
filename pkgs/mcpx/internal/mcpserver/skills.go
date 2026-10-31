@@ -171,10 +171,10 @@ func frontmatter(md []byte) (map[string]any, error) {
 
 // UpstreamSkill represents a skill contributed by an upstream server.
 type UpstreamSkill struct {
-	Namespace   string         `json:"namespace"`
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Frontmatter map[string]any `json:"frontmatter,omitempty"`
+	Namespace   string              `json:"namespace"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Frontmatter map[string]any      `json:"frontmatter,omitempty"`
 	Files       []UpstreamSkillFile `json:"files,omitempty"`
 }
 

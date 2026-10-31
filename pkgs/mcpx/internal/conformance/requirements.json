@@ -14339,7 +14339,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes — `proto.askRounds` (8) bounds rounds per request; no per-server rate limit",
+      "client": "yes — `proto.samplingPerMinute` (60) per server and `proto.samplingSessionPerMinute` (20) per session, fixed window; a refused request reaches no handler (#2192)",
       "server": "n/a"
     }
   },
@@ -15443,7 +15443,7 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes — TTL/askRounds only",
+      "client": "yes — `proto.elicitationPerMinute` (30) per server, fixed window; a refused request reaches no handler and is not answered cancel (#2192)",
       "server": "n/a"
     }
   },

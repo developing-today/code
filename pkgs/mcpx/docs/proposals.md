@@ -10,7 +10,7 @@ to make the decisions visible before they are made. Shipped work moves to
 
 Before proposing anything, the current state, verified in the code.
 
-**Shared servers are started lazily and *do* shut down.** Nothing starts at
+**Shared servers are started lazily and _do_ shut down.** Nothing starts at
 daemon boot except the schema warm, which starts each server once to read
 `tools/list` and lets it idle out. `ReapIdle` runs on a 30-second timer against
 each server's `idleTimeout` (default 5m), and a shared instance is reaped when
@@ -58,31 +58,31 @@ proposal is to split them.
 
 **`sharing`** — how many callers may use one process at a time.
 
-| value | meaning |
-| --- | --- |
-| `shared` | many concurrent callers per process; MCP multiplexes by JSON-RPC id |
-| `exclusive` | one caller at a time; others queue |
+| value       | meaning                                                             |
+| ----------- | ------------------------------------------------------------------- |
+| `shared`    | many concurrent callers per process; MCP multiplexes by JSON-RPC id |
+| `exclusive` | one caller at a time; others queue                                  |
 
 **`scope`** — what key selects a process. One process per distinct key value.
 
-| scope | key | who computes it |
-| --- | --- | --- |
-| `global` | constant | mcpx |
-| `repo` | `git rev-parse --git-common-dir` | mcpx |
-| `worktree` | `git rev-parse --show-toplevel` | mcpx |
-| `cwd` | working directory | mcpx |
-| `session` | `$MCPX_SESSION_ID`, else the run key | **caller** |
-| `parent-session` | `$MCPX_PARENT_SESSION_ID`, else `$MCPX_SESSION_ID` | **caller** |
-| `call` | fresh per invocation | mcpx |
-| `named:<x>` | the literal string | caller |
-| `pid:<n>` | the pid | caller |
+| scope            | key                                                | who computes it |
+| ---------------- | -------------------------------------------------- | --------------- |
+| `global`         | constant                                           | mcpx            |
+| `repo`           | `git rev-parse --git-common-dir`                   | mcpx            |
+| `worktree`       | `git rev-parse --show-toplevel`                    | mcpx            |
+| `cwd`            | working directory                                  | mcpx            |
+| `session`        | `$MCPX_SESSION_ID`, else the run key               | **caller**      |
+| `parent-session` | `$MCPX_PARENT_SESSION_ID`, else `$MCPX_SESSION_ID` | **caller**      |
+| `call`           | fresh per invocation                               | mcpx            |
+| `named:<x>`      | the literal string                                 | caller          |
+| `pid:<n>`        | the pid                                            | caller          |
 
 Today's modes become aliases, so existing configs keep working:
 
-| today | becomes |
-| --- | --- |
-| `shared` | `sharing: shared`, `scope: global` |
-| `pooled` | `sharing: exclusive`, `scope: call` |
+| today     | becomes                             |
+| --------- | ----------------------------------- |
+| `shared`  | `sharing: shared`, `scope: global`  |
+| `pooled`  | `sharing: exclusive`, `scope: call` |
 | `session` | `sharing: exclusive`, `scope: call` |
 
 That last row is the honest mapping: today's `session` **is** per-call.
@@ -111,12 +111,12 @@ until then. Everything else stays `sharing: shared, scope: global`.
 
 A scope needs a teardown rule or it leaks.
 
-| scope | released when |
-| --- | --- |
-| `call` | the process exits (today) |
-| `cwd`, `repo`, `worktree`, `global` | idle timeout |
-| `session`, `named` | idle timeout, or `mcpx session stop <key>` |
-| `pid` | the watched pid exits |
+| scope                               | released when                              |
+| ----------------------------------- | ------------------------------------------ |
+| `call`                              | the process exits (today)                  |
+| `cwd`, `repo`, `worktree`, `global` | idle timeout                               |
+| `session`, `named`                  | idle timeout, or `mcpx session stop <key>` |
+| `pid`                               | the watched pid exits                      |
 
 `pid:<n>` is worth building early and is cheap: poll `kill(pid, 0)` on the
 existing 30-second reaper tick. It gives an agent host a way to say "this
@@ -168,7 +168,7 @@ flushed on a 200 ms tick and on shutdown. One object per line with `ts`,
 plus free-form fields. Cheap to write, trivially greppable, survives anything
 that does not `SIGKILL`.
 
-**A SQLite index** at `.../logs/index.db` with one row per *call* rather than
+**A SQLite index** at `.../logs/index.db` with one row per _call_ rather than
 per log line — server, tool, session, start, duration, ok, bytes in and out.
 That is the table `mcpx stats` reads. Keeping it call-grained rather than
 line-grained is what keeps it small enough to stay fast.
@@ -229,7 +229,7 @@ merge you cannot inspect is worse than no merge.
 the behaviour config should match.
 
 **`.config/mcpx` is now checked everywhere `.mcpx` is**, at higher precedence,
-with a warning when both exist in one directory. *(Shipped.)*
+with a warning when both exist in one directory. _(Shipped.)_
 
 **Per-user versus global.** The daemon is already keyed to a config file, and a
 config file is reached through `$HOME`, so "global" means "this user's default
@@ -274,9 +274,11 @@ does not, top-level await runs and stdout is the result. That makes a file both
 importable and runnable without ceremony:
 
 ```ts
-export function helper() { /* importable */ }
+export function helper() {
+  /* importable */
+}
 export default async function main(args: string[]) {
-  return { ok: true };            // printed as JSON
+  return { ok: true }; // printed as JSON
 }
 ```
 
@@ -346,7 +348,7 @@ namespace-level doc comment in `types` output. This is the cheapest fix for the
 **Producer inference.** The real problem: `pageId: number` does not say to call
 `list_pages` first, and including every tool that mentions `pageId` is all 27.
 
-Heuristic worth trying: for a required parameter `P` of tool `T`, a *producer*
+Heuristic worth trying: for a required parameter `P` of tool `T`, a _producer_
 is a tool that does **not** require `P` and whose name or description contains
 `P`'s noun. For `pageId` that selects `list_pages`, `new_page`, `select_page` —
 three, not twenty-seven. Emit them as a comment:
@@ -409,7 +411,7 @@ its tools and a large one as many as fit.
 
 **Ranking is by cost, not relevance.** There is no similarity search and no
 model involved: it is `sort by length`, ties broken by path. That is a
-deliberate difference from `mcpx search`, which *is* relevance-ranked by
+deliberate difference from `mcpx search`, which _is_ relevance-ranked by
 substring scoring (exact 100, prefix 60, contains 40, function path 30,
 namespace 20, description 10) with an any-term fallback. Neither uses
 embeddings or an external library.
@@ -495,7 +497,7 @@ precisely why mcpx has no port machinery, and why the predecessor's
 port-assignment code was solving a problem this server does not have.
 
 It becomes necessary for `--browserUrl` / `--wsEndpoint`, where each instance
-must attach to a *different already-running* Chrome. And a real allocator has
+must attach to a _different already-running_ Chrome. And a real allocator has
 to survive the time-of-check-to-time-of-use gap that sank the earlier attempt:
 bind the port, hold the listener, pass it down, release on start.
 
@@ -556,14 +558,14 @@ named session outlives its creator by definition.
 **Per-scope keepalive defaults.** One `idleTimeout` for everything is wrong,
 because the scopes have different natural lifetimes:
 
-| scope | default | why |
-| --- | --- | --- |
-| `global` | 30m | expensive to lose, cheap to hold |
-| `repo`, `worktree` | 15m | tracks a working session |
-| `cwd` | 10m | narrower, more of them |
-| `session`, `parent-session` | 10m | agent turns have gaps |
-| `pid` | none | released when the pid exits |
-| `call` | none | released when the caller exits |
+| scope                       | default | why                              |
+| --------------------------- | ------- | -------------------------------- |
+| `global`                    | 30m     | expensive to lose, cheap to hold |
+| `repo`, `worktree`          | 15m     | tracks a working session         |
+| `cwd`                       | 10m     | narrower, more of them           |
+| `session`, `parent-session` | 10m     | agent turns have gaps            |
+| `pid`                       | none    | released when the pid exits      |
+| `call`                      | none    | released when the caller exits   |
 
 Overridable in config per server, and at runtime per session.
 
@@ -584,9 +586,9 @@ and works for every server.
 
 **Webhook.** Two directions, and they are different features:
 
-- *Outbound*: mcpx notifies a URL on lifecycle events. This is just the event
+- _Outbound_: mcpx notifies a URL on lifecycle events. This is just the event
   stream with an HTTP sink and is easy.
-- *Inbound*: something tells mcpx to reap. That is a control API needing
+- _Inbound_: something tells mcpx to reap. That is a control API needing
   authentication, and `mcpx session stop` over the existing socket already
   does the job for anything local.
 
@@ -626,7 +628,7 @@ log.info("status: {status}", { status: "ok" });
 ```
 
 ```json
-{"ts":"...","level":"info","msg":"status: ok","template":"status: {status}","status":"ok"}
+{ "ts": "...", "level": "info", "msg": "status: ok", "template": "status: {status}", "status": "ok" }
 ```
 
 `msg` interpolated for humans, `template` preserved for grouping records that
@@ -642,14 +644,14 @@ there is one record type and no second path.
 
 `--format` on every command that emits records:
 
-| format | shape |
-| --- | --- |
-| `json` | one object per line |
-| `json-pretty` | indented, for reading |
-| `logfmt` | `ts=… level=… msg=…` |
-| `text` (default) | `HH:MM:SS LEVEL msg key=value` |
-| `compact` | `LEVEL msg`, attributes interpolated only |
-| `bare` | message only |
+| format           | shape                                     |
+| ---------------- | ----------------------------------------- |
+| `json`           | one object per line                       |
+| `json-pretty`    | indented, for reading                     |
+| `logfmt`         | `ts=… level=… msg=…`                      |
+| `text` (default) | `HH:MM:SS LEVEL msg key=value`            |
+| `compact`        | `LEVEL msg`, attributes interpolated only |
+| `bare`           | message only                              |
 
 `text` interpolates the template and appends attributes not consumed by it.
 `compact` and `bare` drop the timestamp.
@@ -698,7 +700,7 @@ support still gets most of the value.
 
 ### Avoiding double-injection
 
-If a plugin injects instructions *and* an instructions file exists, the text
+If a plugin injects instructions _and_ an instructions file exists, the text
 lands twice. The plugin should look for a marker — a known first line in the
 file — and skip injection when it finds one. Detection beats configuration
 because it cannot drift.
@@ -751,7 +753,7 @@ bad reflex.
 **Autostart.** Both, and they already coexist: any command starts a daemon on
 demand today, and a service unit only means the schema cache is warm before
 the first agent asks. Keep on-demand as the supported path so that nothing
-*requires* installation.
+_requires_ installation.
 
 2026-09-27T07:00:00-05:00
 
@@ -776,6 +778,15 @@ own socket. `mcpx daemons` lists them.
 or a unix path would let the CLI drive a remote daemon. The blocker is not
 parsing but authentication and trust, which loopback currently provides for
 free. Worth specifying before building.
+
+_Correction, 2026-10-30: the remote half of this was specified and
+built — as an identity transport, not raw addressing. Since #1967 the
+daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity (a MagicDNS name) from another network, with the tailnet
+providing exactly the authentication and trust this entry named as
+the blocker. Generic internet addressing (`example.com:8008` and
+friends) remains unbuilt and unendorsed._
 
 **Load.** Untested beyond 12 concurrent runs. Discovery is a map read and
 should be flat; the interesting limits are process count and the reaper's
@@ -804,8 +815,8 @@ Alternatives worth a moment: `xmcp` (same idea, scans worse aloud); `mcpsh`
 `conduit`, `broker`, `switchboard` (descriptive, generic, unsearchable).
 
 Honest assessment: `mcpx` is fine and the rename cost only grows. The one
-argument for changing is that the tool's distinguishing feature is *shell
-access to MCP*, and `mcpsh` says that. Not worth the churn unless it is
+argument for changing is that the tool's distinguishing feature is _shell
+access to MCP_, and `mcpsh` says that. Not worth the churn unless it is
 decided before anything publishes.
 
 2026-09-27T07:00:00-05:00
@@ -860,7 +871,7 @@ probably the wrong shape. Shadowing already resolves name conflicts by
 precedence, and `mcpx scripts` already shows what is shadowed. An alias adds a
 second mechanism for the same job, and a second place to look when a name
 resolves to something unexpected. The case it would uniquely solve — wanting
-*both* of two same-named scripts — is better served by naming one of them
+_both_ of two same-named scripts — is better served by naming one of them
 differently, which the author controls.
 
 2026-09-27T08:00:00-05:00
@@ -912,7 +923,7 @@ effort:  small each
 
 Beyond `mcpx types <ns>.<tool>`:
 
-- **`--no-instructions`** to omit server guidance. *Shipped* — `fff` returns
+- **`--no-instructions`** to omit server guidance. _Shipped_ — `fff` returns
   3,768 characters of it, which more than doubles that namespace's output.
 - **`--depth N`** to control how far nested object types expand. Deeply nested
   schemas are most of the cost of a large namespace.
@@ -932,17 +943,26 @@ status:  proposed
 effort:  medium
 ```
 
+_Correction, 2026-10-30: the re-export proposed here is still the
+open part — but "remote daemon" itself is no longer unbuilt. Since
+#1967 the daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity, and the settings registry ships the client half
+(`daemon.endpoint`, `daemon.address`). What remains proposal is the
+code-mode MCP server / OpenAPI endpoint re-export above, not remote
+reachability as such._
+
 Distinct from importing or emitting OpenAPI: this makes mcpx itself something
-other tools connect *to*.
+other tools connect _to_.
 
 **As an MCP server.** mcpx already aggregates servers, pools them and caches
 their schemas. Re-exporting that as one MCP server would let a harness with no
 shell access reach everything through a single connection, with pooling and
 scoping applied underneath. Two shapes, and they are different products:
 
-- *Passthrough*: every underlying tool re-exported under its namespace. Simple,
+- _Passthrough_: every underlying tool re-exported under its namespace. Simple,
   and reintroduces exactly the context problem mcpx exists to avoid.
-- *Code-mode*: two tools, `search` and `run`, where `run` takes a script. This
+- _Code-mode_: two tools, `search` and `run`, where `run` takes a script. This
   is what opencode v2 does internally, and it keeps the context win.
 
 The second is the interesting one, and it makes mcpx usable from Claude Desktop
@@ -975,7 +995,7 @@ mcpx implements `initialize`, `tools/list`, `tools/call`, `resources/list`,
 `resources/read` and `ping`. The protocol defines more, and opencode v2
 implements most of it. Meeting parity means, roughly in order of value:
 
-- **`instructions` from initialize.** *Shipped.* It was being parsed and
+- **`instructions` from initialize.** _Shipped._ It was being parsed and
   discarded; `fff` alone returns 3.7 KB of tool-selection guidance.
 - **`prompts/list` and `prompts/get`.** Servers ship reusable prompts nobody
   can currently see.
@@ -1006,7 +1026,7 @@ Chrome is the hardest server to drive well and the lessons generalise.
 
 **`pageId` discovery.** The concrete failure: `click` requires `pageId` and its
 description says only "Targets a specific page by ID". Note that
-`close_page` *does* say "Call list_pages to list pages" — so the information
+`close_page` _does_ say "Call list_pages to list pages" — so the information
 exists in some schemas and not others, which is exactly the inconsistency a
 host should paper over. Chrome returns **no** `instructions`, so the
 instructions work does not fix this. Producer inference is the remaining
@@ -1089,7 +1109,7 @@ A rendered record flattens attributes next to `ts`, `level`, `msg` and
 `template`. A user attribute with one of those names used to be dropped
 silently; it is now renamed to `attr.<name>`, so nothing is lost.
 
-What remains open is whether mcpx should *own* a namespace instead. An
+What remains open is whether mcpx should _own_ a namespace instead. An
 underscore prefix (`_kind`, `_session`) or a dotted one (`mcpx.session`) would
 make the boundary obvious and remove the renaming rule entirely. The argument
 against is that every record then carries punctuation for a collision that
@@ -1172,10 +1192,10 @@ rejected because the number means nothing without the chain:
 
 Null covers extend-or-replace, which is the distinction people actually make.
 
-**Corrected: prefixes *do* apply to file scripts, for effects rather than
+**Corrected: prefixes _do_ apply to file scripts, for effects rather than
 bindings.** The first version rejected them outright, which conflated two
-claims. A prefix cannot *bind* anything inside a module, because ESM gives it
-its own scope. It can perfectly well *act* before and after one, because mcpx
+claims. A prefix cannot _bind_ anything inside a module, because ESM gives it
+its own scope. It can perfectly well _act_ before and after one, because mcpx
 already generates a launcher around it.
 
 So the launcher imports the module **dynamically**:
@@ -1202,7 +1222,7 @@ That is ESM, not a limitation worth fighting, and the tests assert it stays
 impossible so nobody comes to depend on an accident.
 
 A snippet is different: `mcpx exec` generates the whole file, so its prefix
-shares scope and *can* declare bindings the snippet uses.
+shares scope and _can_ declare bindings the snippet uses.
 
 2026-09-27T22:30:00-05:00
 
@@ -1242,7 +1262,7 @@ wants the runtime and none of the harness.
 
 The argument for doing this at all is that a launcher which is only
 half-configurable invites someone copying it out and maintaining a fork. The
-argument against doing it *now* is that five named phases have not yet been
+argument against doing it _now_ is that five named phases have not yet been
 shown insufficient.
 
 2026-09-28T01:00:00-05:00
@@ -1345,17 +1365,17 @@ A client watching a resource for changes. Present in every revision. mcpx
 declares `subscribe: false`, so it is honest, but a server publishing live
 data cannot tell mcpx when it changes.
 
-**`resources/templates/list` when serving.** mcpx *consumes* templates from
+**`resources/templates/list` when serving.** mcpx _consumes_ templates from
 upstream servers and does not offer them onward, so a templated resource
 becomes invisible one hop down.
 
 **`sampling/createMessage`.** A server asking the client to run a model
 completion. mcpx is not a model host, so the honest implementation is a
 pass-through to whatever is driving it -- the same shape elicitation uses.
-Worth building when something asks. *Shipped, then found unreachable: `sampling` was
+Worth building when something asks. _Shipped, then found unreachable: `sampling` was
 never declared, because the handler was installed after the handshake that
 declares capabilities. Fixed 2026-09-29, with roots, which the same ordering
-had broken.*
+had broken._
 
 **`notifications/elicitation/complete`** (`2025-11-25`+). A url-mode
 elicitation finishing out of band. Without it, a server that sends somebody
@@ -1384,7 +1404,7 @@ lifetime, realpath-canonical keys, `.config/mcpx` lookup, named scripts, path
 globals.
 
 1. ~~Server `instructions` surfaced in `types`.~~ **Shipped.** Worth recording
-   that it did *not* do what it was ranked first for: Chrome returns no
+   that it did _not_ do what it was ranked first for: Chrome returns no
    instructions, so `pageId` is untouched. It turned out valuable for a
    different reason — `fff` returns 3.7 KB of tool-selection guidance that was
    being thrown away.

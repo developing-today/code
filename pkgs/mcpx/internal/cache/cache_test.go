@@ -188,3 +188,82 @@ func TestListReportsSizesAndLeaseState(t *testing.T) {
 		t.Fatalf("List of missing kind = %v, %v", entries, err)
 	}
 }
+
+func TestTraversalNamesRejected(t *testing.T) {
+	root := t.TempDir()
+	c := cache.Open(filepath.Join(root, "cache"))
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeEntry(t, c, "deps", cache.KeyString("real"), 10, 0)
+
+	bad := [][2]string{
+		{"..", "outside"},      // kind escapes the root
+		{"deps", "../outside"}, // key escapes the kind dir
+		{"deps", "../../etc"},  // key escapes the root
+		{"a/b", "x"},           // separator in kind
+		{"deps", "a/b"},        // separator in key
+		{"deps", ".."},         // dot component key
+		{".", "x"},             // dot component kind
+		{"", "x"},              // empty kind
+		{"deps", ""},           // empty key
+	}
+	for _, tc := range bad {
+		if err := c.Remove(tc[0], tc[1], 0); err == nil {
+			t.Fatalf("Remove(%q, %q) succeeded, want rejection", tc[0], tc[1])
+		}
+		if got := c.Path(tc[0], tc[1]); got != "" {
+			t.Fatalf("Path(%q, %q) = %q, want empty (rejected)", tc[0], tc[1], got)
+		}
+		if _, _, err := c.Put(tc[0], tc[1], cache.Limits{}, func(string) error { return nil }); err == nil {
+			t.Fatalf("Put(%q, %q) succeeded, want rejection", tc[0], tc[1])
+		}
+		if _, ok := c.Get(tc[0], tc[1]); ok {
+			t.Fatalf("Get(%q, %q) reported a hit", tc[0], tc[1])
+		}
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("traversal attempt removed a file outside the cache root: %v", err)
+	}
+	if _, err := c.List("..", 0); err == nil {
+		t.Fatal("List of a traversal kind succeeded, want rejection")
+	}
+	if got := c.Dir(".."); got != "" {
+		t.Fatalf("Dir(%q) = %q, want empty (rejected)", "..", got)
+	}
+	// The legitimate entry is untouched.
+	if _, ok := c.Get("deps", cache.KeyString("real")); !ok {
+		t.Fatal("legitimate entry lost during traversal attempts")
+	}
+}
+
+func TestPutNeverEvictsItsOwnEntry(t *testing.T) {
+	c := cache.Open(t.TempDir())
+	writeEntry(t, c, "deps", cache.KeyString("old"), 10, time.Hour)
+	// The acceptance repro: a 2-byte payload with MaxBytes 1. The new
+	// entry is larger than the bound by itself; it must be kept (the
+	// bound is exceeded by that entry alone) instead of being evicted
+	// by its own Put while Put reports success.
+	key := cache.KeyString("oversized")
+	p, hit, err := c.Put("deps", key, cache.Limits{MaxBytes: 1}, func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "payload"), []byte("ab"), 0o600)
+	})
+	if err != nil || hit {
+		t.Fatalf("Put oversized: hit=%v err=%v", hit, err)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("Put evicted the entry it just stored: %v", err)
+	}
+	if got, ok := c.Get("deps", key); !ok || got != p {
+		t.Fatalf("Get after oversized Put = %q,%v want %q,true", got, ok, p)
+	}
+	// The older entry, not the new one, is what eviction removes.
+	if _, ok := c.Get("deps", cache.KeyString("old")); ok {
+		t.Fatal("older entry survived while the new entry was protected")
+	}
+}

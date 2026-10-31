@@ -83,6 +83,7 @@ import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./pro
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
+import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -490,8 +491,9 @@ export function navLinks(active: string, activeGroup?: string): string {
     .map(({ group, pages }) => {
       const anchors = pages
         .filter((p) => p.id !== "pages")
-        .map((p) =>
-          `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
+        .map(
+          (p) =>
+            `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
         )
         .join("");
       const current = group.id === groupOfActive ? ' data-current="true"' : "";
@@ -1768,9 +1770,7 @@ function attentionStripHtml(usage: UsageView): string {
  * the yuan figure as read, never converted to dollars.
  */
 function paygBalanceHtml(usage: UsageView): string {
-  const recs = (usage.history["deepseek:api"] ?? []).filter(
-    (r) => r.unit === "cny" && typeof r.value === "number",
-  );
+  const recs = (usage.history["deepseek:api"] ?? []).filter((r) => r.unit === "cny" && typeof r.value === "number");
   if (!recs.length) return "";
   const last = recs[recs.length - 1];
   return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
@@ -4840,13 +4840,8 @@ export function renderProjects(
   const UNSET_AREA = "(unset)";
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
-    opts.area === UNSET_AREA && unsetCount > 0
-      ? UNSET_AREA
-      : opts.area && areas.includes(opts.area)
-        ? opts.area
-        : null;
-  const shown =
-    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+    opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
+  const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
     `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
@@ -4862,7 +4857,9 @@ export function renderProjects(
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`,
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks()
+        .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
+        .join(" · ")}</p>`,
       provenance,
       "/projects",
     );
@@ -4906,7 +4903,9 @@ export function renderProjects(
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
-<p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
+<p class="muted">Live services: ${serviceHomeLinks()
+    .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
+    .join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
     "Projects",
@@ -5032,6 +5031,61 @@ ${trackedTable(live.tracked)}`;
 
 const POOL_ITEM_CAP = 24;
 
+/** The #2400 graph section of a project page: blocked weight + longest
+ * blocked chain and the depth-graph SVG, from the part-1 edge contract
+ * (#2399). Graceful absence is explicit: a pool with no effort labels
+ * and no edges says "not yet sized/graphed" (never a fake 0%); a sized
+ * pool without edges says "not yet graphed" only. */
+function poolGraphHtml(items: ProjectPoolItem[], allW: ReturnType<typeof summarizeWeights>): string {
+  const edges = hasGraphEdges(items);
+  if (!edges && allW.totalWeight === 0) {
+    return `<div class="banner">Not yet sized/graphed: no pool item for this project carries an effort/* label or an issue graph edge yet, so there is no weighted or graph view to draw. The counts above are raw item counts — not a 0% weighted score.</div>`;
+  }
+  if (!edges) {
+    return `<p class="muted">Not yet graphed: pool items carry no parent / blocked-by edges yet, so blocked weight and the depth graph appear once the collector sees edges. Weighted progress above is from effort labels alone.</p>`;
+  }
+  const blocked = blockedSummary(items);
+  const chainHtml =
+    blocked.longestChain.length >= 2
+      ? ` · longest blocked chain: ${blocked.longestChain.map((r) => `<a href="${esc(refUrl(r))}">${esc(r)}</a>`).join(" → ")} (${blocked.longestChain.length - 1} link${blocked.longestChain.length === 2 ? "" : "s"})`
+      : "";
+  const blockedHtml = blocked.blockedCount
+    ? `<p class="muted"><strong>Blocked weight: ${blocked.blockedWeight}</strong> across ${blocked.blockedCount} open item${blocked.blockedCount === 1 ? "" : "s"} waiting on an unresolved blocker${blocked.blockedUnsizedCount ? ` (${blocked.blockedUnsizedCount} of them unsized — counted, never zero-weighted)` : ""}${chainHtml}.</p>`
+    : `<p class="muted"><strong>Blocked weight: 0</strong> — no open item is waiting on an unresolved blocker.</p>`;
+
+  const layout = depthLayout(items);
+  const pos = new Map(layout.nodes.map((n) => [n.ref, n]));
+  const X = (depth: number) => 16 + depth * 180;
+  const Y = (row: number) => 16 + row * 26;
+  const width = X(layout.maxDepth) + 340;
+  const height = Y(layout.nodes.length - 1) + 16;
+  const edgeLines = layout.edges
+    .map((e) => {
+      const a = pos.get(e.from)!;
+      const b = pos.get(e.to)!;
+      return `<line x1="${X(a.depth)}" y1="${Y(a.row)}" x2="${X(b.depth)}" y2="${Y(b.row)}" stroke="#8b949e" stroke-width="1"/>`;
+    })
+    .join("");
+  const nodeShapes = layout.nodes
+    .map((n) => {
+      const label = `#${n.number} ${n.title.length > 34 ? `${n.title.slice(0, 33)}…` : n.title}`;
+      const dash = n.mode === "hybrid" ? ` stroke-dasharray="3 2"` : "";
+      const strokeW = n.mode === "physical" ? 3 : 1.5;
+      const shape = n.epic
+        ? `<rect x="${X(n.depth) - 6}" y="${Y(n.row) - 6}" width="12" height="12" fill="${n.state === "open" ? "#8957e5" : "#6e7781"}" stroke="#0d1117" stroke-width="${strokeW}"${dash}/>`
+        : `<circle cx="${X(n.depth)}" cy="${Y(n.row)}" r="6" fill="${n.state === "open" ? "#bf8700" : "#6e7781"}" stroke="#0d1117" stroke-width="${strokeW}"${dash}/>`;
+      return `${shape}<a href="${esc(n.issueUrl)}"><text x="${X(n.depth) + 11}" y="${Y(n.row) + 4}" font-size="11" fill="currentColor">${esc(label)}</text></a>`;
+    })
+    .join("");
+  const truncated = layout.truncated
+    ? `<p class="muted">Depth graph shows ${layout.nodes.length} of ${items.length} items (cap) — the full set is in the cards below.</p>`
+    : "";
+  const svg = layout.nodes.length
+    ? `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Issue depth graph" style="max-width:100%;height:auto">${edgeLines}${nodeShapes}</svg><p class="muted">Depth = sub-issue nesting from the Project pool. Squares are epics; amber = open, grey = closed. Border: thick solid = mode/physical, dashed = mode/hybrid, thin = online or no mode.</p>${truncated}`
+    : "";
+  return `<h3>Blocked + depth graph</h3>${blockedHtml}${svg}`;
+}
+
 export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
@@ -5099,7 +5153,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${cards}${more}`;
   }
 
   let roadmapHtml: string;

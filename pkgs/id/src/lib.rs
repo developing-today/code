@@ -156,6 +156,7 @@ pub mod access;
 pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
+pub mod attestation;
 pub mod blob_gate;
 pub mod chain;
 pub mod cli;

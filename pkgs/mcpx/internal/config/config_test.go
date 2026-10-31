@@ -577,7 +577,6 @@ func TestPreconditionsGating(t *testing.T) {
 	}
 }
 
-
 // #1923: server tags and per-tool tags survive resolution — the server's
 // list verbatim, and toolTags keyed by tool name.
 func TestResolveCarriesTags(t *testing.T) {

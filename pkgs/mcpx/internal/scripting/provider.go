@@ -31,12 +31,12 @@ type Provider interface {
 
 // ProviderConfig configures model resolution.
 type ProviderConfig struct {
-	Type     string `json:"type"`     // "openai", "ollama", "qwen", "claude", "codex", "opencode", "agy", "command"
-	BaseURL  string `json:"baseUrl"`  // e.g. "http://localhost:11434/v1", "https://api.openai.com/v1"
-	APIKey   string `json:"apiKey"`   // API key if required
-	Model    string `json:"model"`    // Model name, e.g. "qwen2.5-coder", "gpt-4o"
-	Command  string `json:"command"`  // CLI command if Type == "command"
-	Timeout  time.Duration
+	Type    string `json:"type"`    // "openai", "ollama", "qwen", "claude", "codex", "opencode", "agy", "command"
+	BaseURL string `json:"baseUrl"` // e.g. "http://localhost:11434/v1", "https://api.openai.com/v1"
+	APIKey  string `json:"apiKey"`  // API key if required
+	Model   string `json:"model"`   // Model name, e.g. "qwen2.5-coder", "gpt-4o"
+	Command string `json:"command"` // CLI command if Type == "command"
+	Timeout time.Duration
 }
 
 // OpenAICompatibleProvider handles any OpenAI-compatible completions API

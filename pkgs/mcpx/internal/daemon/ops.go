@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/dezren39/mcpx/internal/api"
 	"github.com/dezren39/mcpx/internal/config"
@@ -404,21 +406,18 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 // server's own completion knows the *values* an argument may take, which
 // mcpx cannot guess, so this is a floor rather than a substitute.
 func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource, req completeReq, max int) map[string]any {
-	var values []string
+	var candidates []string
 	switch req.Ref.Type {
 	case "ref/prompt":
 		for _, p := range prompts {
-			if hasPrefixFold(p.Name, req.Argument.Value) {
-				values = append(values, p.Name)
-			}
+			candidates = append(candidates, p.Name)
 		}
 	case "ref/resource":
 		for _, t := range templates {
-			if hasPrefixFold(t.URI, req.Argument.Value) {
-				values = append(values, t.URI)
-			}
+			candidates = append(candidates, t.URI)
 		}
 	}
+	values := rankCompletions(candidates, req.Argument.Value)
 	if values == nil {
 		values = []string{}
 	}
@@ -429,6 +428,62 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 		values = values[:max]
 	}
 	return map[string]any{"values": values, "total": total, "hasMore": total > len(values)}
+}
+
+// rankCompletions orders the candidates that match value by relevance
+// (issue #2388, Phase 2 of design #2386): tier 1 is an exact
+// case-folded match, tier 2 a prefix match (shorter names first, then
+// folded alphabetical, then the raw string), tier 3 a substring
+// (non-prefix) match (by first-match position, then folded
+// alphabetical, then raw). Matching and ordering are case-folded with
+// strings.ToLower, consistent with hasPrefixFold. An empty value puts
+// every candidate in the prefix tier. The sort is stable and duplicate
+// candidates are preserved. Non-matches are dropped.
+func rankCompletions(candidates []string, value string) []string {
+	q := strings.ToLower(value)
+	type scored struct {
+		raw    string
+		folded string
+		tier   int
+		pos    int // tier 3: first-match index in the folded candidate
+	}
+	var hits []scored
+	for _, c := range candidates {
+		fc := strings.ToLower(c)
+		switch {
+		case q != "" && fc == q:
+			hits = append(hits, scored{c, fc, 1, 0})
+		case strings.HasPrefix(fc, q):
+			hits = append(hits, scored{c, fc, 2, 0})
+		case q != "" && strings.Index(fc, q) >= 0:
+			hits = append(hits, scored{c, fc, 3, strings.Index(fc, q)})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		a, b := hits[i], hits[j]
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
+		switch a.tier {
+		case 2:
+			if ra, rb := utf8.RuneCountInString(a.raw), utf8.RuneCountInString(b.raw); ra != rb {
+				return ra < rb
+			}
+		case 3:
+			if a.pos != b.pos {
+				return a.pos < b.pos
+			}
+		}
+		if a.folded != b.folded {
+			return a.folded < b.folded
+		}
+		return a.raw < b.raw
+	})
+	values := make([]string, 0, len(hits))
+	for _, h := range hits {
+		values = append(values, h.raw)
+	}
+	return values
 }
 
 // ---- tasks ----
@@ -539,8 +594,16 @@ func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallCon
 
 // ---- the specification ----
 
-func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	doc := api.OpenAPI(s.version)
+	// The static variant (?static=1, #1883 item 4) returns only the
+	// ops-table document, without the live catalogue merged in: a docs
+	// build that fetches it publishes the API surface, not the builder's
+	// configured servers. The live default below stays the default.
+	if staticOpenAPI(r) {
+		writeJSON(w, http.StatusOK, doc)
+		return
+	}
 	// Generated per request rather than once, so a server that appears after
 	// startup is described without a restart. The per-tool paths were served
 	// only by `mcpx serve --transport http`; a document without them
@@ -551,6 +614,16 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, doc)
+}
+
+// staticOpenAPI reports whether the request asks for the static
+// (ops-table only) OpenAPI document: ?static=1 or ?static=true.
+func staticOpenAPI(r *http.Request) bool {
+	switch r.URL.Query().Get("static") {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 // toolPaths describes every upstream tool as its own POST path.
