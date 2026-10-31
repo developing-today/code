@@ -400,6 +400,23 @@ func visibleTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool 
 // description override and the pinned properties hidden from the
 // exposed inputSchema. Sorted by view name: tools/list order is
 // deterministic or prompt caches miss.
+// ruleToolName returns the identity argument rules (#1986) know a
+// listed tool by. A declared tool view (#1933) is advertised under its
+// alias, but rules are written against -- and enforced on -- the
+// target's real name: resolveAndGuard maps the alias to its From
+// before applyWritePolicy evaluates them. Schema generation must look
+// rules up by that same real name, or a rule keyed by the target would
+// be enforced without being advertised, and one keyed by an alias
+// advertised without ever being enforced.
+func ruleToolName(view *config.Resolved, name string) string {
+	if view != nil {
+		if tv, ok := view.ToolViews[name]; ok {
+			return tv.From
+		}
+	}
+	return name
+}
+
 func viewTools(view *config.Resolved, all []mcpclient.Tool) []mcpclient.Tool {
 	byName := make(map[string]mcpclient.Tool, len(all))
 	for _, t := range all {
@@ -441,7 +458,13 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 		return schema
 	}
 	var m map[string]any
-	if err := json.Unmarshal(schema, &m); err != nil {
+	// UseNumber: decoding into float64 would silently rewrite large
+	// integers elsewhere in the schema (an enum bound of
+	// 9007199254740993 would come back 9007199254740992) when the
+	// hidden-property edit re-marshals it.
+	dec := json.NewDecoder(strings.NewReader(string(schema)))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
 		return schema
 	}
 	if props, ok := m["properties"].(map[string]any); ok {
@@ -855,7 +878,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
 				Description:  t.Description,
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  view.ArgumentRules.EffectiveSchema(ruleToolName(view, t.Name), t.InputSchema),
 				Execution:    t.Execution,
 				Title:        t.Title,
 				OutputSchema: t.OutputSchema,
@@ -1268,7 +1291,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 				Name:         t.Name,
 				Description:  t.Description,
 				Tags:         toolTags(view, t.Name),
-				InputSchema:  view.ArgumentRules.EffectiveSchema(t.Name, t.InputSchema),
+				InputSchema:  view.ArgumentRules.EffectiveSchema(ruleToolName(view, t.Name), t.InputSchema),
 				OutputSchema: t.OutputSchema,
 			})
 		}

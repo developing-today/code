@@ -184,3 +184,55 @@ func TestReloadValidatesViewsAgainstCachedSchemas(t *testing.T) {
 		t.Errorf("registry state was corrupted after failed reload")
 	}
 }
+
+// Codex P2 on the #1986 merge (46ac651db): hiding a property must not
+// rewrite unrelated numbers in the schema -- a float64 round-trip
+// turned the enum bound 9007199254740993 into 9007199254740992.
+func TestHideSchemaPropsPreservesNumberPrecision(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"secret":{"type":"string"},"limit":{"type":"integer","enum":[9007199254740993]}},"required":["secret","limit"]}`)
+	out := hideSchemaProps(schema, []string{"secret"})
+	if strings.Contains(string(out), "secret") {
+		t.Errorf("hidden property must be removed: %s", out)
+	}
+	if !strings.Contains(string(out), "9007199254740993") {
+		t.Errorf("large integer must survive the hide round-trip exactly: %s", out)
+	}
+	if strings.Contains(string(out), "9007199254740992") {
+		t.Errorf("large integer was rewritten by float64 rounding: %s", out)
+	}
+}
+
+// Codex P2 on the #1986 merge (46ac651db): argument rules are enforced
+// under the view target's real name (resolveAndGuard maps the alias to
+// From before applyWritePolicy), so the schema advertised for the
+// alias must be generated under that same identity or the rule is
+// enforced but never advertised.
+func TestAdvertisedViewSchemaUsesRuleTargetIdentity(t *testing.T) {
+	view := tailscaleView(t)
+	set, err := config.CompileArgumentRules([]config.ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test config", Schema: json.RawMessage(`{"properties":{"limit":{"maximum":10}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	view.ArgumentRules = set
+	if got := ruleToolName(view, "listHostnames"); got != "list_devices" {
+		t.Fatalf("alias must resolve to its rule identity (the From target), got %q", got)
+	}
+	if got := ruleToolName(view, "listTailnet"); got != "list_tailnets" {
+		t.Fatalf("alias must resolve to its rule identity (the From target), got %q", got)
+	}
+	all := []mcpclient.Tool{
+		{Name: "list_devices", InputSchema: json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"number"}}}`)},
+		{Name: "list_tailnets", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+	}
+	for _, tool := range visibleTools(view, all) {
+		advertised := view.ArgumentRules.EffectiveSchema(ruleToolName(view, tool.Name), tool.InputSchema)
+		if tool.Name == "listHostnames" && !strings.Contains(string(advertised), "maximum") {
+			t.Errorf("rule keyed by the real name must be advertised on the alias: %s", advertised)
+		}
+		if tool.Name == "listTailnet" && strings.Contains(string(advertised), "maximum") {
+			t.Errorf("rule for list_devices must not leak onto listTailnet: %s", advertised)
+		}
+	}
+}
