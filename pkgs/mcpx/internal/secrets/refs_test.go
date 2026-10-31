@@ -165,6 +165,7 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"a namespace subscript with an as-const assertion counts", `tools["fs" as const].read();`, none, []string{"fs"}},
 		{"a namespace subscript with a non-null assertion counts", `tools["fs"!].read();`, none, []string{"fs"}},
 		{"a namespace subscript with a generic as assertion counts", `tools["fs" as Record<string, any>].read();`, none, []string{"fs"}},
+		{"division after an as-const assertion is not a regex", "const n = 2 as const / 2; tools.fs.read();", none, []string{"fs"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
