@@ -11,6 +11,7 @@ import (
 
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/dezren39/mcpx/internal/schemaval"
 )
 
 // #1933 slice 1, the tailscale shape from the issue: an alias view
@@ -314,11 +315,43 @@ func TestAdvertisedViewSchemaConjoinsRefSiblingRequirements(t *testing.T) {
 func TestHideSchemaPropsProjectsRefRequirements(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"$defs":{"need":{"required":["tailnet","limit"]}},"$ref":"#/$defs/need"}`)
 	out := hideSchemaProps(schema, []string{"tailnet"})
-	if strings.Contains(string(out), "tailnet") {
-		t.Errorf("hidden property must be projected out of referenced constraints too: %s", out)
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), `"required":["limit"]`) {
-		t.Errorf("unhidden requirements must survive in the referenced schema: %s", out)
+	if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err != nil {
+		t.Fatalf("projected ref rejected visible input: %v", err)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err == nil {
+		t.Fatal("unhidden requirement lost")
+	}
+}
+
+func TestHideSchemaPropsSharedRefPreservesNestedConstraints(t *testing.T) {
+	for _, applicator := range []string{`"$ref":"#/$defs/need"`, `"allOf":[{"$ref":"#/$defs/need"}]`} {
+		t.Run(applicator, func(t *testing.T) {
+			schema := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema",` + applicator + `,"$defs":{"need":{"type":"object","properties":{"secret":{"type":"string"},"child":{"$ref":"#/$defs/need"}},"required":["secret"]}},"properties":{"nested":{"$ref":"#/$defs/need"}}}`)
+			out := hideSchemaProps(schema, []string{"secret"})
+			compiled, err := schemaval.Compile(out)
+			if err != nil {
+				t.Fatalf("compile %s: %v", out, err)
+			}
+			for _, tc := range []struct {
+				input string
+				valid bool
+			}{
+				{`{}`, true},
+				{`{"nested":{"secret":"x"}}`, true},
+				{`{"nested":{}}`, false},
+				{`{"nested":{"secret":"x","child":{}}}`, false},
+				{`{"nested":{"secret":"x","child":{"secret":"y"}}}`, true},
+			} {
+				err := compiled.ValidateJSON(json.RawMessage(tc.input))
+				if (err == nil) != tc.valid {
+					t.Errorf("%s: valid=%v, err=%v; schema=%s", tc.input, tc.valid, err, out)
+				}
+			}
+		})
 	}
 }
 

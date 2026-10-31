@@ -484,7 +484,8 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 	if err := dec.Decode(&m); err != nil {
 		return schema
 	}
-	hidePropsAtScope(m, m, hide, map[string]bool{})
+	projector := schemaProjector{root: m, hide: hide, refs: map[string]string{}}
+	projector.hidePropsAtScope(m)
 	out, err := json.Marshal(m)
 	if err != nil {
 		return schema
@@ -500,16 +501,21 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 // projection, and against additionalProperties:false with the
 // property's declaration deleted it advertises a schema no caller
 // can satisfy, even though calls succeed because pins merge before
-// forwarding (Codex P2 on PR #2976). A referenced schema is projected
-// in place: the decoded document shares the referenced map, so the
-// projection is exactly the schema the reference advertises.
+// forwarding (Codex P2 on PR #2976). Same-instance references point to
+// projected copies; their original targets may also constrain nested instances.
 // Disjunctive applicators (anyOf/oneOf) are not projected: a branch
 // requiring the hidden property stays satisfiable through the merged
 // pin at call time, and weakening a branch would misstate the choice
 // the schema offers.
-func hidePropsAtScope(m, root map[string]any, hide []string, resolving map[string]bool) {
+type schemaProjector struct {
+	root map[string]any
+	hide []string
+	refs map[string]string
+}
+
+func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 	if props, ok := m["properties"].(map[string]any); ok {
-		for _, h := range hide {
+		for _, h := range p.hide {
 			delete(props, h)
 		}
 	}
@@ -518,7 +524,7 @@ func hidePropsAtScope(m, root map[string]any, hide []string, resolving map[strin
 		for _, r := range req {
 			name, _ := r.(string)
 			hidden := false
-			for _, h := range hide {
+			for _, h := range p.hide {
 				if name == h {
 					hidden = true
 					break
@@ -537,18 +543,59 @@ func hidePropsAtScope(m, root map[string]any, hide []string, resolving map[strin
 	if subs, ok := m["allOf"].([]any); ok {
 		for _, sub := range subs {
 			if sm, ok := sub.(map[string]any); ok {
-				hidePropsAtScope(sm, root, hide, resolving)
+				p.hidePropsAtScope(sm)
 			}
 		}
 	}
-	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
-		if target, ok := resolveSchemaPointer(root, ref); ok {
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
+		if projected, ok := p.refs[ref]; ok {
+			m["$ref"] = projected
+			return
+		}
+		if target, ok := resolveSchemaPointer(p.root, ref); ok {
 			if tm, ok := target.(map[string]any); ok {
-				resolving[ref] = true
-				hidePropsAtScope(tm, root, hide, resolving)
-				delete(resolving, ref)
+				defs, ok := p.root["$defs"].(map[string]any)
+				if !ok && p.root["$defs"] != nil {
+					return
+				}
+				if !ok {
+					defs = map[string]any{}
+					p.root["$defs"] = defs
+				}
+				name := "_mcpx_projection"
+				for i := 1; ; i++ {
+					if _, exists := defs[name]; !exists {
+						break
+					}
+					name = fmt.Sprintf("_mcpx_projection_%d", i)
+				}
+				projected := "#/$defs/" + name
+				p.refs[ref] = projected // register before recursion, including cycles
+				copy := cloneSchemaValue(tm).(map[string]any)
+				defs[name] = copy
+				m["$ref"] = projected
+				p.hidePropsAtScope(copy)
 			}
 		}
+	}
+}
+
+func cloneSchemaValue(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, value := range v {
+			out[k] = cloneSchemaValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, value := range v {
+			out[i] = cloneSchemaValue(value)
+		}
+		return out
+	default:
+		return v
 	}
 }
 
