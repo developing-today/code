@@ -325,6 +325,12 @@ export interface QuotaView {
   /** Gatherer overlay provenance (#1151); absent when no
    * quota-current.json was read. Additive for existing consumers. */
   gatherer?: GathererSummary;
+  /** Feed-load sanitization counts (#2429): present only when the
+   * loader dropped malformed pools/windows/burn segments, so an
+   * incomplete read is distinguishable from a successful empty one
+   * in the public payload (/api/quota.json projects this view).
+   * Additive for existing consumers. */
+  dropped?: { pools: number; windows: number; burn: number };
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {

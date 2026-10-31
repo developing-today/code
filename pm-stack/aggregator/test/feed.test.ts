@@ -203,6 +203,20 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     expect(out.view).toEqual(q);
   });
 
+  test("choices are reconciled to surviving pools with usable windows", () => {
+    const noWindows = { ...POOL, windows: [null] };
+    const out = sanitizeQuotaView(quotaWith([noWindows]) as never);
+    expect(out.view.pools.length).toBe(1);
+    expect(out.view.choices).toEqual({ hasHeadroom: [], burnBeforeReset: [], doNotStart: [] });
+    expect(out.view.dropped).toEqual({ pools: 0, windows: 1, burn: 0 });
+  });
+
+  test("a dropped pool leaves the retained choices and surfaces dropped on the view", () => {
+    const out = sanitizeQuotaView(quotaWith([null, POOL]) as never);
+    expect(out.view.choices.hasHeadroom).toEqual(["opencode-go"]);
+    expect(out.view.dropped).toEqual({ pools: 1, windows: 0, burn: 0 });
+  });
+
   test("loadFeed returns the sanitized remainder with drop counts attached", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-feed-quota-"));
     const file = join(dir, "feed.json");
@@ -213,6 +227,7 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     expect(loaded?.quota.pools.length).toBe(1);
     expect(loaded?.quota.pools[0]?.windows).toEqual([WINDOW]);
     expect(loaded?.quotaDropped).toEqual({ pools: 1, windows: 1, burn: 0 });
+    expect(loaded?.quota.dropped).toEqual({ pools: 1, windows: 1, burn: 0 });
   });
 
   test("loadFeed rejects a feed missing burn/choices (fixture-fallback path)", async () => {

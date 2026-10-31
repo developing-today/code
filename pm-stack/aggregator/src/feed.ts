@@ -340,11 +340,31 @@ export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
     return out;
   });
   const burn = arrayOf(isBurnSegment)(quota.burn);
+  const droppedPools = pools?.dropped ?? 0;
+  const droppedBurn = burn?.dropped ?? 0;
+  // Guidance must describe the surviving usable pools only: the
+  // retained choices were computed over the pre-sanitization pools,
+  // and computeChoices() (quota-guidance.ts) gives no guidance for a
+  // pool with no windows — so filter every list to kept pools that
+  // still have windows. A pool whose data was discarded must not
+  // stay recommended under hasHeadroom or burnBeforeReset.
+  const usable = new Set(keptPools.filter((p) => p.windows.length > 0).map((p) => p.id));
+  const choices = {
+    hasHeadroom: quota.choices.hasHeadroom.filter((id) => usable.has(id)),
+    burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
+    doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
+  };
+  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  // Surface the loss on the view itself (its consumers project the
+  // view, e.g. /api/quota.json), not only on the feed wrapper.
+  if (droppedPools + droppedWindows + droppedBurn > 0) {
+    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  }
   return {
-    view: { ...quota, pools: keptPools, burn: burn?.values ?? [] },
-    droppedPools: pools?.dropped ?? 0,
+    view,
+    droppedPools,
     droppedWindows,
-    droppedBurn: burn?.dropped ?? 0,
+    droppedBurn,
   };
 }
 
