@@ -276,6 +276,7 @@ func TestADeclarationLineCannotLexTheBody(t *testing.T) {
 		t.Errorf("the code reference was not substituted:\n%s", out)
 	}
 }
+
 // TestJSONDefaultsWithBracketsInsideStrings pins #1671: a JSON default
 // whose string values contain bracket characters must survive Parse
 // whole — splitDefault counted brackets with no string state, so the
