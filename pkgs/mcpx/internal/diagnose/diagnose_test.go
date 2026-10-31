@@ -199,3 +199,91 @@ func TestACallInsideAnotherCallIsStillACall(t *testing.T) {
 		t.Fatalf("expected the nested call to be diagnosed, got %+v", ds)
 	}
 }
+
+// fieldCatalog is a tool whose declared arguments are the ones the
+// #1646 misattribution shapes collide over: short names that hide
+// inside longer ordinary words ("id"/"valid" in "invalid", "name" in
+// "unnamed").
+func fieldCatalog() diagnose.Catalog {
+	return diagnose.Catalog{
+		Tools: []diagnose.Tool{
+			{
+				Namespace: "demo", Name: "update_record", Func: "update_record",
+				Shape: diagnose.Shape{
+					Props: map[string]string{
+						"id": "string", "valid": "boolean", "name": "string",
+						"query": "string", "x": "string", "user_id": "string",
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestAFieldNamedOnlyInsideAnotherWordIsNotBlamed(t *testing.T) {
+	// #1646 BUG-A/BUG-B/BUG-C and the contract controls pinned by the
+	// triage on the issue: token boundaries first, quote preference
+	// second, longest name within a class, no separator folding.
+	cases := []struct {
+		name, message, want string
+	}{
+		{"BUG-A: id inside invalid names nothing", "the value is invalid", ""},
+		{"BUG-B: name inside unnamed names nothing", "unnamed field rejected", ""},
+		{"BUG-C: valid inside invalid loses to the named id", "invalid value for id", "id"},
+		{"BUG-C quoted: valid inside invalid loses to the quoted id", "invalid value: 'id' must be a string", "id"},
+		{"control: double-quoted query", `argument "query" is malformed`, "query"},
+		{"control: single-quoted x", "argument 'x' has the wrong type", "x"},
+		{"control: bare x is required phrasing", "x is required", "x"},
+		{"quote preference beats a longer bare token", "valid syntax but 'id' is the wrong one", "id"},
+		{"longest wins within the quoted class", `field "user_id" is bad`, "user_id"},
+		{"longest wins within the bare class", "user_id is bad", "user_id"},
+		{"a hyphen is a token boundary for id", "user-id is not allowed", "id"},
+		{"matching stays case-sensitive", "ID is missing", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ds := diagnose.CallError(diagnose.CallErrorInput{
+				Namespace: "demo", Tool: "update_record",
+				Code:    diagnose.InvalidParams,
+				Message: c.message,
+			}, fieldCatalog())
+			if len(ds) != 1 {
+				t.Fatalf("expected one diagnostic, got %+v", ds)
+			}
+			if ds[0].Field != c.want {
+				t.Errorf("message %q: field = %q, want %q", c.message, ds[0].Field, c.want)
+			}
+		})
+	}
+}
+
+func TestASeparatorVariantDoesNotNameTheUnderscoredProp(t *testing.T) {
+	// Contract point 4 in isolation: with only user_id declared, the
+	// hyphenated spelling in the message must not be folded into it.
+	cat := diagnose.Catalog{
+		Tools: []diagnose.Tool{
+			{
+				Namespace: "demo", Name: "update_record", Func: "update_record",
+				Shape: diagnose.Shape{
+					Props: map[string]string{"user_id": "string"},
+				},
+			},
+		},
+	}
+	ds := diagnose.CallError(diagnose.CallErrorInput{
+		Namespace: "demo", Tool: "update_record",
+		Code:    diagnose.InvalidParams,
+		Message: "user-id is not allowed",
+	}, cat)
+	if len(ds) != 1 || ds[0].Field != "" {
+		t.Fatalf("expected the generic diagnostic, got %+v", ds)
+	}
+	ds = diagnose.CallError(diagnose.CallErrorInput{
+		Namespace: "demo", Tool: "update_record",
+		Code:    diagnose.InvalidParams,
+		Message: "user_id is not allowed",
+	}, cat)
+	if len(ds) != 1 || ds[0].Field != "user_id" {
+		t.Fatalf("expected user_id to be named, got %+v", ds)
+	}
+}
