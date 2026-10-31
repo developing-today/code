@@ -70,6 +70,20 @@
 //! arguments containing operator characters (`get "a<<b"`,
 //! `get $(echo ')')`) preprocess the way a shell user expects.
 //!
+//! # Rescan Boundary
+//!
+//! Content a stage inserts into the line is a protected span that
+//! later stages never rescan:
+//!
+//! - Here-string content — single-quoted, double-quoted, or
+//!   unquoted — is stored literally: a `$(...)` or backtick span
+//!   inside it is text, not a substitution (#2281).
+//! - `$(...)` output is data, not source: the backtick stage never
+//!   rescans it, so backticks in captured output stay literal.
+//!
+//! Substitutions written in the typed line itself, outside any
+//! inserted content, still execute exactly as documented above.
+//!
 //! # Content Markers
 //!
 //! When preprocessing detects inline content (from `$()`, here-strings, or pipes),
@@ -870,6 +884,74 @@ mod tests {
         match preprocess_repl_line("put - $(printf name) <<< \"O'Reilly\"").unwrap() {
             ReplInput::Ready(s) => {
                 assert_eq!(s, "put __STDIN_CONTENT__:O'Reilly name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_substitution_is_literal() {
+        // #2281 regression: single-quoted here-string content is
+        // documented literal; the $(...) stage must not rescan the
+        // content the here-string stage inserted and execute it.
+        match preprocess_repl_line("put - name <<< 'price $(echo SUBSTITUTED) end'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_backticks_are_literal() {
+        // #2281 regression: same boundary for the backtick stage.
+        match preprocess_repl_line("put - name <<< 'a `echo TICK` b'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(s, "put __STDIN_CONTENT__:a `echo TICK` b name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_substitution_output_backticks_are_not_rescanned() {
+        // #2281 regression: $(...) output containing backticks is a
+        // protected span; the backtick stage must not execute it.
+        match preprocess_repl_line("get $(printf '`echo TICK`')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get `echo TICK`"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_double_quoted_substitution_is_literal() {
+        // #2281 pinned semantics: double-quoted here-string content is
+        // literal too — inserted content is never rescanned, whatever
+        // quote form carried it.
+        match preprocess_repl_line("put - name <<< \"price $(echo SUBSTITUTED) end\"").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_unquoted_substitution_is_literal() {
+        // #2281 pinned semantics: unquoted here-string content is
+        // likewise inserted as a protected span and never rescanned.
+        match preprocess_repl_line("put - name <<< price_$(echo SUBSTITUTED)_end").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price_$(echo SUBSTITUTED)_end name"
+                );
             }
             other => panic!("expected Ready, got {other:?}"),
         }
