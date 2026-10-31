@@ -625,27 +625,27 @@ func (s *Store) touch(m *Meta, now time.Time) error {
 	// reader's already-committed renewal with an older deadline --
 	// GC would collect the artifact before the latest reader's
 	// promised deadline.
-	res, err := s.db.Exec(`UPDATE artifacts SET last_touched=?, expires=?
+	// MAX on both columns: a concurrent store configured with a
+	// different idleTtl can compute a smaller renewal than one
+	// already persisted (or a larger one with an earlier
+	// last_touched). Neither column may ever move backwards,
+	// whatever order the touches commit in.
+	_, err := s.db.Exec(`UPDATE artifacts SET last_touched=MAX(last_touched, ?), expires=MAX(expires, ?)
 		WHERE id=? AND (expires < ? OR last_touched < ?)`,
 		now.UnixMilli(), expires.UnixMilli(), m.ID,
 		expires.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		// A concurrent renewal already persisted a deadline at
-		// least as new as this one. Return what is actually
-		// persisted rather than this caller's staler computation.
-		fresh, gerr := s.get(m.ID)
-		if gerr != nil {
-			return gerr
-		}
-		*m = fresh
-		return nil
+	// Return what is actually persisted rather than this caller's
+	// computation: a concurrent renewal may have persisted a
+	// deadline (or last-touch) at least as new as this one, and
+	// the MAX update above keeps that newer state.
+	fresh, gerr := s.get(m.ID)
+	if gerr != nil {
+		return gerr
 	}
-	m.LastTouched = now
-	m.Expires = expires
-	m.ExpiresAt = expires
+	*m = fresh
 	return nil
 }
 

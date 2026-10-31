@@ -165,3 +165,57 @@ func TestTouchStaleReaderDoesNotRegressRenewal(t *testing.T) {
 			persisted.LastTouched, persisted.Expires, later, wantExpires)
 	}
 }
+
+// Two processes can hold the same store open with different
+// artifacts.idleTtl values (the daemon and a CLI, say). Both snapshot
+// the artifact; the longer-window touch commits first; the
+// shorter-window touch lands second, from its stale snapshot, with a
+// LATER last_touched (so its WHERE guard passes) but a SMALLER
+// computed deadline. The update must never move expires backwards:
+// MAX in the UPDATE keeps the longer renewal, and the touch returns
+// the persisted state. Reverting to a plain SET makes this fail.
+func TestTouchShorterWindowDoesNotRegressLongerRenewal(t *testing.T) {
+	s, err := Open(Options{Dir: t.TempDir(), TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m, err := s.Put(strings.NewReader("hello"), PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two snapshots of the same pre-renewal state.
+	longSnap, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortSnap, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := m.Created.Add(30 * time.Minute).Truncate(time.Millisecond)
+	if err := s.touch(&longSnap, later); err != nil {
+		t.Fatal(err)
+	}
+	wantExpires := later.Add(2 * time.Hour)
+	// The shorter-window peer touches from its stale snapshot: later
+	// in wall-clock terms, but renewing by less.
+	s.opts.IdleTTL = 30 * time.Minute
+	shortNow := later.Add(10 * time.Minute)
+	if err := s.touch(&shortSnap, shortNow); err != nil {
+		t.Fatal(err)
+	}
+	if shortSnap.Expires.UnixMilli() != wantExpires.UnixMilli() {
+		t.Errorf("shorter-window touch returned expires %v, want the longer renewal %v", shortSnap.Expires, wantExpires)
+	}
+	persisted, err := s.get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Expires.UnixMilli() != wantExpires.UnixMilli() {
+		t.Errorf("persisted expires=%v, want %v (never regress)", persisted.Expires, wantExpires)
+	}
+	if persisted.LastTouched.UnixMilli() != shortNow.UnixMilli() {
+		t.Errorf("persisted lastTouched=%v, want %v (the later touch still counts)", persisted.LastTouched, shortNow)
+	}
+}
