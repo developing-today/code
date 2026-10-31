@@ -185,6 +185,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 
 	svc := &execsvc.Service{
 		Calls:    s.callRegistry(),
@@ -251,6 +252,12 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	svc := s.ExecService()
+	// exec.maxOutputBytes is call-scoped (settings/exec.go), so a value the
+	// client sent for this one request (--exec-max-output-bytes, forwarded
+	// via X-Mcpx-Settings) must govern this execution. ExecService builds
+	// from the daemon's cached startup settings and cannot see it; apply
+	// the request-resolved value to the service this request runs through.
+	svc.Limits.StdoutLimit = s.callSettings(r).Bytes("exec.maxOutputBytes")
 
 	// A task is a handle now and the result later, which is the right shape
 	// for a script that takes minutes: holding a request open that long
