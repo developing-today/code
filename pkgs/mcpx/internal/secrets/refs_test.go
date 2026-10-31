@@ -212,3 +212,17 @@ func TestReferencesManyComparisonsStayLinear(t *testing.T) {
 	}
 	t.Logf("16000 comparisons took %v", elapsed)
 }
+
+func TestReferencesDeeplyNestedParensStayLinear(t *testing.T) {
+	// Perf-guard companion (Codex round on f85c5f740): paren matches
+	// are precomputed in one stack pass, so deeply nested calls stay
+	// correct — and linear — at scale.
+	src := strings.Repeat("f(", 16000) + "1" + strings.Repeat(")", 16000) + "; tools.fs.read();"
+	start := time.Now()
+	got := References(src, only("fs"))
+	elapsed := time.Since(start)
+	if len(got) != 1 || got[0] != "fs" {
+		t.Fatalf("References(16000 nested parens) = %v; want [fs]", got)
+	}
+	t.Logf("16000 nested parens took %v", elapsed)
+}

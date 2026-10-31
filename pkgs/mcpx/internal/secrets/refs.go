@@ -451,6 +451,7 @@ func (l *lexer) blockEnd(i int) int {
 func declaredNames(toks []lexToken) map[string]bool {
 	out := map[string]bool{}
 	angles := angleEnds(toks)
+	parens := parenMatches(toks)
 	typeOnly := typeAliasMask(toks)
 	forHead := forHeadDecls(toks)
 	for i, t := range toks {
@@ -461,7 +462,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 		}
 		if t.kind == tPunct && t.text == "(" {
 			// An arrow function's parameter list: (...) => ...
-			if close := matchParen(toks, i); close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
+			if close := parens[i]; close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
 				if !isAnnotationTypeParen(toks, i) {
 					parseParams(toks, i, out, angles)
 				}
@@ -522,26 +523,38 @@ func declaredNames(toks []lexToken) map[string]bool {
 	return out
 }
 
-func matchParen(toks []lexToken, open int) int {
-	depth := 0
-	for j := open; j < len(toks); j++ {
-		if toks[j].kind != tPunct {
+// parenMatches computes, for every "(" token, the index of the token
+// that returns its bracket depth to zero, in one stack pass over the
+// stream. A bracket of any kind opens a level and any closer ends the
+// most recent level — the same pairing the former per-paren depth scan
+// produced — but precomputing keeps declaredNames linear: rescanning
+// the suffix at every "(" made deeply nested scripts quadratic.
+// matches[i] is -1 unless token i is "(" and its level is closed by ")".
+func parenMatches(toks []lexToken) []int {
+	matches := make([]int, len(toks))
+	for i := range matches {
+		matches[i] = -1
+	}
+	var stack []int
+	for i, t := range toks {
+		if t.kind != tPunct {
 			continue
 		}
-		switch toks[j].text {
+		switch t.text {
 		case "(", "[", "{":
-			depth++
+			stack = append(stack, i)
 		case ")", "]", "}":
-			depth--
-			if depth == 0 {
-				if toks[j].text == ")" {
-					return j
-				}
-				return -1
+			if len(stack) == 0 {
+				continue
+			}
+			open := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if toks[open].text == "(" && t.text == ")" {
+				matches[open] = i
 			}
 		}
 	}
-	return -1
+	return matches
 }
 
 // skipExpr advances past an expression, stopping before a token in stops
