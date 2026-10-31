@@ -156,6 +156,7 @@ for graph-native swaps, countersigned as part of the swap agreement, #2037 patte
 |---|---|---|
 | `offer` | hash | the offer **event ID** — a specific version, never "the current offer" |
 | `taker` | pubkey | the party debited `from_amount` and credited `to_amount` in the fold (§2 conversion fold); the offerer is the cited offer's author |
+| `taker_intent` | hash | the taker-signed intent this execution rests on: for anchored conversions, the hash of the taker's signed intent object (§5 step 3, Taker authorization); for graph-native swaps, the swap agreement itself (graph-native by construction, §5 step 5). A receipt citing no valid intent folds nothing (§2) |
 | `offerer_frontier` | hash | the offerer's chain head the executor verified at execution time (§5) |
 | `from_amount` | u128 | debited from the taker |
 | `to_amount` | u128 | credited to the taker, after rounding (§5) |
@@ -339,6 +340,14 @@ balances would move on an anchored conversion while graph balances did
 not, and the executed-object root comparison would reject a correctly
 executed conversion.
 
+**Authorization is a fold input, not just an execution check.** A receipt
+folds only when its `taker_intent` validates: the cited intent must be
+signed by the receipt's `taker` and must bind this offer event ID, these
+amounts, and this `conversion` ID (§5 step 3). An anchored receipt naming
+a taker with no valid signed intent folds nothing and fails §3 check 2 as
+unauthorized — a receipt is evidence an execution happened, and an
+execution nobody authorized is not one the fold may honour.
+
 ## 3. Snapshot anchoring and the reconciliation join
 
 **Balance-root construction.** Collect `(holder_pubkey, counted_balance)` for
@@ -513,7 +522,8 @@ step aborts before any leg is submitted.
    (offerer, pair) at that frontier, unexpired, with per-tx and cumulative
    caps not exhausted by already-executed conversions citing it (counted per
    step 6 — receipts, durable reservations, and recovered executed legs,
-   never receipts alone). A superseded or
+   never receipts alone). That count and the step-6 reservation are one
+   atomic, offer-scoped operation (step 6). A superseded or
    revoked offer fails here, cleanly, before value moves (abuse case 4).
    **Expiry clock policy:** `expires` (§1.5) is Unix epoch seconds, judged
    against the executor's own clock — for anchored conversions the service's
@@ -532,6 +542,17 @@ step aborts before any leg is submitted.
    definitions' `scale` values are already inside the rate as quoted, and
    adjusting again would transfer a different amount for the same signed
    offer.
+   **Taker authorization.** Before step 5 the executor MUST hold a valid
+   taker-signed intent and MUST verify its signature. The intent binds the
+   offer event ID, the amounts (`from_amount` and the computed
+   `to_amount`), the `conversion` ID, and an expiry; an intent naming a
+   different offer version, different amounts, or a different conversion —
+   or one past its expiry under the step 2 clock policy — authorizes
+   nothing, and the execution aborts here. Anchored: the intent is the
+   taker's signed intent object, cited in the receipt by hash
+   (`taker_intent`, §1.6). Graph-native: the bilateral swap agreement
+   (step 5) is the intent — both parties' signatures are on it before
+   either leg exists.
    **Zero-output rejection:** if the computed `to_amount` is 0 (a positive
    `from_amount` smaller than the rate's denominator, e.g. `from_amount = 1`
    at rate `1/2`), the executor MUST reject the conversion here — error
@@ -561,7 +582,18 @@ step aborts before any leg is submitted.
    Caps are never computed from receipts alone: a crash between step 5 and
    receipt emission would otherwise let a later execution re-spend the same
    allowance (value moved, cap unspent), and a graph-native taker could
-   withhold its own receipt after both legs land. The order is:
+   withhold its own receipt after both legs land.
+   **The cap check and the reservation are one atomic operation.** The
+   cumulative-cap check (steps 2–3) and the reservation write below are a
+   single offer-scoped atomic step: the reservation write is the
+   linearization point. An executor MUST hold per-offer serialization, or
+   perform an atomic compare-and-reserve against the durable log, such
+   that two concurrent executors cannot both pass the check against the
+   same unspent cap; after reserving, each executor re-reads the cap state
+   its reservation created before proceeding to step 5. Check-then-reserve
+   as two separate steps is non-conformant — it reopens exactly the
+   double-spend window this step exists to close.
+   The order is:
    - **Before step 5**, the executor durably records a **cap reservation**:
      the `conversion` ID, the cited offer, and `from_amount`. Anchored: the
      service's durable execution log, written before the legs are submitted.
