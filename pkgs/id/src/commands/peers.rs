@@ -469,12 +469,21 @@ mod tests {
     use crate::discovery::PeerDiscovery;
     use iroh_base::SecretKey;
 
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     fn announcement(byte: u8, name: Option<&str>) -> PeerAnnouncement {
         PeerAnnouncement {
             node_id: SecretKey::from_bytes(&[byte; 32]).public(),
             name: name.map(ToOwned::to_owned),
             blob_count: 7,
-            timestamp_secs: 1_700_000_000,
+            // Fresh stamp: PeerDiscovery::update refuses announcements
+            // older than STALE_THRESHOLD relative to the wall clock.
+            timestamp_secs: now_secs(),
         }
     }
 
@@ -555,7 +564,7 @@ mod tests {
             );
         }
 
-        let now = 1_700_000_120;
+        let now = now_secs() + 120;
         let mut rows: Vec<String> = peers.iter().map(format_peer_row).collect();
         rows.extend(
             peers
