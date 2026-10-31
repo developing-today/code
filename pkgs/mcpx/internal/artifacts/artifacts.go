@@ -188,9 +188,37 @@ func Open(opts Options) (*Store, error) {
 // a zero stamp, which scan renders as their creation time -- the
 // correct anchor, since creation is the one touch they have had.
 func ensureLastTouched(db *sql.DB) error {
+	// Concurrent openers (the daemon and a local CLI first opening the
+	// same legacy store) can both observe the column absent and both
+	// ALTER: the loser's ALTER fails with "duplicate column name" even
+	// though the schema is now exactly right, and the daemon caches an
+	// Open error from that race until restart. So: check, alter, and
+	// on failure loop back to the check -- success is the column
+	// existing, whoever added it; only an alteration that keeps
+	// failing with the column still absent is a real error.
+	var alterErr error
+	for range 50 {
+		has, err := hasLastTouchedColumn(db)
+		if err != nil {
+			return err
+		}
+		if has {
+			return nil
+		}
+		if _, err := db.Exec(`ALTER TABLE artifacts ADD COLUMN last_touched INTEGER NOT NULL DEFAULT 0`); err == nil {
+			return nil
+		} else {
+			alterErr = err
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	return alterErr
+}
+
+func hasLastTouchedColumn(db *sql.DB) (bool, error) {
 	rows, err := db.Query(`PRAGMA table_info(artifacts)`)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -198,18 +226,13 @@ func ensureLastTouched(db *sql.DB) error {
 		var name, typ string
 		var dflt sql.NullString
 		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
-			return err
+			return false, err
 		}
 		if name == "last_touched" {
-			return nil
+			return true, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	_, err = db.Exec(`ALTER TABLE artifacts ADD COLUMN last_touched INTEGER NOT NULL DEFAULT 0`)
-	return err
+	return false, rows.Err()
 }
 
 // Close releases the index handle.
@@ -703,11 +726,39 @@ func (s *Store) GC(now time.Time) (int, error) {
 	}
 	n := 0
 	for _, id := range ids {
-		if err := s.Delete(id); err == nil {
+		if gone, err := s.deleteExpired(id, now); err == nil && gone {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// deleteExpired removes one registration only if it is STILL expired
+// at the moment of deletion, and reports whether it removed anything.
+// The expiry recheck lives in the DELETE itself: GC selects expired
+// ids up front, and with touch-on-read enabled a Get can renew one of
+// them before GC reaches it -- an unconditional delete would remove
+// the renewed registration (and sweep its blob) despite the reader's
+// promised new deadline. The blob is swept only when the conditional
+// delete actually removed the row.
+func (s *Store) deleteExpired(id string, now time.Time) (bool, error) {
+	m, err := s.get(id)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.Exec(`DELETE FROM artifacts WHERE id = ? AND expires <= ?`,
+		id, now.UnixMilli())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	return true, s.sweepBlob(m.SHA256)
 }
 
 // Export places an artifact in a directory the caller named.
