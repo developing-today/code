@@ -180,6 +180,21 @@ func warnSink(opts Options) io.Writer {
 	return os.Stderr
 }
 
+// workDirKeyMaterial is the WorkRoot directory key's input: the
+// runtime kind, the client source, and the dependency set's
+// fingerprint. For Deno the generated deno.json also carries the
+// project's own configuration (see materialiseDeps), which the dep
+// fingerprint does not cover, so its identity joins the key -- two
+// projects with identical payloads would otherwise share one workdir
+// and overwrite each other's config (Codex review, PR #2589).
+func workDirKeyMaterial(kind string, opts Options) string {
+	material := kind + "\x00" + opts.ClientSource + "\x00" + opts.Deps.fingerprint()
+	if kind == KindDeno && opts.Deps != nil {
+		material += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
+	}
+	return material
+}
+
 // Run generates the client, writes the script and executes it.
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
@@ -198,23 +213,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			return nil, err
 		}
 	case opts.WorkRoot != "":
-		// The key hashes the dependency set's fingerprint beside the
-		// client source: runs sharing a client but resolving different
-		// packages get different directories, so materialised
-		// package.json / deno.json / lockfiles / node_modules from one
-		// set can never leak into another set's run -- or into a run
-		// with no set at all (Codex review, PR #2589).
-		keyMaterial := opts.ClientSource + "\x00" + opts.Deps.fingerprint()
-		if rt.Kind == KindDeno && opts.Deps != nil {
-			// The generated deno.json also carries the project's own
-			// configuration (see materialiseDeps), which the dep
-			// fingerprint does not cover: include its identity or
-			// two projects with identical payloads would share one
-			// workdir and overwrite each other's config (Codex
-			// review, PR #2589).
-			keyMaterial += "\x00" + projectDenoConfigIdentity(depsProjectDir(opts))
-		}
-		sum := sha256.Sum256([]byte(keyMaterial))
+		// The key hashes the runtime kind and the dependency set's
+		// fingerprint beside the client source: runs sharing a client
+		// but resolving different packages get different directories,
+		// so materialised package.json / deno.json / lockfiles /
+		// node_modules from one set can never leak into another set's
+		// run -- or into a run with no set at all (Codex review,
+		// PR #2589). The runtime belongs in the key because Node and
+		// Bun payloads can be identical while carrying separate npm
+		// and Bun lockfiles: sharing one directory would let a later
+		// Node install delete a live Bun run's dependencies (Codex
+		// review, PR #2589, ace6c3609 round).
+		sum := sha256.Sum256([]byte(workDirKeyMaterial(rt.Kind, opts)))
 		workDir = filepath.Join(opts.WorkRoot, hex.EncodeToString(sum[:])[:16])
 		if err := os.MkdirAll(workDir, 0o700); err != nil {
 			return nil, err

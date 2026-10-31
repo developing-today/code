@@ -277,6 +277,38 @@ func TestAPinInsideTheManifestRangeIsNotAConflict(t *testing.T) {
 	}
 }
 
+// TestAbbreviatedRelationalBoundsDesugarAtWrittenPrecision is the
+// Codex finding on PR #2589 (config.go, ace6c3609 round): the relational
+// branches zero-filled abbreviated bounds, so foo: ">1" admitted
+// foo@1.0.1. npm desugars >1 to >=2.0.0, >1.2 to >=1.3.0, <=1 to
+// <2.0.0 and <=1.2 to <1.3.0.
+func TestAbbreviatedRelationalBoundsDesugarAtWrittenPrecision(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"gt":">1","gtminor":">1.2","le":"<=1","leminor":"<=1.2"}}`)
+	for _, spec := range []string{"gt@2.0.0", "gt@3.1.0", "gtminor@1.3.0", "le@1.9.9", "leminor@1.2.9"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the manifest range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	for _, spec := range []string{"gt@1.0.1", "gt@1.9.9", "gtminor@1.2.9", "le@2.0.0", "leminor@1.3.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s is outside the manifest range and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}
+
 // TestAnExplicitlyNamedManifestThatIsMissingFails is the Codex finding on
 // PR #2589 (chain.go): discovery tolerates finding nothing, but a manifest
 // the caller named by path must not vanish silently.

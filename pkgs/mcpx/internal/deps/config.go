@@ -276,12 +276,30 @@ func satisfiesToken(tok string, v semver) bool {
 		}
 		return v.nums[0] == base.nums[0] && v.nums[1] == base.nums[1]
 	case ">":
+		// An abbreviated bound desugars at its written precision:
+		// >1 is >=2.0.0 and >1.2 is >=1.3.0 (npm) -- zero-filling
+		// the bound to 1.0.0 / 1.2.0 would admit versions the
+		// range excludes (foo: ">1" must not admit 1.0.1).
+		if base.arity == 1 {
+			return compareSemver(v, semver{nums: [3]int{base.nums[0] + 1, 0, 0}}) >= 0
+		}
+		if base.arity == 2 {
+			return compareSemver(v, semver{nums: [3]int{base.nums[0], base.nums[1] + 1, 0}}) >= 0
+		}
 		return cmp > 0
 	case ">=":
 		return cmp >= 0
 	case "<":
 		return cmp < 0
 	case "<=":
+		// <=1 is <2.0.0 and <=1.2 is <1.3.0 (the same npm
+		// desugaring), not <= of the zero-filled tuple.
+		if base.arity == 1 {
+			return compareSemver(v, semver{nums: [3]int{base.nums[0] + 1, 0, 0}}) < 0
+		}
+		if base.arity == 2 {
+			return compareSemver(v, semver{nums: [3]int{base.nums[0], base.nums[1] + 1, 0}}) < 0
+		}
 		return cmp <= 0
 	case "~":
 		// ~1 is ~ at major precision: any 1.x. ~1.2 and ~1.2.3 pin
