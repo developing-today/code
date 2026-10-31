@@ -91,7 +91,7 @@ func Expand(t Template, fill Fill, opt Options) (string, error) {
 	if err := checkAcyclic(t, fill); err != nil {
 		return "", err
 	}
-	if err := checkUnknown(t, fill); err != nil {
+	if err := checkUnknown(t, fill, opt.Defs); err != nil {
 		return "", err
 	}
 
@@ -349,7 +349,15 @@ func refs(text string, fill Fill) []Placeholder {
 // A typo silently leaves the text in place, producing a syntax error from the
 // runtime that points at a line the user did not write. Catching it here
 // means the message names the misspelling and lists what was available.
-func checkUnknown(t Template, fill Fill) error {
+//
+// The scan covers every text that can reach the generated launcher -- the
+// template text, the fill bodies, and the definition bodies and defaults --
+// and the known names are every name a reference could legitimately mean:
+// the built-ins, the fill keys, the definition names and their parameters.
+// Until #1681 only the template text was scanned and only the built-ins
+// counted as near-miss targets, so a typo of a user-defined name, or any
+// typo inside a body, passed silently and landed in the launcher verbatim.
+func checkUnknown(t Template, fill Fill, defs []Definition) error {
 	known := map[string]bool{}
 	for _, p := range All {
 		known[string(p)] = true
@@ -357,26 +365,44 @@ func checkUnknown(t Template, fill Fill) error {
 	for p := range fill {
 		known[string(p)] = true
 	}
+	for _, d := range defs {
+		known[string(d.Name)] = true
+		for _, param := range d.Params {
+			known[param] = true
+		}
+	}
+	texts := []string{t.Text}
+	for _, body := range fill {
+		texts = append(texts, body)
+	}
+	for _, d := range defs {
+		texts = append(texts, d.Body)
+		for _, def := range d.Defaults {
+			texts = append(texts, def)
+		}
+	}
 	var bad []string
 	seen := map[string]bool{}
-	for i := 0; i < len(t.Text); i++ {
-		if t.Text[i] != '@' {
-			continue
-		}
-		ref, ok := readRef(t.Text[i:])
-		if !ok {
-			continue
-		}
-		name := string(ref.Name)
-		i += max(ref.Width-1, 0)
-		if known[name] || seen[name] {
-			continue
-		}
-		// Only complain about names that look deliberate. An email address
-		// or a decorator should not trip this.
-		if looksLikePlaceholder(name) {
-			seen[name] = true
-			bad = append(bad, "@"+name)
+	for _, text := range texts {
+		for i := 0; i < len(text); i++ {
+			if text[i] != '@' {
+				continue
+			}
+			ref, ok := readRef(text[i:])
+			if !ok {
+				continue
+			}
+			name := string(ref.Name)
+			i += max(ref.Width-1, 0)
+			if known[name] || seen[name] {
+				continue
+			}
+			// Only complain about names that look deliberate. An email
+			// address or a decorator should not trip this.
+			if looksLikePlaceholder(name, known) {
+				seen[name] = true
+				bad = append(bad, "@"+name)
+			}
 		}
 	}
 	if len(bad) == 0 {
@@ -387,8 +413,25 @@ func checkUnknown(t Template, fill Fill) error {
 	for _, p := range All {
 		names = append(names, "@"+string(p))
 	}
+	var extra []string
+	for name := range known {
+		if !containsPlaceholder(All, name) {
+			extra = append(extra, "@"+name)
+		}
+	}
+	sort.Strings(extra)
+	names = append(names, extra...)
 	return fmt.Errorf("%s: unknown placeholder %s; available are %s",
 		t.Name, strings.Join(bad, ", "), strings.Join(names, " "))
+}
+
+func containsPlaceholder(all []Placeholder, name string) bool {
+	for _, p := range all {
+		if string(p) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // looksLikePlaceholder is a near-miss test against the known names. It is
@@ -399,9 +442,9 @@ func checkUnknown(t Template, fill Fill) error {
 // one -- the transposition case ("entyr" for "entry") is one edit there,
 // where this file used to keep its own pair of helpers to say the same
 // thing.
-func looksLikePlaceholder(name string) bool {
-	for _, p := range All {
-		if nearmiss.Near(name, string(p)) {
+func looksLikePlaceholder(name string, known map[string]bool) bool {
+	for p := range known {
+		if nearmiss.Near(name, p) {
 			return true
 		}
 	}
