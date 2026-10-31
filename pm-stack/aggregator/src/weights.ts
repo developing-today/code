@@ -34,7 +34,10 @@ export function effortWeight(labels: readonly string[] | undefined): number | nu
     const label = raw.trim().toLowerCase();
     if (!label.startsWith("effort/")) continue;
     const size = label.slice("effort/".length);
-    const w = EFFORT_WEIGHTS[size];
+    // Own-key lookup: EFFORT_WEIGHTS is a plain object literal, so an
+    // inherited member (effort/constructor, effort/__proto__) must not
+    // resolve as a weight (#2734).
+    const w = Object.hasOwn(EFFORT_WEIGHTS, size) ? EFFORT_WEIGHTS[size] : undefined;
     if (w !== undefined) return w;
   }
   return null;
