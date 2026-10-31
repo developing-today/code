@@ -274,6 +274,34 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
 });
 
+test('CLI transport: cached_input_tokens surfaces as prompt_tokens_details.cached_tokens (#3114)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  // Non-stream: the exec stub's turn.completed carries cached_input_tokens 93.
+  const plainRes = await post(port, { messages: TURN1 });
+  assert.equal(plainRes.status, 200);
+  const plain = JSON.parse(await plainRes.text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 93, 'CLI transport must surface cached_input_tokens as prompt_tokens_details.cached_tokens (opencode #394)');
+
+  // The resumed turn's stub usage has NO cached_input_tokens: the detail
+  // object must be omitted entirely, not emitted as 0.
+  const r2 = await post(port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  const resumed = JSON.parse(await r2.text());
+  assert.equal(resumed.choices[0].message.content, 'resumed answer');
+  assert.equal(resumed.usage.prompt_tokens_details, undefined, 'absent cache value must omit prompt_tokens_details entirely');
+
+  // Stream: the end chunk carries the same cached_tokens for a fresh run.
+  const streamRes = await post(port, { messages: [{ role: 'user', content: 'gamma streaming question' }], stream: true });
+  assert.equal(streamRes.status, 200);
+  const sse = await streamRes.text();
+  const events = sse.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]')).map(l => JSON.parse(l.slice('data: '.length)));
+  const endChunk = events.find(e => e.usage);
+  assert.ok(endChunk, 'stream end chunk must carry usage');
+  assert.equal(endChunk.usage.prompt_tokens_details.cached_tokens, 93, 'streaming CLI transport must surface cached_tokens');
+});
+
 test('execution failure with no output: 500 non-stream, SSE error + [DONE] stream (#676)', async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);

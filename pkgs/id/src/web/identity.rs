@@ -803,12 +803,27 @@ fn base64url_decode(encoded: &str) -> Option<Vec<u8>> {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
         let c = decode_char(bytes[i + 2])?;
+        // Canonical spelling only (#1840): three characters carry
+        // two bytes, so the final character's low 2 bits are unused.
+        // The encoder zeroes them; a spelling that sets them decodes
+        // to the same bytes, which made every token malleable into
+        // alias strings that all verified. Refuse them here, at the
+        // single choke point every verify path funnels through.
+        if c & 0x03 != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12) | (c << 6);
         data.push((triple >> 16) as u8);
         data.push((triple >> 8) as u8);
     } else if remaining == 2 {
         let a = decode_char(bytes[i])?;
         let b = decode_char(bytes[i + 1])?;
+        // Same refusal for the two-character final group: it carries
+        // one byte, so the final character's low 4 bits are unused
+        // and must be zero (#1840).
+        if b & 0x0F != 0 {
+            return None;
+        }
         let triple = (a << 18) | (b << 12);
         data.push((triple >> 16) as u8);
     } else if remaining == 1 {
@@ -887,6 +902,38 @@ mod tests {
     }
 
     #[test]
+    fn test_base64url_decode_refuses_trailing_bit_aliases() {
+        // #1840: the final character of an unpadded encoding carries
+        // unused low bits (2 for a 3-char final group, 4 for a 2-char
+        // one). The canonical encoder zeroes them; a spelling that
+        // sets them decodes to the same bytes, so a token had up to
+        // 16 alias strings that all verified. Decode refuses the
+        // non-canonical spellings outright.
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let alias = |encoded: &str, mask: u32| -> String {
+            let mut bytes = encoded.as_bytes().to_vec();
+            let last = bytes.len() - 1;
+            let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+            assert_eq!(value & mask, 0, "canonical encoding zeroes the trailing bits");
+            bytes[last] = ALPHABET[(value | mask) as usize];
+            String::from_utf8(bytes).unwrap()
+        };
+        // 2-byte input -> 3-char final group, low 2 bits unused.
+        let data2 = [0xABu8, 0xCD];
+        let enc2 = base64url_encode(&data2);
+        assert_eq!(base64url_decode(&enc2).unwrap(), data2);
+        assert!(base64url_decode(&alias(&enc2, 0b01)).is_none());
+        assert!(base64url_decode(&alias(&enc2, 0b10)).is_none());
+        // 1-byte input -> 2-char final group, low 4 bits unused.
+        let data1 = [0xABu8];
+        let enc1 = base64url_encode(&data1);
+        assert_eq!(base64url_decode(&enc1).unwrap(), data1);
+        assert!(base64url_decode(&alias(&enc1, 0b0001)).is_none());
+        assert!(base64url_decode(&alias(&enc1, 0b1000)).is_none());
+    }
+
+    #[test]
     fn test_base64url_no_padding() {
         let encoded = base64url_encode(b"test");
         assert!(!encoded.contains('='), "Should not contain padding");
@@ -917,6 +964,34 @@ mod tests {
 
         let verified = store.verify_token(&token).await.unwrap();
         assert_eq!(verified.name, None);
+    }
+
+    #[tokio::test]
+    async fn test_token_trailing_bit_alias_refused() {
+        // #1840 at the token level: respelling a real issued token by
+        // setting the final character's unused trailing bits must not
+        // verify, while the canonical spelling still does. The token
+        // byte length fixes the final group: %4==3 chars -> low 2 bits
+        // unused, %4==2 chars -> low 4 bits unused.
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let store = IdentityStore::new_ephemeral();
+        let (token, _) = store.register(Some("Alice".to_owned())).await.unwrap();
+        assert!(store.verify_token(&token).await.is_some());
+        let mask: u32 = match token.len() % 4 {
+            3 => 0b01,
+            2 => 0b0001,
+            other => panic!("issued token should end in a partial group, got len%4={other}"),
+        };
+        let mut bytes = token.as_bytes().to_vec();
+        let last = bytes.len() - 1;
+        let value = ALPHABET.iter().position(|&c| c == bytes[last]).unwrap() as u32;
+        assert_eq!(value & mask, 0, "canonical spelling zeroes the trailing bits");
+        bytes[last] = ALPHABET[(value | mask) as usize];
+        let alias = String::from_utf8(bytes).unwrap();
+        assert_ne!(alias, token);
+        assert!(store.verify_token(&alias).await.is_none());
+        assert!(store.verify_token_client_id(&alias).is_none());
     }
 
     #[tokio::test]
