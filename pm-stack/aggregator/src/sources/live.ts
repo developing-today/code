@@ -23,6 +23,7 @@ import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../regist
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { applyCloudflareExport, applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
@@ -920,15 +921,15 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           .catch(() => null);
         // #3124: the feed's charges win/merge here too — prose
         // extraction is the fallback for when the feed carries none,
-        // never a reason to drop the ones it does carry. Dedupe on
-        // the full row identity so a charge present in both the feed
-        // and the prose appears once.
-        const chargeKey = (c: ChargeRow) => [c.at, c.label, c.amountUsd, c.method, c.source].join("|");
-        const feedChargeKeys = new Set(feedCharges.map(chargeKey));
+        // never a reason to drop the ones it does carry. The merge is
+        // charge-level (mergeChargeRows): the same charge recorded in
+        // both places differs in label/date/source strings, so
+        // full-row equality would display it twice; automatic
+        // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           payg: extractPaygLines(doc, registryText),
-          charges: [...feedCharges, ...extractCharges(doc, registryText).filter((c) => !feedChargeKeys.has(chargeKey(c)))],
+          charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
         partial.services = await tursoOverlay(cfg, partial.services);

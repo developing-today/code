@@ -97,6 +97,26 @@ describe("live source usage(): feed charges outside the saas gate (#3124)", () =
     expect(usage.attention.filter((a) => a.kind === "unmatched-charge")).toHaveLength(1);
   });
 
+  test("quota-view fallback: a charge recorded in both the feed and the prose appears once (feed row wins)", async () => {
+    // The prose extractor builds its own row for this charge (label
+    // "Meta PAYG spill", date 2026-10-25, descriptive source string);
+    // the feed row is the same charge with different strings. The
+    // charge-level merge must keep exactly one row — the feed's.
+    const feedRow: ChargeRow = {
+      at: "2026-10-27",
+      label: "Meta PAYG spill",
+      amountUsd: 42.5,
+      method: "Visa •7535",
+      source: "plaid",
+    };
+    const src = await sourceWith({
+      feedOver: { charges: [feedRow] },
+      quotaView: `${VIEW}\n\nVisa •7535 — $42.50 charged + $42.50 charged\n`,
+    });
+    const usage = await src.usage();
+    expect(usage.charges).toEqual([feedRow]);
+  });
+
   test("feed-saas path unchanged: charges + flags come from the feed as before", async () => {
     const src = await sourceWith({
       feedOver: {
