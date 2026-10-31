@@ -11,6 +11,7 @@
 import type { Schema } from "prosemirror-model";
 import { Plugin, PluginKey } from "prosemirror-state";
 import { Decoration, DecorationSet, type EditorView } from "prosemirror-view";
+import { insertPoint } from "prosemirror-transform";
 
 // ============================================================================
 // Constants
@@ -263,23 +264,42 @@ function handleImageUpload(
     // Insert strictly after every earlier batch member's step (#1323).
     await insertionGate;
 
-    // Remove placeholder
+    if (outcome.ok) {
+      try {
+        // Find where to insert (placeholder position may have shifted).
+        // The placeholder may be gone (its range was deleted while the
+        // upload was in flight); then fall back to the captured insert
+        // position, clamped into the current document range — the doc
+        // may have shrunk past it, and inserting there would throw and
+        // silently lose a successfully uploaded image (#1379).
+        const decos = imageUploadKey.getState(view.state);
+        const found = decos?.find(undefined, undefined, (spec) => spec.id === id);
+        const wanted = found && found.length > 0 ? found[0].from : insertPos;
+        const clamped = Math.max(0, Math.min(wanted, view.state.doc.content.size));
+        const pos = insertPoint(view.state.doc, clamped, view.state.schema.nodes.image) ?? clamped;
+
+        // Insert the image and remove the placeholder in one step.
+        const insertTr = view.state.tr;
+        insertTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
+        const imageNode = view.state.schema.nodes.image.create({
+          src: outcome.result.url,
+          alt: outcome.result.name || fileName,
+        });
+        insertTr.insert(pos, imageNode);
+        view.dispatch(insertTr);
+        return;
+      } catch (err) {
+        // Distinct from an upload failure: the upload succeeded, the
+        // document insert failed. Never surface this as "Upload
+        // failed" and never let it escape as an unhandled rejection
+        // (#1379).
+        console.warn(`[image-upload] Insertion failed for ${fileName}:`, err);
+      }
+    }
+
+    // Upload failed or insertion failed: remove only the placeholder.
     const removeTr = view.state.tr;
     removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
-
-    if (outcome.ok) {
-      // Find where to insert (placeholder position may have shifted)
-      const decos = imageUploadKey.getState(view.state);
-      const found = decos?.find(undefined, undefined, (spec) => spec.id === id);
-      const pos = found && found.length > 0 ? found[0].from : insertPos;
-
-      // Insert image node
-      const imageNode = view.state.schema.nodes.image.create({
-        src: outcome.result.url,
-        alt: outcome.result.name || fileName,
-      });
-      removeTr.insert(pos, imageNode);
-    }
     view.dispatch(removeTr);
   })();
 }
