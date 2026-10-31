@@ -184,9 +184,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
 
         event.preventDefault();
 
-        for (const file of accepted) {
-          handleImageUpload(view, file, view.state.selection.from);
-        }
+        startImageUploadBatch(view, accepted, view.state.selection.from);
 
         return true;
       },
@@ -205,9 +203,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         const pos = view.posAtCoords(coords);
         const insertPos = pos ? pos.pos : view.state.selection.from;
 
-        for (const file of accepted) {
-          handleImageUpload(view, file, insertPos);
-        }
+        startImageUploadBatch(view, accepted, insertPos);
 
         return true;
       },
@@ -216,9 +212,35 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
 }
 
 /**
- * Handle uploading a single image file and inserting it into the document.
+ * Start one paste/drop batch: every upload starts immediately (they run
+ * concurrently), but the document insertions are chained in file order
+ * (#1323). Each upload's insertion step waits for every earlier file in
+ * the batch to reach its own insertion step, so images land in
+ * clipboard/file-list order no matter which upload finishes first. A
+ * failed upload resolves its step without inserting, so the survivors
+ * keep their relative order.
  */
-function handleImageUpload(view: EditorView, file: File, insertPos: number): void {
+function startImageUploadBatch(view: EditorView, files: File[], insertPos: number): void {
+  let insertionGate: Promise<void> = Promise.resolve();
+  for (const file of files) {
+    insertionGate = handleImageUpload(view, file, insertPos, insertionGate);
+  }
+}
+
+/**
+ * Handle uploading a single image file and inserting it into the
+ * document. The placeholder is added and the upload is started
+ * synchronously; the returned promise resolves once this file's
+ * insertion step has run. The step waits for `insertionGate` (the
+ * previous batch member's step) before touching the document, which is
+ * what pins the batch's document order to the file order (#1323).
+ */
+function handleImageUpload(
+  view: EditorView,
+  file: File,
+  insertPos: number,
+  insertionGate: Promise<void>,
+): Promise<void> {
   const id = `upload-${Math.random().toString(36).slice(2, 10)}`;
 
   // Add placeholder decoration
@@ -228,12 +250,24 @@ function handleImageUpload(view: EditorView, file: File, insertPos: number): voi
 
   const fileName = file.name || generatePasteFilename(file.type);
 
-  uploadImageFile(file)
-    .then((result) => {
-      // Remove placeholder
-      const removeTr = view.state.tr;
-      removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
+  const uploaded = uploadImageFile(file).then(
+    (result) => ({ ok: true as const, result }),
+    (err: unknown) => {
+      console.warn(`[image-upload] Upload failed for ${fileName}:`, err);
+      return { ok: false as const, result: null };
+    },
+  );
 
+  return (async () => {
+    const outcome = await uploaded;
+    // Insert strictly after every earlier batch member's step (#1323).
+    await insertionGate;
+
+    // Remove placeholder
+    const removeTr = view.state.tr;
+    removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
+
+    if (outcome.ok) {
       // Find where to insert (placeholder position may have shifted)
       const decos = imageUploadKey.getState(view.state);
       const found = decos?.find(undefined, undefined, (spec) => spec.id === id);
@@ -241,17 +275,11 @@ function handleImageUpload(view: EditorView, file: File, insertPos: number): voi
 
       // Insert image node
       const imageNode = view.state.schema.nodes.image.create({
-        src: result.url,
-        alt: result.name || fileName,
+        src: outcome.result.url,
+        alt: outcome.result.name || fileName,
       });
       removeTr.insert(pos, imageNode);
-      view.dispatch(removeTr);
-    })
-    .catch((err) => {
-      console.warn(`[image-upload] Upload failed for ${fileName}:`, err);
-      // Remove placeholder on failure
-      const removeTr = view.state.tr;
-      removeTr.setMeta(imageUploadKey, { type: "remove", id } satisfies PlaceholderAction);
-      view.dispatch(removeTr);
-    });
+    }
+    view.dispatch(removeTr);
+  })();
 }
