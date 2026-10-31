@@ -531,15 +531,15 @@ func (s *Server) taskStore() *tasks.Store {
 // per-requestor limits: the session the caller named (the query param,
 // or the X-Mcpx-Session header creation keys by via callContext), else
 // its run, else the unbound bucket (capped like any other).
-func taskRequestor(r *http.Request) string {
+func taskRequestor(r *http.Request) tasks.Requestor {
 	if v := r.URL.Query().Get("session"); v != "" {
-		return v
+		return tasks.Caller(v)
 	}
 	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
-		return v
+		return tasks.Caller(v)
 	}
 	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
-		return v
+		return tasks.Caller(v)
 	}
 	return tasks.UnboundRequestor
 }
@@ -629,7 +629,7 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 // startCallTask runs a tool call in the background and hands back a handle.
 // The task counts against requestor (the caller session, else its
 // run); an empty requestor lands in the store unbound bucket.
-func (s *Server) startCallTask(ttl int64, server, tool, requestor string, cc config.CallContext, args any) (tasks.Task, error) {
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any) (tasks.Task, error) {
 	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)

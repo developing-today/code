@@ -56,7 +56,7 @@ func TestInjectedStoreIsTheStoreTheMCPSurfaceUses(t *testing.T) {
 	// Cross-surface, /v1 -> MCP, with visibility preserved: a task
 	// started directly in the store (the /v1 surface's way) has no
 	// MCP owner, so no MCP connection may list it.
-	other, _ := store.Start("v1", 60000, func(context.Context) (any, *tasks.Fault) { return "v1", nil })
+	other, _ := store.Start(tasks.Caller("v1"), 60000, func(context.Context) (any, *tasks.Fault) { return "v1", nil })
 	// tasks/list is a legacy-era (2025) method: the 2026-07-28 tasks
 	// extension removed it, and modern-started tasks are ownerless by
 	// design, so the list check goes through the legacy handler with a
@@ -90,7 +90,7 @@ func TestInjectedStoreKeepsMCPTasksAcrossReopen(t *testing.T) {
 		t.Fatalf("task through the injected store: %v", done)
 	}
 	// A task still working when the store closes is the restart case.
-	working, _ := store.Start("v1", 60000, func(context.Context) (any, *tasks.Fault) {
+	working, _ := store.Start(tasks.Caller("v1"), 60000, func(context.Context) (any, *tasks.Fault) {
 		time.Sleep(2 * time.Second)
 		return "late", nil
 	})

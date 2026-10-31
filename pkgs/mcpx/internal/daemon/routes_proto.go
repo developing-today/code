@@ -396,14 +396,11 @@ type askReq struct {
 }
 
 // askRequestor names who an ask-seam task counts against: the caller's
-// session when it has one, else the ask bucket (tasks.AskRequestor) —
-// not the shared unbound bucket, for the two-ledgers reason recorded
-// on tasks.AskRequestor.
-func askRequestor(cc config.CallContext) string {
-	if cc.SessionID != "" {
-		return cc.SessionID
-	}
-	return tasks.AskRequestor
+// session in the ASK role — not the caller role the MCP wrapper
+// charges, for the two-ledgers reason recorded on tasks.Requestor.
+// An anonymous caller's empty identity is the anonymous ask bucket.
+func askRequestor(cc config.CallContext) tasks.Requestor {
+	return tasks.Ask(cc.SessionID)
 }
 
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {

@@ -51,7 +51,7 @@ type Task struct {
 
 	// requestor is the key the task counts against for the store's
 	// per-requestor limits (protoTasks.maxPerRequestor). Never on the wire.
-	requestor string
+	requestor Requestor
 
 	result   any
 	fault    *Fault
@@ -369,21 +369,66 @@ func NewID() string {
 	return "tsk-" + hex.EncodeToString(b[:])
 }
 
-// UnboundRequestor is the bucket a creation site passes when it holds no
-// caller identity. It is capped like any other requestor — "we don't know
-// who asked" must not mean "unlimited".
-const UnboundRequestor = "unbound"
+// Requestor is the composite key a task counts against for the store's
+// per-requestor limits: a ROLE and an IDENTITY, as separate fields —
+// never a plain string, and never distinguished by a string prefix.
+//
+// The role field exists because one logical operation can create two
+// store tasks in different capacities: on the daemon's embedded MCP
+// surface a task-supporting call creates the /v1/ask backing (role
+// ask) and the MCP wrapper (role caller), and for a client-named
+// identity both carried the same plain string, so a per-requestor cap
+// of 1 refused — and abandoned — the operation, and the default cap
+// silently halved. Separate roles keep one operation to one slot in
+// each ledger (Codex + CodeRabbit review, PR #2869).
+//
+// The identity field is caller-supplied text (a session id, a run id,
+// an MCP identity key). Because the role is a separate field, no
+// caller-supplied identity can collide with a reserved bucket: a
+// session literally named "unbound" keys as {caller, "unbound"},
+// which is not the unbound bucket {, } (CodeRabbit review, PR #2869).
+type Requestor struct {
+	Role     string
+	Identity string
+}
 
-// AskRequestor is the bucket anonymous ask-seam tasks count against
-// (/v1/ask backings, handleAskBegin). It is its own bucket, not
-// UnboundRequestor: on the daemon's embedded MCP surface one logical
-// operation creates two store tasks — the /v1/ask backing here and the
-// MCP wrapper in mcpserver, which counts against its caller identity (UnboundRequestor when anonymous) —
-// and charging both to the one bucket made a per-requestor cap of 1
-// refuse (and abandon) a lone anonymous ask call. Separate ledgers,
-// each capped at the same limit, keep one operation to one slot in
-// each. Identified ask callers keep counting against their session.
-const AskRequestor = "unbound-ask"
+// The requestor roles. RoleCaller is an ordinary creation site
+// charging its caller; RoleAsk is the ask seam (/v1/ask backings,
+// handleAskBegin) charging in its asking capacity.
+const (
+	RoleCaller = "caller"
+	RoleAsk    = "ask"
+)
+
+// Caller names an ordinary requestor: the given caller identity in
+// the caller role. An empty identity is the unbound bucket.
+func Caller(identity string) Requestor {
+	if identity == "" {
+		return UnboundRequestor
+	}
+	return Requestor{Role: RoleCaller, Identity: identity}
+}
+
+// Ask names an ask-seam requestor: the given caller identity in the
+// ask role. An empty identity is the anonymous ask bucket.
+func Ask(identity string) Requestor {
+	return Requestor{Role: RoleAsk, Identity: identity}
+}
+
+// UnboundRequestor is the bucket a creation site passes when it holds
+// no caller identity. It is capped like any other requestor — "we
+// don't know who asked" must not mean "unlimited".
+var UnboundRequestor = Requestor{}
+
+// AskRequestor is the bucket anonymous ask-seam tasks count against.
+// It is its own bucket, not UnboundRequestor, for the two-ledgers
+// reason recorded on Requestor.
+var AskRequestor = Requestor{Role: RoleAsk}
+
+// key is the window-counter spelling of the requestor: the two fields
+// joined by a separator neither can be confused across, because the
+// role is one of a fixed set spelled first.
+func (r Requestor) key() string { return r.Role + "\x00" + r.Identity }
 
 // The task-store limit defaults (protoTasks.*). A seam wires the settings
 // over these; the store applies them when its fields are unset.
@@ -460,16 +505,13 @@ func (w *Window) Allow(key string, now time.Time) bool {
 // at admission bounds the call rate without punishing the wait — and an
 // exemption would leave one method permanently unwindowed (triage
 // settlement, task 3733).
-func (s *Store) Admit(requestor string) bool {
+func (s *Store) Admit(requestor Requestor) bool {
 	limit := s.PerMinute
 	if limit == 0 {
 		limit = DefaultPerMinute
 	}
 	if limit < 0 {
 		return true // window disabled (protoTasks.perMinute = 0)
-	}
-	if requestor == "" {
-		requestor = UnboundRequestor
 	}
 	s.mu.Lock()
 	if s.win == nil || s.winLimit != limit {
@@ -478,7 +520,7 @@ func (s *Store) Admit(requestor string) bool {
 	}
 	win := s.win
 	s.mu.Unlock()
-	return win.Allow(requestor, time.Now())
+	return win.Allow(requestor.key(), time.Now())
 }
 
 // DefaultTTL is the retention a caller gets when it does not ask for one, in
@@ -491,10 +533,7 @@ func DefaultTTL() int64 { return int64(defaults.TaskTTL / time.Millisecond) }
 // requested TTL to the store's MaxTTL and refuses with ErrPerRequestorCap
 // when the requestor already holds MaxPerRequestor non-terminal tasks. The
 // empty key is the UnboundRequestor bucket, capped like any other.
-func (s *Store) Start(requestor string, ttl int64, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
-	if requestor == "" {
-		requestor = UnboundRequestor
-	}
+func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL()
 	}

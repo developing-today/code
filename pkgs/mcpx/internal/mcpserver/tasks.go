@@ -85,11 +85,11 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 // the request's IdentityFrom key charges, and only a request with neither
 // falls into the store's unbound bucket.
 func (s *Server) startTask(ctx context.Context, owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
-	requestor := owner
-	if requestor == "" {
-		requestor = IdentityFrom(ctx).Key
+	identity := owner
+	if identity == "" {
+		identity = IdentityFrom(ctx).Key
 	}
-	t, err := s.tasks().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+	t, err := s.tasks().Start(tasks.Caller(identity), ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)
 		if err != nil {
 			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data}
@@ -374,7 +374,7 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 	// so one client's slow calls could refuse another's first call
 	// (Codex on #2869, round 4). An anonymous request's empty key
 	// falls into the store's unbound bucket, capped like any other.
-	t, terr := s.tasks().Start(IdentityFrom(ctx).Key, tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	t, terr := s.tasks().Start(tasks.Caller(IdentityFrom(ctx).Key), tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
 	if terr != nil {
@@ -547,7 +547,7 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 	// shares one window. The result is enforced after the capability
 	// check below, so a non-declaring client gets its -32021 even when
 	// the window is full — but its call still counts.
-	admitted := s.tasks().Admit(IdentityFrom(ctx).Key)
+	admitted := s.tasks().Admit(tasks.Caller(IdentityFrom(ctx).Key))
 	var p struct {
 		TaskID string `json:"taskId"`
 	}

@@ -13,7 +13,7 @@ import (
 
 func TestAResultIsWaitedForRatherThanPolledFor(t *testing.T) {
 	st := tasks.New()
-	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		time.Sleep(20 * time.Millisecond)
 		return map[string]any{"ok": true}, nil
 	})
@@ -37,7 +37,7 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 	// The specification's own note on TaskStatus. Reporting it as completed
 	// makes a client that checks only the status miss every failure.
 	st := tasks.New()
-	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		return map[string]any{"isError": true}, nil
 	})
 	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
@@ -52,7 +52,7 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 func TestCancellingStopsTheWorkAndStands(t *testing.T) {
 	st := tasks.New()
 	released := make(chan struct{})
-	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		close(released)
 		return "too late", nil
@@ -95,7 +95,7 @@ func TestAnUnknownHandleSaysItMayHaveExpired(t *testing.T) {
 
 func TestWaitingIsBoundedByTheCallersContext(t *testing.T) {
 	st := tasks.New()
-	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -117,7 +117,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	}
 
 	// 1. Completed task
-	t1, _ := st1.Start("tester", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+	t1, _ := st1.Start(tasks.Caller("tester"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		return map[string]any{"data": "persisted-result"}, nil
 	})
 	// Wait for t1 to complete
@@ -127,7 +127,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 	}
 
 	// 2. Working task that was interrupted
-	t2, _ := st1.Start("tester", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+	t2, _ := st1.Start(tasks.Caller("tester"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -175,7 +175,7 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 	cooperativeCalled := false
 	var cancelReason string
 
-	task, _ := st.Start("tester", 0, func(ctx context.Context) (any, *tasks.Fault) {
+	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
 		return nil, nil
 	})
@@ -202,7 +202,7 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 func TestStartClampsTTLToTheStoreMax(t *testing.T) {
 	st := tasks.New()
 	st.MaxTTL = 90 * time.Second
-	task, err := st.Start("alice", 10*60*1000, func(ctx context.Context) (any, *tasks.Fault) {
+	task, err := st.Start(tasks.Caller("alice"), 10*60*1000, func(ctx context.Context) (any, *tasks.Fault) {
 		return "ok", nil
 	})
 	if err != nil {
@@ -211,7 +211,7 @@ func TestStartClampsTTLToTheStoreMax(t *testing.T) {
 	if task.TTL != 90*1000 {
 		t.Errorf("a TTL above protoTasks.maxTTL is clamped on the returned task, got %d ms", task.TTL)
 	}
-	under, err := st.Start("alice", 1000, func(ctx context.Context) (any, *tasks.Fault) {
+	under, err := st.Start(tasks.Caller("alice"), 1000, func(ctx context.Context) (any, *tasks.Fault) {
 		return "ok", nil
 	})
 	if err != nil {
@@ -232,11 +232,11 @@ func TestStartRefusesBeyondThePerRequestorCap(t *testing.T) {
 		return "ok", nil
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := st.Start("alice", 60000, fn); err != nil {
+		if _, err := st.Start(tasks.Caller("alice"), 60000, fn); err != nil {
 			t.Fatalf("start %d: %v", i, err)
 		}
 	}
-	_, err := st.Start("alice", 60000, fn)
+	_, err := st.Start(tasks.Caller("alice"), 60000, fn)
 	if !errors.Is(err, tasks.ErrPerRequestorCap) {
 		t.Fatalf("the 3rd non-terminal task is refused with the named sentinel, got %v", err)
 	}
@@ -245,15 +245,15 @@ func TestStartRefusesBeyondThePerRequestorCap(t *testing.T) {
 	}
 	// Another requestor is unaffected, and the unbound bucket is capped
 	// the same way rather than being an unlimited escape hatch.
-	if _, err := st.Start("bob", 60000, fn); err != nil {
+	if _, err := st.Start(tasks.Caller("bob"), 60000, fn); err != nil {
 		t.Errorf("another requestor still starts: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := st.Start("", 60000, fn); err != nil {
+		if _, err := st.Start(tasks.Caller(""), 60000, fn); err != nil {
 			t.Fatalf("unbound start %d: %v", i, err)
 		}
 	}
-	if _, err := st.Start("", 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+	if _, err := st.Start(tasks.Caller(""), 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
 		t.Errorf("the unbound bucket is capped too, got %v", err)
 	}
 }
@@ -261,7 +261,7 @@ func TestStartRefusesBeyondThePerRequestorCap(t *testing.T) {
 func TestACompletedTaskFreesItsCapSlot(t *testing.T) {
 	st := tasks.New()
 	st.MaxPerRequestor = 1
-	first, err := st.Start("alice", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+	first, err := st.Start(tasks.Caller("alice"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		return "ok", nil
 	})
 	if err != nil {
@@ -270,7 +270,7 @@ func TestACompletedTaskFreesItsCapSlot(t *testing.T) {
 	if _, _, err := st.Result(context.Background(), first.TaskID); err != nil {
 		t.Fatalf("result: %v", err)
 	}
-	if _, err := st.Start("alice", 60000, func(ctx context.Context) (any, *tasks.Fault) {
+	if _, err := st.Start(tasks.Caller("alice"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
 		return "ok", nil
 	}); err != nil {
 		t.Errorf("a terminal task no longer counts against the cap: %v", err)
@@ -289,19 +289,19 @@ func TestAdmitCountsAgainstThePerMinuteWindow(t *testing.T) {
 	st := tasks.New()
 	st.PerMinute = 3
 	for i := 0; i < 3; i++ {
-		if !st.Admit("alice") {
+		if !st.Admit(tasks.Caller("alice")) {
 			t.Fatalf("call %d is admitted", i)
 		}
 	}
-	if st.Admit("alice") {
+	if st.Admit(tasks.Caller("alice")) {
 		t.Error("the 4th call in the minute is refused")
 	}
-	if !st.Admit("bob") {
+	if !st.Admit(tasks.Caller("bob")) {
 		t.Error("another requestor has its own window")
 	}
 	st.PerMinute = -1
 	for i := 0; i < 10; i++ {
-		if !st.Admit("alice") {
+		if !st.Admit(tasks.Caller("alice")) {
 			t.Fatal("protoTasks.perMinute = 0 disables the window")
 		}
 	}
@@ -323,7 +323,7 @@ func TestConcurrentStartsRespectThePerRequestorCap(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := st.Start("alice", 60000, fn); err == nil {
+			if _, err := st.Start(tasks.Caller("alice"), 60000, fn); err == nil {
 				won <- struct{}{}
 			} else if !errors.Is(err, tasks.ErrPerRequestorCap) {
 				t.Errorf("a burst refusal is still the named sentinel, got %v", err)
@@ -365,5 +365,51 @@ func TestAskAndUnboundBucketsAreSeparateLedgers(t *testing.T) {
 	}
 	if _, err := st.Start(tasks.UnboundRequestor, 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
 		t.Errorf("a second unbound task is refused, got %v", err)
+	}
+}
+
+// Codex + CodeRabbit round (PR #2589/#2869 lineage, PR #2869): the
+// requestor key is composite (role + identity). An identified ask
+// backing and its MCP wrapper for the SAME identity charge different
+// ledgers, so a per-requestor cap of 1 leaves room for one logical
+// operation; and a caller identity that happens to spell a reserved
+// bucket name keys its own bucket, never the reserved one.
+func TestCompositeRequestorSeparatesRolesAndReservedNames(t *testing.T) {
+	st := tasks.New()
+	st.MaxPerRequestor = 1
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	fn := func(ctx context.Context) (any, *tasks.Fault) {
+		<-block
+		return nil, nil
+	}
+	// One logical ask operation: backing (ask role) + wrapper
+	// (caller role) under one client-named identity.
+	if _, err := st.Start(tasks.Ask("client-x"), 60000, fn); err != nil {
+		t.Fatalf("ask backing: %v", err)
+	}
+	if _, err := st.Start(tasks.Caller("client-x"), 60000, fn); err != nil {
+		t.Fatalf("wrapper for the same identity must not be charged to the ask ledger: %v", err)
+	}
+	// Each ledger is now full at cap 1.
+	if _, err := st.Start(tasks.Ask("client-x"), 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Fatalf("second ask backing should hit the cap, got %v", err)
+	}
+	if _, err := st.Start(tasks.Caller("client-x"), 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Fatalf("second wrapper should hit the cap, got %v", err)
+	}
+	// Reserved-name collisions: a session named "unbound" is an
+	// identified caller with its own bucket.
+	if _, err := st.Start(tasks.UnboundRequestor, 60000, fn); err != nil {
+		t.Fatalf("unbound: %v", err)
+	}
+	if _, err := st.Start(tasks.Caller("unbound"), 60000, fn); err != nil {
+		t.Fatalf("a session named unbound must not share the unbound bucket: %v", err)
+	}
+	if _, err := st.Start(tasks.Ask(""), 60000, fn); err != nil {
+		t.Fatalf("anonymous ask: %v", err)
+	}
+	if _, err := st.Start(tasks.Caller("unbound-ask"), 60000, fn); err != nil {
+		t.Fatalf("a session named unbound-ask must not share the ask bucket: %v", err)
 	}
 }

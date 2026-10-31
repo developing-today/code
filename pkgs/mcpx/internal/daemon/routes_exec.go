@@ -268,7 +268,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// caller's tasks cannot exhaust another's cap; only a caller
 		// that named nothing lands in the unbound bucket (an empty
 		// requestor, which Start maps there), capped like any other.
-		requestor := firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run"))
+		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
 		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
 			if err != nil && res == nil {

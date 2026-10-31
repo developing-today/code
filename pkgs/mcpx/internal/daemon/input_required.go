@@ -97,7 +97,16 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	ready := make(chan string, 1)
 	start := time.Now()
 	run := r.Header.Get("X-Mcpx-Run")
-	t, terr := s.taskStore().Start(cc.SessionID, s.set.Duration("proto.askTTL").Milliseconds(),
+	// The task counts against the caller's session, else its run —
+	// the same fallback the explicit-task branch in handleCall uses.
+	// Charging the session alone put every session-less reporting
+	// call in the shared unbound bucket, so one run's pending call
+	// could refuse another run's first (Codex review, PR #2869).
+	reportingRequestor := tasks.Caller(cc.SessionID)
+	if cc.SessionID == "" {
+		reportingRequestor = tasks.Caller(run)
+	}
+	t, terr := s.taskStore().Start(reportingRequestor, s.set.Duration("proto.askTTL").Milliseconds(),
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
 			callCtx := withRun(ctx, run)

@@ -1104,9 +1104,9 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	if req.Task != nil {
 		// The task counts against the caller's session, else its run
 		// (as taskRequestor keys /v1/tasks), else the unbound bucket.
-		requestor := cc.SessionID
-		if requestor == "" {
-			requestor = r.Header.Get("X-Mcpx-Run")
+		requestor := tasks.Caller(cc.SessionID)
+		if cc.SessionID == "" {
+			requestor = tasks.Caller(r.Header.Get("X-Mcpx-Run"))
 		}
 		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args)
 		if terr != nil {
