@@ -38,7 +38,7 @@ Body:
   // else is rejected (400) before any side effect (issue #2903).
   // Bearer callers keep the free-form directory (deliberate: the bearer
   // secret lives on the laptop, so whoever holds it already has the run).
-  "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
+  "priority": "high", // optional: integer 10-90 (number or decimal string), or critical|high|normal|low → 10/20/40/70
   "issue": true, // optional; default true
   "wait": true, // optional; default true
 }
