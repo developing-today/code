@@ -117,7 +117,10 @@ async function assertDeployable(versionId) {
     return;
   }
   const body = await response.json();
-  const ids = (body.result ?? []).map((v) => v.id);
+  // The versions endpoint paginates: result is { items: [...] }, not a
+  // bare array (verified against the live account, 2026-10-31).
+  const items = Array.isArray(body.result) ? body.result : (body.result?.items ?? []);
+  const ids = items.map((v) => v.id);
   if (!ids.includes(versionId)) {
     throw new Error(`version ${versionId} is not in the deployable set; refusing to create a deployment`);
   }
