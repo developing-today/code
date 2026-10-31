@@ -33,7 +33,11 @@ Body:
   "prompt": "Fix the flaky widget test", // required
   "title": "fix(widget): flaky test", // optional; default: prompt's first line
   "model": "opencode-go/gpt-5.6-luna", // optional "provider/model" or {"providerID","id"}
-  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary
+  "directory": "/home/user/git/code", // optional; default: the repo's laptop primary.
+    // OIDC callers may only omit it or repeat the repo's primary — anything
+    // else is rejected (400) before any side effect (issue #2903).
+    // Bearer callers keep the free-form directory (deliberate: the bearer
+    // secret lives on the laptop, so whoever holds it already has the run).
   "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
   "issue": true, // optional; default true
   "wait": true, // optional; default true
@@ -42,6 +46,9 @@ Body:
 
 Flow:
 
+0. Scope the directory: OIDC callers must omit `directory` or repeat
+   the repo's laptop primary clone — anything else is a 400 with no
+   issue, task, or session created (issue #2903).
 1. Create the tracking GitHub issue (`source/dispatch` label; body = the
    prompt + a dispatch footer). Skipped with a `warnings` entry for
    dezren39/nix, where the pm-stack GitHub App is not installed.
@@ -132,6 +139,12 @@ Every endpoint except `GET /health` requires `Authorization: Bearer …`:
   the claim need not equal the request body's `repo`. Repos outside
   the allowlist can neither call nor be targeted. Bearer callers are
   bound only by the allowlist on the target.
+  **Directory scoping (issue #2903):** OIDC callers may only omit
+  `directory` or repeat the target repo's laptop primary clone — any
+  other value is rejected with 400 before the issue, task, or session
+  is created. Bearer callers keep the free-form directory as a
+  deliberate choice: the static secret lives on the laptop, so its
+  holder already has the run the directory would grant.
   See `examples/dispatch-workflow.yml`.
 - **Static bearer secret**: `DISPATCH_API_TOKEN` (in the laptop's
   `~/secrets/dispatch.env`), compared in constant time — the shape a
