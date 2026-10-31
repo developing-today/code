@@ -301,6 +301,26 @@ export const richSchema = new Schema({
           return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
         },
       },
+      // #1369: YAML front matter block (`---` delimiter only; TOML
+      // `+++` is out of scope) carried verbatim in `text`; the markdown
+      // codec reads/writes it. Atom leaf, never a heading/paragraph.
+      front_matter: {
+        group: "block",
+        atom: true,
+        selectable: false,
+        attrs: { text: { default: "" } },
+        parseDOM: [
+          {
+            tag: "pre[data-front-matter]",
+            getAttrs(dom) {
+              return { text: (dom as HTMLElement).dataset.frontMatter ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["pre", { "data-front-matter": node.attrs.text as string }];
+        },
+      },
     }),
   marks: basicSchema.spec.marks.append({
     strikethrough: {

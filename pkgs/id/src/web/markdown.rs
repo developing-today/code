@@ -14,6 +14,7 @@
 //! - `blockquote`: Block quote containing blocks
 //! - `code_block`: Code block with optional `params` attribute
 //! - `horizontal_rule`: Thematic break
+//! - `front_matter`: YAML front matter block with `text` attribute (legal only as first child of `doc`)
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
@@ -85,6 +86,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.tasklist = true;
     options.extension.table = true;
     options.extension.footnotes = true;
+    options.extension.front_matter_delimiter = Some("---".to_owned());
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
     options
@@ -483,6 +485,15 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         NodeValue::ThematicBreak => {
             json!({"type": "horizontal_rule"})
+        }
+
+        NodeValue::FrontMatter(text) => {
+            json!({
+                "type": "front_matter",
+                "attrs": {
+                    "text": text,
+                }
+            })
         }
 
         NodeValue::List(_) => {
@@ -1412,6 +1423,8 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
 /// Placement categories for the #1043 validation walk. A node whose type
 /// is not listed here is left to `json_to_ast`, which reports it as
 /// `ConversionError::UnknownType` — validation never masks that error.
+/// (`front_matter` is intentionally unlisted: its doc-first-child rule
+/// needs the child index, so `validate_placement` checks it directly.)
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Placement {
     /// Block-level node (`paragraph`, `table`, lists, …).
@@ -1485,13 +1498,27 @@ fn placement_allowed(parent: &str, child: Placement) -> bool {
 /// markdown in release builds. Reject those documents up front with
 /// `ConversionError::MisplacedNode` instead.
 fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
-    fn walk(node: &Value, parent: Option<&str>) -> Result<(), ConversionError> {
+    fn walk(
+        node: &Value,
+        parent: Option<&str>,
+        index_in_parent: Option<usize>,
+    ) -> Result<(), ConversionError> {
         let Some(node_type) = node["type"].as_str() else {
             // Missing type: json_to_ast reports MissingType; keep that
             // error's precedence.
             return Ok(());
         };
-        if let Some(parent_type) = parent
+        // #1369: `front_matter` is legal only as the first child of `doc`
+        // (comrak only parses it there). Anything else is misplaced.
+        if node_type == "front_matter" {
+            let first_child_of_doc = parent == Some("doc") && index_in_parent == Some(0);
+            if !first_child_of_doc {
+                return Err(ConversionError::MisplacedNode {
+                    parent: parent.unwrap_or("<root>").to_owned(),
+                    child: node_type.to_owned(),
+                });
+            }
+        } else if let Some(parent_type) = parent
             && let Some(category) = placement_of(node_type)
             && !placement_allowed(parent_type, category)
         {
@@ -1514,14 +1541,25 @@ fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
             }
             return Ok(());
         }
+        // front_matter carries no PM child content (its payload is the
+        // `text` attr); nothing to recurse into.
+        if node_type == "front_matter" {
+            if node["content"].as_array().is_some_and(|c| !c.is_empty()) {
+                return Err(ConversionError::MisplacedNode {
+                    parent: node_type.to_owned(),
+                    child: "<content>".to_owned(),
+                });
+            }
+            return Ok(());
+        }
         if let Some(content) = node["content"].as_array() {
-            for child in content {
-                walk(child, Some(node_type))?;
+            for (idx, child) in content.iter().enumerate() {
+                walk(child, Some(node_type), Some(idx))?;
             }
         }
         Ok(())
     }
-    walk(doc, None)
+    walk(doc, None, None)
 }
 
 /// Convert `ProseMirror` JSON document to markdown text.
@@ -1823,6 +1861,7 @@ fn is_block_node(node: &AstNode<'_>) -> bool {
             | NodeValue::CodeBlock(_)
             | NodeValue::HtmlBlock(_)
             | NodeValue::ThematicBreak
+            | NodeValue::FrontMatter(_)
             | NodeValue::Table(_)
             | NodeValue::FootnoteDefinition(_)
     )
@@ -1973,6 +2012,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
 
         "horizontal_rule" => NodeValue::ThematicBreak,
+
+        // #1369: YAML front matter (`---` delimiter only; comrak has no
+        // TOML `+++` support) carried verbatim in the `text` attr.
+        "front_matter" => NodeValue::FrontMatter(
+            json["attrs"]["text"].as_str().unwrap_or("").to_owned(),
+        ),
 
         "bullet_list" => {
             let tight = json["attrs"]["tight"].as_bool().unwrap_or(false);
@@ -2245,8 +2290,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         return Ok(ast_node);
     }
 
-    // Process children (except for code_block which stores content in literal, not as children)
+    // Process children (except for code_block which stores content in literal, not as children;
+    // front_matter likewise stores its payload in the `text` attr, #1369)
     if node_type != "code_block"
+        && node_type != "front_matter"
         && let Some(content) = json["content"].as_array()
     {
         // #1032: coalesce consecutive bullet_list siblings into the first
@@ -5238,6 +5285,113 @@ Some text
             markdown_to_prosemirror(&first),
             markdown_to_prosemirror("[<b>x</b>](/y)\n"),
             "same PM structure for single-run form"
+        );
+    }
+
+    #[test]
+    fn test_front_matter_roundtrip_fixpoint() {
+        // #1369: YAML front matter (`---` delimiter only; TOML `+++`
+        // is out of scope) survives open->save verbatim with a
+        // multi-key block, and the second save is a fixpoint.
+        for original in [
+            "---\ntitle: Hello\ntags: [a, b]\n---\n\nBody text.\n",
+            "---\ntitle: Hello\n---\n\n# Heading\n",
+            "---\ntitle: Hello\n---\n\nJust a paragraph.\n",
+            // Blank line inside the block is preserved verbatim.
+            "---\ntitle: Hello\n\ndraft: true\n---\n\nBody.\n",
+        ] {
+            let doc = markdown_to_prosemirror(original);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(
+                content[0]["type"], "front_matter",
+                "first child for {original:?}: {doc}"
+            );
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "round-trip for {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                doc,
+                "stable PM for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_front_matter_mid_doc_dashes_stay_horizontal_rule() {
+        // #1369 control: `---` after a paragraph is a thematic break,
+        // not front matter.
+        let original = "Para one.\n\n---\n\nPara two.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert!(
+            content.iter().all(|n| n["type"] != "front_matter"),
+            "no front_matter mid-doc: {doc}"
+        );
+        assert!(
+            content.iter().any(|n| n["type"] == "horizontal_rule"),
+            "thematic break kept: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        // Thematic breaks normalize to comrak's `-----` spelling; what
+        // matters is the node type survives and the save is a fixpoint.
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_unclosed_leading_dashes_stay_break() {
+        // #1369 control: an unclosed leading `---` is a thematic break.
+        let original = "---\n\nBody.\n";
+        let doc = markdown_to_prosemirror(original);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "horizontal_rule", "no FM: {doc}");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("-----"), "break kept: {first:?}");
+        assert_eq!(first, second, "fixpoint: {first:?}");
+    }
+
+    #[test]
+    fn test_front_matter_misplaced_is_rejected() {
+        // #1369: `front_matter` is legal only as the first child of
+        // `doc`; anywhere else is a MisplacedNode.
+        let fm =
+            || json!({"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}});
+        let para =
+            || json!({"type": "paragraph", "content": [{"type": "text", "text": "x"}]});
+        let cases: &[(&str, Value)] = &[
+            (
+                "second child of doc",
+                json!({"type": "doc", "content": [para(), fm()]}),
+            ),
+            (
+                "inside blockquote",
+                json!({"type": "doc", "content": [{"type": "blockquote", "content": [fm()]}]}),
+            ),
+            (
+                "inside paragraph",
+                json!({"type": "doc", "content": [{"type": "paragraph", "content": [fm()]}]}),
+            ),
+            (
+                "content children inside front_matter",
+                json!({"type": "doc", "content": [{"type": "front_matter", "attrs": {"text": "---\na: b\n---\n"}, "content": [para()]}]}),
+            ),
+        ];
+        for (name, doc) in cases {
+            assert!(
+                matches!(
+                    prosemirror_to_markdown(doc),
+                    Err(ConversionError::MisplacedNode { .. })
+                ),
+                "{name}: expected MisplacedNode, got {:?}",
+                prosemirror_to_markdown(doc)
+            );
+        }
+        // First child of doc saves verbatim.
+        let ok = json!({"type": "doc", "content": [fm(), para()]});
+        assert_eq!(
+            prosemirror_to_markdown(&ok).unwrap(),
+            "---\na: b\n---\nx\n"
         );
     }
 }
