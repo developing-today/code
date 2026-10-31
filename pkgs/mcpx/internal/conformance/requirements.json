@@ -2412,7 +2412,7 @@
     },
     "notes": {
       "client": "parses `supportedVersions` from the discover result (internal/mcpclient/probe.go)",
-      "server": "**partial**: answers with `supportedVersions` and `serverInfo` in `_meta` (envelope), but the discover result carries no `ttlMs`/`cacheScope`"
+      "server": "answers with `supportedVersions` and `serverInfo` in `_meta`; the modern envelope adds `ttlMs`/`cacheScope` to the discover result (internal/mcpserver/server.go)"
     }
   },
   {
