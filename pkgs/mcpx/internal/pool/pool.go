@@ -41,6 +41,12 @@ import (
 // Version reported to MCP servers during initialize.
 var Version = "dev"
 
+// ownServerName is the identity mcpx's own MCP server reports in
+// serverInfo during initialize: internal/cli builds it with this name
+// (mcpserver.New(backend, "mcpx", version)). An upstream answering to
+// it is this daemon, another mcpx, or a proxy of one (#1877).
+const ownServerName = "mcpx"
+
 // Trace, when set, receives a line per tool call naming the instance that
 // served it. The daemon wires this to its logger when MCPX_TRACE is set.
 var Trace func(string, ...any)
@@ -656,6 +662,24 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	if err != nil {
 		_ = tr.Close()
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, p.oauthWaitError(err))
+	}
+	// Self-connection loop guard (#1877): an upstream that identifies
+	// as mcpx is mcpx itself -- this daemon's own MCP endpoint, a
+	// second mcpx, or a proxy of one -- so its catalogue contains
+	// mcpx's own tools, and admitting it would grow tools/list by a
+	// proxy level on every reload, without bound. The identity is
+	// spoofable, but spoofing only makes a server refuse itself
+	// service here; it cannot create the loop. Refuse the instance
+	// before its era is recorded or any schema is read from it, so a
+	// self entry contributes no tools however often it is reloaded.
+	if cl.ServerInfo.Name == ownServerName {
+		lifecycle("server.self_connection_refused", map[string]any{
+			"server": p.cfg.Name, "serverInfoName": cl.ServerInfo.Name,
+			"serverInfoVersion": cl.ServerInfo.Version,
+		})
+		_ = cl.Close()
+		_ = tr.Close()
+		return nil, fmt.Errorf("server %q: refusing self-connection: upstream identifies as %q (mcpx itself); an entry pointing at mcpx's own MCP endpoint would proxy mcpx's tools back into mcpx and grow tools/list on every reload (#1877)", p.cfg.Name, cl.ServerInfo.Name)
 	}
 	if cl.CachedEraWrong {
 		lifecycle("server.era.stale", map[string]any{
