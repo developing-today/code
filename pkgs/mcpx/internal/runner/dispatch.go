@@ -47,6 +47,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/cache"
 	"github.com/dezren39/mcpx/internal/defaults"
 	"github.com/dezren39/mcpx/internal/logging"
 )
@@ -434,7 +435,16 @@ func SplitEnvString(s string) ([]string, error) {
 			}
 			word.WriteString(v)
 			i = ni - 1
-			started = true
+			// An unquoted expansion that contributes nothing does
+			// not start an argument: env(1) omits the word, so
+			// `python3 ${PYFLAGS}` with PYFLAGS unset gains no
+			// empty argument for the interpreter to mistake for
+			// the script filename. A quoted empty expansion still
+			// counts — the quotes themselves start the word
+			// (Codex review, PR #2611).
+			if v != "" {
+				started = true
+			}
 		case c == '#' && !started:
 			// An unquoted # that begins an argument starts a
 			// comment (env(1)): the rest of the payload is not
@@ -837,6 +847,15 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 				return nil, err
 			}
 			pruneWorkDirs(opts.WorkRoot, workDir)
+			// Lease the directory while this run uses it, as Run
+			// does for a JavaScript run: pruneWorkDirs protects
+			// only the current invocation's directory, so without
+			// a lease another run's pruning could delete this
+			// still-active directory once the shared cache passes
+			// its limit (Codex review, PR #2611).
+			if lease, lerr := cache.Acquire(workDir); lerr == nil {
+				cleanup = lease.Release
+			}
 		}
 	} else {
 		// A snippet runs from a file of its own: no Prelude (that is

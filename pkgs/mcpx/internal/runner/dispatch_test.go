@@ -3,10 +3,14 @@ package runner
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
+	"github.com/dezren39/mcpx/internal/cache"
 	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/dezren39/mcpx/internal/defaults"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -711,6 +715,84 @@ func TestSplitEnvStringExpandsFromTheInheritedEnvironment(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("SplitEnvString = %q, want %q", got, want)
 		}
+	}
+}
+
+// TestSplitEnvStringEmptyUnquotedExpansionStartsNoArgument is the
+// Codex finding on PR #2611 (re-review): an unset variable's unquoted
+// expansion must not create an empty argument — env(1) omits the word
+// — while an explicitly quoted empty argument survives.
+func TestSplitEnvStringEmptyUnquotedExpansionStartsNoArgument(t *testing.T) {
+	// Deliberately never set in this process.
+	const unset = "MCPX_SPLIT_TEST_UNSET_3201"
+	cases := []struct {
+		payload string
+		want    []string
+	}{
+		{`python3 ${` + unset + `}`, []string{"python3"}},
+		{`python3 ${` + unset + `} script.py`, []string{"python3", "script.py"}},
+		{`python3 "${` + unset + `}"`, []string{"python3", ""}},
+		{`echo a${` + unset + `}b`, []string{"echo", "ab"}},
+		{`${` + unset + `}`, nil},
+	}
+	for _, c := range cases {
+		got, err := SplitEnvString(c.payload)
+		if err != nil {
+			t.Errorf("SplitEnvString(%q): %v", c.payload, err)
+			continue
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("SplitEnvString(%q) = %q, want %q", c.payload, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("SplitEnvString(%q)[%d] = %q, want %q (all: %q)", c.payload, i, got[i], c.want[i], got)
+			}
+		}
+	}
+}
+
+// TestDispatchedWorkdirRunLeasesItsDirectory is the Codex finding on
+// PR #2611 (re-review): a dispatched run's allocated runner directory
+// stayed unleased for the whole execution, so another run's cache
+// pruning could delete it mid-run. The directory must be leased while
+// the run is live and released when it finishes.
+func TestDispatchedWorkdirRunLeasesItsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	script := writeScript(t, dir, "job.sh",
+		fmt.Sprintf("#!/bin/sh\npwd > %s\nsleep 2\n", marker))
+	done := make(chan error, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		_, err := Run(context.Background(), Options{
+			File: script, CwdPolicy: "workdir", WorkRoot: root,
+			Stdout: &stdout, Stderr: &stderr,
+		})
+		done <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	var cwd string
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(marker); err == nil && len(b) > 0 {
+			cwd = strings.TrimSpace(string(b))
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if cwd == "" {
+		t.Fatal("the dispatched run never reported its directory")
+	}
+	if !cache.Leased(cwd, defaults.CacheLeaseStaleAge) {
+		t.Fatalf("dispatched workdir %q is not leased while the run is live", cwd)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("Run(workdir dispatch): %v", err)
+	}
+	if cache.Leased(cwd, defaults.CacheLeaseStaleAge) {
+		t.Fatalf("dispatched workdir %q is still leased after the run finished", cwd)
 	}
 }
 
