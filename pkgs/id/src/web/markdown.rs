@@ -459,12 +459,28 @@ fn preserve_unreferenced_footnote_definitions(
         })
         .unwrap_or_default();
     let reference_defs = collect_link_reference_definitions(markdown);
+    let blocks = scan_footnote_definition_blocks(markdown);
     let mut synthesized = Vec::new();
-    for block in scan_footnote_definition_blocks(markdown) {
+    for block in &blocks {
         if carried.contains(&block.label) {
             continue;
         }
-        if let Some(mut node) = synthesize_footnote_definition(&block, &reference_defs) {
+        // The probe's resolution context is the document's link
+        // reference definitions PLUS every other footnote definition:
+        // an unreferenced definition may itself reference another
+        // footnote (`[^outer]: See [^inner].`), and a probe without
+        // the inner definition degrades that reference to escaped
+        // literal text (Codex P2 on #1565's third cut).
+        let mut context = reference_defs.clone();
+        for sibling in &blocks {
+            if sibling.label != block.label {
+                if !context.is_empty() {
+                    context.push_str("\n\n");
+                }
+                context.push_str(&sibling.source);
+            }
+        }
+        if let Some(mut node) = synthesize_footnote_definition(block, &context) {
             // The probe parsed the PROTECTED source, whose link
             // destinations carry the newline placeholder token; the
             // outer restore ran before this node existed, so restore
@@ -489,6 +505,10 @@ fn preserve_unreferenced_footnote_definitions(
 /// `footnote_definition` node out. Going through the same conversion
 /// guarantees the synthesized node has exactly the shape the
 /// referenced path produces (#1031 block children included).
+/// `reference_defs` carries the probe's resolution context: the
+/// document's link reference definitions and its other footnote
+/// definitions, so references inside the definition resolve exactly
+/// as they would in the document.
 fn synthesize_footnote_definition(
     block: &FootnoteDefinitionBlock,
     reference_defs: &str,
@@ -4136,6 +4156,38 @@ mod tests {
             "the fake definition appears only inside the preserved comment: {first:?}"
         );
         assert_eq!(first, second, "html-comment round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_referencing_another_footnote() {
+        // Codex P2 on #1565's third cut: the synthesis probe for an
+        // unreferenced definition that references another footnote
+        // must include the inner definition, or comrak restores the
+        // unresolved reference as escaped literal text and the
+        // recovered note loses its footnote_reference node.
+        let original = "Body.\n\n[^outer]: See [^inner].\n\n[^inner]: Inner note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let outer = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition" && n["attrs"]["label"] == "outer")
+            .expect("outer definition recovered");
+        let outer_json = outer.to_string();
+        assert!(
+            outer_json.contains("footnote_reference"),
+            "outer note keeps its footnote_reference node: {outer_json}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^inner]:") && first.contains("Inner note."),
+            "inner definition survives save: {first:?}"
+        );
+        assert!(
+            !first.contains("\\[^inner]"),
+            "inner reference is not escaped literal text: {first:?}"
+        );
+        assert_eq!(first, second, "nested-footnote round-trip is a fixpoint");
     }
 
     #[test]
