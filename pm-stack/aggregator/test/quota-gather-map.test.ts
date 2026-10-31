@@ -412,3 +412,71 @@ describe("entryFromTurso (#1049)", () => {
     expect(empty.windows).toEqual([]);
   });
 });
+
+describe("own-key guards on quota-gather-map lookups (#2781)", () => {
+  const at = "2026-10-27T05:30:00.000Z";
+  test("entryFromFileExport: prototype spellings get windowSeconds null; known names unchanged", () => {
+    const doc = {
+      service: "meta",
+      source: "file-export/meta-laptop",
+      status: "ok",
+      measuredAt: at,
+      windows: [
+        { name: "5h", usedPct: 12 },
+        { name: "weekly", usedPct: 46 },
+        { name: "storage", usedPct: 3 },
+        { name: "constructor", usedPct: 10 },
+        { name: "__proto__", usedPct: 20 },
+        { name: "toString", usedPct: 30 },
+        { name: "hasOwnProperty", usedPct: 40 },
+      ],
+    };
+    const entry = entryFromFileExport(doc, { fileMtimeIso: at, stale: false });
+    const byName = new Map(entry.windows.map((w) => [w.name, w.windowSeconds]));
+    expect(byName.get("5h")).toBe(18000);
+    expect(byName.get("weekly")).toBe(604800);
+    // "storage" is a genuinely unknown file-export window: null, like the
+    // prototype spellings must be after the guard.
+    expect(byName.get("storage")).toBeNull();
+    for (const name of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(byName.get(name)).toBeNull();
+    }
+    // The published shape: every windowSeconds is a number or null — no
+    // function/object prototype member survives serialization.
+    const published = JSON.parse(JSON.stringify(entry)) as typeof entry;
+    for (const w of published.windows) {
+      expect(w.windowSeconds === null || typeof w.windowSeconds === "number").toBe(true);
+    }
+  });
+
+  test("recordsFromEntries: prototype-spelled Turso windows take the pct path; storage control stays native", () => {
+    // Windows arrive via JSON.parse in production, which is what makes
+    // "__proto__" an own key of the windows record — build the fixture
+    // the same way so the probe is truthful.
+    const usage = JSON.parse(
+      '{"windows":{"storage":{"usedPercent":40},"constructor":{"usedPercent":42},"__proto__":{"usedPercent":7},"toString":{"usedPercent":9}}}',
+    ) as QuotaProviderResult["usage"];
+    const entry = entryFromResult(
+      { providerId: "turso", providerName: "Turso", ok: true, configured: true, fetchedAt: 1793076600000, usage },
+      at,
+    );
+    expect(entry.serviceId).toBe("turso");
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    // Control: storage keeps its native-unit record.
+    expect(byMetric.get("storage")).toMatchObject({ unit: "gb", limit: 5, value: 40 });
+    // Prototype spellings: ordinary pct records, never fabricated
+    // native records with undefined unit/limit.
+    for (const [name, value] of [
+      ["constructor", 42],
+      ["__proto__", 7],
+      ["toString", 9],
+    ] as const) {
+      expect(byMetric.get(name)).toMatchObject({ unit: "pct", limit: 100, value });
+    }
+    for (const r of records) {
+      expect(typeof r.unit).toBe("string");
+      expect(Number.isFinite(r.limit)).toBe(true);
+    }
+  });
+});

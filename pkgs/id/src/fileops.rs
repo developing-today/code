@@ -95,16 +95,36 @@ pub struct FileOps<'a> {
     blob_wait: Duration,
 }
 
+/// Serialises archive-name resolve+claim within this process (#2462).
+///
+/// On its own, resolving a free archive name is check-then-act: the name
+/// comes back *unclaimed* and the caller claims it with a later
+/// unconditional `tags().set`, so two concurrent same-second replaces of
+/// one name could resolve the same candidate and the second claim would
+/// silently overwrite the first replace's archive.
+/// [`claim_archive_name`] holds this lock across the whole
+/// resolve-and-set, so a name is never handed out unclaimed.
+///
+/// Scope: this is an in-process lock. It is sound because the `id` server
+/// is the single process writing this tag store; a second writer process
+/// sharing the store would need store-level compare-and-set instead.
+static ARCHIVE_CLAIM_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The archive tag for `name` at `ts`, bumped past any archive tag that
 /// already exists: `{name}.archive.{ts}`, then `{name}.archive.{ts + 1}`,
 /// and so on until the name is free.
 ///
-/// Archive names carry second-resolution timestamps, so two replaces of one
-/// name within the same second would otherwise pick the same tag and the
-/// second would silently overwrite the first replace's archive (#1612). The
-/// suffix stays all digits: `delete` enumerates a file's archives by exactly
-/// that shape, and the web layer parses the suffix as the archive timestamp.
-pub(crate) async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String> {
+/// Archive names carry second-resolution timestamps, so two replaces of
+/// one name within the same second would otherwise pick the same tag and
+/// the second would silently overwrite the first replace's archive
+/// (#1612). The suffix stays all digits: `delete` enumerates a file's
+/// archives by exactly that shape, and the web layer parses the suffix
+/// as the archive timestamp.
+///
+/// The returned name is NOT claimed: callers must go through
+/// [`claim_archive_name`], which holds [`ARCHIVE_CLAIM_LOCK`]; this
+/// helper may only be called with that lock held.
+async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String> {
     let mut suffix = ts;
     loop {
         let candidate = format!("{name}.archive.{suffix}");
@@ -113,6 +133,22 @@ pub(crate) async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Res
         }
         suffix += 1;
     }
+}
+
+/// Resolve a free archive name for `name` at `ts` and claim it for
+/// `hash` in the same critical section (#2462): when this returns, the
+/// tag already points at `hash`, and no concurrent claim in this process
+/// can receive the same name.
+pub(crate) async fn claim_archive_name(
+    store: &Store,
+    name: &str,
+    ts: u64,
+    hash: Hash,
+) -> Result<String> {
+    let _guard = ARCHIVE_CLAIM_LOCK.lock().await;
+    let candidate = free_archive_name(store, name, ts).await?;
+    store.tags().set(&candidate, hash).await?;
+    Ok(candidate)
 }
 
 impl<'a> FileOps<'a> {
@@ -174,10 +210,7 @@ impl<'a> FileOps<'a> {
         let Some(existing) = self.store.tags().get(name).await? else {
             return Ok(None);
         };
-        let archive = free_archive_name(self.store, name, ts).await?;
-        self.store
-            .tags()
-            .set(&archive, existing.hash)
+        let archive = claim_archive_name(self.store, name, ts, existing.hash)
             .await
             .with_context(|| format!("archiving replaced file {name}"))?;
         Ok(Some(archive))
@@ -265,14 +298,8 @@ impl<'a> FileOps<'a> {
             .map_err(anyhow::Error::from)?;
 
         let archived_original = if archive {
-            match free_archive_name(self.store, from, ts).await {
-                Ok(name) => match self.store.tags().set(&name, hash).await {
-                    Ok(()) => Some(name),
-                    Err(e) => {
-                        tracing::error!("failed to archive original {from}: {e}");
-                        None
-                    }
-                },
+            match claim_archive_name(self.store, from, ts, hash).await {
+                Ok(name) => Some(name),
                 Err(e) => {
                     tracing::error!("failed to archive original {from}: {e}");
                     None
@@ -465,13 +492,15 @@ mod archive_name_tests {
         let store: Store = MemStore::new().into();
         let ts = 1_700_000_000_u64;
 
-        let first = free_archive_name(&store, "doc", ts).await.unwrap();
+        let first = claim_archive_name(&store, "doc", ts, hash(1))
+            .await
+            .unwrap();
         assert_eq!(first, format!("doc.archive.{ts}"));
-        store.tags().set(&first, hash(1)).await.unwrap();
 
-        let second = free_archive_name(&store, "doc", ts).await.unwrap();
+        let second = claim_archive_name(&store, "doc", ts, hash(2))
+            .await
+            .unwrap();
         assert_eq!(second, format!("doc.archive.{}", ts + 1));
-        store.tags().set(&second, hash(2)).await.unwrap();
 
         // Both archives survive, each still pointing at its own version.
         assert_eq!(
@@ -484,15 +513,68 @@ mod archive_name_tests {
         );
 
         // A third same-second replace bumps past both.
-        let third = free_archive_name(&store, "doc", ts).await.unwrap();
+        let third = claim_archive_name(&store, "doc", ts, hash(3))
+            .await
+            .unwrap();
         assert_eq!(third, format!("doc.archive.{}", ts + 2));
+    }
+
+    /// Concurrent same-second claims must never share a name (#2462):
+    /// when resolve and claim were separate steps, interleaved resolves
+    /// could pick the same candidate and one archive silently overwrote
+    /// another. Barrier-synchronised claims must all land on distinct
+    /// tags, each still pointing at its own version.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_second_claims_never_collide() {
+        use std::sync::Arc;
+
+        use tokio::sync::Barrier;
+
+        let store: Store = MemStore::new().into();
+        let store = Arc::new(store);
+        let ts = 1_700_000_000_u64;
+        const CLAIMS: u8 = 8;
+        let barrier = Arc::new(Barrier::new(usize::from(CLAIMS)));
+        let mut handles = Vec::new();
+        for i in 0..CLAIMS {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let name = claim_archive_name(&store, "doc", ts, hash(i + 1))
+                    .await
+                    .unwrap();
+                (name, hash(i + 1))
+            }));
+        }
+        let mut claimed = Vec::new();
+        for handle in handles {
+            claimed.push(handle.await.unwrap());
+        }
+        let mut names: Vec<&str> = claimed.iter().map(|(name, _)| name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), usize::from(CLAIMS), "archive claims collided");
+        for (name, expected) in &claimed {
+            assert_eq!(
+                store.tags().get(name).await.unwrap().unwrap().hash,
+                *expected,
+                "archive {name} lost its version"
+            );
+        }
     }
 
     /// With no collision the archive name is exactly the historic shape.
     #[tokio::test]
     async fn uncontested_archive_name_is_unchanged() {
         let store: Store = MemStore::new().into();
-        let name = free_archive_name(&store, "doc", 42).await.unwrap();
+        let name = claim_archive_name(&store, "doc", 42, hash(7))
+            .await
+            .unwrap();
         assert_eq!(name, "doc.archive.42");
+        assert_eq!(
+            store.tags().get(&name).await.unwrap().unwrap().hash,
+            hash(7)
+        );
     }
 }

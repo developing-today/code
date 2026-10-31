@@ -108,6 +108,57 @@ describe("saas extraction (Part b)", () => {
     expect(shells.length).toBe(8);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
   });
+
+  test("modal: monthly console read carries a dated used-credits value", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    ).replace(
+      "- **Last checked:** 2026-10-22 (Tracker).",
+      "- **Last checked:** console read 2026-10-24.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBe(12.5);
+    expect(credits.limit).toBe(30);
+    expect(credits.percent).toBeCloseTo(41.7, 1);
+    expect(modal.measuredAt).toBe("2026-10-24");
+  });
+
+  test("modal: percentage read is not mistaken for dollars", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** used 50% of monthly compute credits on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBeNull();
+  });
+
+  test("modal: no used figure stays an allowance-only shell", () => {
+    const modal = byId.get("modal")!;
+    expect(modal.metrics.find((m) => m.id === "compute-credits")?.used).toBeNull();
+  });
+
+  test("bitwarden: bws count-only read yields dated secrets/projects metrics", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 121 secrets, 1 project (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(121);
+    expect(m.get("projects-count")?.used).toBe(1);
+    expect(bw.measuredAt).toBe("2026-10-26");
+  });
+
+  test("bitwarden: no dated count stays an empty shell, names/values never parsed", () => {
+    const bw = byId.get("bitwarden")!;
+    expect(bw.metrics).toEqual([]);
+  });
 });
 
 describe("payg lines + charges (§1.2, §2.4)", () => {
@@ -268,6 +319,29 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: date-only stamps age by the Chicago calendar day (#1629)", () => {
+    // 19:30 CDT on 2026-10-25 is already 2026-10-26 in UTC. A read
+    // dated today (Chicago) is 0 days old for the whole Chicago day;
+    // the UTC-day age called it 1d old -- and stale at cadence 0 --
+    // from 19:00 Chicago onward.
+    const cdtEvening = new Date("2026-10-26T00:30:00Z");
+    expect(freshness("2026-10-25", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-25", 0, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-24", 7, cdtEvening)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-24", 0, cdtEvening)).toEqual({ stale: true, ageDays: 1 });
+    // Still today at 23:59 Chicago.
+    expect(freshness("2026-10-25", 7, new Date("2026-10-26T04:59:00Z"))).toEqual({
+      stale: false,
+      ageDays: 0,
+    });
+    // The CST evening of the same shape: 19:00 CST on 2026-01-14 is
+    // 2026-01-15 in UTC.
+    const cstEvening = new Date("2026-01-15T01:00:00Z");
+    expect(freshness("2026-01-14", 7, cstEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-01-13", 7, cstEvening)).toEqual({ stale: false, ageDays: 1 });
+    // Tomorrow's Chicago date is still within the future tolerance.
+    expect(freshness("2026-10-26", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
   });
   test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
     const now = new Date("2026-10-26T12:00:00Z");

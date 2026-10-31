@@ -307,18 +307,30 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return err
 		}
 		name := "artifact"
+		match := -1
 		for i := range res.Artifacts {
 			if res.Artifacts[i].ID == f.ID {
 				name = res.Artifacts[i].Name
-				dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name))
-				if err := os.Rename(w.Name(), dest); err != nil {
-					return err
-				}
-				res.Artifacts[i].Path = dest
-				return nil
+				match = i
+				break
 			}
 		}
-		return os.Rename(w.Name(), filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(name)))
+		// Never overwrite: a second artifact whose name sanitises to the
+		// same file is suffixed, exactly as Store.Export does (#1605).
+		// Renaming onto the bare sanitised name silently destroyed the
+		// first artifact's body and left both Path fields pointing at
+		// the one surviving file.
+		dest, err := artifacts.UniquePath(eo.ArtifactsDir, name)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(w.Name(), dest); err != nil {
+			return err
+		}
+		if match >= 0 {
+			res.Artifacts[match].Path = dest
+		}
+		return nil
 	}
 	return nil
 }
@@ -393,7 +405,11 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 				return err
 			}
 		}
-		dest := filepath.Join(eo.ArtifactsDir, artifacts.SanitizeName(art.Name))
+		// Never overwrite, same rule as the streaming path (#1605).
+		dest, err := artifacts.UniquePath(eo.ArtifactsDir, art.Name)
+		if err != nil {
+			return err
+		}
 		if err := writeNew(dest, body); err != nil {
 			return err
 		}

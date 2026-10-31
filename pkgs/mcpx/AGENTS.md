@@ -129,3 +129,24 @@ CI runs the same script as the flake check `checks.mcpx-packaging`.
 - Do not parse human output; use `mcpx --json <command>`.
 - Do not assume a tool name is a valid identifier: `fancy-name` becomes
   `fancy_name`. `mcpx types` shows the real function name.
+
+## Darwin compile check (contributors)
+
+CI compiles for Linux only, so a Linux-only symbol in a `_test.go` file
+(e.g. `syscall.SOCK_CLOEXEC`, #237) is invisible until someone runs the
+suite on a Mac. The darwin compile gate (#1988) cross-compiles every
+test package for darwin/arm64 on the existing ubuntu jobs — no Mac and
+no macOS runner needed. Run it locally from `pkgs/mcpx`:
+
+    bash scripts/darwin-compile-check.sh
+
+By hand, the same check is:
+
+    GOOS=darwin GOARCH=arm64 go build ./...
+    GOOS=darwin GOARCH=arm64 go test -c -o /dev/null <package>   # per package with test files
+
+The script's `DARWIN_COMPILE_EXCEPTIONS` variable is the single list of
+packages allowed to fail this compile today (currently
+`internal/daemon`, tracked by #237). Emptying that one line must make
+the gate fail on the excepted package — that is how you know the gate
+still detects the class. Delete an entry when its fix lands.
