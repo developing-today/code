@@ -113,6 +113,35 @@ describe("session registry", () => {
     // A later merge with fewer tokens never lowers the cumulative total.
     expect(mergeRecords(merged, [a])[0].tokensTotal).toBe(250);
   });
+
+  test("sparse re-read never wipes stored fields (#1560)", () => {
+    const full = recordFromSessionEntry(
+      entry({
+        sessionId: "ses_full",
+        title: "Full title",
+        model: "opus-4-1",
+        directory: "/home/user/git/code",
+        parentId: "ses_parent",
+        createdAt: "2026-10-25T14:00:00Z",
+        lastActivityAt: "2026-10-25T15:00:00Z",
+      }),
+      500,
+    );
+    // A sparse feed entry: no title/model/directory/parentId stated.
+    const sparse = recordFromSessionEntry(entry({ sessionId: "ses_full" }));
+    expect(sparse.model).toBeUndefined();
+    expect(sparse.parentId).toBeNull();
+    const m = mergeRecords([full], [sparse])[0];
+    expect(m.model).toBe("opus-4-1");
+    expect(m.title).toBe("Full title");
+    expect(m.directory).toBe("/home/user/git/code");
+    expect(m.parentId).toBe("ses_parent");
+    // The sparse label is just the session-id fallback; the stored one survives.
+    expect(m.label).toBe("Full title");
+    // Present incoming values still win: a stated model replaces, a stated parent replaces.
+    expect(mergeRecords([full], [{ ...sparse, model: "sonnet" }])[0].model).toBe("sonnet");
+    expect(mergeRecords([full], [{ ...sparse, parentId: "ses_new_parent" }])[0].parentId).toBe("ses_new_parent");
+  });
 });
 
 // --- Comments store (#906 §2) ------------------------------------------------
