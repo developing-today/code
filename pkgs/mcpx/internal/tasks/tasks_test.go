@@ -563,3 +563,43 @@ func TestAStartDeadlineCancelsWaitingWork(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A deadline task's retention is floored at two poll intervals, under
+// the maxTTL clamp: the deadline seams are polled by a wrapper working
+// to the advertised interval, and a clamped TTL below one poll cycle
+// would delete a finished result before the wrapper's next look
+// (Codex on #2869, round 6 -- the daemon-backed ask path losing a
+// successful call's result to a 100ms maxTTL).
+func TestADeadlineTasksResultSurvivesAPollCycleBeyondTheClamp(t *testing.T) {
+	st := tasks.New()
+	st.PollInterval = 400 * time.Millisecond
+	st.MaxTTL = 50 * time.Millisecond
+	task, err := st.StartWithDeadline(tasks.Caller("asker"), 60000, time.Minute, func(ctx context.Context) (any, *tasks.Fault) {
+		return "the answer", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if task.TTL != 800 {
+		t.Errorf("a deadline task's TTL is floored at two poll intervals, got %d ms", task.TTL)
+	}
+	res, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault != nil || res != "the answer" {
+		t.Fatalf("result: %v %v %v", res, fault, err)
+	}
+	// Past the 50ms clamp, inside the 800ms floor: still collectable.
+	time.Sleep(200 * time.Millisecond)
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Error("the finished deadline task expired inside its first poll cycle")
+	}
+	// A plain Start carries no such floor: the clamp is its whole story.
+	plain, err := st.Start(tasks.Caller("asker"), 60000, func(ctx context.Context) (any, *tasks.Fault) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if plain.TTL != 50 {
+		t.Errorf("a plain task's TTL stays clamped, got %d ms", plain.TTL)
+	}
+}

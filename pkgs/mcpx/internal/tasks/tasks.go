@@ -598,6 +598,17 @@ func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Contex
 // if Cancel had been called, and its retention clock starts from that
 // cancellation. A zero deadline leaves the work unbounded. The
 // requestor key, TTL clamp and per-requestor cap are Start's, above.
+//
+// A deadline task's retention is floored at two poll intervals, under
+// the clamp: both deadline seams in the tree are internal tasks whose
+// result a wrapper collects by polling at the interval the task itself
+// advertises (the daemon-backed ask path: driveAsked polls, sleeping a
+// full TaskPoll between looks while a question is open). A clamped TTL
+// below one poll cycle -- protoTasks.maxTTL=100ms against a 1s poll --
+// would delete a finished backing result before the wrapper's next
+// look, and its poll would meet a 404 and record a successful call as
+// failed (Codex on #2869, round 6). The floor is on the returned task's
+// TTL, so what a client is told is what the store does.
 func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL()
@@ -608,6 +619,15 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 	}
 	if ttl > maxTTL.Milliseconds() {
 		ttl = maxTTL.Milliseconds()
+	}
+	if deadline > 0 {
+		poll := s.PollInterval
+		if poll <= 0 {
+			poll = defaults.TaskPollInterval
+		}
+		if floor := (2 * poll).Milliseconds(); ttl < floor {
+			ttl = floor
+		}
 	}
 	capN := s.MaxPerRequestor
 	if capN <= 0 {

@@ -80,14 +80,18 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 // resolved identity still names who is asking, and the per-requestor cap
 // must charge that identity: keying the cap by the owner alone put every
 // modern client in the one unbound bucket, so a single client could hold
-// every slot (Codex on #2869, round 3). An owner, when there is one, is
-// already the connection's identity, so it stays the key; with no owner
-// the request's IdentityFrom key charges, and only a request with neither
-// falls into the store's unbound bucket.
+// every slot (Codex on #2869, round 3). The resolved identity wins over
+// the owner too: a legacy client that names its session in _meta is
+// resolved to that name (identityFor), while its owner is the bare
+// connection id, so charging the owner would give two connections
+// naming the same session a bucket each (Codex on #2869, round 6).
+// The owner remains only as the fallback for a request whose resolved
+// identity is empty, and a request with neither falls into the store's
+// unbound bucket.
 func (s *Server) startTask(ctx context.Context, owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
-	identity := owner
+	identity := IdentityFrom(ctx).Key
 	if identity == "" {
-		identity = IdentityFrom(ctx).Key
+		identity = owner
 	}
 	t, err := s.tasks().Start(tasks.Caller(identity), ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)

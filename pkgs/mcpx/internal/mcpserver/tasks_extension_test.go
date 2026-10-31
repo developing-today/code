@@ -597,3 +597,43 @@ func TestAskedTaskCapChargesTheResolvedIdentity(t *testing.T) {
 		t.Fatalf("want alice's second call refused by the cap naming the limit, got %v", second)
 	}
 }
+
+// The per-requestor cap on the LEGACY task path charges the resolved
+// identity, not the connection id that legacy ownership records: two
+// connections naming the same session in _meta are one requestor, so
+// with a cap of one the second connection's first task is refused even
+// though its owner id differs. (Codex on #2869, round 6: identityFor
+// gives the named session precedence over the connection id, and
+// task-route admission already charges the resolved identity -- only
+// startTask's owner-first accounting disagreed.)
+func TestLegacyTaskCapChargesTheResolvedIdentityNotTheOwner(t *testing.T) {
+	u := &taskUpstream{fakeBackend: newBackend(), delay: 2 * time.Second,
+		tools: map[string][]mcpserver.Tool{"tasks": {supportTool("slow_compute", "optional")}}}
+	s := taskServer(u, "tasks")
+	s.Timing.TaskMaxPerRequestor = 1
+
+	callAs := func(connID string) (admitted bool, errMsg string) {
+		c := s.ConnForTest(connID)
+		gateInit(t, s, c, "2025-11-25")
+		params := map[string]any{
+			"name": "slow_compute", "arguments": map[string]any{},
+			"task":  map[string]any{"ttl": 60000},
+			"_meta": map[string]any{mcpserver.MetaSession: "alice"},
+		}
+		resp := s.HandleOn(context.Background(), c, mcpserver.Request(9, "tools/call", params))
+		if resp == nil {
+			return false, "no response"
+		}
+		if resp.Error != nil {
+			return false, resp.Error.Message
+		}
+		return true, ""
+	}
+
+	if ok, msg := callAs("conn-a"); !ok {
+		t.Fatalf("want alice's first legacy task admitted, got %s", msg)
+	}
+	if ok, msg := callAs("conn-b"); ok || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want the second connection naming alice refused by the cap, admitted=%v err=%q", ok, msg)
+	}
+}
