@@ -2333,6 +2333,35 @@ mod tests {
     }
 
     #[test]
+    fn test_a_smaller_total_on_reopen_drops_the_excess_and_still_opens() {
+        // Three authors each hold one waiting event under the default total.
+        // Reopening under a total of two must not brick the store: the excess
+        // row is dropped, the store opens, and the drop is durable.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ids = Vec::new();
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            for n in 41..=43 {
+                let signer = key(n);
+                let events = chain_of(&signer, 2);
+                assert_eq!(
+                    ingest(&mut store, &events[1]),
+                    Ingest::Waiting { id: events[1].id }
+                );
+                ids.push(events[1].id);
+            }
+            assert_eq!(store.waiting_ids().unwrap().len(), 3);
+        }
+        let limits = WaitingLimits::default().with_total(2);
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(store.waiting_ids().unwrap().len(), 2);
+        assert_eq!(ids.iter().filter(|id| store.is_waiting(id)).count(), 2);
+        store.check_invariants().unwrap();
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(store.waiting_ids().unwrap().len(), 2);
+    }
+
+    #[test]
     fn test_a_parked_event_is_held_across_a_restart_and_still_sees_a_conflict() {
         let dir = tempfile::tempdir().unwrap();
         let signer = key(39);
