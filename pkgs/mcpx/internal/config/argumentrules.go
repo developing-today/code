@@ -1296,6 +1296,18 @@ func collectConditionNames(v any, root map[string]any, resolving map[string]bool
 func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any, bool) {
 	switch t := v.(type) {
 	case map[string]any:
+		// A subschema carrying its own $id is a separate
+		// resource: references inside it resolve against that
+		// resource, not the outer rule document this walk
+		// resolves against. Substituting the outer document's
+		// same-named definitions would evaluate a condition
+		// with different semantics than enforcement, so the
+		// shape is declined (the caller treats the condition
+		// as undecided) — the same boundary rewriteLocalRefs
+		// honours (Codex P2 on PR #2976).
+		if id, ok := t["$id"].(string); ok && id != "" {
+			return nil, false
+		}
 		if ref, ok := t["$ref"].(string); ok && strings.HasPrefix(ref, "#") {
 			if resolving[ref] {
 				return nil, false

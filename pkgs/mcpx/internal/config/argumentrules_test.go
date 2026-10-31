@@ -1001,3 +1001,24 @@ func TestEffectiveSchemaPinnedEvaluatesNegatedPins(t *testing.T) {
 		t.Errorf("undecided negation must survive verbatim: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: a subschema carrying its own $id is a
+// separate resource — references inside it resolve against that
+// resource, not the outer rule document. The inliner must decline
+// pin-decided evaluation for such shapes rather than substituting
+// the outer document's same-named definition and selecting the
+// branch enforcement does not.
+func TestEffectiveSchemaPinnedDeclinesIDCarryingConditions(t *testing.T) {
+	rule := `{"$defs":{"value":{"const":"other"}},"if":{"$id":"https://example.com/cond","$defs":{"value":{"const":"prod"}},"properties":{"tailnet":{"$ref":"#/$defs/value"}},"required":["tailnet"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"if"`) {
+		t.Errorf("a condition inside an $id-carrying resource must stay undecided, not be evaluated against the outer document: %s", got)
+	}
+}
