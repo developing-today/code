@@ -22,7 +22,7 @@ import (
 // exactly one of text/blob, as a string; a blob must be valid base64.
 // mimeType, when present, must be a string. Unknown extra fields pass —
 // a revision mcpx does not know yet may add them — but a known field with
-// the wrong JSON type fails: decoding into *string fields is the point.
+// the wrong JSON type, including null, fails.
 func ValidateResourceResult(raw json.RawMessage) error {
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
@@ -47,6 +47,22 @@ func ValidateResourceResult(raw json.RawMessage) error {
 // validateResourceEntry checks one contents entry: an object with a
 // string uri and exactly one of text/blob (a string; blob valid base64).
 func validateResourceEntry(raw json.RawMessage) error {
+	var fields struct {
+		URI      json.RawMessage `json:"uri"`
+		Text     json.RawMessage `json:"text"`
+		Blob     json.RawMessage `json:"blob"`
+		MimeType json.RawMessage `json:"mimeType"`
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("a resource contents entry must be an object: %w", err)
+	}
+	for name, value := range map[string]json.RawMessage{
+		"uri": fields.URI, "text": fields.Text, "blob": fields.Blob, "mimeType": fields.MimeType,
+	} {
+		if string(value) == "null" {
+			return fmt.Errorf("a resource contents entry's %s must be a string, not null", name)
+		}
+	}
 	var e struct {
 		URI      *string `json:"uri"`
 		Text     *string `json:"text"`
