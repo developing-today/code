@@ -146,6 +146,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// (obj.return, obj.catch()) was misread as the keyword itself
 	// (Codex P2 on #1659).
 	identPrev := rune(0)
+	identPrevSig := rune(0)
 	lastIdentPrev := rune(0)
 	// prevIdent is the completed identifier before the one now
 	// being accumulated, captured when an identifier starts; it
@@ -169,9 +170,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		ch := chars[i]
 
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
-			if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$' {
+			if isIdentChar(ch) {
 				if len(curIdent) == 0 {
 					identPrev = prevChar
+					identPrevSig = prevSig
 					prevIdent = lastIdent
 				}
 				curIdent = append(curIdent, ch)
@@ -182,12 +184,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
 					prevSig = 'o'
 				}
-				if (lastIdent == "in" || lastIdent == "of") && lastIdentPrev != '.' {
+				if (lastIdent == "in" || lastIdent == "of") && lastIdentPrev != '.' && identPrevSig == 'x' {
 					// Binary keyword operators: an expression follows,
 					// so a '/' opens a regex literal (Codex P2 on
 					// #1659: "source" in /a+/ and for (const m of
 					// /a+/.exec(..))). Reached through member access
-					// (obj.in) the word is a property name instead.
+					// (obj.in) the word is a property name instead,
+					// and after a non-operand (const of = 4) the word
+					// is an ordinary identifier: of / 2 divides, so
+					// the operator classification requires the word
+					// to follow an operand (identPrevSig == 'x').
 					prevSig = 'o'
 				}
 				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && isExprPositionStart(lastIdentPrev, prevIdent) {
@@ -249,6 +255,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			if ch == inString {
 				inString = rune(0)
 				prevSig = 'x'
+				// The string was the keyword's operand; the keyword
+				// context does not survive it (see the ';' expiry).
+				lastIdent = ""
+				lastIdentPrev = 0
 			}
 			continue
 		}
@@ -282,6 +292,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			if ch == '/' {
 				inRegex = false
 				prevSig = 'x'
+				// The regex was the keyword's operand; the keyword
+				// context does not survive it (see the ';' expiry).
+				lastIdent = ""
+				lastIdentPrev = 0
 				// Consume flag letters (g, i, m, s, u, y) so the
 				// completed literal stays a single operand token.
 				for i+1 < n && isRegexFlag(chars[i+1]) {
@@ -405,7 +419,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			prevSig = 'x'
 		case isJSWhitespace(ch):
 			// Whitespace does not change the ruling.
-		case unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$':
+		case isIdentChar(ch):
 			prevSig = 'x'
 		case (ch == '+' || ch == '-') && i > 0 && chars[i-1] == ch && signAfterOperand:
 			// Postfix increment/decrement: the adjacent sign pair
@@ -423,6 +437,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
 		if ch == ';' {
 			expectFuncClassBody = false
+			// A statement boundary expires any keyword context: a
+			// '{' after ';' must not be classified by a keyword an
+			// earlier statement ended with (Codex P2 on #1659:
+			// typeof ""; {} /a+/.test(..) — the stale typeof made
+			// the block an object literal).
+			lastIdent = ""
+			lastIdentPrev = 0
 		}
 		closedExprAfter = false
 		if !isJSWhitespace(ch) {
@@ -505,6 +526,20 @@ func isExprPositionStart(prev rune, prevIdent string) bool {
 		return true
 	}
 	return false
+}
+
+// isIdentChar reports whether ch can appear in a JavaScript identifier
+// as this scanner tracks it: letters, digits, '_' and '$', plus the
+// remaining IdentifierPart characters — combining marks (Mn, Mc),
+// connector punctuation (Pc), and the zero-width (non-)joiners U+200C and
+// U+200D. An identifier ending in one of those is still an operand, so a
+// '/' after it divides (Codex P2 on #1659: an identifier ending in
+// U+0301 fell out of the accumulation and the classification alike).
+func isIdentChar(ch rune) bool {
+	return unicode.IsLetter(ch) || unicode.IsDigit(ch) ||
+		ch == '_' || ch == '$' ||
+		unicode.In(ch, unicode.Mn, unicode.Mc, unicode.Pc) ||
+		ch == '\u200c' || ch == '\u200d'
 }
 
 // isJSWhitespace reports whether ch is in the ECMAScript WhiteSpace

@@ -145,6 +145,10 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after delete object literal", "const q = delete {} / 2;\n"},
 		{"division after await object literal", "const q = await {} / 2;\n"},
 		{"division after yield object literal", "function* g() { const q = yield {} / 2; }\n"},
+		{"division after identifier named of", "const of = 4;\nconst ratio = of / 2;\n"},
+		{"division after combining-mark identifier", "const a\u0301 = 4;\nconst q = a\u0301 / 2;\n"},
+		{"division after ZWNJ identifier", "const a\u200c = 4;\nconst q = a\u200c / 2;\n"},
+		{"regex after block following typeof string statement", "typeof \"\"; {} /a+/.test(\"aa\");\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
