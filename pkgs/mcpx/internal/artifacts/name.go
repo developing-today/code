@@ -74,6 +74,15 @@ func MimeForName(name string) string {
 	return "application/octet-stream"
 }
 
+// UniquePath resolves a name inside a directory without ever overwriting,
+// for callers outside this package that deliver artifacts into a directory
+// the caller named (the CLI's exec artifact delivery, #1605). It is the
+// exported form of uniquePath, so every delivery path follows the same
+// never-overwrite rule Store.Export documents.
+func UniquePath(dir, name string) (string, error) {
+	return uniquePath(dir, name)
+}
+
 // uniquePath resolves a name inside a directory without ever overwriting.
 //
 // The suffix goes before the extension -- shot-1.png, not shot.png-1 -- so
