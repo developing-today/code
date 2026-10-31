@@ -77,7 +77,11 @@ if (dryRun) {
   process.exit(0);
 }
 
-const version = listVersions().find((v) => v.annotations?.["workers/tag"] === tag);
+// Re-deploying an unchanged tree uploads a second version under the
+// same tag (uploads are not deduplicated), so pick the newest match.
+const version = listVersions()
+  .filter((v) => v.annotations?.["workers/tag"] === tag)
+  .sort((a, b) => createdOn(b) - createdOn(a))[0];
 if (!version) {
   throw new Error(`uploaded version with tag ${tag} not found in versions list`);
 }
@@ -109,6 +113,12 @@ async function assertDeployable(versionId) {
   if (!ids.includes(versionId)) {
     throw new Error(`version ${versionId} is not in the deployable set; refusing to create a deployment`);
   }
+}
+
+function createdOn(version) {
+  const raw = version.metadata?.created_on ?? version.created_on ?? version.createdOn ?? 0;
+  const parsed = typeof raw === "number" ? raw : Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function listVersions() {
