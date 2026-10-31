@@ -389,9 +389,17 @@ func declaredNames(toks []lexToken) map[string]bool {
 		if i > 0 && toks[i-1].kind == tPunct && (toks[i-1].text == "." || toks[i-1].text == "?.") {
 			continue
 		}
-		// A lone identifier before => is an arrow parameter.
-		if i+1 < len(toks) && toks[i+1].text == "=>" {
-			out[t.text] = true
+		// A lone identifier before => is an arrow parameter —
+		// unless it is the return-type annotation of a
+		// parenthesised parameter list (`(): demo => ...`): the
+		// annotation vanishes at runtime and binds nothing, so
+		// recording it would shadow the real namespace use.
+		if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].text == "=>" {
+			isReturnType := i >= 2 && toks[i-1].kind == tPunct && toks[i-1].text == ":" &&
+				toks[i-2].kind == tPunct && toks[i-2].text == ")"
+			if !isReturnType {
+				out[t.text] = true
+			}
 		}
 		switch t.text {
 		case "const", "let", "var":
@@ -494,17 +502,21 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 		return i + 1
 	case toks[i].text == "{":
 		i++
-		for i < len(toks) && toks[i].text != "}" {
+		// Only punctuation delimits the pattern: a literal whose
+		// text spells a delimiter (the string "}", a template ",")
+		// is a property key, never structure — the same rule
+		// skipExpr follows.
+		for i < len(toks) && !(toks[i].kind == tPunct && toks[i].text == "}") {
 			switch {
-			case toks[i].text == ",":
+			case toks[i].kind == tPunct && toks[i].text == ",":
 				i++
-			case toks[i].text == "...":
+			case toks[i].kind == tPunct && toks[i].text == "...":
 				i++
 				if i < len(toks) && toks[i].kind == tIdent {
 					out[toks[i].text] = true
 					i++
 				}
-			case toks[i].text == "[":
+			case toks[i].kind == tPunct && toks[i].text == "[":
 				// A computed key: skip it, then the target after ':'.
 				i = skipExpr(toks, i, map[string]bool{":": true})
 				if i < len(toks) && toks[i].text == ":" {
@@ -532,12 +544,12 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 		return i
 	case toks[i].text == "[":
 		i++
-		for i < len(toks) && toks[i].text != "]" {
-			if toks[i].text == "," {
+		for i < len(toks) && !(toks[i].kind == tPunct && toks[i].text == "]") {
+			if toks[i].kind == tPunct && toks[i].text == "," {
 				i++
 				continue
 			}
-			if toks[i].text == "..." {
+			if toks[i].kind == tPunct && toks[i].text == "..." {
 				i++
 			}
 			i = parseTarget(toks, i, out)
@@ -643,6 +655,41 @@ func parseDeclarators(toks []lexToken, i int, out map[string]bool) {
 // code (const x = 1\na(), demo.echo()) lets the next statement's
 // comma pose as a declaration separator and its first name as a
 // binding.
+// skipTypeArgs returns the index just past a generic type-argument
+// list opening at i (toks[i] is "<"), or -1 when the angle brackets
+// do not balance or the list is not immediately followed by a call's
+// "(" — the shape that proves the "<" opens type arguments rather
+// than a comparison: identity<string, demo>("").
+func skipTypeArgs(toks []lexToken, i int) int {
+	angle := 0
+	for j := i; j < len(toks); j++ {
+		t := toks[j]
+		if t.kind != tPunct {
+			continue
+		}
+		switch t.text {
+		case "<":
+			angle++
+		case ">":
+			angle--
+		case ">>":
+			angle -= 2
+		case ">>>":
+			angle -= 3
+		}
+		if angle < 0 {
+			return -1
+		}
+		if angle == 0 {
+			if j+1 < len(toks) && toks[j+1].kind == tPunct && toks[j+1].text == "(" {
+				return j + 1
+			}
+			return -1
+		}
+	}
+	return -1
+}
+
 func skipDeclarator(toks []lexToken, i int) int {
 	depth := 0
 	for i < len(toks) {
@@ -653,6 +700,16 @@ func skipDeclarator(toks []lexToken, i int) int {
 		if t.kind != tPunct {
 			i++
 			continue
+		}
+		// A generic call's type arguments sit at this declarator's
+		// own depth, and their commas are not declaration
+		// boundaries: identity<string, demo>("") binds nothing.
+		// Jump the whole list when it has the call shape.
+		if depth == 0 && t.text == "<" && i > 0 && toks[i-1].kind == tIdent {
+			if end := skipTypeArgs(toks, i); end >= 0 {
+				i = end
+				continue
+			}
 		}
 		if depth == 0 && (t.text == "," || t.text == ";") {
 			return i
