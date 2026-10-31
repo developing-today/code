@@ -495,11 +495,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                if !dry_run {
+                if dry_run {
+                    println!("dry run: nothing changed");
+                } else {
                     let applied =
                         apply_steps(&mut client, &admin_token, &capability, &steps).await?;
                     if applied == steps.len() {
-                        println!("applied {} step(s)", applied);
+                        println!("applied {applied} step(s)");
                     } else {
                         println!(
                             "applied {} of {} step(s); the rest were reported but not applied",
@@ -507,8 +509,6 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                             steps.len()
                         );
                     }
-                } else {
-                    println!("dry run: nothing changed");
                 }
             }
             client.close();
@@ -905,7 +905,7 @@ async fn current_world_state(
 /// schedule steps are reported, not applied, until their apply paths are
 /// wired (#807), so they must not count toward the "applied N step(s)"
 /// summary (#818).
-fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
+const fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
     use crate::world_manifest::ApplyStep;
     matches!(
         step,

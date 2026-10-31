@@ -193,7 +193,7 @@ impl ServerConfig {
     /// level, with the world and inviter levels unset, so a more specific setting made
     /// elsewhere still wins and the code default still applies when nothing is set.
     #[must_use]
-    pub fn freshness(&self) -> Freshness {
+    pub const fn freshness(&self) -> Freshness {
         Freshness {
             server: self.policy.freshness_window,
             world: None,

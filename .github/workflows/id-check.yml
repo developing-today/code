@@ -82,7 +82,7 @@ jobs:
   # JSON array for the matrix. The list file stays the single source of
   # truth: adding a check to id-pr-checks.txt adds a parallel job.
   guard:
-    name: guard PR check list
+    name: "basic: guard PR check list"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -124,7 +124,7 @@ jobs:
   # derivation. check-id-pr-checks.sh holds the exclusion list and keeps
   # this list in sync with pkgs/id/flake.nix.
   check_each:
-    name: nix flake check (${{ matrix.check }})
+    name: "basic: nix flake check (${{ matrix.check }})"
     needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -183,7 +183,7 @@ jobs:
   # backstop. Nothing from the old PR matrix is lost: the union of this
   # job, id-e2e-nightly, and the PR matrix covers it.
   full-flake-check:
-    name: nix flake check (full, main tier)
+    name: "full (main tier): nix flake check"
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 180

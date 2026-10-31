@@ -318,7 +318,7 @@ pub enum Command {
         no_mdns: bool,
         /// Enable mainline DHT address lookup and publishing.
         ///
-        /// By default, the server does not use the mainline BitTorrent DHT
+        /// By default, the server does not use the mainline `BitTorrent` DHT
         /// for address discovery. This flag enables DHT lookup and publishing
         /// for the server's endpoint.
         #[arg(long)]
@@ -1542,7 +1542,7 @@ pub enum WorldCommand {
         #[arg(long, value_enum, default_value_t = WorldVia::Iroh)]
         via: WorldVia,
         /// With `--via ssh`: the host key fingerprint `id serve` prints
-        /// (`SHA256:...`). Without it, the key must be in ~/.ssh/known_hosts.
+        /// (`SHA256:...`). Without it, the key must be in ~/.`ssh/known_hosts`.
         #[arg(long, value_name = "FINGERPRINT")]
         ssh_host_key: Option<String>,
         /// World on the host to use (default: the host's default world).
@@ -1558,7 +1558,7 @@ pub enum WorldCommand {
     /// Reach a host's world SSH server through iroh, so an ordinary `ssh`
     /// client can reach a world behind NAT: `ssh -p 2222 <world>@127.0.0.1`
     /// (password: the guest capability). With `--stdio`, acts as an SSH
-    /// ProxyCommand instead of listening.
+    /// `ProxyCommand` instead of listening.
     SshTunnel {
         /// The host's node ID (64 hex characters).
         node: String,

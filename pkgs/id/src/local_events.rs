@@ -308,10 +308,10 @@ impl LocalEvents {
             let mut required: Vec<Hash> = Vec::new();
             let mut seen: HashSet<AuthorKey> = HashSet::new();
             for claim in &group {
-                if seen.insert(claim.author) {
-                    if let Some(head) = heads.get(&claim.author) {
-                        required.push(*head);
-                    }
+                if seen.insert(claim.author)
+                    && let Some(head) = heads.get(&claim.author)
+                {
+                    required.push(*head);
                 }
             }
             let ids: Vec<Hash> = group.iter().map(|claim| claim.id).collect();
