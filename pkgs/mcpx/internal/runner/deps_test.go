@@ -196,6 +196,64 @@ func TestMaterialiseDepsAliasKeepsNpmSpecifier(t *testing.T) {
 	}
 }
 
+// TestMaterialiseDepsDenoAliasUsesNpmTarget is the Codex finding on
+// PR #2589 (runner/deps.go): the Deno imports generation concatenated
+// an npm alias behind its own name, producing
+// "npm:alias@npm:@scope/pkg@2.0.0" instead of the alias's target.
+func TestMaterialiseDepsDenoAliasUsesNpmTarget(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"alias@npm:@scope/pkg@2.0.0"},
+	}, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := readJSON(t, filepath.Join(dir, "deno.json"))
+	imports, ok := m["imports"].(map[string]any)
+	if !ok {
+		t.Fatalf("deno.json has no imports: %v", m)
+	}
+	if imports["alias"] != "npm:@scope/pkg@2.0.0" {
+		t.Fatalf("imports = %v, want alias -> npm:@scope/pkg@2.0.0", imports)
+	}
+}
+
+// TestMaterialiseDepsKeepsDevDependenciesInTheirSection is the Codex
+// finding on PR #2589 (runner/deps.go): a resolved dev dependency was
+// promoted into "dependencies" when the manifest was materialised,
+// changing the manifest a bun.lock was frozen against.
+func TestMaterialiseDepsKeepsDevDependenciesInTheirSection(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindBun, &Deps{
+		Manifest:    `{"name":"p","dependencies":{"a":"^1.0.0"},"devDependencies":{"tool":"^2.0.0"}}`,
+		Packages:    []string{"tool@2.1.0"},
+		AutoInstall: "off",
+	}, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	m := readJSON(t, filepath.Join(dir, "package.json"))
+	deps := m["dependencies"].(map[string]any)
+	if _, promoted := deps["tool"]; promoted {
+		t.Fatalf("dev dependency promoted into dependencies: %v", deps)
+	}
+	dev := m["devDependencies"].(map[string]any)
+	if dev["tool"] != "2.1.0" {
+		t.Fatalf("devDependencies = %v, want the governed pin 2.1.0", dev)
+	}
+}
+
+// TestRebaseDenoMappingEscapesPathCharacters is the Codex finding on
+// PR #2589 (runner/deps.go): the project path was concatenated into a
+// file URL unescaped, so a directory containing '#' or a space changed
+// the mapping's target.
+func TestRebaseDenoMappingEscapesPathCharacters(t *testing.T) {
+	if got := rebaseDenoMapping("./helper.ts", "/repo/project#one"); got != "file:///repo/project%23one/helper.ts" {
+		t.Errorf("got %q", got)
+	}
+	if got := rebaseDenoMapping("./lib/", "/repo/a b"); got != "file:///repo/a%20b/lib/" {
+		t.Errorf("prefix mapping: got %q", got)
+	}
+}
+
 // TestSelectedLockfileFollowsTheRuntime is the Codex finding on
 // PR #2589 (deps/chain.go): with both lockfiles present, discovery's
 // first (bun.lock) was transported and used for every runtime, so a

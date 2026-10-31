@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -229,10 +230,31 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 				names = append(names, name)
 			}
 			sort.Strings(names)
+			// Dependency sections are load-bearing for a frozen
+			// install: the lockfile was generated against the
+			// manifest's own categories, so a name the manifest
+			// carries under devDependencies must stay there.
+			// Promoting resolved dev dependencies into
+			// "dependencies" rewrites the manifest the lockfile
+			// pins and bun's --frozen-lockfile refuses it
+			// (Codex review, PR #2589). The dev section itself is
+			// synced to the governed values below, like the
+			// optional one.
+			devDeps, _ := manifest["devDependencies"].(map[string]any)
 			for _, name := range names {
+				if _, isDev := devDeps[name]; isDev {
+					continue
+				}
 				merged[name] = deps[name]
 			}
-			manifest["dependencies"] = merged
+			if len(merged) > 0 {
+				manifest["dependencies"] = merged
+			}
+			for name, ver := range deps {
+				if _, has := devDeps[name]; has {
+					devDeps[name] = ver
+				}
+			}
 		}
 		// The materialised copy is always package.json, whatever
 		// name resolution read: deps.manifest may select an
@@ -329,9 +351,18 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 			}
 		}
 		for name, version := range deps {
-			if version == "*" || version == "" {
+			switch {
+			case strings.HasPrefix(version, "npm:"):
+				// An npm alias (alias@npm:@scope/pkg@2.0.0, or the
+				// same spelling as a manifest value): the version IS
+				// the target, spelled in full. Concatenating it
+				// behind the alias name produced
+				// "npm:alias@npm:@scope/pkg@2.0.0", which resolves
+				// nothing (Codex review, PR #2589).
+				imports[name] = version
+			case version == "*" || version == "":
 				imports[name] = "npm:" + name
-			} else {
+			default:
 				imports[name] = "npm:" + name + "@" + version
 			}
 		}
@@ -650,5 +681,9 @@ func rebaseDenoMapping(v, cfgDir string) string {
 	if strings.HasSuffix(v, "/") {
 		abs += "/"
 	}
-	return "file://" + filepath.ToSlash(abs)
+	// The path must be escaped into the URL, not concatenated: a
+	// project directory containing '#', '?' or a percent escape would
+	// otherwise change the mapping's target ('#' starts a fragment)
+	// (Codex review, PR #2589).
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
 }
