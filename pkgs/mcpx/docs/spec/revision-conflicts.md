@@ -43,7 +43,7 @@ instead of a silent choice.
 10. **Peer-settled** — legacy session-404 re-initialisation is era-keyed in internal/mcpclient's legacy session recovery (internal/mcpclient/client.go:1138-1145): a session-carrying 404 re-initialises on the legacy path, a modern-era 404 surfaces; on the server side an unknown method on the modern path is answered 404 with `-32601` (internal/mcpserver/server.go:879). See section B item C7.
 11. **Peer-settled** — `batchRefused` (internal/mcpserver/transport.go): batches are refused outside 2025-03-26, the one revision that mandates receiving them.
 12. **Recorded reading** — the schema and caching page govern over the changelog's list: `server/discover` results are `CacheableResult`s. Implementation gap: the discover result (internal/mcpserver/server.go) emits `supportedVersions` but not yet `ttlMs`/`cacheScope`.
-13. **Undisposed (partly dispositioned)** — the missing-required-task code half is dispositioned as a recorded reading in section C item C10 (`-32601`, internal/mcpserver/tasks.go:244); cancelled-task finality (core vs extension) remains undisposed: no site in internal/mcpserver/tasks.go was verified for it in Phase 1, and it stays an open sub-question there (section C item C11).
+13. **Undisposed** — both halves stay open, with the actual behaviour now recorded for one: cancelled-task finality (core vs extension) has no verified site (section C item C11), and the missing-required-task code (`-32601` vs `-32600`) is not implemented either way — a non-augmented call executes ordinarily (section C item C10, internal/mcpserver/tasks.go:237-245).
 
 ## Headline items
 
@@ -116,7 +116,7 @@ instead of a silent choice.
 - `io.modelcontextprotocol/` — the prefix of every 2026 protocol key — is **not** reserved under the 2025-06-18 rule (nothing follows `modelcontextprotocol`), so a 2025-06-18 implementation could legally have used it for its own data. Conversely `modelcontextprotocol.io/` and `tools.mcp.com/` are reserved in 2025-06-18 and free in 2025-11-25.
 
 **C11. Error codes -32002 and -32042.**
-- **Disposition:** Peer-settled — dual-era code choice is in code: legacy `-32002` (`codeResourceNotFoundLegacy`, internal/mcpserver/server.go) vs 2026 `-32602` (headline 6), and `-32042` is emitted on the 2025-11-25 path only (see section E item 12).
+- **Disposition:** Peer-settled — dual-era code choice is in code: legacy `-32002` (`codeResourceNotFoundLegacy`, internal/mcpserver/server.go) vs 2026 `-32602` (headline 6), and `-32042` belongs to the 2025-11-25 era only — the client propagates it untouched (internal/mcpclient/client.go:630); the server-side return gap is recorded at section E, spec-internal item 2.
 - 2025-11-25 (and earlier for -32002): resource-not-found is -32002; `URL_ELICITATION_REQUIRED = -32042` under "Implementation-specific JSON-RPC error codes [-32000, -32099]". https://modelcontextprotocol.io/specification/2025-11-25/schema#urlelicitationrequirederror
 - 2026-07-28: "Implementations of this protocol version **MUST NOT** emit these codes: `-32002` … `-32042`" https://modelcontextprotocol.io/specification/2026-07-28/basic/index#error-codes
 - 2025-11-25 called -32000..-32099 wholly implementation-specific; 2026 carves -32020..-32099 out as spec-only. Any legacy SDK code in -32020..-32099 other than -32042 becomes forbidden to emit under 2026. A dual-era server must choose the code by the era of the request.
@@ -360,7 +360,7 @@ C21. **Header name casing drift.** 2025-03-26..2025-06-18 `Mcp-Session-Id`; 2025
 - **Disposition:** Peer-settled — the client gates `completion/complete` on the declared `completions` capability (internal/mcpclient/request.go:45-61); mcpx serves nothing older than 2025-03-26, so the un-gated 2024-11-05 case is moot on its server side.
 
 **C10 — "task required but not used" error code (2025-11-25, spec-internal).**
-- **Disposition:** Recorded reading — mcpx follows the tool-level MUST: a non-task-augmented call to a tool whose `execution.taskSupport` is `"required"` is refused with `-32601` (internal/mcpserver/tasks.go:244), not the error list's `-32600`. See headline 13.
+- **Disposition:** Undisposed — the actual behaviour is recorded, and it follows neither text: a non-task-augmented legacy call executes ordinarily, because `maybeTask()` returns nil before any task-support check when the call does not request a task (internal/mcpserver/tasks.go:237-240); the `-32601` branch at :241-245 covers the opposite case, an augmented call to a tool whose support is "forbidden". Open question: should the missing-required-task case refuse with `-32601` (tool-level MUST) or `-32600` (error list), or is ordinary execution the intended reading? See headline 13.
 - Tool-level: "If `execution.taskSupport` is `"required"` … Servers **MUST** return a `-32601` (Method not found) error if a client does not attempt to do so." https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks#tool-level-negotiation
 - Protocol errors: "receivers **MAY** return …: Non-task-augmented request when receiver requires task augmentation for that request type: `-32600` (Invalid request)" …#protocol-errors (and the "Task augmentation required" example there uses -32600). For `tools/call` the MUST (-32601) should win; for other request types -32600.
 
@@ -507,7 +507,7 @@ InitializeResult.serverInfo is a required top-level field in legacy; in 2026 it 
     `LegacyTitledEnumSchema`. 2026-07-28 removes `elicitationId`. Sending `mode`/`elicitationId` to a 2025-06-18 peer is
     sending fields its schema lacks; sending url mode to it is sending a request it cannot represent.
 12. **`elicitationId`, `notifications/elicitation/complete`, `URLElicitationRequiredError` (-32042)** exist only in
-- **Disposition:** Peer-settled — the trio exists on the 2025-11-25 path only: `-32042` is a legacy-path code in the server (see section A item C11), and 2026-07-28 forbids emitting it.
+- **Disposition:** Peer-settled — the trio exists in the 2025-11-25 era only, and 2026-07-28 forbids emitting `-32042`; mcpx's client handles and propagates `-32042` on that era's path (internal/mcpclient/client.go:1549-1586), while the server-side return gap is recorded at the spec-internal item 2 below.
     2025-11-25. 2026-07-28 changelog item 11 removes the first two; basic/index: "Implementations of this protocol version
     **MUST NOT** emit these codes: ... `-32042`" (https://modelcontextprotocol.io/specification/2026-07-28/basic/index#error-codes).
 13. **Elicitation statefulness.** 2025-11-25: "Most practical uses of elicitation require that the server maintain state"
@@ -541,7 +541,7 @@ InitializeResult.serverInfo is a required top-level field in legacy; in 2026 it 
    omit the `mode` field" (https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation#elicitation-requests).
    Resolution by reading: only `message` is unconditionally required.
 2. **`-32042`: MAY vs MUST** (2025-11-25). "the server **MAY** return a `URLElicitationRequiredError`"
-- **Disposition:** Recorded reading — mcpx follows the MUST reading on the path that exists for it: when a request cannot be processed until an elicitation completes, the 2025-11-25 path returns `-32042` (the server-side triggers were implemented and verified under #2080 / PR #2886).
+- **Disposition:** Recorded reading (reading chosen; implementation gap recorded) — mcpx's reading is the MUST: a request that cannot be processed until an elicitation completes should return `-32042`. The server does not yet do it: a URL question the legacy client cannot answer stays with the broker while the server waits (internal/mcpserver/ask.go:192-207), and the gap is recorded in the conformance registry (`elicitation-server-must-return-32042`, internal/conformance/coverage_clientfeatures.go, #214). The client side does handle receiving `-32042` (internal/mcpclient/client.go:1549-1586).
    (https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation#url-elicitation-required-error) vs
    "Servers **MUST** return standard JSON-RPC errors for common failure cases: - When a request cannot be processed until
    an elicitation is completed: `-32042`" (https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation#error-handling).
