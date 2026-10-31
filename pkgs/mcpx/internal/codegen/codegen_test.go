@@ -122,6 +122,25 @@ func TestAllOfBecomesIntersection(t *testing.T) {
 	}
 }
 
+// The effective schema for a ruled tool (#1986) keeps the upstream
+// properties and required list at the root and adds the rules under
+// allOf. The rendered type must keep the root fields: dropping them
+// would hide required arguments (path, owner) behind the one field a
+// rule happens to constrain.
+func TestAllOfKeepsSiblingRootProperties(t *testing.T) {
+	got := typeOf(t, `{
+	  "type":"object",
+	  "properties":{"path":{"type":"string"},"owner":{"type":"string"}},
+	  "required":["path","owner"],
+	  "allOf":[{"type":"object","properties":{"owner":{"enum":["my-org"]}},"required":["owner"]}]
+	}`)
+	for _, want := range []string{"path: string;", "owner: string;", `owner: "my-org";`, "&"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered type %q missing %q", got, want)
+		}
+	}
+}
+
 func TestAdditionalPropertiesBecomesIndexSignature(t *testing.T) {
 	got := typeOf(t, `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"number"}}`)
 	if !strings.Contains(got, "[key: string]: number;") {

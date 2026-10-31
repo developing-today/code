@@ -63,11 +63,12 @@ type Registry struct {
 	// dead rule warns once per registry lifetime instead of on every
 	// catalog observation.
 	deadRuleWarned sync.Map
-	// deadRuleRefresh records servers whose post-list_changed
-	// catalog refresh (for the dead-rule re-check) is already in
-	// flight, so a burst of notifications coalesces into one
-	// refresh per server.
-	deadRuleRefresh sync.Map
+	// deadRulePending records servers whose catalog changed
+	// (list_changed) since the last dead-rule check. The check itself
+	// is deferred to the next genuine catalog observation, so the
+	// notification handler never acquires a pool instance just for
+	// this diagnostic (see noteDeadRuleRecheck).
+	deadRulePending sync.Map
 
 	sessMu sync.Mutex
 	leases map[string]*leaseState
@@ -260,6 +261,10 @@ func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*R
 func (r *Registry) warnDeadArgumentRules() {
 	names := r.Names()
 	for _, name := range names {
+		// This runs at load and after Warm -- both genuine catalog
+		// observations -- so any pending post-list_changed re-check
+		// for the server is discharged here.
+		r.deadRulePending.Delete(name)
 		r.warnDeadArgumentRulesFor(name)
 	}
 }
@@ -273,8 +278,13 @@ func (r *Registry) warnDeadArgumentRulesFor(name string) {
 	if !ok {
 		return
 	}
-	tools, _, _ := p.CachedSchemas()
-	if len(tools) == 0 {
+	tools, _, at := p.CachedSchemas()
+	if at.IsZero() || len(tools) == 0 {
+		// A zero timestamp means the cache was invalidated by a
+		// list_changed and not yet re-read: the tool list still
+		// served here is the PREVIOUS catalog, and warning against
+		// it could condemn a rule the changed catalog keeps alive
+		// (or clear one it orphaned). Wait for a real observation.
 		return
 	}
 	known := make([]string, 0, len(tools))
@@ -297,32 +307,46 @@ func (r *Registry) warnDeadArgumentRulesFor(name string) {
 	}
 }
 
-// warnDeadArgumentRulesAfterRefresh re-checks a server's argument
-// rules against its CHANGED catalog (#1986). The check must not read
-// the cache the list_changed handler just invalidated: Invalidate
-// only forgets the timestamps, so CachedSchemas still returns the
-// previous tool list and a newly orphaned rule would look alive.
-// Refresh first, and only warn against a catalog the refresh
-// actually produced; a failed refresh leaves the rule unchecked
-// until the next catalog observation (load, Warm, or the next
-// list_changed), never warned against stale data. Refreshes are
-// coalesced per server: a burst of list_changed notifications
-// starts one refresh, and later notifications observe the catalog
-// it fetched.
-func (r *Registry) warnDeadArgumentRulesAfterRefresh(name string, p *pool.Pool) {
-	if p == nil {
+// noteDeadRuleRecheck records that a server's catalog changed
+// (tools/list_changed, #1986), so its argument rules need a fresh
+// dead-rule check -- later, at the next genuine catalog observation.
+//
+// The check must NOT run here. Reading the changed catalog means
+// RefreshSchemas, which borrows the pool's separate schema key: for
+// a session-scoped server at max 1, acquiring that throwaway
+// instance evicts and closes the caller's live session process,
+// destroying its state between consecutive calls -- all for a
+// diagnostic, and even for servers with no argument rules at all.
+// The notification handler therefore only takes a note. The check
+// runs in recheckDeadArgumentRules once real work (a guarded call,
+// Warm) has refreshed the catalog for its own reasons, and
+// warnDeadArgumentRulesFor refuses to judge from the stale
+// pre-change list in the meantime.
+func (r *Registry) noteDeadRuleRecheck(name string) {
+	view, ok := r.View(name)
+	if !ok || view.ArgumentRules.Empty() {
 		return
 	}
-	if _, flying := r.deadRuleRefresh.LoadOrStore(name, true); flying {
+	r.deadRulePending.Store(name, true)
+}
+
+// recheckDeadArgumentRules discharges a pending post-list_changed
+// dead-rule check for one server, if a fresh catalog has actually
+// been observed since the change. Call it after a RefreshSchemas
+// that other work already paid for; it acquires nothing itself.
+func (r *Registry) recheckDeadArgumentRules(name string) {
+	if _, pending := r.deadRulePending.Load(name); !pending {
 		return
 	}
-	go func() {
-		defer r.deadRuleRefresh.Delete(name)
-		if _, _, err := p.RefreshSchemas(context.Background()); err != nil {
-			return
-		}
-		r.warnDeadArgumentRulesFor(name)
-	}()
+	p, ok := r.Pool(name)
+	if !ok {
+		return
+	}
+	if _, _, at := p.CachedSchemas(); at.IsZero() {
+		return // still no fresh catalog; keep the note for the next one
+	}
+	r.deadRulePending.Delete(name)
+	r.warnDeadArgumentRulesFor(name)
 }
 
 // ConfigHash fingerprints the server definitions.

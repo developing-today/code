@@ -426,6 +426,9 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 				Reason: "its annotations could not be read: " + err.Error()}
 		}
 		all = fresh
+		// This refresh is a genuine catalog observation: discharge
+		// any dead-rule re-check a list_changed left pending (#1986).
+		r.recheckDeadArgumentRules(p.Name())
 	}
 	var found *mcpclient.Tool
 	for i := range all {
@@ -588,6 +591,9 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, t
 				Reason: "write policy: its annotations could not be read: " + err.Error()}
 		}
 		all = fresh
+		// This refresh is a genuine catalog observation: discharge
+		// any dead-rule re-check a list_changed left pending (#1986).
+		r.recheckDeadArgumentRules(p.Name())
 	}
 	// A tool the schemas do not name is treated as unannotated, which
 	// the specification's defaults read as a possibly destructive

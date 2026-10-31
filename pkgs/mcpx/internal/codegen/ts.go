@@ -159,7 +159,20 @@ func (r *renderer) render(s *schema, indent string) string {
 		return r.union(s.AnyOf, indent)
 	}
 	if len(s.AllOf) > 0 {
-		parts := make([]string, 0, len(s.AllOf))
+		parts := make([]string, 0, len(s.AllOf)+1)
+		// Constraints written beside the allOf are part of the schema
+		// too: EffectiveSchema (#1986) keeps the upstream properties
+		// and required list at the root and puts the argument rules
+		// under allOf, so rendering only the members would drop the
+		// tool's own arguments from `mcpx types` and let generated
+		// clients reject object literals that use them.
+		if s.Type != nil || len(s.Properties) > 0 || len(s.Items) > 0 || len(s.PrefixItems) > 0 {
+			sibling := *s
+			sibling.AllOf = nil
+			if root := r.render(&sibling, indent); root != "unknown" && root != "" {
+				parts = append(parts, root)
+			}
+		}
 		for _, sub := range s.AllOf {
 			parts = append(parts, r.render(sub, indent))
 		}
