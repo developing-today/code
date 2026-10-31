@@ -270,6 +270,9 @@ export interface QuotaCredentialRow {
   /** The gatherer's credential label (e.g. "OpenAI 2"), or the
    * provider name/id when the entry carried no label. */
   label: string;
+  /** The stable credential id, when the entry carried one. Rows are
+   * keyed by this, never by label alone (#2978 Codex finding). */
+  credentialId?: string;
   providerId: string;
   /** This credential's percent windows; empty when its newest read
    * is an error or stale — the state rides on freshness instead. */

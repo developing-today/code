@@ -457,3 +457,75 @@ describe("per-credential quota rows (#1113)", () => {
     expect(html).toContain("weekly 80%");
   });
 });
+
+describe("per-credential rows: Codex findings on PR #2978", () => {
+  test("distinct credentialIds with identical labels still split when quotas differ", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-a",
+          credentialLabel: "OpenAI",
+          windows: [win("weekly", 30, iso(5 * 60_000))],
+        }),
+        entry({
+          serviceId: "openai:codex",
+          providerId: "openai-main",
+          credentialId: "cred-b",
+          credentialLabel: "OpenAI",
+          measuredAt: iso(2 * 60_000),
+          windows: [win("weekly", 80, iso(2 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const pool = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(pool.credentials).toHaveLength(2);
+    expect(pool.credentials!.map((c) => c.credentialId).sort()).toEqual(["cred-a", "cred-b"]);
+    expect(pool.credentials!.map((c) => c.windows[0].percent).sort((a, b) => a - b)).toEqual([30, 80]);
+  });
+
+  test("reset drift under the tolerance does not split a shared read", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T12:00:00.700Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toBeUndefined();
+  });
+
+  test("resets genuinely apart still split even at equal percent", () => {
+    const mk = (cred: string, label: string, resetsAt: string, measuredAt: string) =>
+      entry({
+        serviceId: "openai:codex",
+        providerId: "openai-main",
+        credentialId: cred,
+        credentialLabel: label,
+        measuredAt,
+        windows: [{ ...win("weekly", 42, measuredAt), resetsAt }],
+      });
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        mk("cred-a", "OpenAI", "2026-10-27T12:00:00.000Z", iso(5 * 60_000)),
+        mk("cred-b", "OpenAI 2", "2026-10-27T18:00:00.000Z", iso(2 * 60_000)),
+      ]),
+      NOW,
+    );
+    expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
+  });
+});

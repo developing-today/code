@@ -125,18 +125,49 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
 }
 
 /**
+ * Reset instants closer than this are the same window: some producers
+ * recompute resetsAt from a duration on every fetch, so one shared
+ * read's stamp drifts sub-second between credentials (and by up to
+ * the gap between their fetches in one tick). Genuinely different
+ * windows reset minutes-to-days apart (#2978 Codex finding).
+ */
+const RESET_DRIFT_TOLERANCE_MS = 60_000;
+
+function sameReset(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= RESET_DRIFT_TOLERANCE_MS;
+}
+
+function sameQuotaRead(a: QuotaCredentialRow, b: QuotaCredentialRow): boolean {
+  return (
+    a.freshness.state === b.freshness.state &&
+    a.windows.length === b.windows.length &&
+    a.windows.every(
+      (w, i) => w.name === b.windows[i].name && w.percent === b.windows[i].percent && sameReset(w.resetsAt, b.windows[i].resetsAt),
+    )
+  );
+}
+
+/**
  * Per-credential rows for one pool's entries (#1113): the newest
- * entry per credential identity (credentialLabel, else providerId).
- * Rows are returned only when they genuinely differ — in state or in
- * percent windows — so two logins sharing one pool read stay a
- * single headline row, while two logins with distinct quotas (or one
- * read failing while the other succeeds) each get a row.
+ * entry per credential identity — the stable credentialId when the
+ * entry carries one, else credentialLabel, else providerId. Keying
+ * on the label alone would collapse two distinct credentials that
+ * share (or lack) a display label (#2978 Codex finding). Rows are
+ * returned only when they genuinely differ — in state or in percent
+ * windows, with reset-drift tolerance — so two logins sharing one
+ * pool read stay a single headline row, while two logins with
+ * distinct quotas (or one read failing while the other succeeds)
+ * each get a row.
  */
 function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCredentialRow[] | undefined {
   const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
   const byCred = new Map<string, QuotaCurrentEntry>();
   for (const e of newest) {
-    const key = e.credentialLabel ?? e.providerId;
+    const key = e.credentialId ?? e.credentialLabel ?? e.providerId;
     if (!byCred.has(key)) byCred.set(key, e);
   }
   if (byCred.size < 2) return undefined;
@@ -146,14 +177,13 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
     if (state === "error") freshness.error = errorText(e);
     return {
       label: e.credentialLabel ?? e.providerName ?? e.providerId,
+      ...(e.credentialId ? { credentialId: e.credentialId } : {}),
       providerId: e.providerId,
       windows: state === "ok" ? pctWindows(e) : [],
       freshness,
     };
   });
-  const sig = (r: QuotaCredentialRow): string =>
-    r.freshness.state + "|" + r.windows.map((w) => `${w.name}:${w.percent}:${w.resetsAt ?? ""}`).join(",");
-  if (rows.every((r) => sig(r) === sig(rows[0]))) return undefined;
+  if (rows.every((r) => sameQuotaRead(r, rows[0]))) return undefined;
   return rows;
 }
 
