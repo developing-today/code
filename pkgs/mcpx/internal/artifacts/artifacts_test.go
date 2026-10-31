@@ -249,3 +249,125 @@ func TestMissingArtifactSaysItMayHaveExpired(t *testing.T) {
 		t.Errorf("want an expiry hint, got %v", err)
 	}
 }
+
+// --- Touch-on-read opt-in (#2548, decision 0006) ---
+
+// With idleTtl unset, an item read changes nothing: expiry stays at
+// put + ttl exactly, and lastTouched stays at creation.
+func TestItemReadDoesNotRenewByDefault(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != m.Expires.UnixMilli() {
+		t.Errorf("default expiry must not move on read: put %v, read %v", m.Expires, got.Expires)
+	}
+	if got.LastTouched.UnixMilli() != m.Created.UnixMilli() {
+		t.Errorf("lastTouched should stay at creation when the opt-in is off, got %v", got.LastTouched)
+	}
+	if got.ExpiresAt != got.Expires {
+		t.Errorf("expiresAt should mirror expires, got %v vs %v", got.ExpiresAt, got.Expires)
+	}
+	if got.TTLRemainingMs <= 0 || got.TTLRemainingMs > int64(time.Hour/time.Millisecond) {
+		t.Errorf("ttlRemainingMs should be within the TTL, got %d", got.TTLRemainingMs)
+	}
+}
+
+// With idleTtl set, an item read renews: expires becomes
+// lastTouched + idleTtl (past the absolute put + ttl), and the
+// renewal is persisted, not just rendered.
+func TestItemReadRenewsWhenIdleTtlSet(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 24 * time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Expires.After(m.Expires) {
+		t.Fatalf("read should renew past the absolute expiry %v, got %v", m.Expires, got.Expires)
+	}
+	want := got.LastTouched.Add(2 * time.Hour)
+	if got.Expires.Sub(want) > time.Second || want.Sub(got.Expires) > time.Second {
+		t.Errorf("expires should be lastTouched + idleTtl (%v), got %v", want, got.Expires)
+	}
+	if got.LastTouched.Before(before.Add(-time.Second)) || got.LastTouched.After(time.Now().Add(time.Second)) {
+		t.Errorf("lastTouched should be the read time, got %v", got.LastTouched)
+	}
+	// A collection read afterwards must show the renewed deadline
+	// without renewing it further.
+	list, err := s.List(artifacts.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Expires.UnixMilli() != got.Expires.UnixMilli() {
+		t.Errorf("renewal should persist: list shows %+v, get showed %v", list, got.Expires)
+	}
+	if list[0].LastTouched.UnixMilli() != got.LastTouched.UnixMilli() {
+		t.Errorf("list must not touch: lastTouched moved from %v to %v", got.LastTouched, list[0].LastTouched)
+	}
+}
+
+// Renewal is bounded: however often an artifact is read, its deadline
+// never passes created + maxAge.
+func TestRenewalIsBoundedByMaxAge(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: 2 * time.Hour, MaxAge: 90 * time.Minute})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ceiling := m.Created.Add(90 * time.Minute)
+	if got.Expires.UnixMilli() != ceiling.UnixMilli() {
+		t.Errorf("expires should be clamped to created + maxAge (%v), got %v", ceiling, got.Expires)
+	}
+}
+
+// Touch never shortens an explicit per-artifact lifetime, and never
+// revives an expired artifact.
+func TestTouchNeverShortensOrRevives(t *testing.T) {
+	s := open(t, artifacts.Options{TTL: time.Hour, IdleTTL: time.Minute, MaxAge: 24 * time.Hour})
+	m, err := s.Put(strings.NewReader("hello"), artifacts.PutOptions{Name: "a.txt", TTL: 3 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != m.Expires.UnixMilli() {
+		t.Errorf("explicit lifetime should stand: put %v, read %v", m.Expires, got.Expires)
+	}
+
+	short := open(t, artifacts.Options{TTL: time.Millisecond, IdleTTL: time.Hour, MaxAge: 24 * time.Hour})
+	dead, err := short.Put(strings.NewReader("bye"), artifacts.PutOptions{Name: "b.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	got, err = short.Get(dead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expires.UnixMilli() != dead.Expires.UnixMilli() {
+		t.Errorf("an expired artifact must not be revived: was %v, read shows %v", dead.Expires, got.Expires)
+	}
+	n, err := short.GC(time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("GC should still collect the expired artifact, collected %d", n)
+	}
+}

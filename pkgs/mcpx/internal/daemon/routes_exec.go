@@ -91,6 +91,8 @@ func (s *Server) Artifacts() (*artifacts.Store, error) {
 		st, err := artifacts.Open(artifacts.Options{
 			Dir:      filepath.Join(s.paths.State, "artifacts"),
 			TTL:      set.Duration("artifacts.ttl"),
+			IdleTTL:  set.Duration("artifacts.idleTtl"),
+			MaxAge:   set.Duration("artifacts.maxAge"),
 			MaxBytes: set.Bytes("artifacts.maxBytes"),
 			Quota:    set.Bytes("artifacts.quota"),
 		})

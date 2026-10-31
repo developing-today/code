@@ -92,6 +92,8 @@ var EffectExemptions = map[string]string{
 	"artifacts.dir":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.delivery":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.ttl":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
+	"artifacts.idleTtl":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
+	"artifacts.maxAge":                   "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.maxBytes":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.quota":                    "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.inlineMaxBytes":           "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -249,7 +251,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 182 // raised by one for policy.write (#1979), in the elicitation-flow exemption style of elicit.confirmDestructive
+const EffectExemptionPin = 184 // raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

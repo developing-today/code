@@ -161,6 +161,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 	return artifacts.Open(artifacts.Options{
 		Dir:      filepath.Join(paths.State, "artifacts"),
 		TTL:      set.Duration("artifacts.ttl"),
+		IdleTTL:  set.Duration("artifacts.idleTtl"),
+		MaxAge:   set.Duration("artifacts.maxAge"),
 		MaxBytes: set.Bytes("artifacts.maxBytes"),
 		Quota:    set.Bytes("artifacts.quota"),
 	})

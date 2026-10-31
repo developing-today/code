@@ -205,6 +205,8 @@ type Defaults struct {
 	// caller to fetch rather than printed into its context.
 	Artifacts struct {
 		TTL                string `json:"ttl"`
+		IdleTTL            string `json:"idleTtl"`
+		MaxAge             string `json:"maxAge"`
 		MaxBytes           string `json:"maxBytes"`
 		Quota              string `json:"quota"`
 		InlineMaxBytes     string `json:"inlineMaxBytes"`
@@ -703,6 +705,12 @@ var (
 	ExecDelivery       = builtin.Exec.Delivery
 
 	ArtifactTTL = mustDur(builtin.Artifacts.TTL, "artifacts.ttl")
+	// ArtifactIdleTTL is the opt-in touch-on-read window for artifacts
+	// (decision 0006): zero, the builtin, keeps absolute expiry.
+	ArtifactIdleTTL = mustDur(builtin.Artifacts.IdleTTL, "artifacts.idleTtl")
+	// ArtifactMaxAge is the ceiling touch-on-read renewal can never
+	// push an artifact's deadline past, from its creation.
+	ArtifactMaxAge = mustDur(builtin.Artifacts.MaxAge, "artifacts.maxAge")
 	// ArtifactMaxBytes is the ceiling for one artifact. A screenshot is
 	// under a megabyte; the headroom is for the video and the core dump
 	// somebody will eventually want to hand back.

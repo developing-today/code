@@ -367,8 +367,10 @@ and a switch to turn the report off would have kept it quiet.
 | `artifacts.dir` | string | *(empty)* | call | yes | `--artifacts-dir` | `MCPX_ARTIFACTS_DIR` | write this run's artifacts here |
 | `artifacts.enabled` | bool | `true` | daemon | no | `--artifacts-enabled` | `MCPX_ARTIFACTS_ENABLED` | whether the daemon keeps files scripts produce |
 | `artifacts.gcInterval` | duration | `10m` | daemon | no | `--artifacts-gc-interval` | `MCPX_ARTIFACTS_GC_INTERVAL` | *(plumbing)* how often expired artifacts are swept |
+| `artifacts.idleTtl` | duration | `0s` | daemon | no | `--artifacts-idle-ttl` | `MCPX_ARTIFACTS_IDLE_TTL` | when set, reading an artifact renews it for this long; off keeps absolute expiry |
 | `artifacts.inlineMaxBytes` | bytes | `1MiB` | call | yes | `--artifacts-inline-max-bytes` | `MCPX_ARTIFACTS_INLINE_MAX_BYTES` | the largest artifact that may be base64'd into a result |
 | `artifacts.interceptImages` | bool | `true` | call | yes | `--artifacts-intercept-images` | `MCPX_ARTIFACTS_INTERCEPT_IMAGES` | turn image and audio content in a result into artifact references |
+| `artifacts.maxAge` | duration | `168h` | daemon | no | `--artifacts-max-age` | `MCPX_ARTIFACTS_MAX_AGE` | the absolute ceiling on a renewed artifact's life, however often it is read |
 | `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored |
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold |
 | `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected |
@@ -763,7 +765,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `tasks.resultWait` | duration | `2m0s` | call | yes | `--tasks-result-wait` | `MCPX_TASKS_RESULT_WAIT` | how long collecting a task result blocks before giving up |
-| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept, measured from when the task finishes; a still-running task is never expired by it |
+| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept |
 
 ### transport
 
