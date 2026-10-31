@@ -51,7 +51,15 @@ const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT
 // node_modules, so a fresh checkout needs its dev dependencies installed.
 if (!existsSync(join(here, "node_modules"))) {
   console.log("node_modules missing; running npm ci");
-  execFileSync("npm", ["ci", "--no-audit", "--no-fund"], { cwd: here, stdio: "inherit" });
+  // The lockfile's resolved URLs are canonical (registry.npmjs.org). A
+  // user-level npm registry mirror would otherwise rewrite them
+  // (replace-registry-host) and can lag or 404 current tarballs, so pin
+  // host replacement off for this install.
+  execFileSync("npm", ["ci", "--no-audit", "--no-fund"], {
+    cwd: here,
+    stdio: "inherit",
+    env: { ...process.env, npm_config_replace_registry_host: "false" },
+  });
 }
 
 if (deployVersion !== null) {
