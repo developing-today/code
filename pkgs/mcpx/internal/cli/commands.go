@@ -68,6 +68,11 @@ type App struct {
 	// Used by the MCP server, which must return what a script produced
 	// rather than write it to a stream the host is parsing as protocol.
 	stdoutOverride interface{ Write([]byte) (int, error) }
+	// environ is the environment Run was invoked with, recorded at the
+	// entrypoint for stage 2 of #1980 (threading it through ResolvePaths,
+	// settings.Environ and the plumbing source). Nil when the App was
+	// built directly; Environ() then falls back to os.Environ().
+	environ Env
 	settingsState
 }
 
@@ -1136,7 +1141,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 		if res.ExitCode != 0 {
-			os.Exit(res.ExitCode)
+			return &exitStatusError{code: res.ExitCode}
 		}
 		return nil
 	}
@@ -1176,7 +1181,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		a.reportArtifacts(res)
 	}
 	if res.ExitCode != 0 {
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
