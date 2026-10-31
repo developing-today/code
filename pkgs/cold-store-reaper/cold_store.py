@@ -143,7 +143,18 @@ def _parse_s3_list_page(body: bytes):
     is an aware datetime, or None when absent/unparseable — callers
     treat None as oldest, never as 'now'.
     """
-    root = ET.fromstring(body)
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise ColdStoreError(
+            f"s3 list page is not well-formed XML: {exc}"
+        ) from exc
+    if _xml_local(root.tag) != "ListBucketResult":
+        raise ColdStoreError(
+            "s3 list page root is "
+            f"{_xml_local(root.tag)!r}, expected 'ListBucketResult' "
+            "(refusing to read a non-listing body as an empty bucket)"
+        )
     objects = []
     truncated = False
     token = None
@@ -170,10 +181,28 @@ def _parse_s3_list_page(body: bytes):
                     # None reads as oldest/too-young downstream, which
                     # is non-evictable by construction (#2110).
                     stamp = None
+            raw_size = fields.get("Size")
+            if raw_size is None or raw_size.strip() == "":
+                size = 0
+            else:
+                try:
+                    size = int(raw_size.strip())
+                except ValueError:
+                    raise ColdStoreError(
+                        "s3 list page Contents entry "
+                        f"{fields.get('Key') or ''!r} has a non-numeric "
+                        f"Size {raw_size!r}"
+                    ) from None
+                if size < 0:
+                    raise ColdStoreError(
+                        "s3 list page Contents entry "
+                        f"{fields.get('Key') or ''!r} has a negative "
+                        f"Size {raw_size!r}"
+                    )
             objects.append(
                 {
                     "key": fields.get("Key") or "",
-                    "size": int(fields.get("Size") or 0),
+                    "size": size,
                     "last_modified": stamp,
                 }
             )
