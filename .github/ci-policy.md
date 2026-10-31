@@ -83,6 +83,7 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 | id bench                                                       | — (removed)                                                                                         | yes                                                                          | —                                                                |
 | go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                        | —                                                                |
 | mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                 | —                                                                |
+| mcpx test (#1998)                                              | init + unit + lint + 6 static e2e shards + ci-ok (PR tier, non-draft PRs)                            | same full sharded suite on push to main                                      | — (main covers it)                                               |
 
 ## Coverage rule
 
