@@ -50,6 +50,7 @@ on:
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
+  merge_group:
   pull_request:
     paths:
       - "pkgs/id/**"
