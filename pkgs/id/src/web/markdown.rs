@@ -514,6 +514,62 @@ fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
     stripped[..digits].parse::<u64>().ok() != Some(1)
 }
 
+/// Whether a stripped line opens a code fence: a run of >= 3
+/// backticks or tildes whose info string is valid -- a backtick
+/// fence's info string cannot contain a backtick (CommonMark), so
+/// a line like ```a`b is paragraph text, not a fence (Codex P2 on
+/// #1565's fifteenth cut). Mirrors FenceTracker's opening rule.
+fn is_fence_opener(stripped: &str) -> bool {
+    let Some(ch) = stripped.chars().next() else {
+        return false;
+    };
+    if ch != '`' && ch != '~' {
+        return false;
+    }
+    let run = stripped.chars().take_while(|&c| c == ch).count();
+    run >= 3 && !(ch == '`' && stripped[run..].contains('`'))
+}
+
+/// The indentation of a line in columns: a space is one column
+/// and a tab advances to the next multiple of four, so the two
+/// spellings ` \t` and `    ` are the same four columns
+/// (CommonMark) -- a literal prefix check accepts neither the
+/// mixed spelling nor other space/tab combinations (Codex P2 on
+/// #1565's fifteenth cut).
+fn indentation_columns(line: &str) -> usize {
+    let mut col = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => col += 1,
+            '\t' => col += 4 - (col % 4),
+            _ => break,
+        }
+    }
+    col
+}
+
+/// Whether a stripped line carries a list marker as its outermost
+/// container prefix (a bullet, or an ordered marker): such a line
+/// starts a new list item. The marker shapes mirror
+/// strip_container_prefixes' first level.
+fn starts_with_list_marker(stripped: &str) -> bool {
+    let bytes = stripped.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes[0], b'-' | b'*' | b'+')
+        && (bytes[1] == b' ' || bytes[1] == b'\t')
+    {
+        return true;
+    }
+    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits >= 1
+        && digits <= 9
+        && matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')'))
+        && matches!(
+            stripped.as_bytes().get(digits + 1),
+            Some(b' ') | Some(b'\t')
+        )
+}
+
 fn starts_new_block(stripped: &str) -> bool {
     // A link reference definition is deliberately NOT here: it
     // cannot interrupt a paragraph, so a reference-shaped line
@@ -523,8 +579,7 @@ fn starts_new_block(stripped: &str) -> bool {
     footnote_definition_label(stripped).is_some()
         || is_atx_heading(stripped)
         || stripped.starts_with('>')
-        || stripped.starts_with("```")
-        || stripped.starts_with("~~~")
+        || is_fence_opener(stripped)
         || is_thematic_break(stripped)
         || (strip_container_prefixes(stripped) != stripped
             && !is_non_interrupting_ordered_marker(stripped))
@@ -579,10 +634,16 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
         // blank / `[^real]: note` -- the tracker stayed open and
         // treated the real definition as comment interior).
+        // (The blockquote clause above is the tenth/eleventh cut;
+        // the list clause is the fifteenth: a non-blank line at
+        // column zero carrying no container prefix is outside the
+        // item, exactly as for a list-scoped fence.)
         if html.in_html()
-            && html_prefix.contains('>')
+            && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
+            && (html_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -682,7 +743,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                 j += 1;
                 continue;
             }
-            if next.starts_with("    ") || next.starts_with('\t') {
+            if indentation_columns(next) >= 4 {
                 source_lines.push(next);
                 last_content = source_lines.len() - 1;
                 prev_is_content = true;
@@ -875,10 +936,16 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
         // blank / `[^real]: note` -- the tracker stayed open and
         // treated the real definition as comment interior).
+        // (The blockquote clause above is the tenth/eleventh cut;
+        // the list clause is the fifteenth: a non-blank line at
+        // column zero carrying no container prefix is outside the
+        // item, exactly as for a list-scoped fence.)
         if html.in_html()
-            && html_prefix.contains('>')
+            && !html_prefix.is_empty()
             && !stripped.starts_with(&html_prefix)
             && strip_container_prefixes(stripped) == stripped
+            && (html_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
         {
             html.reset();
             html_prefix.clear();
@@ -1025,8 +1092,17 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             let close = find_label_close(def_stripped).expect("start shape checked");
             (vec![line], def_stripped[close + 2..].to_string(), i + 1)
         });
-        if at_block_start
-            && !in_footnote_block
+        // A line carrying a list marker starts a NEW list item
+        // and so a fresh block: `- [url]: ...` after `- Body` is a
+        // definition in its own item, not a continuation of the
+        // first item's paragraph, and it likewise ends any footnote
+        // block in progress (Codex P2 on #1565's fifteenth cut). A
+        // non-1 ordered marker is excepted: it cannot interrupt a
+        // paragraph (thirteenth cut), so it starts no item here.
+        let new_list_item = starts_with_list_marker(stripped)
+            && !is_non_interrupting_ordered_marker(stripped);
+        if (at_block_start || new_list_item)
+            && (!in_footnote_block || new_list_item)
             && (single_start.is_some() || multiline_start.is_some())
         {
             let (mut block, mut after, mut j) =
@@ -5044,6 +5120,77 @@ mod tests {
         assert_eq!(child_types, ["paragraph", "paragraph"]);
         let (first, second) = two_saves(original);
         assert_eq!(first, second, "multi-paragraph orphan is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_in_new_list_item_resolves() {
+        // #1565 fifteenth cut (Codex P2): a new list item starts a
+        // fresh block, so a reference definition inside the second
+        // item is document-global even though the first item's
+        // content is paragraph text; the orphan footnote's
+        // reference-style link must resolve on save.
+        let original =
+            "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "reference in a new list item resolves to a link: {first:?}"
+        );
+        assert_eq!(first, second, "list item reference round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_list_scoped_comment_ends_before_real_definition() {
+        // #1565 fifteenth cut (Codex P2): an HTML comment opened
+        // inside a list item ends when the item ends; a real
+        // definition at column zero after it must still be
+        // recovered, not treated as comment interior.
+        let original = "- <!--\n  hidden\n\n[^real]: note\n";
+        let (first, _second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after list-scoped comment survives: {first:?}"
+        );
+        // Known residual (noted on the PR for the next cut): the
+        // first save re-emits the comment WITHOUT its list marker
+        // on the opening line (`- ` becomes a bare item line and
+        // `<!--` an indented line of its own), so on a second save
+        // the pre-scan reads the comment as a top-level block and
+        // the definition is inside it again. Fixing that shape
+        // needs list-context tracking across lines in the scans;
+        // the authored shape above is what the Codex finding
+        // names, and it now survives.
+    }
+
+    #[test]
+    fn test_invalid_backtick_fence_info_line_continues_definition() {
+        // #1565 fifteenth cut (Codex P2): a backtick fence's info
+        // string cannot contain a backtick, so ```a`b opens no
+        // fence at all -- it is paragraph text and a lazy
+        // continuation of the footnote definition, not a new block
+        // that truncates collection.
+        let original = "[^a]: First.\n```a`b\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.") && first.contains("a\\`b"),
+            "invalid fence line continues the definition: {first:?}"
+        );
+        assert_eq!(first, second, "invalid fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_space_tab_indented_continuation_belongs_to_definition() {
+        // #1565 fifteenth cut (Codex P2): indentation is counted
+        // in columns, so a space followed by a tab is four columns
+        // and the line is the footnote definition's second
+        // paragraph, not a truncation point.
+        let original = "[^a]: First.\n\n \tSecond paragraph.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.") && first.contains("Second paragraph."),
+            "space+tab continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "space+tab continuation is a fixpoint");
     }
 
     #[test]
