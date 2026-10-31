@@ -1003,7 +1003,27 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 			} else {
 				out[k] = val
 			}
-		case "not", "if", "then", "else":
+		case "not":
+			// A negation inverts the effect of the schemas inside
+			// it: stripping a pinned requirement there does not
+			// relax the advertised schema, it tightens it -- the
+			// stripped inner schema succeeds vacuously for a
+			// caller who cannot supply the hidden pin, so the
+			// negation rejects calls enforcement accepts (Codex
+			// P2 on PR #2976). Evaluate the pinned contribution
+			// instead: when the pins decide the inner schema, the
+			// negation's outcome is fixed -- drop it when it
+			// always passes, keep it as not:true when it always
+			// fails. When the pins do not decide it, keep the
+			// inner schema verbatim rather than stripping it.
+			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, root, resolving); decided {
+				if valid {
+					out[k] = true
+				}
+			} else {
+				out[k] = val
+			}
+		case "if", "then", "else":
 			out[k] = stripPinnedScope(val, pinned, pinVals, root, resolving)
 		case "dependentSchemas":
 			if subs, ok := val.(map[string]any); ok {
@@ -1102,41 +1122,60 @@ func pinDecidedBranch(m map[string]any, pinned map[string]bool, pinVals map[stri
 		}
 		return m["else"], true
 	}
-	names := map[string]bool{}
-	if !collectConditionNames(cond, root, resolving, names) || len(names) == 0 {
+	valid, decided := pinnedSchemaVerdict(cond, pinned, pinVals, root, resolving)
+	if !decided {
 		return nil, false
+	}
+	if valid {
+		return m["then"], true
+	}
+	return m["else"], true
+}
+
+// pinnedSchemaVerdict reports whether a schema's truth at its own
+// instance scope is decided by the pinned values alone -- every
+// property it examines is pinned and its shape is one whose truth
+// depends only on those properties (see collectConditionNames) --
+// and if so, whether an instance carrying the pins satisfies it.
+// Pins merge before enforcement, so a decided verdict is the
+// verdict enforcement reaches on the merged instance, whatever the
+// caller adds.
+func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (bool, bool) {
+	if b, isBool := schema.(bool); isBool {
+		return b, true
+	}
+	names := map[string]bool{}
+	if !collectConditionNames(schema, root, resolving, names) || len(names) == 0 {
+		return false, false
 	}
 	inst := make(map[string]any, len(names))
 	for name := range names {
 		if !pinned[name] {
-			return nil, false
+			return false, false
 		}
 		inst[name] = pinVals[name]
 	}
-	inlined, ok := inlineLocalRefs(cond, root, resolving)
+	inlined, ok := inlineLocalRefs(schema, root, resolving)
 	if !ok {
-		return nil, false
+		return false, false
 	}
 	condRaw, err := json.Marshal(inlined)
 	if err != nil {
-		return nil, false
+		return false, false
 	}
 	compiled, err := schemaval.Compile(condRaw)
 	if err != nil {
-		return nil, false
+		return false, false
 	}
 	instRaw, err := json.Marshal(inst)
 	if err != nil {
-		return nil, false
+		return false, false
 	}
 	dec, err := schemaval.DecodeInstance(instRaw)
 	if err != nil {
-		return nil, false
+		return false, false
 	}
-	if compiled.Validate(dec) == nil {
-		return m["then"], true
-	}
-	return m["else"], true
+	return compiled.Validate(dec) == nil, true
 }
 
 // collectConditionNames gathers the property names a condition schema
@@ -1285,11 +1324,31 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			inlined, ok := inlineLocalRefs(val, root, resolving)
-			if !ok {
-				return nil, false
+			// Only schema-valued positions are traversed: a
+			// literal payload (const/enum/default/examples) is
+			// instance data, and a "$ref" key inside it names
+			// data, not a reference -- inlining there rewrites
+			// the very value a condition compares against, so
+			// the projection evaluates a different condition
+			// than enforcement does (Codex P2 on PR #2976).
+			// Name maps flip the walk into name position, where
+			// every value is a schema whatever its key spells.
+			switch {
+			case literalValueKey(k):
+				out[k] = val
+			case nameMapKey(k):
+				inlined, ok := inlineLocalRefsInNames(val, root, resolving)
+				if !ok {
+					return nil, false
+				}
+				out[k] = inlined
+			default:
+				inlined, ok := inlineLocalRefs(val, root, resolving)
+				if !ok {
+					return nil, false
+				}
+				out[k] = inlined
 			}
-			out[k] = inlined
 		}
 		return out, true
 	case []any:
@@ -1305,6 +1364,24 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 	default:
 		return v, true
 	}
+}
+
+// inlineLocalRefsInNames inlines a name -> schema map: every value
+// is a schema, whatever its key spells.
+func inlineLocalRefsInNames(v any, root map[string]any, resolving map[string]bool) (any, bool) {
+	t, ok := v.(map[string]any)
+	if !ok {
+		return v, true
+	}
+	out := make(map[string]any, len(t))
+	for name, sub := range t {
+		inlined, ok := inlineLocalRefs(sub, root, resolving)
+		if !ok {
+			return nil, false
+		}
+		out[name] = inlined
+	}
+	return out, true
 }
 
 // resolveLocalPointer resolves a local JSON Pointer reference ("#"

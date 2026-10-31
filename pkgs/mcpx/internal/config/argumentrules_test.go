@@ -910,3 +910,94 @@ func TestEffectiveSchemaPinnedKeepsUndecidedConditions(t *testing.T) {
 		t.Errorf("a condition reading unpinned properties must stay conditional: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: reference inlining for a pin-decided
+// condition must traverse only schema-valued positions. A literal
+// $ref inside a const payload is instance data, not a reference:
+// inlining it rewrites the constant, so the projection evaluates
+// the condition against a different value than enforcement does
+// and advertises the wrong branch.
+func TestEffectiveSchemaPinnedKeepsLiteralRefConstants(t *testing.T) {
+	rule := `{"$defs":{"value":{"type":"string"}},"if":{"properties":{"selector":{"const":{"$ref":"#/$defs/value"}}},"required":["selector"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	pin := map[string]any{"selector": map[string]any{"$ref": "#/$defs/value"}}
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, pin)
+	if !strings.Contains(string(eff), `"required":["limit"]`) {
+		t.Errorf("condition is true at enforcement (pin equals the const), so the then requirement must be advertised: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	dec, err := schemaval.DecodeInstance(json.RawMessage(`{"limit":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err != nil {
+		t.Errorf("{\"limit\":1} must be advertised-valid: %v (schema %s)", err, eff)
+	}
+	dec, err = schemaval.DecodeInstance(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.Validate(dec); err == nil {
+		t.Errorf("{} must be advertised-invalid (schema %s)", eff)
+	}
+}
+
+// Codex P2 on PR #2976: pinned constraints under a negation must be
+// evaluated against the pin, not stripped. Stripping the pinned
+// requirement inside "not" leaves a properties-only schema that a
+// caller instance satisfies vacuously, so the advertised schema
+// rejected every valid call (pin tailnet="other": the negated
+// const "prod" never matches the merged pin, so the negation
+// always passes at enforcement).
+func TestEffectiveSchemaPinnedEvaluatesNegatedPins(t *testing.T) {
+	rule := `{"not":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]}}`
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"}}}`)
+	for _, tc := range []struct {
+		pin     string
+		wantErr bool // for the {} instance against the advertised schema
+	}{
+		{"other", false}, // negation always passes: {} advertised-valid
+		{"prod", true},   // negation always fails: {} advertised-invalid
+	} {
+		set, err := CompileArgumentRules([]ArgumentRuleSource{
+			{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+		})
+		if err != nil {
+			t.Fatalf("CompileArgumentRules: %v", err)
+		}
+		eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": tc.pin})
+		compiled, err := schemaval.Compile(eff)
+		if err != nil {
+			t.Fatalf("pin %q: effective schema does not compile: %v (%s)", tc.pin, err, eff)
+		}
+		dec, err := schemaval.DecodeInstance(json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != tc.wantErr {
+			t.Errorf("pin %q: validate {} error = %v, want %v (schema %s)", tc.pin, gotErr, tc.wantErr, eff)
+		}
+	}
+	// A negation reading only unpinned properties is not decided by
+	// the pins: it survives verbatim (stripping under a negation
+	// would invert the pinned names' effect).
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"not":{"properties":{"verbose":{"const":true}},"required":["verbose"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"}))
+	if !strings.Contains(got, `"not":{"properties":{"verbose":{"const":true}},"required":["verbose"]}`) {
+		t.Errorf("undecided negation must survive verbatim: %s", got)
+	}
+}
