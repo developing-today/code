@@ -1,1 +1,21 @@
-{"devDependencies":{"@cloudflare/vitest-pool-workers":"^0.9.13","@cloudflare/workers-types":"^5.20261019.1","@types/node":"^22.20.5","cf":"^1.0.0-beta.20","typescript":"^5.6.0","vitest":"^3.2.4","wrangler":"4.152.0"},"name":"pkarr-worker","private":true,"scripts":{"deploy":"echo 'deploy through the flake entrypoint instead: just deploy-pkarr (nix run .#pkarr-deploy)' >&2; exit 1","dev":"wrangler dev","test":"vitest run","typecheck":"tsc --noEmit"},"type":"module","version":"0.1.0"}
+{
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.9.13",
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "@types/node": "^22.20.5",
+    "cf": "^1.0.0-beta.20",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.4",
+    "wrangler": "4.152.0"
+  },
+  "name": "pkarr-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "echo 'deploy through the flake entrypoint instead: just deploy-pkarr (nix run .#pkarr-deploy)' >&2; exit 1",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

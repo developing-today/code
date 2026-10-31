@@ -12,14 +12,14 @@ Deployment standard: `doc/2026-10-31T23-00-00Z_design_cloudflare_worker_deployme
 
 ## What it does
 
-| Route | Behaviour |
-| --- | --- |
-| `PUT /pkarr/<z32>` | Publish a signed pkarr relay payload (`signature ‖ timestamp_micros_be ‖ dns_packet`, ≤ 1072 bytes). The signature is verified against the key in the path; the packet must be a well-formed DNS message ≤ 1000 bytes. Newest timestamp wins; a valid but stale packet still gets `204` (iroh clients accept only 2xx). |
-| `GET /pkarr/<z32>` | Fetch the current payload verbatim (`application/x-pkarr-signed-packet`), or `404`. |
-| `POST /dns-query` | DNS-over-HTTPS (RFC 8484) for `_iroh.<z32>.<ORIGIN>` TXT lookups. Out-of-zone names get `REFUSED`; in-zone non-pkarr names and unpublished keys get NODATA. |
-| `GET /dns-query?dns=<base64url>` | The RFC 8484 GET form of the same endpoint. |
-| `GET /` | Plain-text statement of scope. |
-| `GET /healthz` | `ok`. |
+| Route                            | Behaviour                                                                                                                                                                                                                                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT /pkarr/<z32>`               | Publish a signed pkarr relay payload (`signature ‖ timestamp_micros_be ‖ dns_packet`, ≤ 1072 bytes). The signature is verified against the key in the path; the packet must be a well-formed DNS message ≤ 1000 bytes. Newest timestamp wins; a valid but stale packet still gets `204` (iroh clients accept only 2xx). |
+| `GET /pkarr/<z32>`               | Fetch the current payload verbatim (`application/x-pkarr-signed-packet`), or `404`.                                                                                                                                                                                                                                     |
+| `POST /dns-query`                | DNS-over-HTTPS (RFC 8484) for `_iroh.<z32>.<ORIGIN>` TXT lookups. Out-of-zone names get `REFUSED`; in-zone non-pkarr names and unpublished keys get NODATA.                                                                                                                                                             |
+| `GET /dns-query?dns=<base64url>` | The RFC 8484 GET form of the same endpoint.                                                                                                                                                                                                                                                                             |
+| `GET /`                          | Plain-text statement of scope.                                                                                                                                                                                                                                                                                          |
+| `GET /healthz`                   | `ok`.                                                                                                                                                                                                                                                                                                                   |
 
 It is a lookup service only: not a DHT node, not a general DNS server,
 not a traffic relay. Storage is one SQLite-backed Durable Object per

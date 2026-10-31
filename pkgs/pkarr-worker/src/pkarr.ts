@@ -13,9 +13,7 @@ export const MAX_DNS_PACKET = 1000;
 export const MAX_RELAY_PAYLOAD = 64 + 8 + MAX_DNS_PACKET;
 
 const Z32_ALPHABET = "ybndrfg8ejkmcpqxot1uwisza345h769";
-const Z32_LOOKUP: Record<string, number> = Object.fromEntries(
-  [...Z32_ALPHABET].map((c, i) => [c, i]),
-);
+const Z32_LOOKUP: Record<string, number> = Object.fromEntries([...Z32_ALPHABET].map((c, i) => [c, i]));
 
 /** Decode a z-base-32 string. Returns null on any invalid character/length. */
 export function z32Decode(text: string): Uint8Array | null {
@@ -93,9 +91,7 @@ export function signableBytes(timestampMicros: bigint, packet: Uint8Array): Uint
   return out;
 }
 
-const ED25519_SPKI_PREFIX = new Uint8Array([
-  0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-]);
+const ED25519_SPKI_PREFIX = new Uint8Array([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]);
 
 /** Verify a packet's Ed25519 signature against the path public key. */
 export async function verifyPacket(publicKey: Uint8Array, pkt: SignedPacket): Promise<boolean> {
@@ -181,11 +177,7 @@ function readName(msg: Uint8Array, start: number): { name: string; next: number 
   return { name: labels.join("."), next };
 }
 
-function parseRecords(
-  msg: Uint8Array,
-  start: number,
-  count: number,
-): { records: DnsRecord[]; next: number } | string {
+function parseRecords(msg: Uint8Array, start: number, count: number): { records: DnsRecord[]; next: number } | string {
   const records: DnsRecord[] = [];
   let offset = start;
   for (let i = 0; i < count; i++) {

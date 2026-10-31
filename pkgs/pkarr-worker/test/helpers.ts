@@ -22,11 +22,7 @@ export function keypairFromSeed(seed: Uint8Array): TestKeypair {
 }
 
 /** Assemble a relay payload: signature || timestamp_be64 || packet. */
-export function buildRelayPayload(
-  keypair: TestKeypair,
-  timestampMicros: bigint,
-  packet: Uint8Array,
-): Uint8Array {
+export function buildRelayPayload(keypair: TestKeypair, timestampMicros: bigint, packet: Uint8Array): Uint8Array {
   const head = Buffer.from(`3:seqi${timestampMicros}e1:v${packet.length}:`, "ascii");
   const signature = sign(null, Buffer.concat([head, Buffer.from(packet)]), keypair.privateKey);
   const timestamp = Buffer.alloc(8);
