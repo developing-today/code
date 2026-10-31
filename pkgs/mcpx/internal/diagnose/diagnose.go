@@ -569,12 +569,89 @@ func looksLikeSchemaError(msg string) bool {
 }
 
 // fieldInMessage finds a declared argument named in the server's message.
+//
+// A name counts only where it occurs as a standalone token: the
+// characters either side are not ASCII letters, digits or "_" (the
+// ends of the message count as boundaries). A bare substring inside a
+// larger word never names a field — "id" inside "invalid" blamed the
+// wrong argument (#1646). An occurrence wrapped in matching quotes or
+// backticks outranks a bare-token occurrence — servers quote the field
+// they mean — and within a class the longest name wins, as before.
+// Matching stays case-sensitive, and separator variants are not
+// folded: "user-id" does not name "user_id".
 func fieldInMessage(msg string, shape Shape) string {
 	best := ""
+	bestQuoted := false
 	for name := range shape.Props {
-		if strings.Contains(msg, name) && len(name) > len(best) {
-			best = name
+		if name == "" {
+			// An empty property name names nothing, and scanning for
+			// it never terminates on token boundaries: strings.Index
+			// matches it at every offset. Skip it (Codex P2 on #3041).
+			continue
 		}
+		quoted := fieldNamedQuoted(msg, name)
+		if !quoted && !fieldNamed(msg, name) {
+			continue
+		}
+		if quoted != bestQuoted {
+			if !quoted {
+				continue
+			}
+		} else if len(name) <= len(best) {
+			continue
+		}
+		best, bestQuoted = name, quoted
 	}
 	return best
+}
+
+// fieldNamed reports whether name occurs in msg as a standalone token.
+func fieldNamed(msg, name string) bool {
+	if name == "" {
+		return false
+	}
+	for at := 0; ; {
+		i := strings.Index(msg[at:], name)
+		if i < 0 {
+			return false
+		}
+		i += at
+		if tokenAt(msg, i, len(name)) {
+			return true
+		}
+		at = i + 1
+	}
+}
+
+// fieldNamedQuoted reports whether name occurs in msg wrapped in a
+// matching pair of quotes or backticks: "name", 'name', `name`. The
+// wrapping characters are not name characters, so a quoted occurrence
+// is always a standalone token too.
+func fieldNamedQuoted(msg, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, q := range []string{"\"", "'", "`"} {
+		if strings.Contains(msg, q+name+q) {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenAt reports whether the span msg[at:at+length] stands alone:
+// neither neighbour is an ASCII letter, digit or "_".
+func tokenAt(msg string, at, length int) bool {
+	if at > 0 && isNameChar(msg[at-1]) {
+		return false
+	}
+	if end := at + length; end < len(msg) && isNameChar(msg[end]) {
+		return false
+	}
+	return true
+}
+
+func isNameChar(c byte) bool {
+	return c == '_' ||
+		('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
 }
