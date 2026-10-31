@@ -262,7 +262,7 @@ func renderQuestion(r elicit.Request) string {
 	for _, f := range describeSchema(r.Schema) {
 		fmt.Fprintf(&b, "  %-8s %s\n", f.name, f.detail)
 	}
-	fmt.Fprintf(&b, "\n  mcpx elicit answer %s '%s'\n", r.ID, exampleFor(r.Schema))
+	fmt.Fprintf(&b, "\n  mcpx elicit answer %s %s\n", r.ID, shellQuote(exampleFor(r.Schema)))
 	fmt.Fprintf(&b, "  mcpx elicit decline %s\n", r.ID)
 	return b.String()
 }
@@ -335,6 +335,15 @@ func exampleFor(raw json.RawMessage) string {
 	return "{" + strings.Join(parts, ",") + "}"
 }
 
+// shellQuote renders s as a single POSIX shell word: wrapped in single
+// quotes, with each embedded single quote closed, escaped and reopened.
+// The suggested answer command embeds schema defaults, which are
+// server-controlled; quoting at this boundary keeps a default such as
+// O'Reilly (or worse) from breaking the command or injecting into it.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // urlDomainLines renders the registrable domain under a URL question's
 // full URL, and -- for a punycode or non-ASCII host -- both host forms and
 // the warning. Plain ASCII hosts get the domain line only (#1678).
@@ -398,6 +407,13 @@ func renderAnswerReview(r elicit.Request, content json.RawMessage) string {
 	formats := map[string]string{}
 	for _, f := range describeSchema(r.Schema) {
 		formats[f.name] = f.format
+		// The relay applies schema defaults to omitted fields
+		// (mcpclient.applyDefaults), so the review must show the
+		// effective answer -- defaults included -- not only what
+		// was explicitly supplied (#1678, Codex P2 on PR 3011).
+		if _, supplied := values[f.name]; !supplied && len(f.def) > 0 {
+			values[f.name] = f.def
+		}
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {

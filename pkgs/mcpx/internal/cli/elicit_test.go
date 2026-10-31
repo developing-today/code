@@ -107,3 +107,41 @@ func TestConfirmSendRequiresExplicitYes(t *testing.T) {
 		}
 	}
 }
+
+// Codex P1 on PR 3011: a schema default containing an apostrophe (or a
+// shell injection attempt) must survive shell-quoting in the suggested
+// answer command: the JSON is one shell word, embedded quotes escaped.
+func TestRenderQuestionShellQuotesDefaults(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{
+		"name":{"type":"string","default":"O'Reilly"},
+		"evil":{"type":"string","default":"'; printf INJECTED; #"}}}`)
+	out := renderQuestion(elicit.Request{
+		ID: "elc-4", Message: "Details", Mode: elicit.Form, Schema: schema,
+	})
+	if !strings.Contains(out, `'{"evil":"'\''; printf INJECTED; #","name":"O'\''Reilly"}'`) {
+		t.Errorf("suggested command does not shell-quote the whole JSON as one word:\n%s", out)
+	}
+}
+
+// Codex P2 on PR 3011: the answer review shows the effective answer --
+// schema defaults for omitted fields included, since the relay applies
+// them -- with sensitive defaults still masked.
+func TestRenderAnswerReviewIncludesEffectiveDefaults(t *testing.T) {
+	r := elicit.Request{
+		Mode: elicit.Form,
+		Schema: json.RawMessage(`{"type":"object","properties":{
+			"share_data":{"type":"boolean","default":true},
+			"api_token":{"type":"string","format":"password","default":"d3fault"},
+			"repo":{"type":"string"}}}`),
+	}
+	out := renderAnswerReview(r, json.RawMessage(`{"repo":"me/thing"}`))
+	if !strings.Contains(out, "share_data") || !strings.Contains(out, "true") {
+		t.Errorf("omitted field's default missing from review:\n%s", out)
+	}
+	if strings.Contains(out, "d3fault") {
+		t.Errorf("review leaked a sensitive default value:\n%s", out)
+	}
+	if !strings.Contains(out, "api_token") || !strings.Contains(out, "(set)") {
+		t.Errorf("sensitive default not masked as (set) in review:\n%s", out)
+	}
+}
