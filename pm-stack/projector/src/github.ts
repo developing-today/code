@@ -16,7 +16,15 @@ const encoder = new TextEncoder();
 function decodePem(pem: string): string {
   const trimmed = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
   if (/^[A-Za-z0-9+/]+=*$/.test(trimmed) && !trimmed.includes("PRIVATE")) {
-    // already base64 of the DER key
+    // Base64 input: either base64 of the DER key, or base64 of PEM text.
+    // A single unwrap distinguishes them: if it decodes to text starting
+    // with a PEM marker, it was base64-of-PEM — strip the markers and use
+    // the body. DER bytes never decode to ASCII "-----BEGIN", so
+    // base64-of-DER passes through byte-identical.
+    const decoded = Buffer.from(trimmed, "base64").toString("utf8");
+    if (decoded.trimStart().startsWith("-----BEGIN")) {
+      return decoded.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+    }
     return trimmed;
   }
   return trimmed;
