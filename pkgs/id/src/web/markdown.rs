@@ -200,6 +200,118 @@ impl FenceTracker {
     }
 }
 
+/// HTML-block tracking for the source scans below (Codex P2 on
+/// #1565's second cut): comrak parses a raw HTML block -- a comment,
+/// a script/pre/style/textarea element, a block-level tag, or a lone
+/// complete tag -- as literal content until its CommonMark end
+/// condition (the closing marker for comments/CDATA/PIs/tag-bodies,
+/// a blank line for plain block tags). A definition-shaped line in
+/// that interior is literal text, exactly as in a fence; without this
+/// tracking the pre-scan synthesized a live footnote out of a
+/// comment's interior and a save then moved it outside the comment.
+#[derive(Default)]
+struct HtmlBlockTracker {
+    /// What ends the open block: a literal closing marker, or a
+    /// blank line for block-tag (type 6/7) blocks.
+    end: Option<HtmlBlockEnd>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum HtmlBlockEnd {
+    Marker(&'static str),
+    BlankLine,
+}
+
+/// The CommonMark type-6 block-level tag names.
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
+    "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
+    "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
+    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+];
+
+impl HtmlBlockTracker {
+    fn in_html(&self) -> bool {
+        self.end.is_some()
+    }
+
+    /// Feed one line (already stripped of up to three leading
+    /// spaces). Returns true when the line belongs to an HTML block
+    /// (its opening line, interior, or closing line).
+    fn feed(&mut self, stripped: &str) -> bool {
+        if let Some(end) = self.end {
+            match end {
+                HtmlBlockEnd::Marker(marker) => {
+                    if stripped.to_ascii_lowercase().contains(marker) {
+                        self.end = None;
+                    }
+                }
+                HtmlBlockEnd::BlankLine => {
+                    if stripped.trim().is_empty() {
+                        self.end = None;
+                    }
+                }
+            }
+            return true;
+        }
+        let Some(rest) = stripped.strip_prefix('<') else {
+            return false;
+        };
+        let lower = stripped.to_ascii_lowercase();
+        // Marker-ended blocks (CommonMark types 1-5).
+        for (prefix, marker) in [
+            ("<!--", "-->"),
+            ("<![cdata[", "]]>"),
+            ("<?", "?>"),
+            ("<script", "</script>"),
+            ("<pre", "</pre>"),
+            ("<style", "</style>"),
+            ("<textarea", "</textarea>"),
+        ] {
+            if lower.starts_with(prefix) {
+                if !lower[prefix.len()..].contains(marker) {
+                    self.end = Some(HtmlBlockEnd::Marker(marker));
+                }
+                return true;
+            }
+        }
+        if rest.starts_with('!')
+            && rest[1..].chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        {
+            // Declaration (type 5 covers <![CDATA[ above; a <!X
+            // declaration ends at '>').
+            if !rest.contains('>') {
+                self.end = Some(HtmlBlockEnd::Marker(">"));
+            }
+            return true;
+        }
+        // Tag-ended blocks (types 6 and 7): a block-level tag, or a
+        // lone complete open/closing tag on the line.
+        let tag_body = rest.strip_prefix('/').unwrap_or(rest);
+        let tag_name: String = tag_body
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if tag_name.is_empty() {
+            return false;
+        }
+        if HTML_BLOCK_TAGS.contains(&tag_name.as_str()) {
+            self.end = Some(HtmlBlockEnd::BlankLine);
+            return true;
+        }
+        let trimmed = stripped.trim_end();
+        if trimmed.ends_with('>') && !trimmed[1..].contains('<') {
+            self.end = Some(HtmlBlockEnd::BlankLine);
+            return true;
+        }
+        let _ = rest;
+        false
+    }
+}
+
 /// A footnote definition block found by the source pre-scan (#1565):
 /// its label and the block's verbatim source (the `[^label]:` line
 /// plus any indented continuation lines, trailing blank lines cut).
@@ -239,16 +351,21 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
     let lines: Vec<&str> = markdown.lines().collect();
     let mut blocks = Vec::new();
     let mut fence = FenceTracker::default();
+    let mut html = HtmlBlockTracker::default();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
+        if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
+            i += 1;
+            continue;
+        }
         if indent <= 3 && fence.feed(stripped) {
             i += 1;
             continue;
         }
-        if fence.in_fence() || indent > 3 {
+        if fence.in_fence() || html.in_html() || indent > 3 {
             i += 1;
             continue;
         }
@@ -296,14 +413,18 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
 /// them converts the link to literal text (Codex P2).
 fn collect_link_reference_definitions(markdown: &str) -> String {
     let mut fence = FenceTracker::default();
+    let mut html = HtmlBlockTracker::default();
     let mut defs = Vec::new();
     for line in markdown.lines() {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
+        if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
+            continue;
+        }
         if indent <= 3 && fence.feed(stripped) {
             continue;
         }
-        if fence.in_fence() || indent > 3 || !stripped.starts_with('[') {
+        if fence.in_fence() || html.in_html() || indent > 3 || !stripped.starts_with('[') {
             continue;
         }
         if footnote_definition_label(stripped).is_some() {
@@ -3989,6 +4110,32 @@ mod tests {
             .iter()
             .any(|n| n["type"] == "footnote_definition");
         assert!(!found, "fenced definition-shaped text stays literal");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_html_comment_not_synthesized() {
+        // Codex P2 on #1565's second cut: a definition-shaped line in
+        // an HTML comment's interior is literal text (comrak keeps
+        // the whole comment as an HTML block); the pre-scan must not
+        // synthesize a live footnote out of it, while a real orphan
+        // definition after the comment is still recovered.
+        let original = "<!--\n[^fake]: literal\n-->\n\n[^real]: The real orphan.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "only the real orphan is recovered");
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[^fake]:").count(),
+            1,
+            "the fake definition appears only inside the preserved comment: {first:?}"
+        );
+        assert_eq!(first, second, "html-comment round-trip is a fixpoint");
     }
 
     #[test]
