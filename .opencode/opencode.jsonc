@@ -7077,8 +7077,27 @@
         // (antigravity-ls/gemini-3.8-flash -- the tool-capable Gemini
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
+        // 2026-10-31 (quota-check A3, code#2173 — PRE-FILED for the
+        // Nov 2 trough; merge is a separate decision, effective
+        // Nov 2–4 only): workhorse primary DEFAULTS TO META. The
+        // DeepSeek plan doors are closed through the trough —
+        // OpenCode Go Lab + Personal monthly both 100% (Personal's
+        // plan ends Nov 2 21:02 CT), ClinePass monthly 100% until
+        // Nov 5 19:22 CT — so the deepseek-flash leg is PARKED here
+        // (removed from targets/weights) rather than left to wall
+        // and fail over on every pick. The Meta door
+        // (muse-direct/muse-spark-1.3-contributor, the ONE Meta
+        // Muse API High Usage pool) resets Nov 2 00:00Z and takes
+        // the largest share (weight 3); Gemini Flash (weight 2) and
+        // Sonnet (weight 1) keep their seats. Quota figures at
+        // filing (2026-10-31 07:15Z gatherer): Meta weekly 94.49%
+        // pre-reset, Codex weekly 74% (the Nov 2–4 Luna/Sol work is
+        // queued separately under A3's operational part), Go x2 and
+        // ClinePass monthly 100%.
+        // TO REVERT (Nov 5, as DeepSeek seats return — A4): restore
+        // "opencode-route/deepseek-flash#high" as the first target
+        // with weight 1 and set the muse-direct weight back to 1.
         "targets": [
-          "opencode-route/deepseek-flash#high",
           "muse-direct/muse-spark-1.3-contributor",
           "opencode-route/gemini-flash-plan#high",
           "opencode-route/sonnet-plan#high"
@@ -7086,8 +7105,7 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/deepseek-flash": 1,
-          "muse-direct/muse-spark-1.3-contributor": 1,
+          "muse-direct/muse-spark-1.3-contributor": 3,
           "opencode-route/gemini-flash-plan": 2,
           "opencode-route/sonnet-plan": 1
         }
