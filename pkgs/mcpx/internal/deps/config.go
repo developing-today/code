@@ -175,6 +175,25 @@ func Conflicts(packages []string, want map[string]string) []Conflict {
 	return out
 }
 
+// CompatiblePin reports whether version is an exact pin (a plain
+// semver, not a range or a dist-tag) that satisfies the manifest's
+// declared requirement. The runner's materialisation uses it to decide
+// which of two agreeing declarations governs: a caller who pinned
+// foo@1.3.0 against a manifest's ^1.0.0 asked for 1.3.0 exactly, and
+// treating compatibility as identity would silently run a different
+// version than the one pinned (Codex review, PR #2589). A pin that
+// contradicts the requirement is not compatible -- that case is a
+// conflict, reported by Conflicts before materialisation ever runs.
+func CompatiblePin(requirement, version string) bool {
+	if _, ok := parseSemver(version); !ok {
+		return false
+	}
+	if strings.ContainsAny(version, " 	^~<>=|") {
+		return false
+	}
+	return satisfiesRange(requirement, version)
+}
+
 // satisfiesRange reports whether version satisfies the manifest's declared
 // requirement, for the range forms a package.json actually uses: an exact
 // pin, ^, ~, >=, >, <=, <, *, and space-separated conjunctions of them.

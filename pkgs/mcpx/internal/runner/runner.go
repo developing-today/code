@@ -27,6 +27,7 @@ import (
 	"github.com/dezren39/mcpx/internal/preflight"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -305,6 +306,15 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// the launcher; nothing is installed into the project itself
 		// (Codex review, PR #2589).
 		if opts.File != "" && (rt.Kind == KindNode || rt.Kind == KindBun) {
+			// The link beside the script is shared by every file run
+			// in that directory, and refreshing it mid-flight would
+			// swap the dependency set under a run still importing
+			// (Codex review, PR #2589). Serialize file runs per
+			// script directory for the link's whole lifetime: the
+			// lock is taken before linking and released only when
+			// this Run returns, after the process has exited.
+			unlock := lockScriptDir(filepath.Dir(scriptPath))
+			defer unlock()
 			if lerr := linkNodeModules(filepath.Dir(scriptPath), workDir); lerr != nil {
 				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
 			}
@@ -505,6 +515,18 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		return res, nil
 	}
+}
+
+// fileScriptLocks serializes file runs per script directory (see the
+// linkNodeModules call site in Run): one mutex per directory, held
+// from linking until the run's process has exited.
+var fileScriptLocks sync.Map // map[string]*sync.Mutex
+
+func lockScriptDir(dir string) func() {
+	m, _ := fileScriptLocks.LoadOrStore(dir, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // linkNodeModules symlinks workDir/node_modules beside a file script

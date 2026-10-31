@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func readJSON(t *testing.T, path string) map[string]any {
@@ -380,4 +381,62 @@ func TestInstallFrozenNPMInstallsOncePerSet(t *testing.T) {
 	if n := len(strings.Fields(string(b))); n != 2 {
 		t.Fatalf("npm ci ran %d times after the set changed, want 2", n)
 	}
+}
+
+func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
+	// Codex review, PR #2589: foo@1.3.0 satisfies the manifest's
+	// ^1.0.0, so resolution accepts it -- and the materialised set
+	// must then carry the pin, not the range, or the run executes a
+	// version the caller did not pin.
+	dir := t.TempDir()
+	_, err := materialiseDeps(dir, KindBun, &Deps{
+		Packages:     []string{"foo@1.3.0"},
+		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
+		ManifestName: "package.json",
+		AutoInstall:  "off",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := readJSON(t, filepath.Join(dir, "package.json"))
+	deps := m["dependencies"].(map[string]any)
+	if deps["foo"] != "1.3.0" {
+		t.Fatalf("compatible explicit pin lost to the manifest range: %v", deps)
+	}
+
+	dir2 := t.TempDir()
+	if _, err := materialiseDeps(dir2, KindDeno, &Deps{
+		Packages:     []string{"foo@1.3.0"},
+		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
+		ManifestName: "package.json",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dj := readJSON(t, filepath.Join(dir2, "deno.json"))
+	imports := dj["imports"].(map[string]any)
+	if imports["foo"] != "npm:foo@1.3.0" {
+		t.Fatalf("deno imports map lost the explicit pin: %v", imports)
+	}
+}
+
+func TestLockScriptDirSerializes(t *testing.T) {
+	dir := t.TempDir()
+	unlock := lockScriptDir(dir)
+	acquired := make(chan func(), 1)
+	go func() { acquired <- lockScriptDir(dir) }()
+	select {
+	case <-acquired:
+		t.Fatal("second lock on the same script dir acquired while the first was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case second := <-acquired:
+		second()
+	case <-time.After(5 * time.Second):
+		t.Fatal("second lock on the same script dir never acquired after release")
+	}
+	// A different directory is not serialized against this one.
+	other := lockScriptDir(t.TempDir())
+	other()
 }

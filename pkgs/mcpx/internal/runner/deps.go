@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/dezren39/mcpx/internal/deps"
 )
 
 // Deps is a script's resolved dependency set, as the runner consumes it
@@ -141,9 +143,11 @@ func splitSpecifier(spec string) (name, version string) {
 }
 
 // effectiveDeps merges the explicit packages into the manifest's
-// dependencies. The manifest wins a name both name: a contradiction was
-// already reported as a conflict by the caller (internal/deps), so a
-// name seen twice here is agreement, not a second opinion.
+// dependencies. A contradiction was already reported as a conflict by
+// the caller (internal/deps), so a name seen twice here is agreement,
+// not a second opinion -- but agreement has a seniority: a compatible
+// exact pin from the caller governs over the manifest's range, because
+// the pin is the resolved version and the range is only its envelope.
 func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
 	out := map[string]string{}
 	if manifest != nil {
@@ -157,7 +161,16 @@ func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
 	}
 	for _, spec := range d.Packages {
 		name, version := splitSpecifier(spec)
-		if _, taken := out[name]; taken {
+		if manifestVersion, taken := out[name]; taken {
+			// Agreement is not identity: a compatible exact pin is
+			// the version the caller resolved and asked for, so it
+			// governs over the manifest's range (Codex review,
+			// PR #2589). A contradicting pin was already reported
+			// as a conflict by internal/deps and never reaches
+			// here as agreement; the manifest keeps governing it.
+			if version != "" && deps.CompatiblePin(manifestVersion, version) {
+				out[name] = version
+			}
 			continue
 		}
 		if version == "" {

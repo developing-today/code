@@ -56,6 +56,10 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
+	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
+	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -88,6 +92,7 @@ var EffectExemptions = map[string]string{
 	"exec.timeout":                       "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.output":                        "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.where":                         "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
+	"deps.autoInstall":                   "a runtime fetch policy: its effect is which --install flag a bun run carries, observable only when a runtime actually fetches a missing package -- a network install the harness does not perform deterministically",
 	"artifacts.enabled":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.dir":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.delivery":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -247,7 +252,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 180
+const EffectExemptionPin = 181
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,
