@@ -699,6 +699,12 @@ class FakeS3:
         # list_attempts counts every listing call, failed or not.
         self.list_failures = []
         self.list_attempts = 0
+        # Broken-pagination injection for LIST responses: None serves
+        # well-behaved advancing tokens; "missing" truncates with no
+        # NextContinuationToken, "empty" with an empty one, "repeat"
+        # with the token the current page was requested with (no
+        # progress). A correct client aborts; a broken one loops.
+        self.list_token_mode = None
 
     def put(self, key, body: bytes, last_modified: str):
         self.objects[key] = {"body": body, "last_modified": last_modified}
@@ -767,12 +773,19 @@ def make_s3_handler(fake: FakeS3):
                     f"<Size>{len(fake.objects[k]['body'])}</Size></Contents>"
                     for k in page
                 )
-                token = (
-                    f"<NextContinuationToken>{start + fake.page_size}"
-                    "</NextContinuationToken>"
-                    if truncated
-                    else ""
-                )
+                if not truncated:
+                    token = ""
+                elif fake.list_token_mode == "missing":
+                    token = ""
+                elif fake.list_token_mode == "empty":
+                    token = "<NextContinuationToken></NextContinuationToken>"
+                elif fake.list_token_mode == "repeat":
+                    token = f"<NextContinuationToken>{start}</NextContinuationToken>"
+                else:
+                    token = (
+                        f"<NextContinuationToken>{start + fake.page_size}"
+                        "</NextContinuationToken>"
+                    )
                 body = (
                     '<?xml version="1.0" encoding="UTF-8"?>'
                     '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
@@ -1329,6 +1342,41 @@ class TestS3Client(S3TestBase):
         for o in objects:
             self.assertEqual(o["size"], 1)
             self.assertIsNotNone(o["last_modified"])
+
+    def _list_calls(self):
+        return [r for r in self.s3.requests if r["path"] == "/supabase-backups"]
+
+    def _put_five_for_pagination(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+
+    def test_list_pagination_missing_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "missing"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("missing or empty", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)  # aborts on page 1
+
+    def test_list_pagination_empty_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "empty"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)
+
+    def test_list_pagination_repeated_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "repeat"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("non-advancing", str(ctx.exception))
+        # Page 1 hands back token "0"; the re-request returns it again
+        # and the guard fires — two calls, never a third.
+        self.assertEqual(len(self._list_calls()), 2)
 
     def test_missing_credentials_error(self):
         env = {

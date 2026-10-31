@@ -498,10 +498,11 @@ func TestModernSamplingShape(t *testing.T) {
 
 func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
 	// Register CAP-11 (#1918): a 2026-07-28 connection declares the
-	// extensions map -- empty, because mcpx implements no extension yet
-	// and an identifier is added only with its implementation. A legacy
-	// initialize has no extensions key at all: the map has no counterpart
-	// in that era's shape.
+	// extensions map, and an identifier is added only with its
+	// implementation -- since #1556 that is exactly the tasks
+	// extension, which CallTool now drives for taskSupport-"required"
+	// tools. A legacy initialize has no extensions key at all: the map
+	// has no counterpart in that era's shape.
 	s := newScripted(func(method string, params map[string]any) any {
 		switch method {
 		case "server/discover":
@@ -526,8 +527,11 @@ func TestExtensionsDeclaredOnModernOnly(t *testing.T) {
 			t.Errorf("%s: modern capabilities carry no extensions map: %v", r["method"], caps)
 			continue
 		}
-		if len(ext) != 0 {
-			t.Errorf("%s: extensions declares %v; nothing is implemented yet, so it must be empty", r["method"], ext)
+		if len(ext) != 1 {
+			t.Errorf("%s: extensions declares %v; only the implemented tasks extension may be declared", r["method"], ext)
+		}
+		if _, ok := ext["io.modelcontextprotocol/tasks"]; !ok {
+			t.Errorf("%s: extensions %v does not declare io.modelcontextprotocol/tasks", r["method"], ext)
 		}
 	}
 

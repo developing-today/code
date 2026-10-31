@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
 import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
-import { renderQuota, renderServiceDetail, fmtMetricValue } from "../src/render.ts";
+import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
 import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
@@ -108,6 +108,57 @@ describe("saas extraction (Part b)", () => {
     expect(shells.length).toBe(8);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
   });
+
+  test("modal: monthly console read carries a dated used-credits value", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
+    ).replace(
+      "- **Last checked:** 2026-10-22 (Tracker).",
+      "- **Last checked:** console read 2026-10-24.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBe(12.5);
+    expect(credits.limit).toBe(30);
+    expect(credits.percent).toBeCloseTo(41.7, 1);
+    expect(modal.measuredAt).toBe("2026-10-24");
+  });
+
+  test("modal: percentage read is not mistaken for dollars", () => {
+    const view = VIEW.replace(
+      "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
+      "- **Usage / dates:** used 50% of monthly compute credits on 2026-10-24; monthly grant, exact reset unknown.",
+    );
+    const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
+    const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
+    expect(credits.used).toBeNull();
+  });
+
+  test("modal: no used figure stays an allowance-only shell", () => {
+    const modal = byId.get("modal")!;
+    expect(modal.metrics.find((m) => m.id === "compute-credits")?.used).toBeNull();
+  });
+
+  test("bitwarden: bws count-only read yields dated secrets/projects metrics", () => {
+    const view = `${VIEW}
+### Bitwarden
+- **Plan / price / allowance:** Secrets Manager; plan/price unknown.
+- **Usage / dates:** 121 secrets, 1 project (bws count-only read 2026-10-26).
+- **PAYG estimate:** not applicable — flat account-tooling plan.
+- **Last checked:** bws count-only read 2026-10-26.
+`;
+    const bw = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("bitwarden")!;
+    const m = new Map(bw.metrics.map((x) => [x.id, x]));
+    expect(m.get("secrets-count")?.used).toBe(121);
+    expect(m.get("projects-count")?.used).toBe(1);
+    expect(bw.measuredAt).toBe("2026-10-26");
+  });
+
+  test("bitwarden: no dated count stays an empty shell, names/values never parsed", () => {
+    const bw = byId.get("bitwarden")!;
+    expect(bw.metrics).toEqual([]);
+  });
 });
 
 describe("payg lines + charges (§1.2, §2.4)", () => {
@@ -146,6 +197,17 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
         source: "Gmail card alert (registry billing incidents)",
       },
     ]);
+  });
+
+  test("subscriptions: a non-calendar renews date is null, a leap day is kept (#2206)", () => {
+    const wispr = (date: string) =>
+      extractSubscriptions(`### Wispr Flow
+- **Plan:** Flow Pro annual $151.91/yr charged; renews ${date}.`).find((s) => s.name === "Wispr Flow");
+    expect(wispr("2026-02-30")?.renewsAt).toBeNull();
+    expect(wispr("2026-04-31")?.renewsAt).toBeNull();
+    expect(wispr("2026-13-01")?.renewsAt).toBeNull();
+    expect(wispr("2024-02-29")?.renewsAt).toBe("2024-02-29");
+    expect(wispr("2027-10-09")?.renewsAt).toBe("2027-10-09");
   });
 
   test("subscriptions strip is renewal-only rows from the records", () => {
@@ -268,6 +330,57 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: date-only stamps age by the Chicago calendar day (#1629)", () => {
+    // 19:30 CDT on 2026-10-25 is already 2026-10-26 in UTC. A read
+    // dated today (Chicago) is 0 days old for the whole Chicago day;
+    // the UTC-day age called it 1d old -- and stale at cadence 0 --
+    // from 19:00 Chicago onward.
+    const cdtEvening = new Date("2026-10-26T00:30:00Z");
+    expect(freshness("2026-10-25", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-25", 0, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-24", 7, cdtEvening)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-24", 0, cdtEvening)).toEqual({ stale: true, ageDays: 1 });
+    // Still today at 23:59 Chicago.
+    expect(freshness("2026-10-25", 7, new Date("2026-10-26T04:59:00Z"))).toEqual({
+      stale: false,
+      ageDays: 0,
+    });
+    // The CST evening of the same shape: 19:00 CST on 2026-01-14 is
+    // 2026-01-15 in UTC.
+    const cstEvening = new Date("2026-01-15T01:00:00Z");
+    expect(freshness("2026-01-14", 7, cstEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-01-13", 7, cstEvening)).toEqual({ stale: false, ageDays: 1 });
+    // Tomorrow's Chicago date is still within the future tolerance.
+    expect(freshness("2026-10-26", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+  });
+  test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only form: +30d and +365d are beyond the 1-day tolerance.
+    expect(freshness("2026-11-25", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Datetime form: +30d, +365d, and even +2d are beyond tolerance.
+    expect(freshness("2026-11-25T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2026-10-28T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Garbage is the same honest unknown-age shape.
+    expect(freshness("not-a-date-at-all", 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: a near-future stamp within tolerance is today, not stale (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only granularity: tomorrow's date is exactly at the tolerance.
+    expect(freshness("2026-10-27", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Datetime: +12h of timezone/clock noise clamps to age 0.
+    expect(freshness("2026-10-27T00:00:00Z", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Past controls unchanged.
+    expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-18", 7, now)).toEqual({ stale: true, ageDays: 8 });
+  });
+  test("freshnessStamp: a far-future stamp renders the stale badge, never 'today' (#1568)", () => {
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const html = freshnessStamp(future, "console", 7);
+    expect(html).toContain("stale — as of");
+    expect(html).not.toContain("· today");
   });
 });
 

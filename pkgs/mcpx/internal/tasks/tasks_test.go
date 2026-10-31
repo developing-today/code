@@ -195,3 +195,121 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 		t.Errorf("expected reason 'user aborted run', got %q", cancelReason)
 	}
 }
+
+func TestAWorkingTaskOutlivesItsTTLAndItsResultStaysCollectable(t *testing.T) {
+	// Regression (#1653, Bug A): the TTL is retention from completion,
+	// not a runtime deadline — a task still working when its TTL passes
+	// must not be deleted, and its context must not be cancelled by the
+	// retention clock.
+	st := tasks.New()
+	task := st.Start(80, func(ctx context.Context) (any, *tasks.Fault) {
+		time.Sleep(300 * time.Millisecond)
+		if ctx.Err() != nil {
+			return nil, &tasks.Fault{Code: -32603, Message: "the retention clock cancelled the work"}
+		}
+		return map[string]any{"ok": true}, nil
+	})
+	time.Sleep(160 * time.Millisecond) // past the TTL, still working
+	snap, ok := st.Get(task.TaskID)
+	if !ok {
+		t.Fatal("a working task was deleted at its TTL")
+	}
+	if snap.Status != tasks.Working {
+		t.Fatalf("status while working past the TTL = %q", snap.Status)
+	}
+	result, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault != nil {
+		t.Fatalf("err=%v fault=%v", err, fault)
+	}
+	if m, _ := result.(map[string]any); m["ok"] != true {
+		t.Errorf("result = %v", result)
+	}
+	if _, ok := st.Get(task.TaskID); !ok {
+		t.Error("a just-finished task vanished instead of starting its retention")
+	}
+}
+
+func TestAFinishedTaskKeepsItsResultForTheFullTTLAfterFinishing(t *testing.T) {
+	// Regression (#1653, Bug B): retention is the full TTL measured from
+	// the terminal transition, not what is left of a creation clock.
+	st := tasks.New()
+	task := st.Start(400, func(ctx context.Context) (any, *tasks.Fault) {
+		time.Sleep(250 * time.Millisecond)
+		return "done", nil
+	})
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond) // 500ms from creation, 250ms from finishing
+	snap, ok := st.Get(task.TaskID)
+	if !ok || snap.Status != tasks.Completed {
+		t.Fatalf("a finished task's retention shrank by its runtime: %+v (present=%v)", snap, ok)
+	}
+	time.Sleep(350 * time.Millisecond) // 600ms from finishing: past the full TTL
+	if _, ok := st.Get(task.TaskID); ok {
+		t.Error("retention should lapse a full TTL after finishing")
+	}
+}
+
+func TestRetentionAcrossReopenRunsFromCompletion(t *testing.T) {
+	// Regression (#1653, reload path): a reopened store computes expiry
+	// from when the task finished, not from when it was created, so a
+	// task that ran most of its TTL is not deleted on sight at restart.
+	dbPath := t.TempDir() + "/tasks.db"
+	st1, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	t1 := st1.Start(400, func(ctx context.Context) (any, *tasks.Fault) {
+		time.Sleep(300 * time.Millisecond)
+		return map[string]any{"data": "kept"}, nil
+	})
+	if _, _, err := st1.Result(context.Background(), t1.TaskID); err != nil {
+		t.Fatalf("t1 result: %v", err)
+	}
+	_ = st1.Close()
+	time.Sleep(200 * time.Millisecond) // 500ms from creation, 200ms from finishing
+
+	st2, err := tasks.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open reopen failed: %v", err)
+	}
+	defer st2.Close()
+	snap, ok := st2.Get(t1.TaskID)
+	if !ok {
+		t.Fatal("t1 was deleted at reopen: its retention was clocked from creation")
+	}
+	if snap.Status != tasks.Completed {
+		t.Errorf("t1 status = %q, want completed", snap.Status)
+	}
+	res, fault, err := st2.Result(context.Background(), t1.TaskID)
+	if err != nil || fault != nil {
+		t.Errorf("t1 result err=%v fault=%v", err, fault)
+	}
+	if m, _ := res.(map[string]any); m["data"] != "kept" {
+		t.Errorf("t1 result data = %v", res)
+	}
+}
+
+func TestAStartDeadlineCancelsWaitingWork(t *testing.T) {
+	// The askTTL shape (#1653 ruling 3): StartWithDeadline bounds the
+	// work itself through the ordinary cancel path, so a parked call
+	// nobody answers does not wait forever now that the retention clock
+	// no longer kills running tasks.
+	st := tasks.New()
+	task := st.StartWithDeadline(60000, 50*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
+		<-ctx.Done()
+		return nil, nil
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap, ok := st.Get(task.TaskID)
+		if ok && snap.Status == tasks.Cancelled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the deadline never cancelled the waiting work: %+v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

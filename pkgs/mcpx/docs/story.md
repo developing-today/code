@@ -18,7 +18,7 @@ their schemas is in the agent's context, which is the entire point, but the
 agent does not know that yet.
 
 What it does have is one instruction file, [`AGENTS.md`](../AGENTS.md),
-injected at session start. Abridged -- the full file is 120 lines and adds
+injected at session start. Abridged -- the full file is 152 lines and adds
 profiles, the script contract and the secrets section, which this walk does
 not need -- it reads:
 
@@ -2906,7 +2906,7 @@ else in this document is detail underneath those four verbs.
 
 - [`AGENTS.md`](../AGENTS.md) — the instruction file abridged above. This is
   the text to inject into an agent's session; it is deliberately short, and
-  120 lines today. The quote above is not the whole of it (#264).
+  152 lines today. The quote above is not the whole of it (#264).
 - [`ASSESSMENT.md`](../ASSESSMENT.md) — why this exists, with the measurements
   against the predecessor it replaced.
 - [`OPENCODE-V2.md`](../OPENCODE-V2.md) — how this compares to opencode v2's

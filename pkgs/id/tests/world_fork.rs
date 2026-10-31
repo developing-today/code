@@ -102,3 +102,104 @@ fn a_fork_from_a_different_world_is_refused() {
 
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// Append raw bytes to a journal file, simulating a writer that crashed
+/// mid-append (or wrote a fully-terminated corrupt line).
+fn append_raw(dir: &std::path::Path, bytes: &[u8]) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("journal.jsonl"))
+        .unwrap();
+    file.write_all(bytes).unwrap();
+}
+
+fn make_source(root: &std::path::Path) -> std::path::PathBuf {
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let modules = ModuleDir::new(src.join("modules"));
+    let hash = modules.save(b"wasm-bytes").unwrap();
+    let (mut journal, _) = FileJournal::open(&src.join("journal.jsonl"), "src-world").unwrap();
+    journal
+        .append(&JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 0,
+                kind: WorldEventKind::ProgramInstalled {
+                    module_hash: hash,
+                    seed: 7,
+                    provenance: None,
+                },
+            },
+        })
+        .unwrap();
+    drop(journal);
+    src
+}
+
+#[test]
+fn a_fork_tolerates_a_crash_torn_journal_tail() {
+    let root = std::env::temp_dir().join(format!("id-fork-torn-{}", std::process::id()));
+    let src = make_source(&root);
+    let dst = root.join("dst");
+
+    // A crash mid-append: the final entry is an unterminated fragment. The
+    // world's own open would drop and truncate it (#1523), so the fork must
+    // replay to the last complete entry instead of refusing the world.
+    append_raw(&src, b"{\"entry\":\"committed\",\"partic");
+
+    fork_world(
+        &src,
+        &dst,
+        &ForkSpec {
+            from_world_id: "src-world".to_owned(),
+            to_world_id: "dst-world".to_owned(),
+            template: false,
+        },
+    )
+    .unwrap();
+
+    // The fork replays to the last complete entry: header rewritten, the
+    // parent's install copied, provenance recorded, and no trace of the
+    // torn fragment (read_entries unwraps every line it parses).
+    let entries = read_entries(&dst);
+    assert!(matches!(
+        &entries[0],
+        JournalEntry::Created { world_id, .. } if world_id == "dst-world"
+    ));
+    assert!(entries.iter().any(|entry| matches!(
+        entry,
+        JournalEntry::Committed { event } if matches!(&event.kind, WorldEventKind::ProgramInstalled { seed, .. } if *seed == 7)
+    )));
+    assert!(entries.iter().any(|entry| matches!(
+        entry,
+        JournalEntry::Forked { from_world_id, .. } if from_world_id == "src-world"
+    )));
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_fork_refuses_a_corrupt_but_complete_final_line() {
+    let root = std::env::temp_dir().join(format!("id-fork-corrupt-{}", std::process::id()));
+    let src = make_source(&root);
+    let dst = root.join("dst");
+
+    // Newline-terminated, so it was fully written: corruption, never a torn
+    // append. It must stay fatal even in final position.
+    append_raw(&src, b"this is not a journal entry\n");
+
+    let error = fork_world(
+        &src,
+        &dst,
+        &ForkSpec {
+            from_world_id: "src-world".to_owned(),
+            to_world_id: "dst-world".to_owned(),
+            template: false,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("corrupt"), "{error}");
+
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -73,6 +73,7 @@ import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
 import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
+import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import type {
   AaFeedSection,
   DnsSection,
@@ -617,9 +618,16 @@ async function main(): Promise<void> {
     }
   }
 
+  // #1116 item 3: this collector runs from the pm-feed checkout of
+  // this repo; measure its drift vs origin/main so a stale checkout
+  // (collector running old code) is visible in the health view
+  // instead of lying quietly. Fail-soft: any git problem becomes
+  // state "unknown" with the reason, never a failed collection.
+  const checkout = await computeCheckoutDrift(join(PKG, "..", ".."));
   const feed: FleetFeed = {
     version: 1,
     generatedAt: now.toISOString(),
+    checkout,
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
     julesSummary: jules,

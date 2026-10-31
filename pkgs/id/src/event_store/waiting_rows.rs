@@ -259,7 +259,7 @@ impl Mirror<'_> {
                 delete(self.txn, &id)?;
                 Ok(Hold::Skipped)
             }
-            Err(WaitRefusal::AuthorFull) => {
+            Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                 delete(self.txn, &id)?;
                 Ok(Hold::Full)
             }

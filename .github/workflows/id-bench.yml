@@ -26,6 +26,7 @@ on:
       - "pkgs/id/**"
       - ".github/workflows/id-bench.yml"
       - ".github/scripts/id-bench-compare.sh"
+      - ".github/scripts/id-bench-compare.test.sh"
   workflow_dispatch:
 
 permissions:
@@ -61,6 +62,12 @@ jobs:
           # error. The GitHub Actions cache is the cache.
           use-flakehub: false
           use-gha-cache: true
+
+      # The compare script is the only regression signal for these
+      # benchmarks; its own tests (#1619) are plain bash+awk and run
+      # before the bench build so a broken script fails fast.
+      - name: Test the compare script
+        run: .github/scripts/id-bench-compare.test.sh
 
       # Full-size workloads, exactly as the baselines were taken
       # (BASELINES.md): --quick numbers are smoke sizes and are never

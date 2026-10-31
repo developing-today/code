@@ -425,7 +425,20 @@ const childEnv = () => {
 // change: the automatic multi-turn key hashes the first USER message,
 // not messages[0] — OpenCode's messages[0] is its identical system
 // prompt for every session, which would collide all conversations.
-const SESSION_FILE = path.join(PROXY_DIR, 'sessions.json');
+// Session map: SHARED with claude-code-proxy (mirrored key space), so
+// both proxies must resolve to the SAME path. It lives in the shared
+// CLI-proxy state root, not beside the script: bin/ is the tracked
+// checkout, and every write there dirtied the primary clone and blocked
+// pm-git-sync. #3067 completes the state-dir move of #2782, which
+// covered the WORKDIR state (bin/work) but missed this PROXY_DIR anchor.
+const SESSION_FILE =
+  process.env.COMMANDCODE_PROXY_SESSION_FILE ||
+  path.join(
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+    'cli-proxies',
+    'sessions.json'
+  );
+fs.mkdirSync(path.dirname(SESSION_FILE), { recursive: true });
 const MAX_SESSIONS = 200;
 const sessionStore = new Map();
 

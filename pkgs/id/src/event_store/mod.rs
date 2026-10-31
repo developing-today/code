@@ -1014,7 +1014,7 @@ impl EventStore {
             let event = row_event(&row)?;
             match pool.restore(row.author, row.id, row.deps, event, row.arrived_at) {
                 Ok(()) => {}
-                Err(WaitRefusal::AuthorFull) => {
+                Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
                     waiting_rows::delete(&txn, &row.id)?;
                     dropped = true;
                 }
