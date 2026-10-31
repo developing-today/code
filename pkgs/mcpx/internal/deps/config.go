@@ -290,9 +290,11 @@ func wildcardPrefix(rest string) (prefix []int, ok bool) {
 // under op, at the precision the wildcard was written: a bare or =
 // wildcard pins only the written numeric components; ^ and ~ widen
 // from them the way npm desugars them (^1.2.x is >=1.2.0 <2.0.0,
-// ~1.2.x is >=1.2.0 <1.3.0, ^/~1.x is >=1.0.0 <2.0.0). Any other
-// operator over a wildcard is not a shape npm gives meaning, so it
-// satisfies nothing rather than guessing.
+// ~1.2.x is >=1.2.0 <1.3.0, ^/~1.x is >=1.0.0 <2.0.0, and zero-major
+// carets keep their tighter bound: ^0.2.x is >=0.2.0 <0.3.0 and
+// ^0.0.x is >=0.0.0 <0.1.0). Any other operator over a wildcard is
+// not a shape npm gives meaning, so it satisfies nothing rather
+// than guessing.
 func satisfiesWildcard(op string, prefix []int, v semver) bool {
 	matchesPrefix := func() bool {
 		for i, n := range prefix {
@@ -320,6 +322,13 @@ func satisfiesWildcard(op string, prefix []int, v semver) bool {
 		switch {
 		case op == "~" && len(prefix) >= 2:
 			high.nums[0], high.nums[1] = prefix[0], prefix[1]+1
+		case op == "^" && len(prefix) >= 2 && prefix[0] == 0 && prefix[1] != 0:
+			// ^0.2.x is >=0.2.0 <0.3.0: the left-most non-zero
+			// component (the minor) is the one that may not change.
+			high.nums[0], high.nums[1] = 0, prefix[1]+1
+		case op == "^" && len(prefix) >= 2 && prefix[0] == 0:
+			// ^0.0.x is >=0.0.0 <0.1.0.
+			high.nums[0], high.nums[1] = 0, 1
 		default:
 			high.nums[0] = prefix[0] + 1
 		}

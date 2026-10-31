@@ -374,6 +374,38 @@ func TestAbbreviatedRelationalBoundsDesugarAtWrittenPrecision(t *testing.T) {
 	}
 }
 
+// TestZeroMajorCaretWildcardsKeepTheirTighterBound is the Codex finding
+// on PR #2589 (config.go, 511ab7adb round): satisfiesWildcard always
+// incremented the major component for ^, so ^0.2.x admitted 0.9.0 and
+// ^0.0.x admitted 0.1.0. Zero-major carets keep the left-most non-zero
+// component fixed: ^0.2.x is >=0.2.0 <0.3.0, ^0.0.x is >=0.0.0 <0.1.0.
+func TestZeroMajorCaretWildcardsKeepTheirTighterBound(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"a":"^0.2.x","b":"^0.0.x","c":"^1.2.x","d":"^0.x"}}`)
+	for _, spec := range []string{"a@0.2.0", "a@0.2.9", "b@0.0.0", "b@0.0.7", "c@1.2.0", "c@1.9.9", "d@0.5.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the wildcard range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	for _, spec := range []string{"a@0.9.0", "a@0.3.0", "b@0.1.0", "c@2.0.0", "d@1.0.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s is outside the wildcard range and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}
+
 // TestAnExplicitlyNamedManifestThatIsMissingFails is the Codex finding on
 // PR #2589 (chain.go): discovery tolerates finding nothing, but a manifest
 // the caller named by path must not vanish silently.
