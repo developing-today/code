@@ -512,20 +512,22 @@ fn sanitize_file_name(name: &str) -> Result<String> {
 /// Draining never stops at the cap: the writer (a compiler child on a
 /// pipe) must never block on a full pipe, and the retained memory stays
 /// bounded at `cap` bytes plus one read chunk no matter how much the
-/// writer emits. Read errors end the capture with what was retained,
-/// matching the previous `read_to_end` reader's discard-on-error shape.
+/// writer emits. Interrupted reads are retried (as `read_to_end` does);
+/// any other read error ends the capture with what was retained.
 fn read_capture_tail(reader: &mut impl std::io::Read, cap: usize) -> Vec<u8> {
     let mut retained = Vec::new();
     let mut chunk = [0_u8; 8 * 1024];
     loop {
         match reader.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(read) => {
                 retained.extend_from_slice(&chunk[..read]);
                 if retained.len() > cap {
                     retained.drain(..retained.len() - cap);
                 }
             }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
         }
     }
     retained
@@ -664,6 +666,35 @@ mod tests {
         );
         let mut empty = std::io::Cursor::new(Vec::new());
         assert!(read_capture_tail(&mut empty, MAX_CAPTURE_BYTES).is_empty());
+    }
+
+    /// A reader whose first read fails with `Interrupted`, then yields
+    /// its bytes: the capture must retry, not stop draining.
+    struct InterruptedOnce {
+        interrupted: bool,
+        inner: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for InterruptedOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn capture_tail_retries_interrupted_reads() {
+        let mut reader = InterruptedOnce {
+            interrupted: false,
+            inner: std::io::Cursor::new(b"diagnostics after EINTR\n".to_vec()),
+        };
+        assert_eq!(
+            read_capture_tail(&mut reader, MAX_CAPTURE_BYTES),
+            b"diagnostics after EINTR\n"
+        );
     }
 
     #[test]
