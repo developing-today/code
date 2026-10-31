@@ -278,6 +278,16 @@ rec {
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
+    # The vendored summarize plugin (home/openclaw/plugins/summarize)
+    # as a locked path input, so home/openclaw can hand nix-openclaw's
+    # customPlugins a LOCKED flake reference: builtins.getFlake on the
+    # old unlocked source-tree path fails pure evaluation (CI
+    # host-eval, #705). Deliberately NO nixpkgs follows: the plugin
+    # pins its own nixpkgs rev because its pnpm deps hash is pinned
+    # under that toolchain (see the plugin flake's header comment).
+    openclaw-plugin-summarize = {
+      url = "path:./home/openclaw/plugins/summarize";
+    };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
     # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been
     # closed unmerged and the one still open (#498572) has been stalled since

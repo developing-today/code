@@ -142,7 +142,18 @@ in
     # Custom plugins supplied as plugin flakes
     # (programs.openclaw.customPlugins).
     customPlugins = [
-      { source = toString ./plugins/summarize; }
+      {
+        # nix-openclaw runs builtins.getFlake on this string. A plain
+        # source-tree path is an UNLOCKED flake reference and pure
+        # evaluation (CI host-eval, #705) refuses it, so pass the
+        # locked reference of the root flake's path input instead.
+        # unsafeDiscardStringContext: getFlake also rejects strings
+        # carrying store-path context; the narHash in the reference
+        # is what keeps the result locked and checkable.
+        source =
+          builtins.unsafeDiscardStringContext
+            "path:${inputs.openclaw-plugin-summarize.outPath}?narHash=${inputs.openclaw-plugin-summarize.narHash}";
+      }
     ];
 
     # OpenClaw runtime plugins (channels, harnesses, providers, search),
