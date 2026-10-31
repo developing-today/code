@@ -7,6 +7,8 @@
 // whose behaviour is keyed on markers in the prompt: a run that exits
 // non-zero used to be reported as a successful 'stop' — empty when it
 // produced nothing, and carrying the truncated text when it produced
+// (startProxy additionally pins the stub via CODEX_PROXY_CODEX_BIN so a
+// host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
@@ -56,6 +58,15 @@ case "$prompt" in
     exit 0 ;;
   *INBANDFAIL*)
     printf '%s\\n' '{"type":"turn.failed","error":{"message":"stub codex: model overloaded"}}'
+    exit 0 ;;
+  *INBANDSTR*)
+    printf '%s\\n' '{"type":"turn.failed","error":"stub codex: string overload"}'
+    exit 0 ;;
+  *INBANDNONE*)
+    printf '%s\\n' '{"type":"turn.failed"}'
+    exit 0 ;;
+  *INBANDOBJ*)
+    printf '%s\\n' '{"type":"turn.failed","error":{}}'
     exit 0 ;;
   *SIGKILLME*)
     kill -9 $$ ;;
@@ -207,6 +218,7 @@ const startProxy = async (reuse, extraEnv = {}, seedHome = null) => {
       HOME: home,
       XDG_STATE_HOME: stateHome,
       CODEX_PROXY_PORT: String(port),
+      CODEX_PROXY_CODEX_BIN: path.join(home, '.local', 'bin', 'codex'),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -324,6 +336,24 @@ test('partial output then turn.failed with exit 0: masked success becomes an err
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'INBANDPARTIAL', /Codex execution failed: stub codex: run failed midway/);
+});
+
+test('turn.failed with a bare-string error: the string is the detail on both transports (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDSTR', /Codex execution failed: stub codex: string overload/);
+});
+
+test('turn.failed with no error message: fallback names the in-band failure, not exit 0 (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDNONE', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+  await assertFailure(port, 'INBANDOBJ', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+
+  const plainRes = await post(port, { messages: [{ role: 'user', content: 'please INBANDNONE now' }] });
+  assert.equal(plainRes.status, 500);
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.doesNotMatch(plainBody.error.message, /exited with code 0/, 'message-less in-band failure must not blame a successful exit');
 });
 
 test('empty-stderr fallback names the killing signal, not code null (#676)', async (t) => {
