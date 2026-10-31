@@ -77,12 +77,11 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 
 	// TypedDicts for every tool's arguments and result, before the classes
 	// that name them: a reader meets the shape once, then the call.
-	classNames := pyClassNames(sorted)
+	plan := pyNamePlan(sorted)
 	var types strings.Builder
 	for i, ns := range sorted {
-		tools := sortedTools(ns)
-		for _, t := range tools {
-			writePyTypedDicts(&types, classNames[i], t)
+		for _, t := range sortedTools(ns) {
+			writePyTypedDicts(&types, plan.ClassNames[i], t, plan.Types[i][t.Name])
 		}
 	}
 	if types.Len() > 0 {
@@ -90,7 +89,7 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 	}
 
 	for i, ns := range sorted {
-		fmt.Fprintf(&b, "class %s:\n", classNames[i])
+		fmt.Fprintf(&b, "class %s:\n", plan.ClassNames[i])
 		b.WriteString(pyNamespaceDoc(ns))
 		tools := sortedTools(ns)
 		if len(tools) == 0 {
@@ -123,22 +122,22 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 				b.WriteString("\n")
 			}
 			first = false
-			b.WriteString(pyToolMethod(ns, classNames[i], t))
+			b.WriteString(pyToolMethod(ns, plan.ClassNames[i], plan.Types[i], t))
 		}
 		b.WriteString("\n")
 	}
 
 	b.WriteString("class _Tools:\n")
 	b.WriteString("    \"\"\"The namespaces, reachable as tools.<namespace>.<tool>().\"\"\"\n\n")
-	for _, cn := range classNames {
+	for _, cn := range plan.ClassNames {
 		fmt.Fprintf(&b, "    %s: %s\n", cn, cn)
 	}
 	b.WriteString("\n    def __init__(self) -> None:\n")
-	if len(classNames) == 0 {
+	if len(plan.ClassNames) == 0 {
 		b.WriteString("        self._namespaces: List[Any] = []\n")
 	} else {
 		var holders []string
-		for _, cn := range classNames {
+		for _, cn := range plan.ClassNames {
 			fmt.Fprintf(&b, "        self.%s = %s()\n", cn, cn)
 			holders = append(holders, "self."+cn)
 		}
@@ -448,7 +447,7 @@ func pyAllParams(raw json.RawMessage) (params, required []string) {
 }
 
 // pyToolMethod renders one typed method.
-func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
+func pyToolMethod(ns Namespace, nsClass string, typeNames map[string]pyTypeNameSet, t Tool) string {
 	var b strings.Builder
 	if d := strings.TrimSpace(t.Description); d != "" {
 		for _, l := range pyCommentLines(d) {
@@ -483,7 +482,7 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 		}
 		opt = append(opt, argNames[p]+": "+typ+" = _MISSING")
 	}
-	resType := pyResultType(nsClass, t)
+	resType := pyResultType(typeNames[t.Name], t)
 	fn := pyMethodName(t.Name)
 	parts := []string{"self"}
 	extra := pyOpenExtra(t.InputSchema)
@@ -536,15 +535,68 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	return b.String()
 }
 
+// pyTypeNames allocates every derived type name for one namespace's tools.
+// Two tools can normalize to the same class name ("foo-bar" and "fooBar" both
+// become FooBar), so the allocation is per namespace and collision-safe,
+// exactly like pyClassNames is per module. `used` carries the module-wide
+// names already taken (namespace classes and typing/runtime bindings) and is
+// mutated, so a derived name can never replace a class either.
+//
+// Each Args shape also emits an "<Args>Required" base class, and that
+// derived spelling is reserved here too.
+type pyTypeNameSet struct {
+	Args         string
+	ArgsRequired string
+	Result       string
+}
+
+func pyReserve(base string, used map[string]bool) string {
+	name := base
+	for i := 2; used[name]; i++ {
+		name = fmt.Sprintf("%s%d", base, i)
+	}
+	used[name] = true
+	return name
+}
+
+func pyTypeNames(nsClass string, tools []Tool, used map[string]bool) map[string]pyTypeNameSet {
+	out := make(map[string]pyTypeNameSet, len(tools))
+	for _, t := range tools {
+		var set pyTypeNameSet
+		if params, _ := pyAllParams(t.InputSchema); len(params) > 0 {
+			set.Args = pyReserve(nsClass+pyClassName(t.Name)+"Args", used)
+			set.ArgsRequired = pyReserve(set.Args+"Required", used)
+		}
+		if pyHasResult(t) {
+			set.Result = pyReserve(nsClass+pyClassName(t.Name)+"Result", used)
+		}
+		out[t.Name] = set
+	}
+	return out
+}
+
+// pyHasResult reports whether a tool's output schema yields a Result TypedDict.
+func pyHasResult(t Tool) bool {
+	if len(t.OutputSchema) == 0 {
+		return false
+	}
+	var s schema
+	if json.Unmarshal(t.OutputSchema, &s) != nil {
+		return false
+	}
+	fields, ok := pyObjectFields(&s)
+	return ok && len(fields) > 0
+}
+
 // writePyTypedDicts emits the argument and result shapes for one tool.
 //
 // Nested objects stay Dict[str, Any] in this slice: a TypedDict per nesting
 // level is a naming problem (two parents, one shape) that belongs with the
 // output-schema phase, not with proving the dimension carries a second target.
-func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
+func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool, names pyTypeNameSet) {
 	params, required := pyAllParams(t.InputSchema)
 	if len(params) > 0 {
-		base := nsClass + pyClassName(t.Name) + "Args"
+		base := names.Args
 		req := map[string]bool{}
 		for _, r := range required {
 			req[r] = true
@@ -566,14 +618,14 @@ func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 				optFields = append(optFields, line)
 			}
 		}
-		fmt.Fprintf(b, "class %sRequired(TypedDict):\n", base)
+		fmt.Fprintf(b, "class %s(TypedDict):\n", names.ArgsRequired)
 		if len(reqFields) == 0 {
 			b.WriteString("    pass\n")
 		} else {
 			b.WriteString(strings.Join(reqFields, "\n") + "\n")
 		}
 		b.WriteString("\n\n")
-		fmt.Fprintf(b, "class %s(%sRequired, total=False):\n", base, base)
+		fmt.Fprintf(b, "class %s(%s, total=False):\n", base, names.ArgsRequired)
 		if len(optFields) == 0 {
 			b.WriteString("    pass\n")
 		} else {
@@ -586,7 +638,7 @@ func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 		var s schema
 		if json.Unmarshal(rawResult, &s) == nil {
 			if pairs, ok := pyObjectFieldPairs(&s); ok && len(pairs) > 0 {
-				name := nsClass + pyClassName(t.Name) + "Result"
+				name := names.Result
 				if pyLiteralKeys(pairs) {
 					// Some property names cannot be written as class
 					// attributes ("class", "next-page"): the class form
@@ -683,17 +735,12 @@ func pyLiteralKeys(pairs [][2]string) bool {
 }
 
 // pyResultType names the generated result TypedDict when there is one, and
-// falls back to Any for a schema the emitter does not model.
-func pyResultType(nsClass string, t Tool) string {
-	if len(t.OutputSchema) == 0 {
-		return "Any"
-	}
-	var s schema
-	if json.Unmarshal(t.OutputSchema, &s) != nil {
-		return "Any"
-	}
-	if fields, ok := pyObjectFields(&s); ok && len(fields) > 0 {
-		return nsClass + pyClassName(t.Name) + "Result"
+// falls back to Any for a schema the emitter does not model. The name comes
+// from the shared plan, so the annotation names exactly the class that was
+// allocated (two tools may normalize to the same base name).
+func pyResultType(names pyTypeNameSet, t Tool) string {
+	if pyHasResult(t) {
+		return names.Result
 	}
 	return "Any"
 }
@@ -895,7 +942,11 @@ func pyCollisions(tools []Tool) map[string][]string {
 // "fooBar" both become FooBar); without allocation the later class and its
 // _Tools attribute silently replaced the earlier one. Later duplicates get
 // a numeric suffix (FooBar2, ...).
-func pyClassNames(nss []Namespace) []string {
+// pyClassNames allocates this module's namespace class names. The returned
+// `used` set carries the module-wide names now taken (runtime/typing bindings
+// plus every class), so the derived Args/Result type names are allocated
+// against it and can never replace a class (#2591 review).
+func pyClassNames(nss []Namespace) ([]string, map[string]bool) {
 	used := map[string]bool{}
 	// Runtime and imported typing bindings are taken before any
 	// namespace is allocated: a namespace named "tool_error" must not
@@ -911,15 +962,26 @@ func pyClassNames(nss []Namespace) []string {
 	}
 	out := make([]string, 0, len(nss))
 	for _, ns := range nss {
-		base := pyClassName(ns.Name)
-		name := base
-		for i := 2; used[name]; i++ {
-			name = fmt.Sprintf("%s%d", base, i)
-		}
-		used[name] = true
-		out = append(out, name)
+		out = append(out, pyReserve(pyClassName(ns.Name), used))
 	}
-	return out
+	return out, used
+}
+
+// pyPlan is the shared name plan for a module and for the `mcpx types`
+// declaration block: both must spell the same class and TypedDict names, or
+// the advertised signature names a type the module does not define.
+type pyPlan struct {
+	ClassNames []string
+	Types      []map[string]pyTypeNameSet
+}
+
+func pyNamePlan(sorted []Namespace) pyPlan {
+	classNames, used := pyClassNames(sorted)
+	types := make([]map[string]pyTypeNameSet, len(sorted))
+	for i, ns := range sorted {
+		types[i] = pyTypeNames(classNames[i], sortedTools(ns), used)
+	}
+	return pyPlan{ClassNames: classNames, Types: types}
 }
 
 // pyQuote renders a Python string literal.
@@ -1154,7 +1216,7 @@ func propSchema(raw json.RawMessage, name string) json.RawMessage {
 func PythonDeclarations(nss []Namespace) string {
 	sorted := append([]Namespace(nil), nss...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
-	classNames := pyClassNames(sorted)
+	plan := pyNamePlan(sorted)
 
 	var b strings.Builder
 	b.WriteString("# Generated by mcpx. Call these from a Python script with mcpx_client imported.\n")
@@ -1163,7 +1225,7 @@ func PythonDeclarations(nss []Namespace) string {
 	b.WriteString("from mcpx_client import tools, call, ToolError\n\n")
 
 	for i, ns := range sorted {
-		fmt.Fprintf(&b, "class %s:\n", classNames[i])
+		fmt.Fprintf(&b, "class %s:\n", plan.ClassNames[i])
 		if d := strings.TrimSpace(ns.Description); d != "" {
 			b.WriteString("    # " + sanitizeComment(d) + "\n")
 		}
@@ -1226,7 +1288,7 @@ func PythonDeclarations(nss []Namespace) string {
 			if extra {
 				parts = append(parts, "extra: Optional[Dict[str, Any]] = ...")
 			}
-			fmt.Fprintf(&b, "    def %s(%s) -> %s: ...\n", fn, strings.Join(parts, ", "), pyResultType(classNames[i], t))
+			fmt.Fprintf(&b, "    def %s(%s) -> %s: ...\n", fn, strings.Join(parts, ", "), pyResultType(plan.Types[i][t.Name], t))
 		}
 		b.WriteString("\n")
 	}
@@ -1259,7 +1321,7 @@ func PythonGlobals(nss []Namespace) string {
 	b.WriteString("def here_dir() -> str: ...\n")
 	b.WriteString("def paths(path: str) -> Dict[str, str]: ...\n")
 	b.WriteString("\n")
-	for _, cn := range pyClassNames(sorted) {
+	for _, cn := range pyNamePlan(sorted).ClassNames {
 		fmt.Fprintf(&b, "%s: Any\n", cn)
 	}
 	return b.String()

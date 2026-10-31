@@ -976,3 +976,120 @@ func TestPythonCodexRound9(t *testing.T) {
 		t.Errorf("a description with CR/NUL must still yield an importable module: %v\n%s\n--- module ---\n%s", err, got, out)
 	}
 }
+
+// TestPythonTypeNameCollisions covers the two round-9 name-allocation findings
+// on #2591: (1) two tools that normalize to the same class name must not share
+// a Result TypedDict, and (2) a derived Args/Result name must never replace a
+// namespace class. Both the module and the `mcpx types` block must agree.
+func TestPythonTypeNameCollisions(t *testing.T) {
+	l := pythonLang(t)
+	out := codegen.Namespace{
+		Name:   "foo",
+		Server: "foo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:         "bar",
+				InputSchema:  json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`),
+				OutputSchema: json.RawMessage(`{"type":"object","properties":{"fromBar":{"type":"string"}}}`),
+			},
+			// "foo_bar_result" normalizes to FooBarResult: the name the
+			// namespace `foo`'s tool `bar` derives for its Result type.
+			{Name: "ping", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)},
+		},
+	}
+	// A namespace whose own class name collides with a derived type name.
+	clashNs := codegen.Namespace{
+		Name:   "foo_bar_result",
+		Server: "clash-server",
+		Tools:  []codegen.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}},
+	}
+	// Two tools that normalize to the same Python class name.
+	sameNs := codegen.Namespace{
+		Name:   "same",
+		Server: "same-server",
+		Tools: []codegen.Tool{
+			{
+				Name:         "foo-bar",
+				InputSchema:  json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+				OutputSchema: json.RawMessage(`{"type":"object","properties":{"dash":{"type":"string"}}}`),
+			},
+			{
+				Name:         "fooBar",
+				InputSchema:  json.RawMessage(`{"type":"object","properties":{"y":{"type":"integer"}}}`),
+				OutputSchema: json.RawMessage(`{"type":"object","properties":{"camel":{"type":"integer"}}}`),
+			},
+		},
+	}
+	nss := []codegen.Namespace{out, clashNs, sameNs}
+	mod := l.EmitModule(nss, "http://127.0.0.1:1234", "sess-c")
+	decl := l.EmitDeclarations(nss)
+
+	// No class or TypedDict name may be defined twice in the module.
+	defined := map[string]int{}
+	for _, line := range strings.Split(mod, "\n") {
+		if name, ok := pyDefinedName(line); ok {
+			defined[name]++
+		}
+	}
+	for name, n := range defined {
+		if n > 1 {
+			t.Errorf("%s is defined %d times in the generated module:\n%s", name, n, mod)
+		}
+	}
+
+	// Each colliding tool keeps its own Result shape and annotation.
+	for _, want := range []string{"class SameFooBarResult(TypedDict, total=False):", "class SameFooBarResult2(TypedDict, total=False):"} {
+		if !strings.Contains(mod, want) {
+			t.Errorf("missing distinct result class %q:\n%s", want, mod)
+		}
+	}
+	for _, want := range []string{"-> SameFooBarResult:", "-> SameFooBarResult2:"} {
+		if !strings.Contains(mod, want) {
+			t.Errorf("missing result annotation %q:\n%s", want, mod)
+		}
+	}
+	// The namespace class that collides with a derived name must be renamed,
+	// and the tool annotation must still name the class that was defined.
+	if strings.Count(decl, "class FooBarResult:") != 1 {
+		t.Errorf("the Foo namespace class must be spelled once in the declarations:\n%s", decl)
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(mod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"import mcpx_client\n" +
+		"from mcpx_client import tools\n" +
+		"assert hasattr(tools, 'FooBarResult') or hasattr(tools, 'FooBarResult2')\n" +
+		"print('collision-import-ok')\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	got, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(got), "collision-import-ok") {
+		t.Errorf("a module with colliding type names must import: %v\n%s\n--- module ---\n%s", err, got, mod)
+	}
+}
+
+// pyDefinedName reports the class/type name a top-level generated definition
+// line introduces: "class X(...)", "class X:", or "X = TypedDict(...)".
+func pyDefinedName(line string) (string, bool) {
+	if strings.HasPrefix(line, "class ") {
+		rest := strings.TrimPrefix(line, "class ")
+		if i := strings.IndexAny(rest, "(: "); i > 0 {
+			return rest[:i], true
+		}
+		return "", false
+	}
+	if i := strings.Index(line, " = TypedDict("); i > 0 && !strings.Contains(line[:i], " ") {
+		return line[:i], true
+	}
+	return "", false
+}
