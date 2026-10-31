@@ -530,3 +530,142 @@ func TestEffectiveSchemaDoesNotOverwriteUpstreamDefs(t *testing.T) {
 		}
 	}
 }
+
+// Two layered rules may each define the same $anchor name for
+// different targets: anchors are document-scoped, so copying both
+// documents into one composed root without isolating their anchors
+// collides them -- a duplicate-anchor compile error, or one rule's
+// "#T" resolving to the other rule's target (Codex P2 on PR #2855,
+// round 6). Composition must namespace each document's anchors.
+func TestMergedRulesAnchorCollisionAcrossLayers(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$defs": {"T": {"$anchor": "T", "type": "string"}},
+			"properties": {"a": {"$ref": "#T"}}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$defs": {"T": {"$anchor": "T", "type": "integer"}},
+			"properties": {"b": {"$ref": "#T"}}}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("merged rules with colliding anchors do not compile: %v", err)
+	}
+	if v := set.Check("anything", map[string]any{"a": "yes", "b": 1}); v != nil {
+		t.Errorf("conforming call refused after merge: %v", v)
+	}
+	if v := set.Check("anything", map[string]any{"a": 1, "b": 1}); v == nil {
+		t.Error("far rule's string anchor lost its bite in the merge")
+	}
+	if v := set.Check("anything", map[string]any{"a": "yes", "b": "x"}); v == nil {
+		t.Error("near rule's integer anchor lost its bite in the merge")
+	}
+}
+
+// A $dynamicRef is a local reference exactly like $ref for scoping
+// purposes: a rule whose only local reference is dynamic must still
+// be scoped, or the reference re-bases onto the composed root and
+// its target definition is lost (Codex P2 on PR #2855, round 6).
+func TestMergedRulesDynamicRefScoped(t *testing.T) {
+	far := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{
+			"$defs": {"T": {"type": "string", "minLength": 2}},
+			"properties": {"name": {"$dynamicRef": "#/$defs/T"}}}`),
+	}}
+	near := Extras{ArgumentRules: map[string]json.RawMessage{
+		"*": json.RawMessage(`{}`),
+	}}
+	merged := mergeExtras(near, far)
+	set, err := CompileArgumentRules(argumentRuleSources(merged.ArgumentRules, "test"))
+	if err != nil {
+		t.Fatalf("merged rule with a $dynamicRef does not compile: %v", err)
+	}
+	if v := set.Check("anything", map[string]any{"name": "ok"}); v != nil {
+		t.Errorf("conforming call refused after merge: %v", v)
+	}
+	if v := set.Check("anything", map[string]any{"name": "x"}); v == nil {
+		t.Error("$dynamicRef-referenced constraint lost its bite in the merge")
+	}
+}
+
+// Two rules matching the same tool may define the same anchor name
+// for different targets; the advertised effective schema composes
+// both into one root, where their anchors must not collide.
+func TestEffectiveSchemaAnchorCollisionAcrossRules(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "*", Origin: "test", Schema: json.RawMessage(`{
+			"$defs": {"T": {"$anchor": "T", "type": "string", "minLength": 2}},
+			"properties": {"a": {"$ref": "#T"}}}`)},
+		{Key: "do_thing", Origin: "test", Schema: json.RawMessage(`{
+			"$defs": {"T": {"$anchor": "T", "type": "integer"}},
+			"properties": {"b": {"$ref": "#T"}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}}}`)
+	eff := set.EffectiveSchema("do_thing", upstream)
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema with colliding rule anchors does not compile: %v (%s)", err, eff)
+	}
+	for inst, wantErr := range map[string]bool{
+		`{"a": "ok", "b": 1}`:   false,
+		`{"a": "x", "b": 1}`:    true,
+		`{"a": "ok", "b": "s"}`: true,
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != wantErr {
+			t.Errorf("validate %s: error = %v, want %v (schema %s)", inst, gotErr, wantErr, eff)
+		}
+	}
+}
+
+// An upstream unevaluatedProperties: false forbids every property
+// the upstream schema itself does not evaluate. Folding a rule into
+// the same root under allOf must not make the properties the rule
+// mentions count as evaluated for that keyword -- the advertised
+// schema would accept arguments the upstream schema forbids
+// (Codex P2 on PR #2855, round 6).
+func TestEffectiveSchemaPreservesUnevaluatedProperties(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "*", Origin: "test", Schema: json.RawMessage(`{"properties": {"private": {"const": true}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type": "object",
+		"properties": {"path": {"type": "string"}},
+		"unevaluatedProperties": false}`)
+	eff := set.EffectiveSchema("anything", upstream)
+	var root map[string]any
+	if err := json.Unmarshal(eff, &root); err != nil {
+		t.Fatalf("effective schema does not parse: %v", err)
+	}
+	if _, ok := root["properties"]; !ok {
+		t.Errorf("upstream properties no longer advertised at the root: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for inst, wantErr := range map[string]bool{
+		`{"path": "p"}`:                  false,
+		`{"path": "p", "private": true}`: true,
+		`{"path": "p", "other": 1}`:      true,
+		`{"path": 1}`:                    true,
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotErr := compiled.Validate(dec) != nil; gotErr != wantErr {
+			t.Errorf("validate %s: error = %v, want %v (schema %s)", inst, gotErr, wantErr, eff)
+		}
+	}
+}

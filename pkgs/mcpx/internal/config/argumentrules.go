@@ -237,6 +237,32 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 		}
 		allOf = append(allOf, member)
 	}
+	// An upstream unevaluatedProperties at the root judges the
+	// properties its OWN adjacent applicators evaluated. Left at
+	// the root here, the rule members under allOf would count as
+	// evaluators too, and a property a rule mentions would stop
+	// being "unevaluated" for the upstream keyword -- the
+	// composition would loosen the upstream schema it advertises
+	// (Codex P2 on PR #2855, round 6). Move the keyword into a
+	// boundary member carrying copies of the upstream root's own
+	// property applicators: inside that member, adjacency is the
+	// upstream document's own again, so the keyword keeps exactly
+	// its standalone meaning while the root applies the upstream
+	// schema and the rules as before.
+	if up, present := root["unevaluatedProperties"]; present {
+		delete(root, "unevaluatedProperties")
+		boundary := map[string]any{"unevaluatedProperties": up}
+		for _, k := range []string{
+			"properties", "patternProperties", "additionalProperties",
+			"allOf", "anyOf", "oneOf", "not", "if", "then", "else",
+			"$ref", "$dynamicRef",
+		} {
+			if v, ok := root[k]; ok {
+				boundary[k] = stripAnchorDefs(v)
+			}
+		}
+		allOf = append([]any{boundary}, allOf...)
+	}
 	if len(defs) > 0 {
 		root["$defs"] = defs
 	}
@@ -251,10 +277,11 @@ func (s *ArgumentRuleSet) EffectiveSchema(tool string, upstream json.RawMessage)
 // scopedSchemaMember prepares one schema document for composition
 // into another document's allOf. The document is copied into the host
 // document's $defs under "<prefix>$doc" and every local reference in
-// the copy ("#", "#/$defs/...", any "#/..." pointer) is rewritten to
-// resolve within that copy, so the copy means exactly what the
-// document meant standalone. The returned member is a bare $ref to
-// the copy; a document with no local references needs no copy and is
+// the copy ("#", "#/$defs/...", any "#/..." pointer, via $ref or
+// $dynamicRef) is rewritten to resolve within that copy, so the copy
+// means exactly what the document meant standalone. The returned
+// member is a bare $ref to the copy; a document with no local
+// references and no anchor definitions needs no copy and is
 // returned as itself with no defs.
 func scopedSchemaMember(raw json.RawMessage, prefix string) (member any, defs map[string]any) {
 	return scopedSchemaMemberTaken(raw, prefix, nil)
@@ -275,15 +302,129 @@ func scopedSchemaMemberTaken(raw json.RawMessage, prefix string, taken map[strin
 	if err := dec.Decode(&doc); err != nil {
 		return json.RawMessage(raw), nil
 	}
-	if !hasLocalRef(doc) {
+	anchors := anchorNames(doc)
+	if !hasLocalRef(doc) && len(anchors) == 0 {
 		return doc, nil
 	}
 	name := prefix + "$doc"
 	for n := 2; taken[name]; n++ {
 		name = fmt.Sprintf("%s$doc$%d", prefix, n)
 	}
-	scoped := rewriteLocalRefs(doc, "#/$defs/"+name)
+	// Anchors are document-scoped names, not pointers: two documents
+	// copied into one host resource can each define the same $anchor
+	// (two layered rules both anchoring "T"), and the host then has
+	// a duplicate anchor -- a compile error, or one rule's "#T"
+	// resolving to the other rule's target (Codex P2 on PR #2855,
+	// round 6). Namespace every anchor this document defines with
+	// the copy's own (collision-free) defs name, and rewrite the
+	// document's references to them to match. Anchor names cannot
+	// contain "$", so the defs name's "$"s become "_"s.
+	renamed := make(map[string]string, len(anchors))
+	if len(anchors) > 0 {
+		base := strings.NewReplacer("$", "_").Replace(name) + "_"
+		names := make([]string, 0, len(anchors))
+		for a := range anchors {
+			names = append(names, a)
+		}
+		sort.Strings(names)
+		for _, a := range names {
+			renamed[a] = base + a
+		}
+	}
+	scoped := rewriteLocalRefs(doc, "#/$defs/"+name, renamed)
 	return map[string]any{"$ref": "#/$defs/" + name}, map[string]any{name: scoped}
+}
+
+// anchorNames returns the $anchor/$dynamicAnchor names a decoded
+// schema document defines within its own resource. A map carrying
+// its own $id -- the document root included -- is a separate
+// resource whose anchors the host never sees (the ref rewrite
+// returns such subtrees verbatim), so the walk does not descend
+// into it; literal payloads are instance data, not definitions.
+func anchorNames(doc any) map[string]bool {
+	out := map[string]bool{}
+	collectAnchorNames(doc, out)
+	return out
+}
+
+func collectAnchorNames(v any, out map[string]bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		if id, ok := t["$id"].(string); ok && id != "" {
+			return
+		}
+		for k, val := range t {
+			switch {
+			case k == "$anchor" || k == "$dynamicAnchor":
+				if s, ok := val.(string); ok && s != "" {
+					out[s] = true
+				}
+			case literalValueKey(k):
+				continue
+			case nameMapKey(k):
+				if m, ok := val.(map[string]any); ok {
+					for _, sub := range m {
+						collectAnchorNames(sub, out)
+					}
+				}
+			default:
+				collectAnchorNames(val, out)
+			}
+		}
+	case []any:
+		for _, e := range t {
+			collectAnchorNames(e, out)
+		}
+	}
+}
+
+// stripAnchorDefs returns a copy of a decoded schema with every
+// $anchor/$dynamicAnchor definition removed in schema position.
+// EffectiveSchema's unevaluatedProperties boundary member duplicates
+// the upstream root's applicators; the originals stay at the root,
+// so a "#name" reference inside a copy still resolves to the
+// identical definition there, while defining the same anchor twice
+// in one resource would be a compile error. Subtrees under their
+// own $id are separate resources and are returned verbatim, as in
+// the ref traversals.
+func stripAnchorDefs(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		if id, ok := t["$id"].(string); ok && id != "" {
+			return v
+		}
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if k == "$anchor" || k == "$dynamicAnchor" {
+				continue
+			}
+			switch {
+			case literalValueKey(k):
+				out[k] = val
+			case nameMapKey(k):
+				if m, ok := val.(map[string]any); ok {
+					nm := make(map[string]any, len(m))
+					for n, sub := range m {
+						nm[n] = stripAnchorDefs(sub)
+					}
+					out[k] = nm
+				} else {
+					out[k] = val
+				}
+			default:
+				out[k] = stripAnchorDefs(val)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = stripAnchorDefs(e)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // literalValueKey reports whether a schema keyword's value is
@@ -324,18 +465,20 @@ func nameMapKey(k string) bool {
 //     every value is a schema whatever its key spells;
 //   - a subschema carrying its own $id is a separate resource:
 //     references inside it resolve against that resource, so the
-//     subtree is never re-based (rewrite returns it verbatim), and
-//     plain-name fragments ("#T", an $anchor) are not JSON Pointers
-//     and are likewise left alone -- anchors resolve document-wide,
-//     so the copy still finds them.
+//     subtree is never re-based (rewrite returns it verbatim);
+//   - plain-name fragments ("#T") are not JSON Pointers: they name
+//     $anchors, and a scoped copy namespaces every anchor the
+//     document defines (see scopedSchemaMemberTaken), rewriting
+//     references to locally defined anchors to the namespaced
+//     name; a fragment naming no local anchor is left alone.
 
 // hasLocalRef reports whether a decoded schema document contains a
-// $ref pointing inside itself.
+// $ref or $dynamicRef pointing inside itself.
 func hasLocalRef(v any) bool {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if k == "$ref" {
+			if k == "$ref" || k == "$dynamicRef" {
 				if ref, ok := val.(string); ok && strings.HasPrefix(ref, "#") {
 					return true
 				}
@@ -379,11 +522,14 @@ func hasLocalRefInNames(v any) bool {
 }
 
 // rewriteLocalRefs returns a copy of a decoded schema document with
-// every local root-pointer $ref re-based at base: "#" becomes base
-// itself and "#/..." becomes base + "/...". Plain-name fragments
-// ("#anchor") and the inside of any $id-carrying subschema are
-// returned unchanged (see the traversal note above).
-func rewriteLocalRefs(v any, base string) any {
+// every local root-pointer $ref/$dynamicRef re-based at base: "#"
+// becomes base itself and "#/..." becomes base + "/...". $anchor
+// and $dynamicAnchor definitions are renamed per anchors (the
+// document's own anchors mapped to their namespaced names), and
+// plain-name fragment references to a renamed anchor are rewritten
+// to match. The inside of any $id-carrying subschema is returned
+// unchanged (see the traversal note above).
+func rewriteLocalRefs(v any, base string, anchors map[string]string) any {
 	switch t := v.(type) {
 	case map[string]any:
 		if id, ok := t["$id"].(string); ok && id != "" {
@@ -391,26 +537,42 @@ func rewriteLocalRefs(v any, base string) any {
 		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			if k == "$ref" {
-				if ref, ok := val.(string); ok && (ref == "#" || strings.HasPrefix(ref, "#/")) {
-					out[k] = base + strings.TrimPrefix(ref, "#")
-					continue
+			if k == "$anchor" || k == "$dynamicAnchor" {
+				if s, ok := val.(string); ok {
+					if renamed, ok := anchors[s]; ok {
+						out[k] = renamed
+						continue
+					}
+				}
+			}
+			if k == "$ref" || k == "$dynamicRef" {
+				if ref, ok := val.(string); ok {
+					switch {
+					case ref == "#" || strings.HasPrefix(ref, "#/"):
+						out[k] = base + strings.TrimPrefix(ref, "#")
+						continue
+					case strings.HasPrefix(ref, "#"):
+						if renamed, ok := anchors[ref[1:]]; ok {
+							out[k] = "#" + renamed
+							continue
+						}
+					}
 				}
 			}
 			switch {
 			case literalValueKey(k):
 				out[k] = val // literal instance data, not a schema
 			case nameMapKey(k):
-				out[k] = rewriteLocalRefsInNames(val, base)
+				out[k] = rewriteLocalRefsInNames(val, base, anchors)
 			default:
-				out[k] = rewriteLocalRefs(val, base)
+				out[k] = rewriteLocalRefs(val, base, anchors)
 			}
 		}
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, e := range t {
-			out[i] = rewriteLocalRefs(e, base)
+			out[i] = rewriteLocalRefs(e, base, anchors)
 		}
 		return out
 	default:
@@ -420,14 +582,14 @@ func rewriteLocalRefs(v any, base string) any {
 
 // rewriteLocalRefsInNames rewrites a name -> schema map: every value
 // is a schema, whatever its key spells.
-func rewriteLocalRefsInNames(v any, base string) any {
+func rewriteLocalRefsInNames(v any, base string, anchors map[string]string) any {
 	t, ok := v.(map[string]any)
 	if !ok {
 		return v
 	}
 	out := make(map[string]any, len(t))
 	for name, sub := range t {
-		out[name] = rewriteLocalRefs(sub, base)
+		out[name] = rewriteLocalRefs(sub, base, anchors)
 	}
 	return out
 }
