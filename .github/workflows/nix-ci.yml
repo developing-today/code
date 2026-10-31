@@ -62,7 +62,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # lazy-trees off for this job only (#705): Determinate Nix ships
+      # lazy trees on, which virtualises the flake source tree; the
+      # in-module builtins.fetchTree { type = "path"; } on
+      # home/openclaw/plugins/summarize then opens a directory that is
+      # not materialised and fails with ENOENT (run 41209590370),
+      # while the same head evaluates cleanly against a materialised
+      # source. Materialise the source for host evaluation instead.
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            lazy-trees = false
       - name: Evaluate NixOS host configurations (drvPath only)
         run: |
           nix eval .#nixosConfigurations.amd.config.system.build.toplevel.drvPath
