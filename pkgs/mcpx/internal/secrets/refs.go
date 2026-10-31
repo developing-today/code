@@ -121,8 +121,12 @@ func isControlConditionParen(toks []lexToken) bool {
 		} else if t.text == "(" {
 			depth--
 			if depth == 0 {
-				if i > 0 && toks[i-1].kind == tIdent && controlKeywords[toks[i-1].text] {
-					if i > 1 && toks[i-2].text == "." {
+				keyword := i - 1
+				if keyword > 0 && toks[keyword].text == "await" && toks[keyword-1].text == "for" {
+					keyword--
+				}
+				if keyword >= 0 && toks[keyword].kind == tIdent && controlKeywords[toks[keyword].text] {
+					if keyword > 0 && (toks[keyword-1].text == "." || toks[keyword-1].text == "?.") {
 						return false
 					}
 					return true
@@ -387,6 +391,7 @@ func (l *lexer) blockEnd(i int) int {
 // use of one of them is a local, whatever namespace it shares a name with.
 func declaredNames(toks []lexToken) map[string]bool {
 	out := map[string]bool{}
+	angles := angleEnds(toks)
 	typeOnly := typeAliasMask(toks)
 	forHead := forHeadDecls(toks)
 	for i, t := range toks {
@@ -399,7 +404,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 			// An arrow function's parameter list: (...) => ...
 			if close := matchParen(toks, i); close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
 				if !isAnnotationTypeParen(toks, i) {
-					parseParams(toks, i, out)
+					parseParams(toks, i, out, angles)
 				}
 			}
 			continue
@@ -430,7 +435,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 			if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].text == ":" {
 				continue
 			}
-			parseDeclarators(toks, i+1, out, forHead[i])
+			parseDeclarators(toks, i+1, out, forHead[i], angles)
 		case "function":
 			j := i + 1
 			if j < len(toks) && toks[j].text == "*" {
@@ -441,7 +446,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 				j++
 			}
 			if j < len(toks) && toks[j].text == "(" {
-				parseParams(toks, j, out)
+				parseParams(toks, j, out, angles)
 			}
 		case "class":
 			if i+1 < len(toks) && toks[i+1].kind == tIdent {
@@ -451,7 +456,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 			parseImport(toks, i+1, out)
 		case "catch":
 			if i+2 < len(toks) && toks[i+1].text == "(" {
-				parseTarget(toks, i+2, out)
+				parseTarget(toks, i+2, out, angles)
 			}
 		}
 	}
@@ -482,7 +487,7 @@ func matchParen(toks []lexToken, open int) int {
 
 // skipExpr advances past an expression, stopping before a token in stops
 // (or a closing bracket) at the expression's own nesting depth.
-func skipExpr(toks []lexToken, i int, stops map[string]bool) int {
+func skipExpr(toks []lexToken, i int, stops map[string]bool, angles []int) int {
 	depth := 0
 	for i < len(toks) {
 		// Only punctuation delimits: a literal whose text happens to
@@ -493,6 +498,10 @@ func skipExpr(toks []lexToken, i int, stops map[string]bool) int {
 			continue
 		}
 		t := toks[i].text
+		if depth == 0 && t == "<" && i > 0 && toks[i-1].kind == tIdent && angles[i] >= 0 && angles[i] < len(toks) && toks[angles[i]].text == "(" {
+			i = angles[i]
+			continue
+		}
 		if depth == 0 && stops[t] {
 			return i
 		}
@@ -513,7 +522,7 @@ func skipExpr(toks []lexToken, i int, stops map[string]bool) int {
 // parseTarget reads one binding target at i — an identifier or a
 // destructuring pattern — recording every name it binds, and returns the
 // index just past it.
-func parseTarget(toks []lexToken, i int, out map[string]bool) int {
+func parseTarget(toks []lexToken, i int, out map[string]bool, angles []int) int {
 	if i >= len(toks) {
 		return i
 	}
@@ -539,15 +548,15 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 				}
 			case toks[i].kind == tPunct && toks[i].text == "[":
 				// A computed key: skip it, then the target after ':'.
-				i = skipExpr(toks, i, map[string]bool{":": true})
+				i = skipExpr(toks, i, map[string]bool{":": true}, angles)
 				if i < len(toks) && toks[i].text == ":" {
-					i = parseTarget(toks, i+1, out)
+					i = parseTarget(toks, i+1, out, angles)
 				}
 			case toks[i].kind == tIdent || toks[i].kind == tString || toks[i].kind == tNumber:
 				key := toks[i]
 				i++
 				if i < len(toks) && toks[i].text == ":" {
-					i = parseTarget(toks, i+1, out)
+					i = parseTarget(toks, i+1, out, angles)
 				} else if key.kind == tIdent {
 					// Shorthand: the key is the binding.
 					out[key.text] = true
@@ -556,7 +565,7 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 				i++
 			}
 			if i < len(toks) && toks[i].text == "=" {
-				i = skipExpr(toks, i+1, map[string]bool{",": true, "}": true})
+				i = skipExpr(toks, i+1, map[string]bool{",": true, "}": true}, angles)
 			}
 		}
 		if i < len(toks) {
@@ -573,9 +582,9 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 			if toks[i].kind == tPunct && toks[i].text == "..." {
 				i++
 			}
-			i = parseTarget(toks, i, out)
+			i = parseTarget(toks, i, out, angles)
 			if i < len(toks) && toks[i].text == "=" {
-				i = skipExpr(toks, i+1, map[string]bool{",": true, "]": true})
+				i = skipExpr(toks, i+1, map[string]bool{",": true, "]": true}, angles)
 			}
 		}
 		if i < len(toks) {
@@ -587,7 +596,7 @@ func parseTarget(toks []lexToken, i int, out map[string]bool) int {
 }
 
 // parseParams records the bindings of the parameter list opening at i.
-func parseParams(toks []lexToken, i int, out map[string]bool) {
+func parseParams(toks []lexToken, i int, out map[string]bool, angles []int) {
 	i++
 	for i < len(toks) && toks[i].text != ")" {
 		if toks[i].text == "," {
@@ -597,14 +606,14 @@ func parseParams(toks []lexToken, i int, out map[string]bool) {
 		if toks[i].text == "..." {
 			i++
 		}
-		i = parseTarget(toks, i, out)
+		i = parseTarget(toks, i, out, angles)
 		if i < len(toks) && toks[i].kind == tPunct && toks[i].text == ":" {
 			// A TypeScript annotation is not more bindings:
 			// f(x: typeof demo) binds x alone.
 			i = skipAnnotation(toks, i+1)
 		}
 		if i < len(toks) && toks[i].text == "=" {
-			i = skipExpr(toks, i+1, map[string]bool{",": true, ")": true})
+			i = skipExpr(toks, i+1, map[string]bool{",": true, ")": true}, angles)
 		}
 	}
 }
@@ -674,8 +683,12 @@ func forHeadDecls(toks []lexToken) []bool {
 		if t.kind == tPunct {
 			switch t.text {
 			case "(":
-				isFor := i > 0 && toks[i-1].kind == tIdent && toks[i-1].text == "for" &&
-					(i < 2 || toks[i-2].text != ".")
+				keyword := i - 1
+				if keyword > 0 && toks[keyword].text == "await" && toks[keyword-1].text == "for" {
+					keyword--
+				}
+				isFor := keyword >= 0 && toks[keyword].kind == tIdent && toks[keyword].text == "for" &&
+					(keyword == 0 || (toks[keyword-1].text != "." && toks[keyword-1].text != "?."))
 				stack = append(stack, paren{isFor: isFor})
 			case ")":
 				if len(stack) > 0 {
@@ -833,13 +846,13 @@ func typeAliasMask(toks []lexToken) []bool {
 
 // parseDeclarators records the bindings of a const/let/var statement
 // whose first declarator starts at i.
-func parseDeclarators(toks []lexToken, i int, out map[string]bool, forHead bool) {
+func parseDeclarators(toks []lexToken, i int, out map[string]bool, forHead bool, angles []int) {
 	for i < len(toks) {
-		i = parseTarget(toks, i, out)
+		i = parseTarget(toks, i, out, angles)
 		if i < len(toks) && toks[i].kind == tPunct && toks[i].text == ":" {
 			i = skipAnnotation(toks, i+1)
 		}
-		i = skipDeclarator(toks, i, forHead)
+		i = skipDeclarator(toks, i, forHead, angles)
 		if i < len(toks) && toks[i].text == "," {
 			i++
 			continue
@@ -855,42 +868,46 @@ func parseDeclarators(toks []lexToken, i int, out map[string]bool, forHead bool)
 // code (const x = 1\na(), demo.echo()) lets the next statement's
 // comma pose as a declaration separator and its first name as a
 // binding.
-// skipTypeArgs returns the index just past a generic type-argument
-// list opening at i (toks[i] is "<"), or -1 when the angle brackets
-// do not balance or the list is not immediately followed by a call's
-// "(" — the shape that proves the "<" opens type arguments rather
-// than a comparison: identity<string, demo>("").
-func skipTypeArgs(toks []lexToken, i int) int {
-	angle := 0
-	for j := i; j < len(toks); j++ {
-		t := toks[j]
+// angleEnds computes balanced angle-list ends in linear time. A multi-token
+// close balances only the outermost opening it consumes.
+func angleEnds(toks []lexToken) []int {
+	ends := make([]int, len(toks))
+	for i := range ends {
+		ends[i] = -1
+	}
+	var stack []int
+	for i, t := range toks {
 		if t.kind != tPunct {
 			continue
 		}
+		if t.text == "<" {
+			stack = append(stack, i)
+			continue
+		}
+		n := 0
 		switch t.text {
-		case "<":
-			angle++
 		case ">":
-			angle--
+			n = 1
 		case ">>":
-			angle -= 2
+			n = 2
 		case ">>>":
-			angle -= 3
+			n = 3
 		}
-		if angle < 0 {
-			return -1
+		if n == 0 {
+			continue
 		}
-		if angle == 0 {
-			if j+1 < len(toks) && toks[j+1].kind == tPunct && toks[j+1].text == "(" {
-				return j + 1
-			}
-			return -1
+		if len(stack) < n {
+			stack = stack[:0]
+			continue
 		}
+		open := stack[len(stack)-n]
+		stack = stack[:len(stack)-n]
+		ends[open] = i + 1
 	}
-	return -1
+	return ends
 }
 
-func skipDeclarator(toks []lexToken, i int, forHead bool) int {
+func skipDeclarator(toks []lexToken, i int, forHead bool, angles []int) int {
 	depth := 0
 	for i < len(toks) {
 		t := toks[i]
@@ -910,7 +927,7 @@ func skipDeclarator(toks []lexToken, i int, forHead bool) int {
 		// boundaries: identity<string, demo>("") binds nothing.
 		// Jump the whole list when it has the call shape.
 		if depth == 0 && t.text == "<" && i > 0 && toks[i-1].kind == tIdent {
-			if end := skipTypeArgs(toks, i); end >= 0 {
+			if end := angles[i]; end >= 0 && end < len(toks) && toks[end].kind == tPunct && toks[end].text == "(" {
 				i = end
 				continue
 			}
@@ -921,7 +938,7 @@ func skipDeclarator(toks []lexToken, i int, forHead bool) int {
 		// "<...>" whose type name follows as/satisfies.
 		if depth == 0 && t.text == "<" && i > 1 && toks[i-1].kind == tIdent &&
 			toks[i-2].kind == tIdent && (toks[i-2].text == "as" || toks[i-2].text == "satisfies") {
-			if end := skipAngles(toks, i); end >= 0 {
+			if end := angles[i]; end >= 0 {
 				i = end
 				continue
 			}

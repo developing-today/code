@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func none(string) bool { return false }
@@ -150,6 +151,13 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"a regex after a break statement is not division", "while (x) { break\n/y/.test(z); } tools.fs.read();", none, []string{"fs"}},
 		{"a for-in binding is still declared", "for (const demo in obj) { demo.echo(); }", only("demo"), nil},
 		{"a for-of binding is still declared", "for (const demo of items) { demo.echo(); }", only("demo"), nil},
+		{"generic type arguments in parameter defaults do not bind", "function f(x = identity<string, demo>(\"\")) {} demo.echo();", only("demo"), []string{"demo"}},
+		{"a regex after a for-await head is not division", "async function f() { for await (const x of []) /x*/.test(\"x\"); tools.fs.read(); } f();", none, []string{"fs"}},
+		{"generic call in object destructuring default", "const {x = identity<string, demo>('')} = obj; demo.echo();", only("demo"), []string{"demo"}},
+		{"nested generic call in array destructuring default", "const [x = identity<Map<string, demo>, number>('')] = obj; demo.echo();", only("demo"), []string{"demo"}},
+		{"for await iterable does not declare references", "for await (const x of items, demo.echo()) {}", only("demo"), []string{"demo"}},
+		{"for await binding is declared", "for await (const demo of items) { demo.echo(); }", only("demo"), nil},
+		{"member named for is not a control head", "obj.for(x) / 2; tools.fs.read();", none, []string{"fs"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -182,4 +190,20 @@ func TestReferencesManyDeclarationsStayCorrect(t *testing.T) {
 	if len(got) != 1 || got[0] != "demo" {
 		t.Fatalf("References(2000 declarations + for-in) = %v; want [demo]", got)
 	}
+}
+
+func TestReferencesManyComparisonsStayLinear(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("const x = ")
+	for i := 0; i < 16000; i++ {
+		b.WriteString("a < b && ")
+	}
+	b.WriteString("true;\ndemo.echo();\n")
+	start := time.Now()
+	got := References(b.String(), only("demo"))
+	elapsed := time.Since(start)
+	if len(got) != 1 || got[0] != "demo" {
+		t.Fatalf("References(16000 comparisons) = %v; want [demo]", got)
+	}
+	t.Logf("16000 comparisons took %v", elapsed)
 }
