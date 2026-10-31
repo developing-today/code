@@ -78,6 +78,7 @@ var allowed = map[string]string{
 	// A unit boundary in a duration renderer: it decides whether to print
 	// hours or days, which is arithmetic rather than policy.
 	"24*time.Hour": "a unit boundary in the duration formatter",
+	"2*time.Millisecond": "the poll interval in artifacts' schema-migration race guard (ensureLastTouched): a bounded loop waiting out a concurrent opener's ALTER; race arbitration, not a policy value",
 }
 
 // outOfScope names files owned by work happening in parallel. Their inline
