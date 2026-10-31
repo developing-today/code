@@ -5,8 +5,9 @@
  */
 
 import type { Slice } from "prosemirror-model";
-import type { EditorView } from "prosemirror-view";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorState } from "prosemirror-state";
+import { EditorView } from "prosemirror-view";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -366,5 +367,134 @@ describe("handlePaste/handleDrop oversized filtering", () => {
     expect(result).toBe(true);
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(view.dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================================
+// handlePaste batch ordering (#1323)
+// ============================================================================
+
+describe("handlePaste batch ordering (#1323)", () => {
+  const plugin = createImageUploadPlugin(richSchema);
+  if (!plugin) throw new Error("rich schema must have an image node");
+  const handlePaste = plugin.props.handlePaste;
+  if (!handlePaste) throw new Error("plugin must define a paste handler");
+
+  interface Deferred<T> {
+    promise: Promise<T>;
+    resolve: (value: T) => void;
+    reject: (err: unknown) => void;
+  }
+  function deferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  let view: EditorView | null = null;
+  let container: HTMLElement | null = null;
+  const uploads = new Map<string, Deferred<Response>>();
+
+  function createView(): EditorView {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    const doc = richSchema.node("doc", null, [richSchema.node("paragraph")]);
+    const state = EditorState.create({ schema: richSchema, doc, plugins: [plugin!] });
+    view = new EditorView(container, { state });
+    return view;
+  }
+
+  function imageAlts(v: EditorView): string[] {
+    const alts: string[] = [];
+    v.state.doc.descendants((node) => {
+      if (node.type.name === "image") alts.push(String(node.attrs.alt));
+      return true;
+    });
+    return alts;
+  }
+
+  function paste(v: EditorView, files: File[]): void {
+    const event = { clipboardData: { files }, preventDefault: vi.fn() };
+    const result = handlePaste!.call(
+      plugin,
+      v,
+      event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
+    );
+    expect(result).toBe(true);
+  }
+
+  function okResponse(name: string): Response {
+    return {
+      ok: true,
+      json: () => Promise.resolve({ hash: name, name, url: `/blob/${name}` }),
+    } as Response;
+  }
+
+  beforeEach(() => {
+    uploads.clear();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const file = (init?.body as FormData).get("file") as File;
+      const d = deferred<Response>();
+      uploads.set(file.name, d);
+      return d.promise;
+    });
+  });
+
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+    container?.remove();
+    container = null;
+    vi.restoreAllMocks();
+  });
+
+  it("inserts a pasted batch in clipboard order when uploads finish out of order", async () => {
+    const v = createView();
+    paste(v, [
+      new File(["a"], "first.png", { type: "image/png" }),
+      new File(["b"], "second.png", { type: "image/png" }),
+    ]);
+    expect(uploads.size).toBe(2);
+
+    // The second upload completes first; nothing may be inserted yet,
+    // because first.png's slot comes first in the batch.
+    uploads.get("second.png")!.resolve(okResponse("second.png"));
+    await vi.waitFor(() => {
+      expect(uploads.get("second.png")).toBeDefined();
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(imageAlts(v)).toEqual([]);
+
+    uploads.get("first.png")!.resolve(okResponse("first.png"));
+    await vi.waitFor(() => {
+      expect(imageAlts(v)).toEqual(["first.png", "second.png"]);
+    });
+  });
+
+  it("a failed upload mid-batch removes only its placeholder; survivors keep order", async () => {
+    const v = createView();
+    paste(v, [
+      new File(["a"], "one.png", { type: "image/png" }),
+      new File(["b"], "bad.png", { type: "image/png" }),
+      new File(["c"], "three.png", { type: "image/png" }),
+    ]);
+    expect(uploads.size).toBe(3);
+
+    // Complete in reverse order, with the middle upload failing.
+    uploads.get("three.png")!.resolve(okResponse("three.png"));
+    uploads.get("bad.png")!.reject(new Error("boom"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(imageAlts(v)).toEqual([]);
+
+    uploads.get("one.png")!.resolve(okResponse("one.png"));
+    await vi.waitFor(() => {
+      expect(imageAlts(v)).toEqual(["one.png", "three.png"]);
+    });
   });
 });
