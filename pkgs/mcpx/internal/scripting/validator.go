@@ -182,6 +182,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
 					prevSig = 'o'
 				}
+				if (lastIdent == "in" || lastIdent == "of") && lastIdentPrev != '.' {
+					// Binary keyword operators: an expression follows,
+					// so a '/' opens a regex literal (Codex P2 on
+					// #1659: "source" in /a+/ and for (const m of
+					// /a+/.exec(..))). Reached through member access
+					// (obj.in) the word is a property name instead.
+					prevSig = 'o'
+				}
 				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && isExprPositionStart(lastIdentPrev, prevIdent) {
 					expectFuncClassBody = true
 				}
@@ -520,8 +528,12 @@ func isJSWhitespace(ch rune) bool {
 // character is prevChar (and previous completed identifier lastIdent)
 // opens an object literal rather than a statement block.
 func isObjectBrace(prevChar rune, lastIdent string) bool {
+	// The expression keywords of isExprKeyword, minus else/do:
+	// their braces open statement blocks, not object literals
+	// (Codex P2 on #1659: void {} / 2 divided after a phantom
+	// block closure).
 	switch lastIdent {
-	case "return", "throw", "case", "typeof":
+	case "return", "throw", "case", "typeof", "void", "delete", "await", "yield":
 		return true
 	}
 	switch prevChar {

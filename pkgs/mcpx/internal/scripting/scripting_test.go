@@ -139,6 +139,12 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after vertical tab and form feed", "const ratio = 4\v\f/ 2;\n"},
 		{"division after BOM whitespace", "const ratio = 4\ufeff/ 2;\n"},
 		{"division after line separator", "const ratio = 4\u2028/ 2;\n"},
+		{"regex after for-of keyword", "for (const match of /a+/.exec(\"aa\")) {}\n"},
+		{"regex after in keyword operator", "const ok = \"source\" in /a+/;\n"},
+		{"division after void object literal", "const q = void {} / 2;\n"},
+		{"division after delete object literal", "const q = delete {} / 2;\n"},
+		{"division after await object literal", "const q = await {} / 2;\n"},
+		{"division after yield object literal", "function* g() { const q = yield {} / 2; }\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
