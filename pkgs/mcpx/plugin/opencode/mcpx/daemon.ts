@@ -102,7 +102,18 @@ export const goDurationMs = (v: string | undefined): number | undefined => {
     matched += m[0].length;
   }
   const body = v.trim().replace(/^[+-]/, "");
+  // Go's special case: a bare "0" is a valid duration (zero) even
+  // though it carries no unit (#2309). "-0" still counts as a
+  // negative spelling below and stays undefined, as before.
+  if (body === "0" && !v.trim().startsWith("-")) return 0;
   if (matched !== body.length || matched === 0) return undefined;
+  // Go's ceiling: time.ParseDuration rejects any total past the
+  // int64-nanosecond maximum (2^63-1 ns = 9223372036854.776 ms).
+  // Without this check an extreme spelling summed to Infinity (or
+  // past the ceiling), and an infinite discovery cooldown silently
+  // disabled daemon rediscovery for the whole session (#2309).
+  // Unparseable-by-Go is this function's "treated as absent".
+  if (!Number.isFinite(total) || total > 9_223_372_036_854.776) return undefined;
   return v.trim().startsWith("-") ? undefined : total;
 };
 
