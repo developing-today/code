@@ -173,3 +173,19 @@ func (s *Server) rawOwner(ctx context.Context, name string) (NamespacedTool, boo
 	nt, ok := l.owner[name]
 	return nt, ok, nil
 }
+
+// rawTool is the raw definition of an exposed raw name on this request --
+// the upstream's own declaration, Execution included, under the exposed
+// name -- or false when the name is not a raw tool here.
+func (s *Server) rawTool(ctx context.Context, name string) (Tool, bool) {
+	l := s.raw(ctx)
+	if l == nil || l.err != nil {
+		return Tool{}, false
+	}
+	for _, t := range l.tools {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return Tool{}, false
+}

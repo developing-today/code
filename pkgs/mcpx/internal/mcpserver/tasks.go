@@ -147,15 +147,26 @@ const (
 )
 
 // taskSupportOf is what the tool a tools/call names declared about running
-// as a task: a pass-through upstream's execution.taskSupport, verbatim, or
-// "" for a tool that declared nothing -- every gateway tool, and an upstream
-// tool without the field.
+// as a task: an upstream's execution.taskSupport, verbatim -- a raw
+// (codemode=false) tool's own declaration on a raw request, a pass-through
+// upstream's otherwise -- or "" for a tool that declared nothing -- every
+// gateway tool, and an upstream tool without the field.
 func (s *Server) taskSupportOf(ctx context.Context, params json.RawMessage) string {
 	var call struct {
 		Name string `json:"name"`
 	}
 	if json.Unmarshal(params, &call) != nil || call.Name == "" {
 		return ""
+	}
+	if t, ok := s.rawTool(ctx, call.Name); ok {
+		if len(t.Execution) == 0 {
+			return ""
+		}
+		var ex struct {
+			TaskSupport string `json:"taskSupport"`
+		}
+		_ = json.Unmarshal(t.Execution, &ex)
+		return ex.TaskSupport
 	}
 	t, ok := s.passTool(ctx, call.Name)
 	if !ok || len(t.Execution) == 0 {
@@ -185,6 +196,9 @@ func (s *Server) legacyTaskSupport(ctx context.Context, params json.RawMessage) 
 		return supportForbidden
 	}
 	if _, isPass := s.passTool(ctx, call.Name); isPass {
+		return supportForbidden
+	}
+	if _, isRaw := s.rawTool(ctx, call.Name); isRaw {
 		return supportForbidden
 	}
 	for _, t := range s.Tools() {

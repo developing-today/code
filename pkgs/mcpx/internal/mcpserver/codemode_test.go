@@ -300,3 +300,106 @@ func TestRawToolsListChangedReachesTheLegacyGETStream(t *testing.T) {
 		t.Fatalf("a raw GET stream was not promised tool changes: %+v", lf)
 	}
 }
+
+// rawTaskBackend is the raw surface with execution.taskSupport
+// declarations on it: db_job requires a task, db_nap allows one, db_query
+// declares nothing.
+type rawTaskBackend struct {
+	*rawBackend
+}
+
+func (b *rawTaskBackend) RawTools(context.Context) ([]mcpserver.NamespacedTool, error) {
+	mk := func(name, support string) mcpserver.Tool {
+		t := mcpserver.Tool{Name: name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+		if support != "" {
+			t.Execution = json.RawMessage(`{"taskSupport":"` + support + `"}`)
+		}
+		return t
+	}
+	return []mcpserver.NamespacedTool{
+		{Namespace: "db", Tool: mk("job", "required")},
+		{Namespace: "db", Tool: mk("nap", "optional")},
+		{Namespace: "db", Tool: mk("query", "")},
+	}, nil
+}
+
+func rawTaskServer() *mcpserver.Server {
+	return mcpserver.New(&rawTaskBackend{rawBackend: &rawBackend{fakeBackend: newBackend()}}, "mcpx", "test")
+}
+
+// The task-support lookups consult the raw definitions: a modern client
+// that did not declare the tasks extension calling a raw tool whose
+// taskSupport is "required" gets -32021 naming the extension, exactly as
+// a pass-through tool's declaration is honoured. Before, taskSupportOf
+// resolved only pass-through tools, so the raw declaration was ignored
+// and the call ran in line.
+func TestCodemodeFalseRequiredRawToolWithoutTheExtensionIsMissingCapability(t *testing.T) {
+	s := rawTaskServer()
+	m := postQueryModern(s, "codemode=false", "tools/call", "db_job", frame(1, "tools/call",
+		modernWith(`{}`, map[string]any{"name": "db_job", "arguments": map[string]any{}})))
+	if errCode(m) != -32021 {
+		t.Fatalf("raw required-task tool without the extension: want -32021, got %v", m)
+	}
+}
+
+// The legacy lookup too: a 2025-11-25 task-augmented call to a raw tool
+// declaring taskSupport "optional" becomes a task, while one declaring
+// nothing stays forbidden (-32601) -- before, both were refused because
+// legacyTaskSupport never saw the raw catalogue.
+func TestCodemodeFalseLegacyTaskAugmentedRawCalls(t *testing.T) {
+	s := rawTaskServer()
+	m := postQuery(s, "codemode=false", frame(1, "tools/call",
+		map[string]any{"name": "db_nap", "arguments": map[string]any{},
+			"task": map[string]any{"ttl": 60000}}))
+	res, _ := m["result"].(map[string]any)
+	task, _ := res["task"].(map[string]any)
+	if errCode(m) != 0 || task["taskId"] == nil {
+		t.Fatalf("task-augmented raw db_nap: want a task handle, got %v", m)
+	}
+
+	m = postQuery(s, "codemode=false", frame(2, "tools/call",
+		map[string]any{"name": "db_query", "arguments": map[string]any{},
+			"task": map[string]any{"ttl": 60000}}))
+	if errCode(m) != -32601 {
+		t.Fatalf("task-augmented raw db_query (no taskSupport): want -32601, got %v", m)
+	}
+}
+
+// upstreamAsker finishes every call at once with an upstream protocol
+// error, the way the question bridge reports a call whose upstream
+// answered with a JSON-RPC error.
+type upstreamAsker struct {
+	up *mcpserver.UpstreamError
+}
+
+func (a *upstreamAsker) Begin(context.Context, string, json.RawMessage) (string, error) {
+	return "call-1", nil
+}
+
+func (a *upstreamAsker) Poll(context.Context, string, time.Duration) (mcpserver.Outcome, error) {
+	return mcpserver.Outcome{Done: true, IsError: true, Text: a.up.Error(), Upstream: a.up}, nil
+}
+
+func (a *upstreamAsker) Reply(context.Context, string, map[string]json.RawMessage) error {
+	return nil
+}
+
+func (a *upstreamAsker) Abandon(string) {}
+
+// A raw call whose upstream answers through the question bridge with a
+// JSON-RPC error is relayed as that error, as a pass-through call's is:
+// before, passCall recognised only pass-through names, so the error came
+// back as a successful tools/call result carrying isError and the client
+// lost the code and its data.
+func TestCodemodeFalseAskBridgeRelaysUpstreamProtocolErrors(t *testing.T) {
+	s := rawServer(&rawBackend{fakeBackend: newBackend()})
+	s.Ask = &upstreamAsker{up: &mcpserver.UpstreamError{
+		Code: -32021, Message: "Missing required client capability",
+		Data: json.RawMessage(`{"requiredCapabilities":{"sampling":{}}}`)}}
+	m := postQueryModern(s, "codemode=false", "tools/call", "db_query", frame(1, "tools/call",
+		modernWith(`{"elicitation":{"form":{}}}`, map[string]any{
+			"name": "db_query", "arguments": map[string]any{}})))
+	if errCode(m) != -32021 {
+		t.Fatalf("raw call with an upstream protocol error: want -32021 relayed, got %v", m)
+	}
+}
