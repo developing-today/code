@@ -652,8 +652,17 @@ func TestSplitEnvStringUsesEnvSemantics(t *testing.T) {
 	}{
 		{`awk -v FS=\"\t\" -f`, []string{"awk", "-v", `FS="` + "\t" + `"`, "-f"}},
 		{`sh -c "printf hello"`, []string{"sh", "-c", "printf hello"}},
-		{`MODE=prod echo ${MODE}`, []string{"MODE=prod", "echo", "prod"}},
-		{`echo a\_b`, []string{"echo", "a b"}},
+		// \_ outside quotes is an argument separator in env(1),
+		// not a space: `python3\_-u` must dispatch python3 with -u
+		// (Codex review, PR #2611; verified against GNU env).
+		{`echo a\_b`, []string{"echo", "a", "b"}},
+		{`python3\_-u script.py`, []string{"python3", "-u", "script.py"}},
+		// Inside double quotes \_ is a literal space.
+		{`echo "a\_b"`, []string{"echo", "a b"}},
+		// An unquoted # that begins an argument starts a comment;
+		// a # inside an argument is literal (Codex review, PR #2611).
+		{`sh # interpreter comment`, []string{"sh"}},
+		{`echo a#b`, []string{"echo", "a#b"}},
 		{"echo 'single quoted'", []string{"echo", "single quoted"}},
 		// Inside single quotes only \' and \\ are escapes; every other
 		// backslash is literal, or a regexp like r"\d" loses its
@@ -680,6 +689,54 @@ func TestSplitEnvStringUsesEnvSemantics(t *testing.T) {
 	}
 	if _, err := SplitEnvString(`echo ${UNTERMINATED`); err == nil {
 		t.Error("SplitEnvString(unterminated ${): want an error")
+	}
+}
+
+// TestSplitEnvStringExpandsFromTheInheritedEnvironment is the Codex
+// finding on PR #2611: env expands ${VAR} BEFORE applying the
+// payload's own assignments, so a preceding MODE=prod in the payload
+// must not shadow the inherited MODE. Verified against GNU env:
+// MODE=old env -S 'MODE=prod printf ${MODE}' prints "old".
+func TestSplitEnvStringExpandsFromTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("MODE", "old")
+	got, err := SplitEnvString(`MODE=prod printf ${MODE}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"MODE=prod", "printf", "old"}
+	if len(got) != len(want) {
+		t.Fatalf("SplitEnvString = %q, want %q", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("SplitEnvString = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestDispatchedWorkdirPolicyAllocatesARunnerDirectory is the Codex
+// finding on PR #2611: a file-backed dispatched run under
+// script.cwd=workdir with only a WorkRoot supplied ran in the
+// script's own directory, making workdir behave as script. The run
+// must land in a runner directory under the root.
+func TestDispatchedWorkdirPolicyAllocatesARunnerDirectory(t *testing.T) {
+	dir := t.TempDir()
+	root := t.TempDir()
+	script := writeScript(t, dir, "job.sh", "#!/bin/sh\npwd\n")
+	var stdout, stderr bytes.Buffer
+	_, err := Run(context.Background(), Options{
+		File: script, CwdPolicy: "workdir", WorkRoot: root,
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Run(workdir dispatch): %v (stderr %q)", err, stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got == "" || !strings.HasPrefix(got, root) {
+		t.Fatalf("dispatched workdir run executed in %q, want a directory under WorkRoot %q", got, root)
+	}
+	if got == dir {
+		t.Fatalf("dispatched workdir run executed in the script directory %q", dir)
 	}
 }
 

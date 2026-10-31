@@ -328,35 +328,31 @@ func (sp *shebangEnv) resplit(payload string) []string {
 // SplitEnvString splits an env(1) -S/--split-string payload with
 // env's own semantics, which are NOT the shell's: env defines a
 // backslash escape table (\\, \", \', \t, \n, \r, \f, \v and
-// \_ for a space) that applies inside quotes as well as outside --
+// \_) that applies inside quotes as well as outside --
 // the coreutils manual's own example, -S awk -v FS=\"\\t\" -f,
 // depends on \\t becoming a tab, where a shell tokenizer leaves a
 // literal "t" (Codex review, PR #2611). Quotes still group, as the
-// earlier rounds of this parser established, and ${VAR} expands
-// from the environment the payload itself is building (assignments
-// already split, then the inherited one), as env expands it.
+// earlier rounds of this parser established. Two rules are easy to
+// get wrong, both verified against env(1) itself: \_ outside quotes
+// is an argument SEPARATOR, not a space (inside double quotes it is
+// a literal space), and ${VAR} expands from the INHERITED
+// environment -- env expands before it applies the payload's own
+// VAR=value assignments, so `MODE=prod ... ${MODE}` sees the
+// inherited MODE, never "prod" (Codex review, PR #2611). An
+// unquoted # that begins an argument starts a comment: the rest of
+// the payload is ignored.
 func SplitEnvString(s string) ([]string, error) {
 	var out []string
 	var word strings.Builder
 	quoted := byte(0)
 	started := false
-	assigned := map[string]string{}
-	seenCommand := false
 	flush := func() {
 		if !started {
 			return
 		}
-		f := word.String()
-		out = append(out, f)
+		out = append(out, word.String())
 		word.Reset()
 		started = false
-		if !seenCommand {
-			if k, v, ok := strings.Cut(f, "="); ok && k != "" && !strings.ContainsAny(k, " \t") {
-				assigned[k] = v
-			} else {
-				seenCommand = true
-			}
-		}
 	}
 	expand := func(i int) (string, int, error) {
 		// s[i] == '$' and s[i+1] == '{'.
@@ -365,9 +361,6 @@ func SplitEnvString(s string) ([]string, error) {
 			return "", 0, fmt.Errorf("unterminated ${ in env -S payload %q", s)
 		}
 		name := s[i+2 : i+j]
-		if v, ok := assigned[name]; ok {
-			return v, i + j + 1, nil
-		}
 		return os.Getenv(name), i + j + 1, nil
 	}
 	for i := 0; i < len(s); i++ {
@@ -402,7 +395,17 @@ func SplitEnvString(s string) ([]string, error) {
 			case 'v':
 				word.WriteByte('\v')
 			case '_':
-				word.WriteByte(' ')
+				// Outside quotes \_ is an argument separator
+				// (env(1): `python3\_-u` is two arguments);
+				// inside double quotes it is a literal space.
+				// The single-quote case never reaches here.
+				if quoted == '"' {
+					word.WriteByte(' ')
+					started = true
+				} else {
+					flush()
+				}
+				continue
 			default:
 				word.WriteByte(s[i])
 			}
@@ -432,6 +435,13 @@ func SplitEnvString(s string) ([]string, error) {
 			word.WriteString(v)
 			i = ni - 1
 			started = true
+		case c == '#' && !started:
+			// An unquoted # that begins an argument starts a
+			// comment (env(1)): the rest of the payload is not
+			// arguments. A # inside an argument stays literal,
+			// and quoted or escaped hashes never reach here.
+			flush()
+			return out, nil
 		case c == ' ' || c == '\t':
 			flush()
 		default:
@@ -811,6 +821,23 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 			return nil, err
 		}
 		scriptPath = abs
+		if workDir == "" && opts.WorkRoot != "" {
+			// A file run has no generated client to key on, so its
+			// runner directory under the root is keyed on the
+			// script itself. Allocating it
+			// here is what makes script.cwd=workdir mean the
+			// runner directory for a dispatched run, the way it
+			// does for a JavaScript run; substituting the script's
+			// own directory (the old fallback below) made workdir
+			// behave identically to script, and relative output
+			// landed beside the source (Codex review, PR #2611).
+			sum := sha256sum([]byte(scriptPath))
+			workDir = filepath.Join(opts.WorkRoot, sum[:16])
+			if err := os.MkdirAll(workDir, 0o700); err != nil {
+				return nil, err
+			}
+			pruneWorkDirs(opts.WorkRoot, workDir)
+		}
 	} else {
 		// A snippet runs from a file of its own: no Prelude (that is
 		// TypeScript for the generated client) and no .ts suffix (the
@@ -833,9 +860,10 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		}
 	}
 	defer cleanup()
-	if workDir == "" {
-		workDir = filepath.Dir(scriptPath)
-	}
+	// No script-directory fallback for workDir: with no WorkDir and no
+	// WorkRoot, a script.cwd=workdir run has no runner directory, and
+	// ResolveCwd says so explicitly rather than silently running in
+	// the script's directory under the workdir name.
 
 	dir, err := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
 	if err != nil {
