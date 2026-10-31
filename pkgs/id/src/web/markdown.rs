@@ -400,7 +400,16 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             i += 1;
             continue;
         }
-        if indent <= 3 && fence.feed(strip_container_prefixes(stripped)) {
+        // Container prefixes are stripped only to find a fence's
+        // OPENING line: inside an already-open fence, a `> ``` line
+        // is literal content, not a closing delimiter (Codex P2 on
+        // #1565's fifth cut).
+        let fence_line = if fence.in_fence() {
+            stripped
+        } else {
+            strip_container_prefixes(stripped)
+        };
+        if indent <= 3 && fence.feed(fence_line) {
             i += 1;
             continue;
         }
@@ -454,30 +463,60 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
     let mut fence = FenceTracker::default();
     let mut html = HtmlBlockTracker::default();
     let mut defs = Vec::new();
+    // A link reference definition is only a definition where it can
+    // START a block: a definition-shaped line continuing a paragraph
+    // is paragraph text, and promoting it into the synthesis context
+    // would resolve references the document itself does not honor
+    // (Codex P2 on #1565's fifth cut). Track block-start eligibility:
+    // blank lines, headings, fences, HTML blocks, list/blockquote
+    // lines and other definitions leave the next line block-eligible;
+    // paragraph text does not.
+    let mut at_block_start = true;
     for line in markdown.lines() {
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
+        if stripped.trim().is_empty() {
+            at_block_start = true;
+            continue;
+        }
         if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
+            at_block_start = true;
             continue;
         }
-        if indent <= 3 && fence.feed(strip_container_prefixes(stripped)) {
+        let fence_line = if fence.in_fence() {
+            stripped
+        } else {
+            strip_container_prefixes(stripped)
+        };
+        if indent <= 3 && fence.feed(fence_line) {
+            at_block_start = true;
             continue;
         }
-        if fence.in_fence() || html.in_html() || indent > 3 || !stripped.starts_with('[') {
+        if fence.in_fence() || html.in_html() || indent > 3 {
             continue;
         }
         if footnote_definition_label(stripped).is_some() {
+            // A footnote definition is its own leaf block; a link
+            // definition after it starts a fresh block.
+            at_block_start = true;
             continue;
         }
-        let Some(close) = stripped.find(']') else {
-            continue;
-        };
-        let Some(after) = stripped[close + 1..].strip_prefix(':') else {
-            continue;
-        };
-        if !after.trim().is_empty() {
-            defs.push(line);
+        if at_block_start && stripped.starts_with('[') {
+            if let Some(close) = stripped.find(']') {
+                if let Some(after) = stripped[close + 1..].strip_prefix(':') {
+                    if !after.trim().is_empty() {
+                        defs.push(line);
+                        continue;
+                    }
+                }
+            }
         }
+        // Any other line: headings and container lines end a
+        // paragraph (next line may start a block); plain text is a
+        // paragraph line (next line is its continuation).
+        at_block_start = stripped.starts_with('#')
+            || stripped.starts_with('>')
+            || strip_container_prefixes(stripped) != stripped;
     }
     defs.join("\n")
 }
@@ -499,27 +538,23 @@ fn preserve_unreferenced_footnote_definitions(
         .unwrap_or_default();
     let reference_defs = collect_link_reference_definitions(markdown);
     let blocks = scan_footnote_definition_blocks(markdown);
+    let orphans: Vec<&FootnoteDefinitionBlock> = blocks
+        .iter()
+        .filter(|block| !carried.contains(&block.label))
+        .collect();
+    // ONE augmented parse recovers every orphan (Codex P2 on #1565's
+    // fifth cut): the probe references every orphan label and carries
+    // every definition block plus the document's link reference
+    // definitions as resolution context -- an unreferenced definition
+    // may itself reference another footnote (`[^outer]: See
+    // [^inner].`), and a probe without the inner definition degrades
+    // that reference to escaped literal text (third cut). A per-orphan
+    // probe scaled quadratically with the number of orphans.
+    let recovered = synthesize_footnote_definitions(&orphans, &reference_defs);
     let mut synthesized = Vec::new();
-    for block in &blocks {
-        if carried.contains(&block.label) {
-            continue;
-        }
-        // The probe's resolution context is the document's link
-        // reference definitions PLUS every other footnote definition:
-        // an unreferenced definition may itself reference another
-        // footnote (`[^outer]: See [^inner].`), and a probe without
-        // the inner definition degrades that reference to escaped
-        // literal text (Codex P2 on #1565's third cut).
-        let mut context = reference_defs.clone();
-        for sibling in &blocks {
-            if sibling.label != block.label {
-                if !context.is_empty() {
-                    context.push_str("\n\n");
-                }
-                context.push_str(&sibling.source);
-            }
-        }
-        if let Some(mut node) = synthesize_footnote_definition(block, &context) {
+    for block in &orphans {
+        if let Some(mut node) = recovered.get(&block.label) {
+            let mut node = node.clone();
             // The probe parsed the PROTECTED source, whose link
             // destinations carry the newline placeholder token; the
             // outer restore ran before this node existed, so restore
@@ -538,32 +573,46 @@ fn preserve_unreferenced_footnote_definitions(
     }
 }
 
-/// Build the PM node for one unreferenced definition by parsing its
-/// verbatim source back through the full conversion with a reference
-/// attached, so comrak DOES emit it, and lifting the resulting
-/// `footnote_definition` node out. Going through the same conversion
-/// guarantees the synthesized node has exactly the shape the
-/// referenced path produces (#1031 block children included).
-/// `reference_defs` carries the probe's resolution context: the
-/// document's link reference definitions and its other footnote
-/// definitions, so references inside the definition resolve exactly
-/// as they would in the document.
-fn synthesize_footnote_definition(
-    block: &FootnoteDefinitionBlock,
+/// Build the PM nodes for every unreferenced definition in ONE
+/// augmented parse: a probe document that references every orphan
+/// label (so comrak emits each definition) and carries every
+/// definition block plus the document's link reference definitions
+/// as resolution context, so references inside a definition resolve
+/// exactly as they would in the document. Going through the same
+/// conversion guarantees the synthesized nodes have exactly the
+/// shape the referenced path produces (#1031 block children
+/// included). Returns the first node per label, keyed by label.
+fn synthesize_footnote_definitions(
+    orphans: &[&FootnoteDefinitionBlock],
     reference_defs: &str,
-) -> Option<Value> {
-    let mut probe = format!("x[^{}]\n\n{}\n", block.label, block.source);
+) -> std::collections::HashMap<String, Value> {
+    let mut nodes = std::collections::HashMap::new();
+    if orphans.is_empty() {
+        return nodes;
+    }
+    let mut probe = String::new();
+    for block in orphans {
+        probe.push_str(&format!("x[^{}]\n\n", block.label));
+    }
+    for block in orphans {
+        probe.push_str(&block.source);
+        probe.push_str("\n\n");
+    }
     if !reference_defs.is_empty() {
-        probe.push_str("\n");
         probe.push_str(reference_defs);
         probe.push('\n');
     }
     let doc = markdown_to_prosemirror_inner(&probe, false);
-    doc["content"].as_array()?.iter().find_map(|n| {
-        (n["type"] == "footnote_definition"
-            && n["attrs"]["label"].as_str() == Some(block.label.as_str()))
-        .then(|| n.clone())
-    })
+    if let Some(content) = doc["content"].as_array() {
+        for n in content {
+            if n["type"] == "footnote_definition" {
+                if let Some(label) = n["attrs"]["label"].as_str() {
+                    nodes.entry(label.to_string()).or_insert_with(|| n.clone());
+                }
+            }
+        }
+    }
+    nodes
 }
 
 /// Replace each newline inside an angle-form link/image destination
@@ -4243,6 +4292,44 @@ mod tests {
             .iter()
             .any(|n| n["type"] == "footnote_definition");
         assert!(!found, "list-contained fenced text stays literal");
+    }
+
+    #[test]
+    fn test_container_marker_inside_open_fence_stays_literal() {
+        // Codex P2 on #1565's fifth cut: container prefixes are
+        // stripped only to find a fence's opening line -- a `> ````
+        // line inside an open top-level fence is literal content,
+        // not a closing delimiter.
+        let original = "Text.\n\n```\n> ```\n[^fake]: literal\n```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "fence interior stays literal past a container-shaped line");
+    }
+
+    #[test]
+    fn test_paragraph_continuation_reference_line_not_promoted() {
+        // Codex P2 on #1565's fifth cut: a definition-shaped line
+        // continuing a paragraph is paragraph text, not a link
+        // reference definition; the synthesis context must not
+        // promote it, or the recovered footnote's bracketed text
+        // becomes a hyperlink the document never had.
+        let original =
+            "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            !orphan.to_string().contains("example.com"),
+            "paragraph text is not a reference definition: {orphan}"
+        );
     }
 
     #[test]
