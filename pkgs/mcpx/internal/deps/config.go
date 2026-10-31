@@ -262,7 +262,19 @@ func satisfiesToken(tok string, v semver) bool {
 	cmp := compareSemver(v, base)
 	switch op {
 	case "", "=":
-		return cmp == 0
+		// An abbreviated pin is a range at its written precision:
+		// "1" admits any 1.x, "1.2" any 1.2.x (npm's desugaring);
+		// only a fully written version is an exact pin.
+		if base.arity >= 3 {
+			return cmp == 0
+		}
+		if cmp < 0 {
+			return false
+		}
+		if base.arity == 1 {
+			return v.nums[0] == base.nums[0]
+		}
+		return v.nums[0] == base.nums[0] && v.nums[1] == base.nums[1]
 	case ">":
 		return cmp > 0
 	case ">=":
@@ -272,10 +284,27 @@ func satisfiesToken(tok string, v semver) bool {
 	case "<=":
 		return cmp <= 0
 	case "~":
+		// ~1 is ~ at major precision: any 1.x. ~1.2 and ~1.2.3 pin
+		// the minor as well.
+		if base.arity <= 1 {
+			return cmp >= 0 && v.nums[0] == base.nums[0]
+		}
 		return cmp >= 0 && v.nums[0] == base.nums[0] && v.nums[1] == base.nums[1]
 	case "^":
 		if cmp < 0 {
 			return false
+		}
+		// Abbreviated carets stop at their written precision:
+		// ^0.0 admits any 0.0.x (it is NOT ^0.0.0, which pins the
+		// patch), and ^1 / ^0 behave as their full forms.
+		if base.arity == 1 {
+			return v.nums[0] == base.nums[0]
+		}
+		if base.arity == 2 {
+			if base.nums[0] > 0 {
+				return v.nums[0] == base.nums[0]
+			}
+			return v.nums[0] == 0 && v.nums[1] == base.nums[1]
 		}
 		// Standard caret semantics: the left-most non-zero component
 		// of the base is the one that may not change.
@@ -299,6 +328,13 @@ func satisfiesToken(tok string, v semver) bool {
 type semver struct {
 	nums [3]int
 	pre  string
+	// arity is how many release components were actually written:
+	// "~1" and "~1.0.0" zero-fill to the same tuple but are NOT the
+	// same range — npm reads the abbreviated form at its written
+	// precision (~1 admits any 1.x, ^0.0 admits any 0.0.x), so the
+	// count must survive parsing for the bounds to come out right
+	// (Codex review, PR #2589).
+	arity int
 }
 
 // parseSemver reads a plain dotted version ("1.3", "v1.3.0",
@@ -321,6 +357,7 @@ func parseSemver(s string) (semver, bool) {
 	if len(parts) > 3 {
 		return out, false
 	}
+	out.arity = len(parts)
 	for i, p := range parts {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {

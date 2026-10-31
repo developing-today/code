@@ -434,3 +434,35 @@ func TestLockfilesTextReturnsEveryLockfile(t *testing.T) {
 		t.Fatalf("lockfile contents = %+v", locks)
 	}
 }
+
+// Codex round (PR #2589): abbreviated ranges keep their written
+// precision — "~1" is not "~1.0.0" and "^0.0" is not "^0.0.0" — so a
+// pin inside the abbreviated range must not be reported as a
+// conflict (both cases verified against npm's semver).
+func TestAbbreviatedRangesKeepTheirArity(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"tilde":"~1","caret":"^0.0","bare":"1.2"}}`)
+	for _, spec := range []string{"tilde@1.9.0", "caret@0.0.5", "bare@1.2.9"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the abbreviated manifest range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	// And pins outside the abbreviated ranges still contradict them.
+	for _, spec := range []string{"tilde@2.0.0", "caret@0.1.0", "bare@1.3.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s is outside the abbreviated range and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}

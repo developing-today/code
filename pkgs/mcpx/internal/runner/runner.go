@@ -311,6 +311,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				return nil, cerr
 			}
 		}
+		if opts.Deps.frozenBun(rt.Kind) {
+			if cerr := installFrozenBun(ctx, workDir, opts.Deps); cerr != nil {
+				return nil, cerr
+			}
+		}
 		// A file script resolves bare imports from its own directory
 		// upward, never from the exec workdir, so an installed set was
 		// invisible to it (ERR_MODULE_NOT_FOUND after a successful

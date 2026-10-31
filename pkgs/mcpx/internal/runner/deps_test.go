@@ -75,9 +75,12 @@ func TestMaterialiseDepsManifestWinsAndLockfileVerbatim(t *testing.T) {
 	if string(got) != string(lock) {
 		t.Fatalf("lockfile rewritten: %q != %q", got, lock)
 	}
-	// Frozen beats the autoInstall mapping for bun.
-	if len(flags) != 1 || flags[0] != "--install=fallback" {
-		t.Fatalf("flags = %v, want [--install=fallback] for a frozen bun set", flags)
+	// Frozen beats the autoInstall mapping for bun: the frozen
+	// install step (installFrozenBun) populates the workdir, and the
+	// run goes --no-install so the runtime cannot re-resolve past
+	// the lockfile.
+	if len(flags) != 1 || flags[0] != "--no-install" {
+		t.Fatalf("flags = %v, want [--no-install] for a frozen bun set", flags)
 	}
 }
 
@@ -607,5 +610,76 @@ func TestProjectDenoConfigIdentityDistinguishesProjects(t *testing.T) {
 	}
 	if got := projectDenoConfigIdentity(none); got != "" {
 		t.Fatalf("a project with no config must have empty identity, got %q", got)
+	}
+}
+
+// Codex round (PR #2589): the generated Deno config replaces the
+// project's, so its compilerOptions — jsx/jsxImportSource above all —
+// must be carried into it, or a .tsx run silently falls back to the
+// classic JSX transform.
+func TestMaterialiseDepsDenoPreservesProjectCompilerOptions(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "deno.json"), []byte(`{
+		"imports": {"@app/": "./src/"},
+		"compilerOptions": {"jsx": "react-jsx", "jsxImportSource": "preact", "strict": true}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"zod@3.0.0"},
+	}, false, project); err != nil {
+		t.Fatal(err)
+	}
+	dj := readJSON(t, filepath.Join(dir, "deno.json"))
+	co, ok := dj["compilerOptions"].(map[string]any)
+	if !ok {
+		t.Fatalf("generated deno.json dropped the project compilerOptions: %v", dj)
+	}
+	if co["jsx"] != "react-jsx" || co["jsxImportSource"] != "preact" || co["strict"] != true {
+		t.Fatalf("compilerOptions not preserved verbatim: %v", co)
+	}
+}
+
+// Codex round (PR #2589): waiting for another run's install must
+// observe cancellation, like lockScriptDir already does.
+func TestLockInstallDirHonoursCancellation(t *testing.T) {
+	dir := t.TempDir()
+	unlock, err := lockInstallDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, lerr := lockInstallDir(ctx, dir)
+		done <- lerr
+	}()
+	select {
+	case lerr := <-done:
+		t.Fatalf("install lock acquired or failed before cancellation: %v", lerr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case lerr := <-done:
+		if lerr == nil {
+			t.Fatal("cancelled install-lock acquisition returned no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled install-lock acquisition never returned")
+	}
+}
+
+func TestFrozenBunFollowsTheLockfile(t *testing.T) {
+	if !(&Deps{Lockfiles: []Lockfile{{Name: "bun.lock", Content: []byte("x")}}}).frozenBun(KindBun) {
+		t.Fatal("a bun run carrying bun.lock must be frozen")
+	}
+	if (&Deps{Lockfiles: []Lockfile{{Name: "package-lock.json", Content: []byte("x")}}}).frozenBun(KindBun) {
+		t.Fatal("an npm lockfile alone must not freeze a bun run")
+	}
+	if (&Deps{Lockfiles: []Lockfile{{Name: "bun.lock", Content: []byte("x")}}}).frozenBun(KindNode) {
+		t.Fatal("frozenBun is bun-only")
 	}
 }

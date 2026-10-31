@@ -33,8 +33,16 @@ import (
 // otherwise be discarded silently.
 func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, error) {
 	cfg := deps.From(a.Settings())
+	// The AutoInstall comparison cannot use the resolved value alone:
+	// off is the DEFAULT, so an explicitly configured off is
+	// indistinguishable from an unset one in cfg — yet only the
+	// explicit one is a policy the runner must honour (its --no-install
+	// flag is the only thing standing between the caller and Bun's
+	// default auto-install). Given() is what tells them apart (Codex
+	// review, PR #2589).
 	if cfg.Source == deps.SourceHost && cfg.Manifest == "" && len(cfg.Packages) == 0 &&
-		cfg.AutoInstall == deps.AutoInstallOff && len(cfg.Paths.Entries) == 0 {
+		cfg.AutoInstall == deps.AutoInstallOff && len(cfg.Paths.Entries) == 0 &&
+		!a.Settings().Given("deps.autoInstall") {
 		return nil, nil
 	}
 	startDir := cwd

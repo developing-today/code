@@ -288,8 +288,10 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		// mappings loses them the moment dependency pins are added
 		// (Codex review, PR #2589). The resolved pins are senior:
 		// they overwrite a project mapping for the same specifier.
+		var projectCompilerOptions json.RawMessage
 		if projectDir != "" {
-			if pImports, pScopes, cfgDir, ok := loadProjectDenoConfig(projectDir); ok {
+			if pImports, pScopes, pCompilerOptions, cfgDir, ok := loadProjectDenoConfig(projectDir); ok {
+				projectCompilerOptions = pCompilerOptions
 				for k, v := range pImports {
 					imports[k] = rebaseDenoMapping(v, cfgDir)
 				}
@@ -322,6 +324,14 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if len(scopes) > 0 {
 			rendered["scopes"] = scopes
 		}
+		if len(projectCompilerOptions) > 0 {
+			// The generated config replaces the project's own, so
+			// its compilerOptions (JSX mode and import source
+			// above all) must be carried into it or the run
+			// silently compiles under different settings than
+			// the project declares (Codex review, PR #2589).
+			rendered["compilerOptions"] = projectCompilerOptions
+		}
 		text, err := json.MarshalIndent(rendered, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("deps: render deno.json: %w", err)
@@ -352,9 +362,11 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 // deps.autoInstall enum maps onto it directly; off is --no-install, so
 // a missing package fails the run instead of being fetched. A lockfile
 // has no --frozen-lockfile spelling under `bun run` (that flag belongs
-// to `bun install`); frozen is honoured by materialising the lockfile
-// and using fallback, which installs only what is missing and resolves
-// it against the lockfile, never rewriting the manifest.
+// to `bun install`), and --install=fallback does not enforce one
+// either (it resolves missing packages against the manifest, not the
+// lock); frozen is honoured by the bun install --frozen-lockfile step
+// in Run, after which the run goes --no-install so the runtime uses
+// exactly the installed set.
 //
 // deno: --frozen is deno run's lockfile mode, spelled when the set
 // carries deno.lock; deno otherwise caches npm packages from the
@@ -367,7 +379,7 @@ func depsFlags(kind string, d *Deps) []string {
 	switch kind {
 	case KindBun:
 		if frozen {
-			return []string{"--install=fallback"}
+			return []string{"--no-install"}
 		}
 		switch d.AutoInstall {
 		case "fallback":
@@ -407,7 +419,23 @@ func (d *Deps) frozenNPM(kind string) bool {
 // npm ci removes the existing node_modules before installing, so a
 // second run's install can delete the set a live first run is still
 // resolving imports from (Codex review, PR #2589).
-var frozenInstallLocks sync.Map // map[string]*sync.Mutex, keyed by workdir
+var frozenInstallLocks sync.Map // map[string]chan struct{}, keyed by workdir
+
+// lockInstallDir acquires the workdir's install semaphore, observing
+// ctx while it waits: a queued run whose request was cancelled must
+// return promptly instead of blocking behind another run's install
+// until that install finishes, however long it takes (Codex review,
+// PR #2589) -- the same shape as lockScriptDir, for the same reason.
+func lockInstallDir(ctx context.Context, dir string) (func(), error) {
+	c, _ := frozenInstallLocks.LoadOrStore(dir, make(chan struct{}, 1))
+	ch := c.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("deps: waiting for the workdir install lock: %w", ctx.Err())
+	}
+}
 
 // installFrozenNPM runs npm ci in dir exactly once per dep set: the
 // first run for a fingerprint installs and records a marker; later
@@ -415,10 +443,11 @@ var frozenInstallLocks sync.Map // map[string]*sync.Mutex, keyed by workdir
 // install entirely. A changed set (different fingerprint), a missing
 // marker, or a pruned node_modules installs again.
 func installFrozenNPM(ctx context.Context, dir string, d *Deps) error {
-	mu, _ := frozenInstallLocks.LoadOrStore(dir, &sync.Mutex{})
-	lock := mu.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+	unlock, err := lockInstallDir(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	marker := filepath.Join(dir, ".mcpx-deps-installed")
 	want := d.fingerprint()
@@ -431,6 +460,51 @@ func installFrozenNPM(ctx context.Context, dir string, d *Deps) error {
 	out, cerr := ci.CombinedOutput()
 	if cerr != nil {
 		return fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
+			cerr, strings.TrimSpace(string(out)))
+	}
+	_ = os.WriteFile(marker, []byte(want), 0o600)
+	return nil
+}
+
+// frozenBun reports whether this run must install a frozen Bun set
+// before executing: a bun run carrying a bun.lock or bun.lockb.
+// `bun run --install=fallback` does NOT enforce it -- fallback
+// installs only what is missing and resolves that against the
+// manifest, so a newer in-range version is fetched over the
+// lockfile's pin (reproduced against a localhost registry in Codex
+// review, PR #2589). Frozen for Bun means a real install step:
+// `bun install --frozen-lockfile` into the workdir, after which the
+// run itself goes --no-install so the runtime cannot re-resolve.
+func (d *Deps) frozenBun(kind string) bool {
+	if kind != KindBun {
+		return false
+	}
+	name, _, ok := d.selectedLockfile(kind)
+	return ok && (name == "bun.lock" || name == "bun.lockb")
+}
+
+// installFrozenBun runs bun install --frozen-lockfile in dir exactly
+// once per dep set, under the same once-per-fingerprint discipline
+// as installFrozenNPM (separate marker: the two installers are not
+// interchangeable even when a workdir fingerprint matches).
+func installFrozenBun(ctx context.Context, dir string, d *Deps) error {
+	unlock, err := lockInstallDir(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	marker := filepath.Join(dir, ".mcpx-deps-installed-bun")
+	want := d.fingerprint()
+	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
+		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
+			return nil
+		}
+	}
+	ci := exec.CommandContext(ctx, "bun", "install", "--frozen-lockfile", "--cwd", dir)
+	out, cerr := ci.CombinedOutput()
+	if cerr != nil {
+		return fmt.Errorf("deps: bun install --frozen-lockfile: %w: %s",
 			cerr, strings.TrimSpace(string(out)))
 	}
 	_ = os.WriteFile(marker, []byte(want), 0o600)
@@ -454,7 +528,7 @@ func writeBytesIfChanged(path string, content []byte) error {
 // mappings are relative to THAT directory). ok is false when no
 // project config exists or it cannot be parsed -- a config mcpx
 // cannot read must not fail a run it was only enriching.
-func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[string]map[string]string, cfgDir string, ok bool) {
+func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[string]map[string]string, compilerOptions json.RawMessage, cfgDir string, ok bool) {
 	for d := dir; ; d = filepath.Dir(d) {
 		for _, name := range []string{"deno.json", "deno.jsonc"} {
 			raw, err := os.ReadFile(filepath.Join(d, name))
@@ -464,14 +538,20 @@ func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[st
 			var parsed struct {
 				Imports map[string]string            `json:"imports"`
 				Scopes  map[string]map[string]string `json:"scopes"`
+				// CompilerOptions travels raw: the generated
+				// config replaces the project's, and dropping
+				// jsx/jsxImportSource silently reverts a
+				// project to the classic JSX transform
+				// (Codex review, PR #2589).
+				CompilerOptions json.RawMessage `json:"compilerOptions"`
 			}
 			if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
-				return nil, nil, "", false
+				return nil, nil, nil, "", false
 			}
-			return parsed.Imports, parsed.Scopes, d, true
+			return parsed.Imports, parsed.Scopes, parsed.CompilerOptions, d, true
 		}
 		if filepath.Dir(d) == d {
-			return nil, nil, "", false
+			return nil, nil, nil, "", false
 		}
 	}
 }
@@ -487,16 +567,17 @@ func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[st
 // about to read (Codex review, PR #2589). "" when the project carries
 // no readable config, matching the generated config carrying none.
 func projectDenoConfigIdentity(dir string) string {
-	imports, scopes, cfgDir, ok := loadProjectDenoConfig(dir)
+	imports, scopes, compilerOptions, cfgDir, ok := loadProjectDenoConfig(dir)
 	if !ok {
 		return ""
 	}
 	h := sha256.New()
 	fmt.Fprintf(h, "cfgdir:%s\n", cfgDir)
 	if b, err := json.Marshal(struct {
-		Imports map[string]string            `json:"imports"`
-		Scopes  map[string]map[string]string `json:"scopes"`
-	}{imports, scopes}); err == nil {
+		Imports         map[string]string            `json:"imports"`
+		Scopes          map[string]map[string]string `json:"scopes"`
+		CompilerOptions json.RawMessage              `json:"compilerOptions"`
+	}{imports, scopes, compilerOptions}); err == nil {
 		h.Write(b)
 	}
 	return hex.EncodeToString(h.Sum(nil))

@@ -280,3 +280,24 @@ func TestDepsOptionsReportConflicts(t *testing.T) {
 		t.Fatalf("err = %v, want a conflict error naming both versions", err)
 	}
 }
+
+// Codex round (PR #2589): an EXPLICIT deps.autoInstall=off is a
+// policy, not an absence — the nil fast path must not swallow it,
+// because the runner's --no-install flag is the only thing that
+// disables Bun's default auto-install.
+func TestDepsOptionsExplicitOffAutoInstallIsARequest(t *testing.T) {
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.autoInstall", "off"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("an explicit deps.autoInstall=off should carry a dependency set")
+	}
+	if got.AutoInstall != "off" {
+		t.Fatalf("autoInstall: %q", got.AutoInstall)
+	}
+}
