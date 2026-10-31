@@ -12,12 +12,7 @@
 // (DISPATCH_HOSTS); public reachability arrives later via the pm-stack
 // Cloudflare tunnel, not from here.
 import { APP_INSTALLED_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig, type Config } from "./config.ts";
-import {
-  AuthError,
-  assertCallerRepo,
-  authenticate,
-  type CallerIdentity,
-} from "./auth.ts";
+import { AuthError, assertCallerRepo, authenticate, type CallerIdentity } from "./auth.ts";
 import {
   ValidationError,
   parseSessionRequest,
@@ -27,13 +22,7 @@ import {
   type SessionRequest,
   type TaskRequest,
 } from "./validate.ts";
-import {
-  buildPacket,
-  canonicalDedupeKey,
-  describeCaller,
-  dispatchDedupeKey,
-  validatePayload,
-} from "./packet.ts";
+import { buildPacket, canonicalDedupeKey, describeCaller, dispatchDedupeKey, validatePayload } from "./packet.ts";
 import { QueueClient, QueueError, type TaskRow } from "./queue.ts";
 import { handleLaunchFailure } from "./launch_failure.ts";
 import { GitHubClient } from "./github.ts";
@@ -91,9 +80,7 @@ async function maybeCreateIssue(
   warnings: string[],
 ): Promise<IssueRef | null> {
   if (!APP_INSTALLED_REPOS.has(repo)) {
-    warnings.push(
-      `github app is not installed on ${repo}; issue creation skipped (task is the tracking record)`,
-    );
+    warnings.push(`github app is not installed on ${repo}; issue creation skipped (task is the tracking record)`);
     return null;
   }
   try {
@@ -120,8 +107,7 @@ async function launchSession(
     title: req.title ?? titleFromPrompt(req.prompt),
     model: req.model,
   });
-  const prefix =
-    `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
+  const prefix = `[dispatch] Queue task #${task.id} · Issue ${issue ? issue.url : "none"} · Repo ${req.repo}`;
   await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
   // Assign immediately: PATCH the exact row the enqueue created (the
@@ -198,16 +184,13 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   // 1. Tracking issue (default on).
   let issue: IssueRef | null = null;
   if (body.issue) {
-    const footer =
-      `\n\n---\nLaunched by pm-dispatch for ${body.repo}. Queue task and OpenCode session ids follow in a comment below.`;
+    const footer = `\n\n---\nLaunched by pm-dispatch for ${body.repo}. Queue task and OpenCode session ids follow in a comment below.`;
     issue = await maybeCreateIssue(body.repo, title, body.prompt + footer, ["source/dispatch"], warnings);
   }
 
   // 2. Enqueue the queue task.
   const kind = issue ? "small_fix" : "triage";
-  const dedupeKey = issue
-    ? canonicalDedupeKey(kind, body.repo, issue.number)!
-    : dispatchDedupeKey(body.repo);
+  const dedupeKey = issue ? canonicalDedupeKey(kind, body.repo, issue.number)! : dispatchDedupeKey(body.repo);
   const packet = buildPacket(
     {
       repo: body.repo,
@@ -247,14 +230,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
         // Mirror the wait:true failure path exactly (#2901): cancel the
         // task and note the failure on the issue — never leave a queued
         // task behind for a session that did not launch.
-        await handleLaunchFailure(
-          requireQueue(),
-          github,
-          body.repo,
-          task.id,
-          issue?.number ?? null,
-          e,
-        );
+        await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
       }
     })();
     return json(202, {
@@ -273,14 +249,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
     // Never leave a queued/claimed task behind for a session that did
     // not launch: cancel it and note the failure on the issue (the
     // shared handler the wait:false path also uses, #2901).
-    const msg = await handleLaunchFailure(
-      requireQueue(),
-      github,
-      body.repo,
-      task.id,
-      issue?.number ?? null,
-      e,
-    );
+    const msg = await handleLaunchFailure(requireQueue(), github, body.repo, task.id, issue?.number ?? null, e);
     return json(502, { task_id: task.id, error: msg, ...(warnings.length ? { warnings } : {}) });
   }
 
@@ -314,18 +283,10 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
       url: `https://github.com/${body.repo}/issues/${body.issueNumber}`,
     };
     if (!APP_INSTALLED_REPOS.has(body.repo)) {
-      warnings.push(
-        `github app is not installed on ${body.repo}; issue attach skipped (task is the tracking record)`,
-      );
+      warnings.push(`github app is not installed on ${body.repo}; issue attach skipped (task is the tracking record)`);
     }
   } else if (body.issue) {
-    issue = await maybeCreateIssue(
-      body.repo,
-      body.title,
-      body.prompt,
-      ["queue/queued", "source/dispatch"],
-      warnings,
-    );
+    issue = await maybeCreateIssue(body.repo, body.title, body.prompt, ["queue/queued", "source/dispatch"], warnings);
   }
 
   const dedupeKey =
@@ -366,8 +327,7 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     // Attach is skipped where the GitHub App is not installed (warning
     // already recorded above); the create path needs no skip — its issue
     // exists precisely because the app route worked there.
-    const attachSkipped =
-      body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
+    const attachSkipped = body.issueNumber !== undefined && !APP_INSTALLED_REPOS.has(body.repo);
     if (!attachSkipped) {
       try {
         await github.comment(
@@ -416,9 +376,7 @@ export async function handler(req: Request): Promise<Response> {
         oidcAudience: cfg.oidcAudience,
         allowlist: cfg.repoAllowlist,
       });
-      return path === "/v1/sessions"
-        ? await handleSessions(req, caller)
-        : await handleTasks(req, caller);
+      return path === "/v1/sessions" ? await handleSessions(req, caller) : await handleTasks(req, caller);
     }
     return json(404, { error: "not found" });
   } catch (e) {
@@ -430,9 +388,7 @@ export async function handler(req: Request): Promise<Response> {
 }
 
 if (import.meta.main) {
-  const servers = cfg.hosts.map((hostname) =>
-    Bun.serve({ hostname, port: cfg.port, fetch: handler }),
-  );
+  const servers = cfg.hosts.map((hostname) => Bun.serve({ hostname, port: cfg.port, fetch: handler }));
   for (const server of servers) {
     console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
   }

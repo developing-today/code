@@ -23,11 +23,7 @@ globalThis.fetch = (async (input: unknown) => {
 }) as typeof fetch;
 
 function b64url(data: Buffer | string): string {
-  return Buffer.from(data)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return Buffer.from(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function signOidc(repository: string): string {
@@ -82,9 +78,7 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
 
   test("OIDC + own clone directory passes validation the same way", async () => {
     const token = signOidc("developing-today/code");
-    const res = await handler(
-      sessionsRequest(token, { ...base, directory: "/home/user/git/code" }),
-    );
+    const res = await handler(sessionsRequest(token, { ...base, directory: "/home/user/git/code" }));
     expect(res.status).toBe(502);
   });
 });

@@ -207,6 +207,10 @@ export function parseTaskRequest(body: unknown): TaskRequest {
 
 /** First line of a prompt, trimmed and length-capped — the fallback title. */
 export function titleFromPrompt(prompt: string, max = 120): string {
-  const first = prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "dispatch request";
+  const first =
+    prompt
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "dispatch request";
   return first.length > max ? first.slice(0, max - 1) + "…" : first;
 }

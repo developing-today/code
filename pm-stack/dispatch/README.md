@@ -34,10 +34,10 @@ Body:
   "title": "fix(widget): flaky test", // optional; default: prompt's first line
   "model": "opencode-go/gpt-5.6-luna", // optional "provider/model" or {"providerID","id"}
   "directory": "/home/user/git/code", // optional; default: the repo's laptop primary.
-    // OIDC callers may only omit it or repeat the repo's primary — anything
-    // else is rejected (400) before any side effect (issue #2903).
-    // Bearer callers keep the free-form directory (deliberate: the bearer
-    // secret lives on the laptop, so whoever holds it already has the run).
+  // OIDC callers may only omit it or repeat the repo's primary — anything
+  // else is rejected (400) before any side effect (issue #2903).
+  // Bearer callers keep the free-form directory (deliberate: the bearer
+  // secret lives on the laptop, so whoever holds it already has the run).
   "priority": "high", // optional: 10-90 or critical|high|normal|low → 10/20/40/70
   "issue": true, // optional; default true
   "wait": true, // optional; default true

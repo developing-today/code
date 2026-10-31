@@ -95,7 +95,9 @@ describe("request validation", () => {
     expect(b.prompt).toBe("p");
     expect(b.kind).toBe("small_fix");
     expect(() => parseTaskRequest({ repo: "developing-today/code", title: "t" })).toThrow(/prompt/);
-    expect(() => parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", kind: "bogus" })).toThrow(/kind/);
+    expect(() => parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", kind: "bogus" })).toThrow(
+      /kind/,
+    );
   });
 
   test("titleFromPrompt takes the first non-empty line, capped", () => {
@@ -138,30 +140,20 @@ describe("session directory scoping (issue #2903)", () => {
   });
 
   test("OIDC + own clone directory is accepted", () => {
-    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code", repoDirs)).toBe(
-      "/home/user/git/code",
-    );
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code", repoDirs)).toBe("/home/user/git/code");
   });
 
   test("OIDC + own clone with trailing slashes is accepted and normalized", () => {
-    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code///", repoDirs)).toBe(
-      "/home/user/git/code",
-    );
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code///", repoDirs)).toBe("/home/user/git/code");
   });
 
   test("OIDC + another allowlisted clone is rejected", () => {
-    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/opencode", repoDirs)).toThrow(
-      ValidationError,
-    );
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/opencode", repoDirs)).toThrow(ValidationError);
   });
 
   test("OIDC + arbitrary directory is rejected", () => {
-    expect(() => resolveSessionDirectory("oidc", code, "/tmp/evil", repoDirs)).toThrow(
-      ValidationError,
-    );
-    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git", repoDirs)).toThrow(
-      ValidationError,
-    );
+    expect(() => resolveSessionDirectory("oidc", code, "/tmp/evil", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git", repoDirs)).toThrow(ValidationError);
   });
 
   test("bearer + omitted directory resolves to the repo clone", () => {
@@ -169,8 +161,6 @@ describe("session directory scoping (issue #2903)", () => {
   });
 
   test("bearer + foreign directory is the documented deliberate choice", () => {
-    expect(resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toBe(
-      "/tmp/ops-scratch",
-    );
+    expect(resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toBe("/tmp/ops-scratch");
   });
 });
