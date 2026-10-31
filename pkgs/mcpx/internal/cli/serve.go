@@ -119,6 +119,15 @@ func (b mcpBackend) Search(ctx context.Context, query string, limit int) (string
 	return sb.String(), nil
 }
 
+// isRawCall reports whether this Call serves a raw (codemode=false)
+// tool: the request's own raw lookup resolves the exposed name
+// <ns>_<tool> back to exactly this namespace and the upstream's own
+// tool name, as RawToolOf resolved it for the asker bridge.
+func isRawCall(ctx context.Context, ns, tool string) bool {
+	rns, rtool, known := mcpserver.RawToolOf(ctx, ns+"_"+tool)
+	return known && rns == ns && rtool == tool
+}
+
 func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMessage) (string, error) {
 	c, err := b.app.ensure(ctx)
 	if err != nil {
@@ -134,7 +143,13 @@ func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMess
 	if !visible(ns) {
 		return "", unknownNamespace(ns)
 	}
-	if b.app.isPass(ns) {
+	// A raw call (codemode=false) is a direct upstream call under a
+	// namespaced name, exactly as a pass-through call is under its own:
+	// the upstream judges what the client can answer and its JSON-RPC
+	// errors relay as themselves, so both take the pass-through path
+	// through this function.
+	direct := b.app.isPass(ns) || isRawCall(ctx, ns, tool)
+	if direct {
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpserver.DeclaredCapabilities(ctx))
 	}
 	ctx = mcpclient.WithCallerVersion(ctx, mcpserver.PeerVersion(ctx))
@@ -150,7 +165,7 @@ func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMess
 		res, err = c.Call(ctx, ns, tool, b.app.mcpCaller(ctx), args)
 	}
 	if err != nil {
-		if b.app.isPass(ns) {
+		if direct {
 			return "", relayedFault(err)
 		}
 		return "", err
@@ -497,6 +512,7 @@ func (a *App) mcpSession() string {
 // existed.
 func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	srv := mcpserver.New(mcpBackend{app: a}, "mcpx", a.Version)
+	srv.Instance = a.InstanceID()
 	srv.Notify = daemonNotifier{app: a}
 	// The daemon's task store, when this server is the daemon's own
 	// (root.go set a.daemonStore): MCP tasks and /v1 tasks are then
@@ -616,6 +632,21 @@ func (a *App) CmdServe(ctx context.Context, args []string) error {
 		maxTools := a.Settings().Int("retention.maxTools")
 		stickyWindow := a.Settings().Duration("retention.stickyWindow")
 		srv.ReactiveWorkingSet = catalog.NewWorkingSet(maxTools, stickyWindow, srv.PinnedTools)
+	}
+	// #1877 (Codex P2 on PR 2975): this stdio server is a shim over its
+	// backing daemon, so the identity it reports must be the DAEMON's,
+	// not this shim process's. Otherwise a daemon configured with this
+	// shim as a stdio upstream sees a "distinct peer" and admits its
+	// own aggregate surface back into itself. Ensuring the connection
+	// here only moves the daemon start to serve start; the shim can
+	// answer nothing without it anyway. A daemon that reports no
+	// instance (older build) leaves the shim's own identity in place.
+	if c, err := a.ensure(ctx); err == nil {
+		if st, err := c.Status(ctx); err == nil {
+			if inst, ok := st["instance"].(string); ok && inst != "" {
+				srv.Instance = inst
+			}
+		}
 	}
 	if *printTools {
 		return a.out(srv.Tools())
@@ -1529,6 +1560,33 @@ func (a *App) uriOwner(ctx context.Context, pass []string, u string) string {
 		}
 	}
 	return ""
+}
+
+// RawTools lists every visible namespace's tools under their owners'
+// names, for the raw surface a ?codemode=false request to /mcp asks for
+// (mcpserver.RawToolsBackend). One namespace that cannot be listed fails
+// the whole list, as it does in pass-through mode: a partial catalogue
+// would have a client trust that the missing server has no tools.
+func (b mcpBackend) RawTools(ctx context.Context) ([]mcpserver.NamespacedTool, error) {
+	c, err := b.app.ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+	nss, err := c.Namespaces(ctx, b.app.Profile)
+	if err != nil {
+		return nil, err
+	}
+	var out []mcpserver.NamespacedTool
+	for _, n := range nss {
+		ts, err := b.UpstreamTools(ctx, n.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range ts {
+			out = append(out, mcpserver.NamespacedTool{Namespace: n.Namespace, Tool: t})
+		}
+	}
+	return out, nil
 }
 
 // UpstreamTools lists one namespace's tools under their own names, for

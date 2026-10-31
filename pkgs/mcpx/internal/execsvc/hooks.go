@@ -227,6 +227,13 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 	}
 
 	opts := ropts
+	// The main script's interpreter preference (script.interpreter) is
+	// not the hook's: hooks are TypeScript by definition here, and a
+	// configured sh interpreter would otherwise execute every hook's
+	// TypeScript under sh (Codex review, PR #2611). A hook's own
+	// shebang still selects its interpreter -- rank 1 in the runner's
+	// dispatch order is read from the hook script itself.
+	opts.Interpreter = ""
 	// The hook gets the same runtime, permissions, working directory and
 	// content-addressed client as the script, and nothing of the parent's
 	// phases: a hook running the parent's onSuccess would recurse.

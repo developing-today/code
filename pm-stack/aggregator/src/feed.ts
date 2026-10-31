@@ -7,9 +7,10 @@ import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
-import { isIsoDate, isTimestampNotFuture } from "./validate.ts";
+import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
 import type {
   AaFeedSection,
+  BurnSegment,
   ChargeRow,
   DnsSection,
   GoalMeasurement,
@@ -18,7 +19,9 @@ import type {
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
+  QuotaPool,
   QuotaView,
+  QuotaWindow,
   SaasService,
   SessionFeedEntry,
   SessionRecord,
@@ -34,6 +37,9 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
+  /** Element drops loadFeed's quota sanitization made (#2429), set
+   * only on feeds returned by loadFeed; absent on raw parsed feeds. */
+  quotaDropped?: { pools: number; windows: number; burn: number };
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -247,17 +253,138 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   return raw.filter(isProjectPoolItem);
 }
 
+/** One quota window as the renderers dereference it (#2429): `limit`
+ * is read arithmetically by windowPercent, `used` is rendered, and a
+ * non-object element crashes both renderQuota and buildAttentionFlags. */
+export function isQuotaWindow(v: unknown): v is QuotaWindow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    (v.unit === "requests" || v.unit === "tokens" || v.unit === "usd" || v.unit === "messages" || v.unit === "other") &&
+    (v.limit === null || isFiniteNumber(v.limit)) &&
+    isFiniteNumber(v.used) &&
+    (v.resetsAt === null || typeof v.resetsAt === "string") &&
+    (v.percent === undefined || isFiniteNumber(v.percent))
+  );
+}
+
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+
+/** One quota pool whose own shape is safe to hand to the renderers
+ * (#2429): an object with a `windows` ARRAY — a non-array windows value
+ * must never be iterated as a collection of windows (it fabricated
+ * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
+ * so a pool survives one bad window. Credential rows, when present,
+ * must at least be records holding a windows array; their elements are
+ * filtered the same way. */
+export function isQuotaPool(v: unknown): v is QuotaPool {
+  if (!isRecord(v)) return false;
+  if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
+  if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
+  if (!Array.isArray(v.windows)) return false;
+  if (v.credentials !== undefined) {
+    if (!Array.isArray(v.credentials)) return false;
+    for (const row of v.credentials) {
+      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
+    }
+  }
+  return true;
+}
+
+/** One historical burn segment as renderQuota maps it (#2429). */
+export function isBurnSegment(v: unknown): v is BurnSegment {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.provider === "string" &&
+    typeof v.pool === "string" &&
+    typeof v.from === "string" &&
+    typeof v.to === "string" &&
+    isFiniteNumber(v.tokens)
+  );
+}
+
+/** The choices block renderQuota dereferences (hasHeadroom et al.). */
+function isQuotaChoices(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return isStringArray(v.hasHeadroom) && isStringArray(v.burnBeforeReset) && isStringArray(v.doNotStart);
+}
+
+export interface QuotaSanitization {
+  view: QuotaView;
+  droppedPools: number;
+  droppedWindows: number;
+  droppedBurn: number;
+}
+
+/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+ * following poolFromFeed's per-element pattern, built on the shared
+ * arrayOf primitive from #2577): malformed pools and burn segments
+ * drop individually, malformed windows drop out of their pool, and the
+ * well-formed remainder renders. The counts ride out on the result so
+ * the caller surfaces them, never swallows them. */
+export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
+  const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedWindows = 0;
+  const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
+    const windows = arrayOf(isQuotaWindow)(pool.windows);
+    droppedWindows += windows?.dropped ?? 0;
+    let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.credentials !== undefined) {
+      const rows = pool.credentials.map((row) => {
+        const rowWindows = arrayOf(isQuotaWindow)(row.windows);
+        droppedWindows += rowWindows?.dropped ?? 0;
+        return { ...row, windows: rowWindows?.values ?? [] };
+      });
+      out = { ...out, credentials: rows };
+    }
+    return out;
+  });
+  const burn = arrayOf(isBurnSegment)(quota.burn);
+  const droppedPools = pools?.dropped ?? 0;
+  const droppedBurn = burn?.dropped ?? 0;
+  // Guidance must describe the surviving usable pools only: the
+  // retained choices were computed over the pre-sanitization pools,
+  // and computeChoices() (quota-guidance.ts) gives no guidance for a
+  // pool with no windows — so filter every list to kept pools that
+  // still have windows. A pool whose data was discarded must not
+  // stay recommended under hasHeadroom or burnBeforeReset.
+  const usable = new Set(keptPools.filter((p) => p.windows.length > 0).map((p) => p.id));
+  const choices = {
+    hasHeadroom: quota.choices.hasHeadroom.filter((id) => usable.has(id)),
+    burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
+    doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
+  };
+  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  // Surface the loss on the view itself (its consumers project the
+  // view, e.g. /api/quota.json), not only on the feed wrapper.
+  if (droppedPools + droppedWindows + droppedBurn > 0) {
+    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  }
+  return {
+    view,
+    droppedPools,
+    droppedWindows,
+    droppedBurn,
+  };
+}
+
 export function isFleetFeed(v: unknown): v is FleetFeed {
   if (typeof v !== "object" || v === null) return false;
   const f = v as Partial<FleetFeed>;
+  if (!(typeof f.quota === "object" && f.quota !== null)) return false;
+  const q = f.quota as QuotaView;
   return (
     f.version === 1 &&
     // A generatedAt implausibly in the future is invalid, not
     // "maximally fresh" (#2242, via the shared primitive).
     isTimestampNotFuture(f.generatedAt) &&
-    typeof f.quota === "object" &&
-    f.quota !== null &&
-    Array.isArray((f.quota as QuotaView).pools) &&
+    Array.isArray(q.pools) &&
+    // burn and choices are mandatory in QuotaView and dereferenced
+    // unguarded by renderQuota (#2429): a feed without them is an old
+    // collector's shape and is rejected whole, like other invalid
+    // feeds, rather than crashing /quota.
+    Array.isArray(q.burn) &&
+    isQuotaChoices(q.choices) &&
     Array.isArray(f.attention)
   );
 }
@@ -265,7 +392,17 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isFleetFeed(parsed) ? parsed : null;
+    if (!isFleetFeed(parsed)) return null;
+    // The gate pins the section-level shape; element-level damage is
+    // dropped here so every loadFeed consumer (live source, server)
+    // sees only renderer-safe pools/windows (#2429). Drop counts are
+    // attached to the feed so they are visible, not swallowed.
+    const san = sanitizeQuotaView(parsed.quota);
+    return {
+      ...parsed,
+      quota: san.view,
+      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+    };
   } catch {
     return null;
   }

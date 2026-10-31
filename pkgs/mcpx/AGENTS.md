@@ -111,6 +111,17 @@ in a tool argument or on a command line. Ask them to give it through OpenChamber
 or to run `mcpx secrets set <NAME>` themselves, then try again. `mcpx secrets list`
 shows which names have a value.
 
+## Packaging test
+
+`packaging-test.sh` (beside this file) tests the built artifact, not the
+source tree: version, wrapper PATH, man page and completions, and a stdio
+serve handshake, all with an empty HOME (#1981).
+
+    nix build .#packages.x86_64-linux.mcpx
+    pkgs/mcpx/packaging-test.sh ./result
+
+CI runs the same script as the flake check `checks.mcpx-packaging`.
+
 ## Do not
 
 - Do not add these servers to your own MCP config. The point is that they are

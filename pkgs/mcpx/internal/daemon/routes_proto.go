@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -517,9 +516,10 @@ func (s *Server) runAsk(ctx context.Context, id string, cc config.CallContext, r
 // or a delay somebody notices, and this is neither.
 func (s *Server) handleAskPoll(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	wait := defaults.ProtoAskPoll
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("proto.askPoll"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	t, known := s.taskStore().Get(id)
 	if !known {

@@ -343,6 +343,12 @@
           crash-gate-sweep = mkCheck "crash-gate-sweep" "crash-gate-sweep";
           crash-gate-control = mkCheck "crash-gate-control" "crash-gate-control";
           crash-gate-ingest = mkCheck "crash-gate-ingest" "crash-gate-ingest";
+          # Drift guard for the generated just-recipes.json (#2729): fails
+          # when the checked-in JSON disagrees with the justfile on the
+          # semantic recipe fields. The recipe projects out generation
+          # noise (absolute source path, body serialisation), so this is
+          # green on any correctly regenerated file.
+          just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {

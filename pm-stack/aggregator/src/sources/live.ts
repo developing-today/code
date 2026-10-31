@@ -816,6 +816,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
+        const dropped = feed.quotaDropped;
+        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
+          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();

@@ -1059,7 +1059,9 @@ export function extractSubscriptions(doc: string): { name: string; plan: string;
     out.push({
       name: "Wispr Flow",
       plan: price ? `Pro $${price[1]}/yr` : "Pro (annual)",
-      renewsAt: renews ? renews[1] : null,
+      // Real calendar dates only (#2206): a non-calendar date is no
+      // renewal date at all, never a verbatim renewsAt.
+      renewsAt: renews && parseIsoDate(renews[1]) !== null ? renews[1] : null,
     });
   }
   return out;

@@ -585,6 +585,19 @@ func ServerEntry(req addServerReq) (map[string]any, error) {
 	return entry, nil
 }
 
+// pointsAtOwnEndpoint reports whether a server entry's URL is this
+// daemon's own HTTP endpoint (or a path under it): the literal
+// self-connection #1877 names, refused at add time and flagged at
+// reload time. The pool's identity guard refuses the same loop for
+// entries that arrive by file edit or report a spoofed path.
+func (s *Server) pointsAtOwnEndpoint(rawURL string) bool {
+	if rawURL == "" || s.endpoint == "" {
+		return false
+	}
+	u := strings.TrimSuffix(rawURL, "/")
+	return u == s.endpoint || strings.HasPrefix(u, s.endpoint+"/")
+}
+
 func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 	var req addServerReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
@@ -594,6 +607,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	entry, err := ServerEntry(req)
 	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.pointsAtOwnEndpoint(req.URL) {
+		err := fmt.Errorf("server %q: refusing self-connection: url %s is this daemon's own MCP endpoint; mcpx as its own upstream would grow tools/list on every reload (#1877)", req.Name, req.URL)
+		s.logger.Printf("%v", err)
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -778,6 +797,15 @@ func (s *Server) reloadConfig() (added, removed []string, err error) {
 	cfg, err := config.Load(explicit)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Flag a self entry on every reload (#1877): the file may have
+	// been edited behind the API's back, so the add-time refusal
+	// cannot be the only word. The pool refuses to start such an
+	// entry; this line is the reason in the daemon's log.
+	for name, srv := range cfg.MCPServers {
+		if srv != nil && s.pointsAtOwnEndpoint(srv.URL) {
+			s.logger.Printf("self-connection entry %q points at this daemon's own MCP endpoint %s; its pool will refuse to start (#1877)", name, srv.URL)
+		}
 	}
 	// A reload re-reads the file and would otherwise drop whatever the
 	// environment, a flag or a runtime override said about the pool.
