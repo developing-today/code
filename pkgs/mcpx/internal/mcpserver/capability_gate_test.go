@@ -53,6 +53,11 @@ func TestCapabilityGateRefusesUnadvertisedMethods(t *testing.T) {
 
 func TestCapabilityGateAdmitsAdvertisedMethods(t *testing.T) {
 	s := mcpserver.New(newBackend(), "mcpx", "test")
+	// capabilities() advertises resources.subscribe only when a
+	// notifier exists AND the connection can push: configure the
+	// notifier before initializing, as the subscription tests do, so
+	// the snapshot actually carries subscribe:true.
+	s.Notify = &fakeNotifier{got: make(chan mcpserver.ListenFilter, 1), fire: make(chan [2]any, 4)}
 	rec := &recorder{}
 	// A connection that can push, at a revision that defines
 	// completions: both gated capabilities are advertised.

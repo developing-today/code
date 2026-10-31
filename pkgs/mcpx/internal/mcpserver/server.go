@@ -820,20 +820,34 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 	// this request's own context, version, and connection, exactly as
 	// an advertisement for this request would compute it.
 	if capName, gated := gatedCapability(req.Method); gated {
-		var caps map[string]any
-		if peer.Modern {
-			caps = s.capabilities(ctx, peer.Version, c)
-		} else if c != nil {
-			caps = c.advertisedCaps()
+		// The peer's declared revision: per-request _meta first, else
+		// what the handshake settled. Empty means the peer told us
+		// nothing — peerFor's Oldest fallback is a shape-downgrade
+		// default, not an advertisement, and no advertisement ever
+		// happened on the connection either, so there is nothing to
+		// gate against: serve as today. A genuine 2024-11-05 peer
+		// always declares (legacy initialize settles a version;
+		// modern per-request peers carry _meta), so it stays gated.
+		version := requestVersion(req.Params)
+		if version == "" && c != nil {
+			version = c.Version()
 		}
-		if caps == nil {
-			// No advertisement happened on this connection (a peer
-			// that never shook hands): evaluate what it would be
-			// advertised now.
-			caps = s.capabilities(ctx, peer.Version, c)
-		}
-		if !capabilityAdvertised(caps, capName) {
-			return fail(codeMethodNotFound, "no method "+req.Method+": capability "+capName+" not advertised")
+		if version != "" {
+			var caps map[string]any
+			if peer.Modern {
+				caps = s.capabilities(ctx, peer.Version, c)
+			} else if c != nil {
+				caps = c.advertisedCaps()
+			}
+			if caps == nil {
+				// No advertisement happened on this connection (a peer
+				// that never shook hands): evaluate what it would be
+				// advertised now.
+				caps = s.capabilities(ctx, peer.Version, c)
+			}
+			if !capabilityAdvertised(caps, capName) {
+				return fail(codeMethodNotFound, "no method "+req.Method+": capability "+capName+" not advertised")
+			}
 		}
 	}
 
