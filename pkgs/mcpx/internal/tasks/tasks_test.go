@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -303,5 +304,39 @@ func TestAdmitCountsAgainstThePerMinuteWindow(t *testing.T) {
 		if !st.Admit("alice") {
 			t.Fatal("protoTasks.perMinute = 0 disables the window")
 		}
+	}
+}
+
+func TestConcurrentStartsRespectThePerRequestorCap(t *testing.T) {
+	st := tasks.New()
+	st.MaxPerRequestor = 2
+	block := make(chan struct{})
+	defer close(block)
+	fn := func(ctx context.Context) (any, *tasks.Fault) {
+		<-block
+		return "ok", nil
+	}
+	const racers = 10
+	var wg sync.WaitGroup
+	won := make(chan struct{}, racers)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := st.Start("alice", 60000, fn); err == nil {
+				won <- struct{}{}
+			} else if !errors.Is(err, tasks.ErrPerRequestorCap) {
+				t.Errorf("a burst refusal is still the named sentinel, got %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(won)
+	got := 0
+	for range won {
+		got++
+	}
+	if got != 2 {
+		t.Errorf("a concurrent burst admits exactly the cap, got %d", got)
 	}
 }

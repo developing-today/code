@@ -465,6 +465,34 @@ func TestCancellingAnAskedTaskAbandonsTheCall(t *testing.T) {
 	t.Error("the call behind a cancelled task was never abandoned")
 }
 
+// A task-supporting call refused by the per-requestor cap abandons the call
+// already running upstream: with no task to drive it, nothing could observe
+// or cancel it otherwise.
+func TestRefusedAskedTaskAbandonsTheCall(t *testing.T) {
+	// askAfter far out keeps the first task Working (never polled done),
+	// so it holds the one unbound slot while the second call arrives.
+	a := &timedAsker{askAfter: time.Hour}
+	s := askingServer(a, "capped_job")
+	s.Timing.TaskMaxPerRequestor = 1
+	first := resultOf(t, handle(t, s, "tools/call", callTool(extAskCaps, "capped_job")))
+	id, _ := first["taskId"].(string)
+	if id == "" {
+		t.Fatalf("want a task holding the unbound slot, got %v", first)
+	}
+	second := handle(t, s, "tools/call", callTool(extAskCaps, "capped_job"))
+	e, _ := second["error"].(map[string]any)
+	msg, _ := e["message"].(string)
+	if e == nil || !strings.Contains(msg, "maxPerRequestor") {
+		t.Fatalf("want the cap refusal naming the limit, got %v", second)
+	}
+	a.mu.Lock()
+	gone := a.abandoned
+	a.mu.Unlock()
+	if !gone {
+		t.Error("the call behind a refused task was never abandoned")
+	}
+	handle(t, s, "tasks/cancel", taskParams(map[string]any{"taskId": id}))
+}
 // tasks-request-headers / sep-2663-server-rejects-mismatched-mcp-name-on-tasks-get:
 // Mcp-Name on tasks/get mirrors the taskId, and one that contradicts it is
 // -32020. One left out is tolerated: SEP-2243 does not name the tasks

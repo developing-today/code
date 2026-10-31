@@ -420,6 +420,14 @@ func (w *Window) Allow(key string, now time.Time) bool {
 	b, ok := w.counts[key]
 	if !ok || now.Sub(b.start) >= time.Minute {
 		w.counts[key] = &windowBucket{start: now, n: 1}
+		// A bucket is created exactly when a new key arrives, so sweeping
+		// here bounds the map: distinct requestors on a long-lived daemon
+		// cannot accumulate entries past their windows.
+		for k, v := range w.counts {
+			if k != key && now.Sub(v.start) >= time.Minute {
+				delete(w.counts, k)
+			}
+		}
 		return true
 	}
 	if b.n >= w.limit {
@@ -492,8 +500,10 @@ func (s *Store) Start(requestor string, ttl int64, fn func(ctx context.Context) 
 			live++
 		}
 	}
-	s.mu.Unlock()
 	if live >= capN {
+		// Counted and inserted under the one lock: concurrent bursts for
+		// the same requestor cannot each observe the same free slot.
+		s.mu.Unlock()
 		return Task{}, fmt.Errorf("%w: protoTasks.maxPerRequestor allows %d non-terminal tasks per requestor", ErrPerRequestorCap, capN)
 	}
 	now := time.Now()
@@ -510,8 +520,6 @@ func (s *Store) Start(requestor string, ttl int64, fn func(ctx context.Context) 
 		cancel:    cancel, done: make(chan struct{}),
 	}
 	ctx = context.WithValue(ctx, idKey{}, t.TaskID)
-	s.mu.Lock()
-	s.ensure()
 	s.tasks[t.TaskID] = t
 	s.saveTaskLocked(t)
 	s.mu.Unlock()

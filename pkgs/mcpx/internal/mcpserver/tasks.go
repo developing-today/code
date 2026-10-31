@@ -360,6 +360,10 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 		return s.driveAsked(tctx, req, peer, callID)
 	})
 	if terr != nil {
+		// The call is already running upstream, but no task will ever
+		// drive it now: abandon it rather than leaving work nobody can
+		// observe or cancel.
+		s.Ask.Abandon(callID)
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeInternal, Message: terr.Error()}}, true
 	}
 	s.mu.Lock()
