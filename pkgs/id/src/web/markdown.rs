@@ -522,6 +522,98 @@ fn strip_container_prefixes(line: &str) -> &str {
     rest
 }
 
+/// The container structure of a recorded container prefix, as
+/// a string of marker kinds with all spacing removed: `> ` and
+/// `>` are the same blockquote level, so a fence opened under
+/// one spelling closes under the other (Codex P2 on #1565's
+/// nineteenth cut). Byte-exact prefix matching left such a
+/// fence open and suppressed the definitions after it.
+fn container_signature(prefix: &str) -> String {
+    let mut sig = String::new();
+    let mut rest = prefix;
+    loop {
+        let t = rest.trim_start_matches([' ', '\t']);
+        if let Some(r) = t.strip_prefix('>') {
+            sig.push('>');
+            rest = r;
+            continue;
+        }
+        let bytes = t.as_bytes();
+        if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            sig.push('*');
+            rest = &t[1..];
+            continue;
+        }
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits >= 1
+            && digits <= 9
+            && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+            && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+        {
+            sig.push('#');
+            rest = &t[digits + 1..];
+            continue;
+        }
+        break;
+    }
+    sig
+}
+
+/// Strip at most `levels` container levels (blockquote `>`,
+/// list markers) from a line, mirroring
+/// strip_container_prefixes' per-level shapes.
+fn strip_container_levels(line: &str, levels: usize) -> &str {
+    let mut rest = line;
+    for _ in 0..levels {
+        let t = rest.trim_start_matches(' ');
+        if let Some(r) = t.strip_prefix('>') {
+            rest = r.strip_prefix(' ').unwrap_or(r);
+            continue;
+        }
+        let bytes = t.as_bytes();
+        let marker_len = if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            Some(1)
+        } else {
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits >= 1
+                && digits <= 9
+                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+            {
+                Some(digits + 1)
+            } else {
+                None
+            }
+        };
+        let Some(marker_len) = marker_len else { break };
+        rest = t[marker_len..].trim_start_matches([' ', '\t']);
+    }
+    rest
+}
+
+/// Whether `stripped` (a line stripped of up to three leading
+/// spaces) carries the recorded container `prefix`, matched
+/// STRUCTURALLY rather than byte-for-byte: the line's own
+/// leading container levels (as many as the recorded prefix
+/// has) must have the same signature as the recorded prefix.
+fn carries_container_prefix(stripped: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+    let levels = container_signature(prefix).chars().count();
+    if levels == 0 {
+        return false;
+    }
+    let own = &stripped[..stripped.len() - strip_container_levels(stripped, levels).len()];
+    !own.is_empty() && container_signature(own) == container_signature(prefix)
+}
+
 /// A footnote definition block found by the source pre-scan (#1565):
 /// its label and the block's verbatim source (the `[^label]:` line
 /// plus any indented continuation lines, trailing blank lines cut).
@@ -853,7 +945,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // list-scoped fence open and skipped the real definition).
         if fence.in_fence()
             && !fence_prefix.is_empty()
-            && !stripped.starts_with(&fence_prefix)
+            && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
             && (fence_prefix.contains('>')
                 || (indent == 0 && !stripped.is_empty()))
@@ -862,8 +954,8 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             fence_prefix.clear();
         }
         let fence_line = if fence.in_fence() {
-            if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
-                &stripped[fence_prefix.len()..]
+            if carries_container_prefix(stripped, &fence_prefix) {
+                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
             } else {
                 stripped
             }
@@ -877,6 +969,15 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             } else {
                 fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
+            // A fence delimiter is a block boundary: after an
+            // (empty) fenced block the next line is block-eligible
+            // again, so a type-7 HTML block may open there -- the
+            // reference collector already reset this; without it
+            // `Body` / ``` ``` ``` / `<em>` / `[^fake]: ...` kept
+            // the paragraph's ineligibility, refused the tag, and
+            // recovered the fake definition (Codex P2 on #1565's
+            // nineteenth cut).
+            at_block_start = true;
             i += 1;
             continue;
         }
@@ -1201,7 +1302,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // list-scoped fence open and skipped the real definition).
         if fence.in_fence()
             && !fence_prefix.is_empty()
-            && !stripped.starts_with(&fence_prefix)
+            && !carries_container_prefix(stripped, &fence_prefix)
             && strip_container_prefixes(stripped) == stripped
             && (fence_prefix.contains('>')
                 || (indent == 0 && !stripped.is_empty()))
@@ -1210,8 +1311,8 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             fence_prefix.clear();
         }
         let fence_line = if fence.in_fence() {
-            if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
-                &stripped[fence_prefix.len()..]
+            if carries_container_prefix(stripped, &fence_prefix) {
+                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
             } else {
                 stripped
             }
@@ -1340,7 +1441,22 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     // needs whitespace or end-of-line after the
                     // hashes), so it is collected below (Codex P2
                     // on #1565's seventeenth cut).
-                    if after.trim().is_empty()
+                    // The boundary check also applies while an
+                    // angle destination is still unterminated: a
+                    // block-starting line cannot be swallowed
+                    // into the destination, and consuming it took
+                    // the heading AND the valid definition after
+                    // it down with the discarded candidate (Codex
+                    // P2 on #1565's nineteenth cut). A line
+                    // containing an unescaped '>' may still close
+                    // the destination and is consumed.
+                    let pending_angle_destination = {
+                        let t = after.trim_start();
+                        t.starts_with('<') && !contains_unescaped(&t[1..], '>')
+                    };
+                    if (after.trim().is_empty()
+                        || (pending_angle_destination
+                            && !contains_unescaped(next_stripped, '>')))
                         && (footnote_definition_label(next_stripped).is_some()
                             || is_link_reference_definition_start(next_stripped)
                             || is_atx_heading(next_stripped)
@@ -5333,6 +5449,90 @@ mod tests {
             "non-1 ordered marker continuation survives save: {first:?}"
         );
         assert_eq!(first, second, "ordered continuation is a fixpoint");
+    }
+
+
+    #[test]
+    fn test_empty_bullet_ends_footnote_like_comrak() {
+        // #1565 nineteenth cut (Codex P2, DECLINED with evidence):
+        // Codex proposed that an empty bullet cannot interrupt a
+        // paragraph, so `* ` and `second line.` after
+        // `[^a]: First.` belong to the footnote. Ground truth is
+        // comrak, whose boundaries this codec mirrors: parsing
+        // the REFERENCED document (`x[^a]` + this definition)
+        // puts only `First.` in the definition -- comrak ends the
+        // definition at the empty bullet and parses the bullet as
+        // a top-level empty list item and `second line.` as a
+        // body paragraph. The round trip below preserves every
+        // line and is a fixpoint, so nothing is lost on save and
+        // the scanner keeps mirroring comrak (see the PR thread
+        // for the probe output).
+        let original = "[^a]: First.\n* \nsecond line.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.")
+                && first.contains("second line.")
+                && first.contains("- "),
+            "all lines survive the round trip: {first:?}"
+        );
+        assert_eq!(first, second, "empty-bullet round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unterminated_angle_destination_does_not_swallow_blocks() {
+        // #1565 nineteenth cut (Codex P2): `[bad]: <unclosed`
+        // is malformed; the heading after it ends the paragraph
+        // and `[url]:` is a valid definition. The collector's
+        // boundary checks ran only while nothing followed the
+        // colon, so the unterminated angle destination consumed
+        // both lines and the whole candidate was discarded,
+        // leaving the orphan's link literal.
+        let original = "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "valid definition after malformed angle destination resolves: {first:?}"
+        );
+        assert_eq!(first, second, "angle-destination boundary is a fixpoint");
+    }
+
+    #[test]
+    fn test_empty_fence_resets_block_start_for_type7_html() {
+        // #1565 nineteenth cut (Codex P2): an empty fenced block
+        // ends the preceding paragraph, so `<em>` after it opens
+        // a type-7 HTML block and the definition-shaped line is
+        // its literal interior. The footnote scan's fence branch
+        // never reset block-start eligibility (the reference
+        // collector's did), so the tag was refused and the fake
+        // definition recovered as a live footnote.
+        let original = "Body\n```\n```\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        assert!(
+            doc["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["type"] != "footnote_definition"),
+            "definition-shaped HTML interior is not synthesized: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "type-7-after-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_blockquote_fence_closes_without_space_after_marker() {
+        // #1565 nineteenth cut (Codex P2): a fence opened under
+        // `> ` may close under `>` -- the space after the quote
+        // marker is optional, so byte-exact prefix matching left
+        // the fence open and suppressed the reference definition
+        // after it, degrading the orphan's link to literal text.
+        let original = "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "definition after structurally-closed quote fence resolves: {first:?}"
+        );
+        assert_eq!(first, second, "quote-fence round-trip is a fixpoint");
     }
 
     #[test]
