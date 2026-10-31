@@ -114,12 +114,12 @@ func init() {
 		),
 	)
 	registerGaps(
-		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#209", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
-		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#209", Why: "a task failed by an isError tool result carries no statusMessage"},
-		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#209", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
-		Gap{ID: "tasks-rate-limit", Side: Server, Issue: "#209", Why: "tasks/* has no rate limit"},
-		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#209", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
-		Gap{ID: "tasks-audit", Side: Server, Issue: "#209", Why: "task creation, completion and retrieval are not logged"},
-		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#209", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
+		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#1554", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
+		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#1554", Why: "a task failed by an isError tool result carries no statusMessage"},
+		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#1554", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
+		Gap{ID: "tasks-rate-limit", Side: Server, Issue: "#1554", Why: "tasks/* has no rate limit"},
+		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#1554", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
+		Gap{ID: "tasks-audit", Side: Server, Issue: "#1554", Why: "task creation, completion and retrieval are not logged"},
+		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#1554", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
 	)
 }
