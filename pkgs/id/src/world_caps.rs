@@ -27,7 +27,7 @@
 //!
 //! A refused request or subscription carries a stable wire `"error"` code and,
 //! when the refusal has a specific cause, an advisory `"reason"`. Codes are
-//! part of the wire contract and never change meaning; the DoS suite asserts
+//! part of the wire contract and never change meaning; the `DoS` suite asserts
 //! them.
 //!
 //! | Code             | Meaning                                                             |
@@ -352,7 +352,7 @@ pub struct CapError {
 
 /// The stable wire code of a refused request or subscription.
 ///
-/// These are documented in the capability guide and asserted by the DoS
+/// These are documented in the capability guide and asserted by the `DoS`
 /// suite; adding a code changes the wire contract, so new refusals reuse an
 /// existing code before a new one is considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

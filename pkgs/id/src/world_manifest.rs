@@ -56,7 +56,7 @@ pub struct WorldManifest {
 
 /// The relevant current state of a live world, as `id world stats` would see
 /// it. This is the projection a manifest is compared against.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct WorldState {
     /// The active module's content hash, if a program is installed.
     pub module_hash: Option<String>,
@@ -70,19 +70,6 @@ pub struct WorldState {
     pub profile: WorldExecutionProfile,
     /// Pending schedules: id to fire time, in unix milliseconds.
     pub schedules: BTreeMap<String, u64>,
-}
-
-impl Default for WorldState {
-    fn default() -> Self {
-        Self {
-            module_hash: None,
-            seed: 0,
-            grants: Vec::new(),
-            ceiling: None,
-            profile: WorldExecutionProfile::default(),
-            schedules: BTreeMap::new(),
-        }
-    }
 }
 
 /// One reconciliation step, in the order a server applies it. Module install
@@ -131,7 +118,7 @@ pub enum ApplyStep {
 impl ApplyStep {
     /// A stable, human-readable name for the step.
     #[must_use]
-    pub fn kind(&self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Self::InstallModule { .. } => "install_module",
             Self::SetGrants { .. } => "set_grants",
@@ -388,7 +375,7 @@ fn render_steps(steps: &[ApplyStep]) -> String {
                 }
             }
             ApplyStep::SetGrants { grants } => {
-                out.push_str(&format!("~ grants [{}]\n", grants.join(", ")))
+                out.push_str(&format!("~ grants [{}]\n", grants.join(", ")));
             }
             ApplyStep::SetCeiling { ceiling } => match ceiling {
                 Some(names) => {

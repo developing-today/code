@@ -162,22 +162,16 @@ impl SearchOptions {
 /// verbatim behaviour.
 fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
     if name.is_empty() || name.ends_with('/') {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
+        bail!("refusing download of match with unsafe name {name:?}: no final path component");
     }
     let Some(file_name) = std::path::Path::new(name)
         .file_name()
         .and_then(|c| c.to_str())
     else {
-        bail!(
-            "refusing download of match with unsafe name {:?}: no final path component",
-            name
-        );
+        bail!("refusing download of match with unsafe name {name:?}: no final path component");
     };
     Ok(match dir {
-        Some(dir) => format!("{}/{}", dir, file_name),
+        Some(dir) => format!("{dir}/{file_name}"),
         None => file_name.to_owned(),
     })
 }

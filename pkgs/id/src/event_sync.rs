@@ -12,7 +12,7 @@
 //! the pull gate `serve` uses.
 //!
 //! The store these sessions serve is the *same* [`LocalEvents`] instance the web layer
-//! publishes ProseMirror save revisions into. `serve` opens that store once and shares
+//! publishes `ProseMirror` save revisions into. `serve` opens that store once and shares
 //! the `Arc<Mutex<LocalEvents>>` between the web state and this handler, so there is no
 //! second, divergent store: a revision saved through the web UI is in the sync set of
 //! the next session, and a revision that arrives by sync is in the history the web UI
@@ -74,6 +74,7 @@ pub fn open_gate() -> PullGate {
 }
 
 /// Serves range-sync sessions over the node's shared [`LocalEvents`] store.
+///
 /// Register it with `Router::builder(..).accept(ALPN, EventSyncProtocol::new(events))`,
 /// where `events` is the same instance the web layer publishes into.
 #[derive(Clone)]

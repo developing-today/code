@@ -87,16 +87,16 @@ impl ScreenSurface {
         for y in 0..height {
             let start = y * usize::from(self.width);
             let mut row = self.cells[start..start + width].to_vec();
-            if row.last().is_some_and(|cell| cell.columns == 2) {
-                if let Some(last) = row.last_mut() {
-                    *last = ScreenCell {
-                        symbol: " ".to_owned(),
-                        fg: 0,
-                        bg: 0,
-                        bold: false,
-                        columns: 1,
-                    };
-                }
+            if row.last().is_some_and(|cell| cell.columns == 2)
+                && let Some(last) = row.last_mut()
+            {
+                *last = ScreenCell {
+                    symbol: " ".to_owned(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                };
             }
             cells.extend(row);
         }

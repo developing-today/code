@@ -51,7 +51,7 @@ mod tests;
 mod types;
 
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{
@@ -186,7 +186,7 @@ impl WorldService {
 
     /// The world's host metrics registry (F11.7), for metering the
     /// frames this service sends.
-    pub(crate) fn frame_meter(&self) -> &WorldMetrics {
+    pub(crate) const fn frame_meter(&self) -> &WorldMetrics {
         &self.metrics
     }
 
@@ -1165,14 +1165,12 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             let auth_ok = if let Some(admin) = admin_token.as_deref() {
                 service.authorize_admin(Some(admin)).is_ok()
             } else if let Some(cap) = capability.as_deref() {
-                let token = JoinCapability::from_wire(cap.to_string());
+                let token = JoinCapability::from_wire(cap.to_owned());
                 service.world().participant_id(token).await.is_ok()
             } else {
                 false
             };
-            if !auth_ok {
-                let _ = send_error(service.frame_meter(), io, "access denied").await;
-            } else {
+            if auth_ok {
                 match service.world().execution_profile().await {
                     Ok(profile) => {
                         let _ = send_json(
@@ -1192,6 +1190,8 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                         let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                     }
                 }
+            } else {
+                let _ = send_error(service.frame_meter(), io, "access denied").await;
             }
         }
         #[cfg(feature = "sandbox")]
@@ -1325,8 +1325,8 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                 // Authorized exactly like `info`: holding a capability
                 // that snapshots the world is enough to read its metrics.
                 let token = JoinCapability::from_wire(capability);
-                match service.world().snapshot(token).await {
-                    Ok(_) => match service.world().metrics().await {
+                if let Ok(_) = service.world().snapshot(token).await {
+                    match service.world().metrics().await {
                         Ok(metrics) => {
                             if !send_json(
                                 service.frame_meter(),
@@ -1343,11 +1343,10 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                                 send_error(service.frame_meter(), io, &format!("{error:#}")).await;
                             return;
                         }
-                    },
-                    Err(_) => {
-                        let _ = send_error(service.frame_meter(), io, "join denied").await;
-                        return;
                     }
+                } else {
+                    let _ = send_error(service.frame_meter(), io, "join denied").await;
+                    return;
                 }
             }
             ClientFrame::Records {

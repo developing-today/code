@@ -28,8 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE, JournalEntry, WorldCore, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, journal_version_required_by,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram, journal_version_required_by,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -1573,7 +1573,7 @@ mod tests {
             matches!(
                 entries[0],
                 JournalEntry::Created {
-                    version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                    version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                     ..
                 }
             ),
@@ -1619,7 +1619,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));
@@ -1627,7 +1627,7 @@ mod tests {
         assert!(matches!(
             on_disk[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
                 ..
             }
         ));

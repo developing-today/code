@@ -1455,8 +1455,7 @@ fn evaluate_group_warnings(
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 /// Background loop for gossip-based peer discovery.

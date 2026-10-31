@@ -431,7 +431,7 @@ fn check_fields(
                 return Err(format!("`{kind}` needs field `{name}`"));
             }
             Some(value) => {
-                check_value(field, value).map_err(|error| format!("`{kind}.{name}` {error}"))?
+                check_value(field, value).map_err(|error| format!("`{kind}.{name}` {error}"))?;
             }
         }
     }

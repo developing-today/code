@@ -190,6 +190,7 @@ pub fn search_store(
 }
 
 /// The multi-term search over the store's live claims, read by [`EventStore::tag_claims`].
+///
 /// [`Term::SubjectKind`] resolves through the store: the subject's event, read by
 /// [`EventStore::event_by_id`], and the kind in its header extension.
 ///

@@ -464,20 +464,6 @@ enum Staged {
 }
 
 impl Staged {
-    /// Whether the event is kept: stored, or held. A refused event and a fork are not.
-    fn keeps(&self) -> bool {
-        matches!(
-            self,
-            Self::Stored { .. }
-                | Self::Ready(
-                    Ingest::Accepted { .. }
-                        | Ingest::Voided { .. }
-                        | Ingest::Duplicate { .. }
-                        | Ingest::Waiting { .. },
-                )
-        )
-    }
-
     /// The outcome, with its labels read from the store as it is now.
     fn finish(self, txn: &WriteTransaction) -> Result<Ingest, StoreError> {
         match self {

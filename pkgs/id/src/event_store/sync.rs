@@ -127,7 +127,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, outcome: &Ingest) {
+    const fn add(&mut self, outcome: &Ingest) {
         match outcome {
             Ingest::Accepted { .. } => self.accepted += 1,
             Ingest::Duplicate { .. } => self.duplicates += 1,
@@ -195,7 +195,7 @@ pub(crate) enum Cut {
 
 /// Runs one range session over an open connection. The dialer opens the stream and passes
 /// `initiator = true`. `now_ms` is the clock the store's waiting rules use. `deadline` bounds
-/// the whole session, from opening the stream to the last event, as LogSync's does.
+/// the whole session, from opening the stream to the last event, as `LogSync`'s does.
 ///
 /// # Errors
 ///
@@ -362,7 +362,7 @@ struct ReadBudget {
 impl ReadBudget {
     /// Charges `cost` bytes. A charge that would pass the budget is refused, and nothing is
     /// charged.
-    fn charge(&mut self, cost: usize) -> Result<(), BudgetExceeded> {
+    const fn charge(&mut self, cost: usize) -> Result<(), BudgetExceeded> {
         let total = self.read.saturating_add(cost);
         if total > self.budget {
             return Err(BudgetExceeded {
@@ -529,14 +529,14 @@ async fn run(
         let count = u32::try_from(offers.len())?;
         let mut bytes = write_frame(&mut send, &count.to_be_bytes()).await?;
         for (sent, id) in offers.iter().enumerate() {
-            if let Some((records, wait)) = &cut_records {
-                if sent == *records {
-                    if let Some((signal, committed)) = wait {
-                        wait_for_commit(signal, *committed).await;
-                    }
-                    conn.close(1u32.into(), b"cut");
-                    bail!("cut before event {}", sent + 1);
+            if let Some((records, wait)) = &cut_records
+                && sent == *records
+            {
+                if let Some((signal, committed)) = wait {
+                    wait_for_commit(signal, *committed).await;
                 }
+                conn.close(1u32.into(), b"cut");
+                bail!("cut before event {}", sent + 1);
             }
             let record = lock(&store)?
                 .sync_bytes(id)?
