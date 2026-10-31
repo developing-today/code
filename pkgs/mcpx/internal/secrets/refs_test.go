@@ -64,6 +64,7 @@ func TestReferencesFindsTheNamespacesAScriptReaches(t *testing.T) {
 		{"a typescript annotation is not a binding", `function f(x: typeof demo) {} demo.echo();`, only("demo"), []string{"demo"}},
 		{"a typescript generic annotation is not a binding", `function f(x: Map<string, demo>) {} demo.echo();`, only("demo"), []string{"demo"}},
 		{"declaration scanning stops at an ASI boundary", "const x = 1\na(), demo.echo();", only("demo"), []string{"demo"}},
+		{"an instantiation expression ends at an ASI boundary", "const x = identity<string>\na(), demo.echo();", only("demo"), []string{"demo"}},
 		{"control-condition parens do not end a value", `if (true) /x*/.test("x"); tools.fs.read();`, none, []string{"fs"}},
 		{"while condition parens do not end a value", `while (true) /x*/.test("x"); tools.fs.read();`, none, []string{"fs"}},
 		{"for condition parens do not end a value", `for (;;) /x*/.test("x"); tools.fs.read();`, none, []string{"fs"}},
@@ -169,6 +170,9 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"a namespace subscript with an as-const assertion counts", `tools["fs" as const].read();`, none, []string{"fs"}},
 		{"a namespace subscript with a non-null assertion counts", `tools["fs"!].read();`, none, []string{"fs"}},
 		{"a namespace subscript with a generic as assertion counts", `tools["fs" as Record<string, any>].read();`, none, []string{"fs"}},
+		{"a namespace subscript with a satisfies assertion counts", `tools["fs" satisfies string].read();`, none, []string{"fs"}},
+		{"a namespace subscript with a nested >> assertion counts", `tools["fs" as Record<string, Array<string>>].read();`, none, []string{"fs"}},
+		{"a namespace subscript with a nested >>> assertion counts", `tools["fs" as Record<string, Array<Array<string>>>].read();`, none, []string{"fs"}},
 		{"division after an as-const assertion is not a regex", "const n = 2 as const / 2; tools.fs.read();", none, []string{"fs"}},
 	}
 	for _, c := range cases {

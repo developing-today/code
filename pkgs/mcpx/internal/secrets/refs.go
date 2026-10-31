@@ -63,8 +63,8 @@ func References(src string, configured func(string) bool) []string {
 
 // subscriptName reads the bracket spelling at toks[i] ("tools"): the
 // namespace is the plain string literal right after "[", and an erased
-// TypeScript assertion may sit between the literal and the closing
-// bracket — tools["fs" as const], tools["fs"!] and
+// TypeScript assertion (as or satisfies) may sit between the
+// literal and the closing bracket — tools["fs" as const], tools["fs"!] and
 // tools["fs" as Record<string, any>] all reach the same server as
 // tools["fs"], so all three count. Anything else (a computed key, an
 // expression) is not a literal namespace spelling.
@@ -75,7 +75,7 @@ func subscriptName(toks []lexToken, i int) (string, bool) {
 	j := i + 3
 	if j < len(toks) && toks[j].text == "!" {
 		j++
-	} else if j < len(toks) && toks[j].kind == tIdent && toks[j].text == "as" {
+	} else if j < len(toks) && toks[j].kind == tIdent && (toks[j].text == "as" || toks[j].text == "satisfies") {
 		j++
 		depth := 0
 		closed := false
@@ -91,6 +91,13 @@ func subscriptName(toks []lexToken, i int) (string, bool) {
 					depth++
 				case ">", "]", ")", "}":
 					depth--
+				case ">>":
+					// The lexer emits a nested generic close as
+					// one token: it ends two levels, not one
+					// (CodeRabbit minor on #1644).
+					depth -= 2
+				case ">>>":
+					depth -= 3
 				}
 			}
 			j++
@@ -1102,7 +1109,12 @@ func skipDeclarator(toks []lexToken, i int, forHead bool, angles []int) int {
 	depth := 0
 	for i < len(toks) {
 		t := toks[i]
-		if depth == 0 && t.nl && i > 0 && endsValue(toks[i-1]) && startsStatement(t) {
+		// A closing ">" of a type-argument list also ends the
+		// declarator's value for ASI purposes — endsValue does
+		// not claim it (a ">" can be a comparison), but at a
+		// newline after an angle list the same ruling the type
+		// alias mask uses applies (CodeRabbit minor on #1644).
+		if depth == 0 && t.nl && i > 0 && (endsValue(toks[i-1]) || toks[i-1].text == ">" || toks[i-1].text == ">>" || toks[i-1].text == ">>>") && startsStatement(t) {
 			return i
 		}
 		if forHead && depth == 0 && t.kind == tIdent && (t.text == "in" || t.text == "of") &&
