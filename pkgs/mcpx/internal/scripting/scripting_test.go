@@ -129,6 +129,16 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after expression parens", "const ratio = (1 + 2) / 2;\n"},
 		{"division after object literal parens", "const ratio = ({}) / 2;\n"},
 		{"regex after return keyword", "function f() { return /a+/.test(\"aa\"); }\n"},
+		{"division after keyword-named property", "const obj = {return: 4};\nconst ratio = obj.return / 2;\n"},
+		{"division after keyword-named method call", "const obj = {catch: () => 4};\nconst ratio = obj.catch() / 2;\n"},
+		{"division after function expression", "const n = function() {} / 2;\n"},
+		{"division after class expression", "const n = class {} / 2;\n"},
+		{"division after named class expression", "const n = class Foo extends Bar {} / 2;\n"},
+		{"regex after function declaration", "function f() {}\n/a+/.test(\"aa\");\n"},
+		{"division after non-breaking space", "const ratio = 4\u00a0/ 2;\n"},
+		{"division after vertical tab and form feed", "const ratio = 4\v\f/ 2;\n"},
+		{"division after BOM whitespace", "const ratio = 4\ufeff/ 2;\n"},
+		{"division after line separator", "const ratio = 4\u2028/ 2;\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

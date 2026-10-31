@@ -137,6 +137,30 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	var curIdent []rune
 	lastIdent := ""
 	prevChar := rune(0)
+	// identPrev is the last significant character before the
+	// identifier currently being accumulated started, and
+	// lastIdentPrev the same for lastIdent. Keyword classification
+	// must consult the character BEFORE the identifier: by the
+	// time an identifier completes, prevChar holds its own final
+	// character, so a member property named like a keyword
+	// (obj.return, obj.catch()) was misread as the keyword itself
+	// (Codex P2 on #1659).
+	identPrev := rune(0)
+	lastIdentPrev := rune(0)
+	// prevIdent is the completed identifier before the one now
+	// being accumulated, captured when an identifier starts; it
+	// spots expression keywords in front of function/class
+	// (return function() {} / 2 divides after the body closure).
+	prevIdent := ""
+	// expectFuncClassBody is set while scanning a function or
+	// class EXPRESSION whose body '{' has not been seen yet: that
+	// brace closes an operand, not a statement block, so a '/'
+	// after its '}' is division (Codex P2 on #1659:
+	// const n = function() {} / 2). It is gated on the keyword
+	// sitting in expression position — after a function/class
+	// DECLARATION a '/' starts a new statement and does open a
+	// regex — and is cleared by the body's '{' or by a ';'.
+	expectFuncClassBody := false
 
 	chars := []rune(src)
 	n := len(chars)
@@ -146,12 +170,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
 			if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$' {
+				if len(curIdent) == 0 {
+					identPrev = prevChar
+					prevIdent = lastIdent
+				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
 				lastIdent = string(curIdent)
+				lastIdentPrev = identPrev
 				curIdent = nil
-				if isExprKeyword(lastIdent) && prevChar != '.' {
+				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
 					prevSig = 'o'
+				}
+				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && isExprPositionStart(lastIdentPrev, prevIdent) {
+					expectFuncClassBody = true
 				}
 			}
 		}
@@ -274,8 +306,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// approximation. Expression keywords (return, typeof, ...),
 		// control-header and statement-block closures, and postfix
 		// tokens are classified explicitly below; remaining blind
-		// spots are exotic shapes such as a regex after a member
-		// property named like a keyword (obj.return /re/).
+		// spots are exotic shapes such as an async function
+		// expression or a function statement after 'else', whose
+		// keyword is not recognised as expression-position, and
+		// U+2028/U+2029 appearing inside a regex literal.
 		if ch == '/' {
 			if prevSig == 0 || prevSig == 'o' {
 				inRegex = true
@@ -302,15 +336,31 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// switch/catch/with) opens a control header: its ')'
 			// returns to expression position, so a following '/'
 			// opens a regex (Codex P2 on #1659: if (true) /a+/.test(..)).
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControlKeyword(lastIdent) && prevChar != '.'})
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControlKeyword(lastIdent) && lastIdentPrev != '.'})
 			lastIdent = ""
+			lastIdentPrev = 0
 		case '{':
 			// A '{' in statement position opens a block, whose '}'
 			// returns to expression position ({} /a+/.test(..)); a
 			// '{' in expression position opens an object literal,
-			// whose '}' is an operand (({}) / 2 divides).
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: !isObjectBrace(prevChar, lastIdent)})
+			// whose '}' is an operand (({}) / 2 divides). A keyword
+			// reached through member access (obj.return) is a
+			// property name, not a keyword, so it does not make
+			// the brace an object literal. The body of a function
+			// or class expression is likewise an operand closure:
+			// const n = function() {} / 2 divides.
+			kwIdent := lastIdent
+			if lastIdentPrev == '.' {
+				kwIdent = ""
+			}
+			exprAfter := !isObjectBrace(prevChar, kwIdent)
+			if expectFuncClassBody {
+				exprAfter = false
+				expectFuncClassBody = false
+			}
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter})
 			lastIdent = ""
+			lastIdentPrev = 0
 		case '[':
 			stack = append(stack, delimToken{char: ch, line: line})
 		case ')', '}', ']':
@@ -345,7 +395,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			prevSig = 'x'
 		case ch == '!' && wasOperand:
 			prevSig = 'x'
-		case ch == ' ' || ch == '\t' || ch == '\r':
+		case isJSWhitespace(ch):
 			// Whitespace does not change the ruling.
 		case unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$':
 			prevSig = 'x'
@@ -363,8 +413,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			prevSig = 'o'
 		}
 		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
+		if ch == ';' {
+			expectFuncClassBody = false
+		}
 		closedExprAfter = false
-		if ch != ' ' && ch != '\t' && ch != '\r' {
+		if !isJSWhitespace(ch) {
 			prevChar = ch
 		}
 	}
@@ -426,6 +479,41 @@ func isControlKeyword(kw string) bool {
 		return true
 	}
 	return false
+}
+
+// isExprPositionStart reports whether a function/class keyword that
+// started right after the significant character prev (with prevIdent
+// the identifier completed before it) sits in expression position:
+// after an operator or opening delimiter, or after an expression
+// keyword (return function() {}). Statement position — start of
+// input, or after ';', '{' or '}' — makes the keyword a declaration
+// instead, whose closing brace returns to expression position.
+func isExprPositionStart(prev rune, prevIdent string) bool {
+	if isExprKeyword(prevIdent) {
+		return true
+	}
+	switch prev {
+	case '=', '(', ',', '[', ':', '!', '&', '|', '?', '+', '-', '*', '/', '%', '~', '^', '<', '>':
+		return true
+	}
+	return false
+}
+
+// isJSWhitespace reports whether ch is in the ECMAScript WhiteSpace
+// or LineTerminator set other than '\n' (handled separately at the
+// top of the scan loop): space, tab, carriage return, vertical tab,
+// form feed, no-break space, BOM/zero-width no-break space, the
+// Unicode line/paragraph separators, and the remaining Unicode
+// space separators. Every member must preserve the previous token's
+// operand status — treating one as an operator flipped a following
+// division slash into a phantom regex opener (Codex P2 on #1659:
+// an operand separated from '/' by a non-breaking space).
+func isJSWhitespace(ch rune) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\v', '\f', '\u00a0', '\ufeff', '\u2028', '\u2029', '\u1680', '\u202f', '\u205f', '\u3000':
+		return true
+	}
+	return ch >= '\u2000' && ch <= '\u200a'
 }
 
 // isObjectBrace reports whether a '{' whose previous significant
