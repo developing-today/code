@@ -82,6 +82,13 @@ The deploy itself uses the **cf versions flow**:
    `?deployable=true` set.
 3. `cf workers deployments create` puts that version at 100%.
 
+First deploy only: `cf workers versions create` cannot create a
+brand-new Worker (it refuses and points at the deploy command), so
+when the Worker does not exist yet the script bootstraps with
+`cf deploy` — same tag and message — which creates the first version
+and its deployment together. Every later deploy uses the versions
+flow above.
+
 ### Rollback
 
 Versions and deployments are separate objects; rollback is a new

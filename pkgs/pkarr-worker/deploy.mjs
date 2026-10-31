@@ -12,6 +12,10 @@
 // machinery run at an older version id: --deploy-version <id> creates a
 // deployment at an existing version without uploading anything.
 //
+// One cf gap: versions create cannot create a brand-new Worker, so the
+// first-ever deploy bootstraps through `cf deploy` (same tag/message);
+// see the bootstrap note at the deploy step below.
+//
 // Usage:
 //   deploy.mjs [--dry-run]                 upload + deploy HEAD
 //   deploy.mjs --deploy-version <id>       deploy (or roll back to) an
@@ -70,19 +74,38 @@ if (deployVersion !== null) {
 
 const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
+const message = `deploy ${sha} via nix run .#pkarr-deploy`;
 
-const createArgs = [
-  "workers", "versions", "create",
-  "--worker", WORKER,
-  "--tag", tag,
-  "--message", `deploy ${sha} via nix run .#pkarr-deploy`,
-];
-if (dryRun) createArgs.push("--dry-run");
-console.log(`uploading version (tag ${tag})`);
-runCf(createArgs, { stdio: "inherit" });
-if (dryRun) {
-  console.log("dry run: config builds, nothing uploaded");
-  process.exit(0);
+// cf gap (recorded on #1829): `cf workers versions create` cannot
+// create a brand-new Worker — it refuses and tells you to run the
+// deploy command first. So the very first deploy bootstraps with
+// `cf deploy`, which creates the Worker's first version (with the
+// same tag/message) and its first deployment in one step. Every
+// later deploy uses the versions flow below.
+const bootstrapping = !workerExists();
+if (bootstrapping) {
+  const deployArgs = ["deploy", "--worker", WORKER, "--tag", tag, "--message", message];
+  if (dryRun) deployArgs.push("--dry-run");
+  console.log(`worker ${WORKER} does not exist yet; bootstrapping with cf deploy (tag ${tag})`);
+  runCf(deployArgs, { stdio: "inherit" });
+  if (dryRun) {
+    console.log("dry run: config builds, nothing uploaded");
+    process.exit(0);
+  }
+} else {
+  const createArgs = [
+    "workers", "versions", "create",
+    "--worker", WORKER,
+    "--tag", tag,
+    "--message", message,
+  ];
+  if (dryRun) createArgs.push("--dry-run");
+  console.log(`uploading version (tag ${tag})`);
+  runCf(createArgs, { stdio: "inherit" });
+  if (dryRun) {
+    console.log("dry run: config builds, nothing uploaded");
+    process.exit(0);
+  }
 }
 
 // Re-deploying an unchanged tree uploads a second version under the
@@ -96,9 +119,27 @@ if (!version) {
 console.log(`uploaded version ${version.id}`);
 
 await assertDeployable(version.id);
-createDeployment(version.id);
+if (bootstrapping) {
+  console.log(`bootstrap deployment already live at version ${version.id}`);
+} else {
+  createDeployment(version.id);
+}
 reportLive();
 console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
+
+function workerExists() {
+  try {
+    execFileSync("cf", ["-q", "workers", "get", WORKER], {
+      cwd: here,
+      env,
+      encoding: "utf8",
+      stdio: ["inherit", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function createDeployment(versionId) {
   const versions = JSON.stringify([{ version_id: versionId, percentage: 100 }]);

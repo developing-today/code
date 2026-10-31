@@ -48,6 +48,12 @@ Rules carried from the #1828 ruling:
   what makes rollback a first-class operation instead of a redeploy:
   `deploy.mjs --deploy-version <id>` creates a deployment at any
   retained version, forward or back.
+- **Bootstrap exception.** `cf workers versions create` cannot create
+  a brand-new Worker (found by the pilot's first deploy run; recorded
+  on #1829). A Worker's first-ever deploy therefore goes through
+  `cf deploy` with the same tag/message, which creates version 1 and
+  its deployment together; the versions flow governs everything
+  after.
 - **State handling is deferrable.** No terraform/terranix in the pilot;
   the Worker's own config (`cloudflare.config.ts`, mirrored by
   `wrangler.jsonc` for dev/tests) is the resource declaration.
