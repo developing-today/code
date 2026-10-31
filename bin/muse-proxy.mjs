@@ -1057,15 +1057,15 @@ const contentPartsForInput = (content) => {
 // model's tool calls back on the way out. The CLI door never needed this —
 // the CLI sends its own toolset.
 const DIRECT_TOOL_ALIASES = { shell: 'run_command', bash: 'terminal' };
-const DIRECT_TOOL_NAMES = Object.fromEntries(
-  Object.entries(DIRECT_TOOL_ALIASES).map(([client, alias]) => [alias, client])
-);
 const directToolAlias = (name, taken) => {
   const alias = DIRECT_TOOL_ALIASES[name];
-  if (!alias || (taken && taken.has(alias))) return name;
-  return alias;
+  if (!alias) return name;
+  let candidate = alias;
+  let suffix = 2;
+  while (taken && taken.has(candidate)) candidate = `${alias}_${suffix++}`;
+  return candidate;
 };
-const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
+const clientToolName = (name, inverse) => inverse.get(name) || name;
 
 // The /v1/responses passthrough forwards client bodies in Responses shape;
 // apply the same tool-name aliasing there, in both directions, so a native
@@ -1073,15 +1073,16 @@ const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
 // unparseable body forwards verbatim, exactly as before.
 const aliasResponsesRequestBody = (bodyText) => {
   let parsed;
-  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false }; }
-  if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false };
+  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false, inverse: new Map() }; }
+  if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false, inverse: new Map() };
   const taken = new Set((Array.isArray(parsed.tools) ? parsed.tools : [])
     .map(t => t && t.name).filter(Boolean));
   let aliased = false;
+  const inverse = new Map();
   const rename = (holder) => {
     if (holder && typeof holder.name === 'string') {
       const next = directToolAlias(holder.name, taken);
-      if (next !== holder.name) { holder.name = next; aliased = true; }
+      if (next !== holder.name) { inverse.set(next, holder.name); holder.name = next; aliased = true; }
     }
   };
   if (Array.isArray(parsed.tools)) for (const t of parsed.tools) rename(t);
@@ -1091,32 +1092,32 @@ const aliasResponsesRequestBody = (bodyText) => {
     }
   }
   if (parsed.tool_choice && parsed.tool_choice.type === 'function') rename(parsed.tool_choice);
-  return aliased ? { text: JSON.stringify(parsed), aliased } : { text: bodyText, aliased };
+  return aliased ? { text: JSON.stringify(parsed), aliased, inverse } : { text: bodyText, aliased, inverse };
 };
 
-const unaliasResponsesOutput = (holder) => {
+const unaliasResponsesOutput = (holder, inverse) => {
   if (!holder || typeof holder !== 'object') return;
   for (const item of holder.output || []) {
     if (item && item.type === 'function_call' && typeof item.name === 'string') {
-      item.name = clientToolName(item.name);
+      item.name = clientToolName(item.name, inverse);
     }
   }
 };
 
 // Rewrite one SSE data payload if it carries an aliased tool name in a
 // function_call item; anything else passes through untouched.
-const unaliasSseData = (data) => {
-  if (!data.includes('run_command') && !data.includes('terminal')) return data;
+const unaliasSseData = (data, inverse) => {
+  if (![...inverse.keys()].some(name => data.includes(name))) return data;
   let evt;
   try { evt = JSON.parse(data); } catch { return data; }
   if (evt && evt.item && evt.item.type === 'function_call' && typeof evt.item.name === 'string') {
-    evt.item.name = clientToolName(evt.item.name);
+    evt.item.name = clientToolName(evt.item.name, inverse);
   }
-  if (evt && evt.response) unaliasResponsesOutput(evt.response);
+  if (evt && evt.response) unaliasResponsesOutput(evt.response, inverse);
   return JSON.stringify(evt);
 };
 
-const buildResponsesRequest = (body, baseModel, effort) => {
+const buildResponsesRequest = (body, baseModel, effort, inverse) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const instructions = messages
     .filter(m => m.role === 'system')
@@ -1125,6 +1126,11 @@ const buildResponsesRequest = (body, baseModel, effort) => {
     .join('\n\n');
   const takenNames = new Set((Array.isArray(body.tools) ? body.tools : [])
     .map(t => t && t.function && t.function.name).filter(Boolean));
+  const alias = (name) => {
+    const next = directToolAlias(name, takenNames);
+    if (next !== name) inverse.set(next, name);
+    return next;
+  };
   const input = [];
   for (const m of messages) {
     if (m.role === 'system') continue;
@@ -1137,7 +1143,7 @@ const buildResponsesRequest = (body, baseModel, effort) => {
         input.push({
           type: 'function_call',
           call_id: tc.id,
-          name: tc.function ? directToolAlias(tc.function.name, takenNames) : undefined,
+          name: tc.function ? alias(tc.function.name) : undefined,
           arguments: (tc.function && tc.function.arguments) || ''
         });
       }
@@ -1155,13 +1161,13 @@ const buildResponsesRequest = (body, baseModel, effort) => {
   if (instructions) out.instructions = instructions;
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     out.tools = body.tools.map(t => (t && t.type === 'function' && t.function)
-      ? { type: 'function', name: directToolAlias(t.function.name, takenNames), description: t.function.description, parameters: t.function.parameters }
+      ? { type: 'function', name: alias(t.function.name), description: t.function.description, parameters: t.function.parameters }
       : t);
   }
   if (body.tool_choice !== undefined) {
     const tc = body.tool_choice;
     if (typeof tc === 'string') out.tool_choice = tc;
-    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: directToolAlias(tc.function.name, takenNames) };
+    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: alias(tc.function.name) };
     else out.tool_choice = tc;
   }
   const maxOut = body.max_completion_tokens !== undefined && body.max_completion_tokens !== null
@@ -1175,7 +1181,7 @@ const buildResponsesRequest = (body, baseModel, effort) => {
   return out;
 };
 
-const extractResponsesOutput = (respBody) => {
+const extractResponsesOutput = (respBody, inverse) => {
   let content = '';
   const toolCalls = [];
   for (const item of (respBody && respBody.output) || []) {
@@ -1188,7 +1194,7 @@ const extractResponsesOutput = (respBody) => {
       toolCalls.push({
         id: item.call_id || item.id,
         type: 'function',
-        function: { name: clientToolName(item.name), arguments: item.arguments || '' }
+        function: { name: clientToolName(item.name, inverse), arguments: item.arguments || '' }
       });
     }
   }
@@ -1222,8 +1228,8 @@ const chatUsageFromResponses = (usage) => {
   };
 };
 
-const responsesToChatCompletion = (respBody, { chatId, created, fullName }) => {
-  const { content, toolCalls } = extractResponsesOutput(respBody);
+const responsesToChatCompletion = (respBody, { chatId, created, fullName, inverse }) => {
+  const { content, toolCalls } = extractResponsesOutput(respBody, inverse);
   const message = { role: 'assistant', content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
   return {
@@ -1241,7 +1247,7 @@ const responsesToChatCompletion = (respBody, { chatId, created, fullName }) => {
 };
 
 // Translate an upstream Responses SSE stream into chat-completion chunks.
-const streamResponsesAsChat = async (response, { res, chatId, created, fullName }) => {
+const streamResponsesAsChat = async (response, { res, chatId, created, fullName, inverse }) => {
   const sendChunk = (delta, finishReason = null, usage) => {
     if (res.writableEnded) return;
     const chunk = {
@@ -1282,7 +1288,7 @@ const streamResponsesAsChat = async (response, { res, chatId, created, fullName 
           index,
           id: evt.item.call_id || evt.item.id,
           type: 'function',
-          function: { name: clientToolName(evt.item.name || ''), arguments: '' }
+          function: { name: clientToolName(evt.item.name || '', inverse), arguments: '' }
         }]
       });
     } else if (type === 'response.function_call_arguments.delta') {
@@ -1295,7 +1301,7 @@ const streamResponsesAsChat = async (response, { res, chatId, created, fullName 
       });
     } else if (type === 'response.completed') {
       const respBody = evt.response || {};
-      const { toolCalls } = extractResponsesOutput(respBody);
+      const { toolCalls } = extractResponsesOutput(respBody, inverse);
       sendChunk({}, finishReasonFromResponses(respBody, toolCalls.length > 0), chatUsageFromResponses(respBody.usage));
       if (!res.writableEnded) res.write('data: [DONE]\n\n');
       res.end();
@@ -1353,7 +1359,8 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
     writeJsonBody(res, 502, { error: { message: keyResult.message } });
     return true;
   }
-  const upstreamBody = JSON.stringify(buildResponsesRequest(body, baseModel, effort));
+  const inverse = new Map();
+  const upstreamBody = JSON.stringify(buildResponsesRequest(body, baseModel, effort, inverse));
   let outcome;
   try {
     outcome = await directResponsesFetch(keyResult, upstreamBody, stream ? 'text/event-stream' : 'application/json');
@@ -1388,7 +1395,7 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
       writeJsonBody(res, 502, { error: { message: 'Direct Meta route returned an unreadable response body' } });
       return true;
     }
-    writeJsonBody(res, 200, responsesToChatCompletion(respBody, { chatId, created, fullName }));
+    writeJsonBody(res, 200, responsesToChatCompletion(respBody, { chatId, created, fullName, inverse }));
     return true;
   }
   res.writeHead(200, {
@@ -1397,7 +1404,7 @@ const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, c
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no'
   });
-  await streamResponsesAsChat(response, { res, chatId, created, fullName });
+  await streamResponsesAsChat(response, { res, chatId, created, fullName, inverse });
   return true;
 };
 
@@ -1544,7 +1551,7 @@ const server = http.createServer((req, res) => {
           let buffer = '';
           const flushLine = (line) => {
             if (line.startsWith('data: ') && line.length > 6 && !line.startsWith('data: [DONE]')) {
-              res.write(`data: ${unaliasSseData(line.slice(6))}\n`);
+              res.write(`data: ${unaliasSseData(line.slice(6), aliasedBody.inverse)}\n`);
             } else {
               res.write(line + '\n');
             }
@@ -1567,7 +1574,7 @@ const server = http.createServer((req, res) => {
       let text = await response.text().catch(() => '');
       try {
         const parsedJson = JSON.parse(text);
-        unaliasResponsesOutput(parsedJson);
+        unaliasResponsesOutput(parsedJson, aliasedBody.inverse);
         text = JSON.stringify(parsedJson);
       } catch { /* not JSON: pass through as-is */ }
       res.writeHead(response.status, { 'Content-Type': contentType });
