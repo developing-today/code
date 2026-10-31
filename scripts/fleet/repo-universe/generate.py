@@ -248,7 +248,7 @@ def build(org_repos: list[dict], user_repos: list[dict], census_text: str,
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--org-json", help="captured `gh api orgs/developing-today/repos` JSON")
+    ap.add_argument("--org-json", help="captured `gh api --paginate orgs/developing-today/repos` JSON")
     ap.add_argument("--user-json", help="captured `gh api --paginate 'user/repos?affiliation=owner'` JSON (authenticated as dezren39; users/dezren39/repos is public-only)")
     ap.add_argument("--live", action="store_true", help="fetch the enumeration via gh instead of files")
     ap.add_argument("--census", required=True, help="path to all-repos-census.md")
