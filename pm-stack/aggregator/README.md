@@ -273,6 +273,41 @@ the sessions that worked them. The OpenCode tool in
 `{ sessionId, parentId, agent, directory }` on demand — copy it to
 `~/.config/opencode/tool/` on each host and restart that server.
 
+## Ingest contract (#2576)
+
+Every document the aggregator ingests is validated **once, at its
+ingest boundary**, before any consumer, store append, or render sees
+it. Validation covers shape, element types, value ranges, and real
+calendar dates, and it is written with the shared primitives in
+`src/validate.ts` (`isRecord`, `isNonEmptyString`, `isStringArray`,
+`isFiniteNumber`, `isNonNegative`, `isPercentOf(limit)`,
+`isIsoDate`/`parseIsoDate`, `arrayOf(guard)`,
+`isTimestampNotFuture`) — a guard never re-implements a check those
+primitives already express.
+
+A validation failure produces exactly one of three sanctioned
+outcomes, chosen per boundary and recorded in its guard:
+
+- **Reject and retain** — the document/section/entry is refused; the
+  previously retained value stays and ages.
+- **Drop the element, count it** — where elements are independent,
+  the malformed element alone is dropped and the drop is counted
+  somewhere visible, never silently and never at the cost of its
+  siblings.
+- **Refuse the append** — a snapshot record that fails validation is
+  not appended, and the append reports the refusal. A record the
+  store cannot read back is a record it must not accept.
+
+Three outcomes are forbidden everywhere: throwing across the boundary
+and discarding valid siblings; fabricating rows, ids, or zeros from
+malformed input; and publishing an out-of-range value as live
+measured data. A genuine zero is a successful validation whose value
+is 0.
+
+The contract's existing embodiment is `src/token-adapter.ts` (#1153):
+it validates its document once at the boundary and rejects-and-retains
+on failure, and new boundaries are written to its standard.
+
 ## First-class requirements (from the design record)
 
 1. **Cross-repo links.** Any board card or roadmap row links any GitHub
