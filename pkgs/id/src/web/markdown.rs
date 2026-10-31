@@ -406,7 +406,13 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         let line = lines[i];
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
-        if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
+        // An already-open HTML block sees every line, however
+        // indented: an indented closing marker still closes it,
+        // and gating this feed on indent left the tracker open
+        // forever, suppressing every later definition (Codex P2
+        // on #1565's seventh cut). The indent limit applies only
+        // to recognizing an OPENING line.
+        if !fence.in_fence() && (indent <= 3 || html.in_html()) && html.feed(stripped) {
             i += 1;
             continue;
         }
@@ -483,6 +489,65 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
 /// a reference-style link inside an unreferenced footnote resolves
 /// against definitions elsewhere in the document, and a probe without
 /// them converts the link to literal text (Codex P2).
+/// The text after a link reference definition's destination, given
+/// everything after its `]:` (accumulated across the definition's
+/// lines). None while the destination itself is still incomplete --
+/// nothing collected yet, or an unterminated angle destination.
+fn link_reference_definition_title_text(after: &str) -> Option<&str> {
+    let text = after.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let rest = if let Some(inner) = text.strip_prefix('<') {
+        let pos = inner.find('>')?;
+        &inner[pos + 1..]
+    } else {
+        let end = text.find(char::is_whitespace).unwrap_or(text.len());
+        &text[end..]
+    };
+    Some(rest.trim_start())
+}
+
+/// Whether a link reference definition needs more lines: its
+/// destination has not arrived yet, or a title that was started
+/// (double quote, single quote, or open paren) has not closed
+/// (Codex P2 on #1565's seventh cut -- definitions legitimately
+/// span lines, with the destination or the title on a following
+/// line).
+fn link_reference_definition_needs_more(after: &str) -> bool {
+    let Some(title) = link_reference_definition_title_text(after) else {
+        return true;
+    };
+    if title.is_empty() {
+        return false;
+    }
+    let closer = match title.as_bytes()[0] {
+        b'"' => '"',
+        0x27 => 0x27 as char,
+        b'(' => ')',
+        _ => return false,
+    };
+    !title[1..].contains(closer)
+}
+
+/// Whether anything follows the destination in the accumulated
+/// after-colon text (a title, complete or still arriving).
+fn link_reference_definition_has_title(after: &str) -> bool {
+    link_reference_definition_title_text(after).is_some_and(|t| !t.is_empty())
+}
+
+/// Whether a stripped line opens a link reference definition
+/// (`[label]:`), footnote definitions excluded by the caller.
+fn is_link_reference_definition_start(stripped: &str) -> bool {
+    if !stripped.starts_with('[') {
+        return false;
+    }
+    match stripped.find(']') {
+        Some(close) => stripped[close + 1..].starts_with(':'),
+        None => false,
+    }
+}
+
 fn collect_link_reference_definitions(markdown: &str) -> String {
     let mut fence = FenceTracker::default();
     let mut fence_prefix = String::new();
@@ -497,7 +562,10 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
     // lines and other definitions leave the next line block-eligible;
     // paragraph text does not.
     let mut at_block_start = true;
-    for line in markdown.lines() {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
         if stripped.trim().is_empty() {
@@ -506,10 +574,18 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
             // definition (Codex P2 on #1565's sixth cut).
             html.feed(stripped);
             at_block_start = true;
+            i += 1;
             continue;
         }
-        if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
+        // An already-open HTML block sees every line, however
+        // indented: an indented closing marker still closes it,
+        // and gating this feed on indent left the tracker open
+        // forever, suppressing every later definition (Codex P2
+        // on #1565's seventh cut). The indent limit applies only
+        // to recognizing an OPENING line.
+        if !fence.in_fence() && (indent <= 3 || html.in_html()) && html.feed(stripped) {
             at_block_start = true;
+            i += 1;
             continue;
         }
         let container_stripped = strip_container_prefixes(stripped);
@@ -530,26 +606,78 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
                 fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
             }
             at_block_start = true;
+            i += 1;
             continue;
         }
         if fence.in_fence() || html.in_html() || indent > 3 {
+            i += 1;
             continue;
         }
         if footnote_definition_label(stripped).is_some() {
             // A footnote definition is its own leaf block; a link
             // definition after it starts a fresh block.
             at_block_start = true;
+            i += 1;
             continue;
         }
-        if at_block_start && stripped.starts_with('[') {
-            if let Some(close) = stripped.find(']') {
-                if let Some(after) = stripped[close + 1..].strip_prefix(':') {
-                    if !after.trim().is_empty() {
-                        defs.push(line);
-                        continue;
-                    }
+        if at_block_start && is_link_reference_definition_start(stripped) {
+            let close = stripped.find(']').expect("start shape checked");
+            // Collect the COMPLETE definition block: the destination
+            // or the title may sit on following lines, and collecting
+            // only the opening line degraded the reference to literal
+            // text or silently dropped its title (Codex P2 on
+            // #1565's seventh cut).
+            let mut block: Vec<&str> = vec![line];
+            let mut after = stripped[close + 2..].to_string();
+            let mut j = i + 1;
+            while j < lines.len() {
+                let next = lines[j];
+                let next_stripped = next.trim_start_matches(' ');
+                if next_stripped.trim().is_empty() {
+                    break;
                 }
+                if link_reference_definition_needs_more(&after) {
+                    // Still waiting for the destination or an
+                    // unclosed title. A definition-shaped line while
+                    // the destination is missing starts its own
+                    // block instead of serving as a destination.
+                    if after.trim().is_empty()
+                        && (footnote_definition_label(next_stripped).is_some()
+                            || is_link_reference_definition_start(next_stripped)
+                            || next_stripped.starts_with('#')
+                            || next_stripped.starts_with('>')
+                            || next_stripped.starts_with('`'))
+                    {
+                        break;
+                    }
+                    block.push(next);
+                    after.push('\n');
+                    after.push_str(next_stripped);
+                    j += 1;
+                    continue;
+                }
+                // Complete so far, but a title line still belongs to
+                // this definition.
+                if !link_reference_definition_has_title(&after)
+                    && matches!(
+                        next_stripped.as_bytes().first().copied(),
+                        Some(b'"') | Some(0x27) | Some(b'(')
+                    )
+                {
+                    block.push(next);
+                    after.push('\n');
+                    after.push_str(next_stripped);
+                    j += 1;
+                    continue;
+                }
+                break;
             }
+            if link_reference_definition_title_text(&after).is_some() {
+                defs.push(block.join("\n"));
+            }
+            at_block_start = true;
+            i = j;
+            continue;
         }
         // Any other line: headings and container lines end a
         // paragraph (next line may start a block); plain text is a
@@ -557,6 +685,7 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
         at_block_start = stripped.starts_with('#')
             || stripped.starts_with('>')
             || strip_container_prefixes(stripped) != stripped;
+        i += 1;
     }
     defs.join("\n")
 }
@@ -4411,6 +4540,84 @@ mod tests {
             orphan.to_string().contains("example.com"),
             "reference-style link resolves after an HTML block: {orphan}"
         );
+    }
+
+    #[test]
+    fn test_multiline_link_reference_definition_destination_on_next_line() {
+        // Codex P2 on #1565's seventh cut: a valid definition with
+        // its destination on the following line was omitted from the
+        // synthesis context (the text after the colon is empty), so
+        // the orphan's reference-style link degraded to literal text.
+        let original = "[url]:\n    https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "multiline destination resolves the orphan link: {orphan}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multiline-definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_link_reference_definition_title_on_next_line() {
+        // Codex P2 on #1565's seventh cut: a definition whose title
+        // sits on the following line was collected without it, so
+        // the recovered footnote's link silently lost its title.
+        let original =
+            "[url]: https://example.com\n    \"Target title\"\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("Target title"),
+            "continuation-line title is kept on the orphan link: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_indented_html_comment_close_releases_reference_definitions() {
+        // Codex P2 on #1565's seventh cut: an indented closing
+        // marker ends the real HTML comment, but the collector's
+        // indent gate never fed it to the tracker, so the tracker
+        // stayed open and suppressed the valid definition after it.
+        let original =
+            "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "definition after an indented comment close is collected: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_indented_html_comment_close_releases_footnote_definitions() {
+        // Codex P2 on #1565's seventh cut, pre-scan half: the same
+        // indent gate in the footnote scan kept the comment open
+        // forever, so a real orphan after it was never recovered.
+        let original = "<!--\n    -->\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after an indented comment close is recovered");
     }
 
     #[test]
