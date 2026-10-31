@@ -91,7 +91,13 @@ func (s *Server) canAsk(ctx context.Context, c *Conn, p Peer) bool {
 	// Streamable HTTP that is a property of the exchange rather than of the
 	// connection -- the frame goes out on the response stream of the
 	// request that is waiting for it.
-	return p.Modern || senderFrom(ctx) != nil || c.canPush()
+	// A 2025-11-25 host that declared elicitation.url is also admitted
+	// when no channel exists: a URL question pending for its call is
+	// answered with -32042 (see url_required.go) instead of silently
+	// falling through to the ordinary path, where the question would
+	// sit with the broker until the call timed out generically (#2080).
+	return p.Modern || senderFrom(ctx) != nil || c.canPush() ||
+		p.eligibleURLElicitationRequired()
 }
 
 // resumeOf reads the two fields a modern client sends when answering.
@@ -185,6 +191,18 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			return finishedAsk(req, out, peer, s.passCall(ctx, req))
 		}
 
+		// Undeliverable URL question, entry trigger (#2080): this host
+		// declared elicitation.url at 2025-11-25 but there is no channel
+		// to ask it on, so a pending URL question of this call can never
+		// be delivered inline. Answer -32042 listing exactly those
+		// questions; the broker KEEPS them (no Abandon) -- the host
+		// completes them out of band and retries, mirroring the client
+		// flow of #2079.
+		if senderFrom(ctx) == nil && !c.canPush() {
+			if resp := urlRequiredResponse(req, peer, out.Questions); resp != nil {
+				return resp
+			}
+		}
 		sendable := sendableTo(out.Questions, peer)
 		if len(sendable) == 0 && len(out.Notifications) > 0 {
 			continue // Poll returned to deliver these; go straight back
@@ -249,6 +267,7 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			return reply(inputRequired(sendable, state, peer))
 		}
 
+		noPushURL := false
 		answers := map[string]json.RawMessage{}
 		// The question itself is bounded by the same deadline: a client
 		// that never answers must not hold the call past AskTimeout, and
@@ -260,6 +279,9 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 				if errors.Is(aerr, ErrNoPush) {
 					// This transport cannot carry a request to the client.
 					// The broker keeps the question; stop trying to ask.
+					if q.Method == "elicitation/create" && q.Mode == "url" {
+						noPushURL = true
+					}
 					break
 				}
 				continue
@@ -267,6 +289,19 @@ func (s *Server) viaAsk(ctx context.Context, c *Conn, req request, peer Peer) *r
 			answers[q.ID] = raw
 		}
 		cancelAsk()
+		if noPushURL {
+			// In-loop trigger (#2080): askClient could not push a URL
+			// question to a 2025-11-25 host that declared
+			// elicitation.url. Answer -32042 with this call's pending
+			// URL questions instead of waiting out the timeout and
+			// failing generically; the broker keeps the questions.
+			if resp := urlRequiredResponse(req, peer, sendable); resp != nil {
+				if len(answers) > 0 {
+					_ = s.Ask.Reply(ctx, callID, answers)
+				}
+				return resp
+			}
+		}
 		if len(answers) > 0 {
 			// The questions still open, to undo wireKey's renaming.
 			if open, perr := s.Ask.Poll(ctx, callID, time.Millisecond); perr == nil {
@@ -346,6 +381,13 @@ func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	// An upstream error carried whole -- -32021 with its requiredCapabilities
 	// -- is relayed as itself on every path.
 	if up := (*UpstreamError)(nil); errors.As(out.Err, &up) {
+		// An upstream -32042 is relayed only to a host that declared
+		// elicitation.url at 2025-11-25 (#2080): to anyone else the
+		// code would name elicitations it never agreed to open, so
+		// the call fails generically instead.
+		if up.Code == codeURLElicitationRequired && !peer.eligibleURLElicitationRequired() {
+			return fail(codeInternal, up.Message)
+		}
 		return up.relay(req.ID)
 	}
 	if pass && out.Upstream != nil && req.Method == "tools/call" {
