@@ -6999,7 +6999,8 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Antigravity only: Gemini Flash",
+        "name": "Workhorse primary - Codex only: Terra",
+        // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
         // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
         // Flash and Muse Spark contributor legs are removed from
@@ -7083,12 +7084,12 @@
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
-          "opencode-route/gemini-flash-plan#high"
+          "opencode-route/terra-plan#medium"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/gemini-flash-plan": 2
+          "opencode-route/terra-plan": 2
         }
       },
       "workhorse": {
@@ -7131,9 +7132,10 @@
         // 2026-10-28 (Job 2): the Spark seat addresses spark-plan#xhigh
         // (was the direct meta contributor leaf) at the same weight 1.
         // 2026-10-31 (Drew): Sonnet and DeepSeek Flash plan join the relief pool (Spark already seated).
+        // 2026-10-31 (Drew): Terra leaves the relief pool for the primary seat; Gemini Flash joins here at weight 2 (the weight it carried in primary).
         "targets": [
           "opencode-route/haiku-plan#high",
-          "opencode-route/terra-plan#medium",
+          "opencode-route/gemini-flash-plan#high",
           "opencode-route/spark-plan#xhigh",
           "opencode-route/sonnet-plan#high",
           "opencode-route/deepseek-flash-plan#high"
@@ -7142,7 +7144,7 @@
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
-          "opencode-route/terra-plan": 2,
+          "opencode-route/gemini-flash-plan": 2,
           "opencode-route/spark-plan": 1,
           "opencode-route/sonnet-plan": 1,
           "opencode-route/deepseek-flash-plan": 1
