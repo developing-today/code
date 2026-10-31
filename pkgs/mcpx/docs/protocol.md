@@ -107,8 +107,10 @@ Two behaviours consult it today:
 | progress `message` relayed to a 2024-11-05 client (whose schema has no such field) | **sent** | stripped only when 2024-11-05 is first *and* strict: `--mcp-spec 2024-11-05` |
 | a request from a 2026-07-28 upstream server (that revision has none; its stdio page says the client MUST NOT answer) | **dropped** | answered when `spec.lenient` includes `2026-07-28` |
 
-The other conflicts in [`spec/revision-conflicts.md`](spec/revision-conflicts.md)
-are still decided in code, not by these settings.
+Each other conflict in [`spec/revision-conflicts.md`](spec/revision-conflicts.md)
+carries a disposition there — peer-settled, precedence-governed, a recorded
+reading, or undisposed with its open question named. Only the
+precedence-governed ones are decided by these settings.
 
 `internal/mcpserver/revisions.go` holds the floors, ceilings and removals as
 data, and `GET /v1/protocol` serves them. A matrix in a document and a matrix
@@ -572,7 +574,7 @@ the tool call for a script that expects to ask.
   `requestState` and holds across the retries; it used to restart at zero on
   every one (#201).
 - `proto.stateTTL` (30m) — how long a `requestState` may be resumed with.
-- `proto.askTTL` (15m) — how long the daemon keeps the call and its result.
+- `proto.askTTL` (15m) — two clocks for a parked `/v1/call`: the waiting deadline (a call still waiting for an answer after 15m is cancelled) and, once the call finishes, how long its result is kept, measured from when it finishes.
 - `pool.callTimeout` pauses while a question is pending on the instance
   (#229). It used to kill a call while a person was answering it, which made
   the three settings above promises the pool did not keep. The precedence of

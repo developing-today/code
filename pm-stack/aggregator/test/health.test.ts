@@ -375,6 +375,8 @@ describe("pending comment counts (#1145)", () => {
     expect(html).toContain("3 messages awaiting triage");
     expect(html).toContain("2 GitHub comments awaiting posting");
     expect(html).toContain("9 comments in the store");
+    expect(html).toContain("a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting");
+    expect(html).not.toContain("a pending count that never drains means the triage/poster loop is not running");
   });
 });
 

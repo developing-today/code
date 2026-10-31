@@ -2,9 +2,12 @@
 //!
 //! An event waits when a dependency has not arrived: a backlink, an `after`
 //! hash, or an auth dependency. The pool holds the event until every dependency
-//! has arrived, then releases it. Two caps bound what a peer can make a node
-//! hold: at most [`WaitingLimits::per_author`] waiting events per author, and a
-//! drop once an event has waited [`WaitingLimits::max_age_ms`]. A dropped event
+//! has arrived, then releases it. Three caps bound what a peer can make a node
+//! hold: at most [`WaitingLimits::per_author`] waiting events per author, at
+//! most [`WaitingLimits::total`] waiting events across all authors, and a drop
+//! once an event has waited [`WaitingLimits::max_age_ms`]. The total cap is
+//! the one that binds an attacker: author keys are self-certifying, so minting
+//! authors is free and a per-author cap alone bounds nothing. A dropped event
 //! is not acknowledged, and sync sends it again once its dependency exists.
 //!
 //! The pool does no I/O and takes the clock as an explicit `now_ms`, so tests
@@ -34,6 +37,12 @@ pub type AuthorKey = [u8; 32];
 /// Waiting events allowed per author, unless a world sets its own.
 pub const DEFAULT_PER_AUTHOR: usize = 256;
 
+/// Waiting events allowed across all authors, unless a world sets its own:
+/// 32 authors' worth of the per-author cap. The per-author cap shapes one
+/// author's share; this cap is the node's actual memory and disk bound,
+/// because author keys are free to mint.
+pub const DEFAULT_TOTAL: usize = 32 * DEFAULT_PER_AUTHOR;
+
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1_000;
 
 /// Age after which a waiting event is dropped, unless a world sets its own: 7 days.
@@ -42,29 +51,46 @@ pub const DEFAULT_MAX_AGE_MS: u64 = 7 * MS_PER_DAY;
 /// The caps a world sets on its waiting events.
 ///
 /// [`WaitingLimits::default`] gives the accepted values: 256 waiting events per
-/// author, and a 7-day age cap. A world sets its own with [`WaitingLimits::new`].
+/// author, 8,192 across all authors, and a 7-day age cap. A world sets its own
+/// with [`WaitingLimits::new`] and [`WaitingLimits::with_total`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WaitingLimits {
     per_author: usize,
+    total: usize,
     max_age_ms: u64,
 }
 
 impl WaitingLimits {
     /// Caps for one world. `per_author` is the most waiting events one author may
     /// hold, and `max_age_ms` is how long an event may wait before it expires.
+    /// The total across all authors is [`DEFAULT_TOTAL`]; set it with
+    /// [`with_total`](Self::with_total).
     ///
     /// Zero is accepted. A `per_author` of zero refuses every event that would
     /// wait, and a `max_age_ms` of zero expires events at the next call.
     pub const fn new(per_author: usize, max_age_ms: u64) -> Self {
         Self {
             per_author,
+            total: DEFAULT_TOTAL,
             max_age_ms,
         }
+    }
+
+    /// The same caps with a different total: the most waiting events the pool
+    /// may hold across all authors. A total of zero refuses every event that
+    /// would wait.
+    pub const fn with_total(self, total: usize) -> Self {
+        Self { total, ..self }
     }
 
     /// The most waiting events one author may hold.
     pub const fn per_author(self) -> usize {
         self.per_author
+    }
+
+    /// The most waiting events the pool may hold across all authors.
+    pub const fn total(self) -> usize {
+        self.total
     }
 
     /// How long an event may wait before it expires, in milliseconds.
@@ -97,6 +123,13 @@ pub enum WaitRefusal {
     /// The author already holds the per-author cap of waiting events.
     #[error("the author already holds the maximum number of waiting events")]
     AuthorFull,
+    /// The pool already holds the total cap of waiting events across all
+    /// authors. Distinct from [`AuthorFull`](Self::AuthorFull) so a caller can
+    /// tell a Sybil-shaped flood (many authors, pool full) from one author
+    /// over its own share; the event store's ingest surfaces both as its one
+    /// waiting-full refusal, because the remedy for the sender is the same.
+    #[error("the pool already holds the maximum number of waiting events")]
+    PoolFull,
 }
 
 /// One held event and the dependencies it still waits for.
@@ -189,7 +222,8 @@ where
     /// # Errors
     ///
     /// [`WaitRefusal::AuthorFull`] when the event would wait and its author
-    /// already holds the per-author cap.
+    /// already holds the per-author cap, or [`WaitRefusal::PoolFull`] when the
+    /// pool already holds the total cap across all authors.
     pub fn insert(
         &mut self,
         author: AuthorKey,
@@ -222,7 +256,9 @@ where
     ///
     /// # Errors
     ///
-    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author cap.
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author
+    /// cap, or [`WaitRefusal::PoolFull`] when the pool already holds the total
+    /// cap across all authors.
     pub fn park(
         &mut self,
         author: AuthorKey,
@@ -253,7 +289,12 @@ where
     ///
     /// # Errors
     ///
-    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author cap.
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author
+    /// cap, or [`WaitRefusal::PoolFull`] when the pool already holds the total
+    /// cap across all authors. On restore-on-open the store drops a refused
+    /// row's event, exactly as it drops an expired one, so a store written
+    /// under a larger cap still opens under a smaller one: the earliest
+    /// arrivals are kept and the excess is dropped, never wedged.
     pub fn restore(
         &mut self,
         author: AuthorKey,
@@ -280,7 +321,10 @@ where
             .map(|entry| &entry.event)
     }
 
-    /// Stores `event` under `key`, waiting for `missing`, under the author's cap.
+    /// Stores `event` under `key`, waiting for `missing`, under the caps.
+    /// The total cap is checked first: it is the node's resource bound, and
+    /// when the pool is full every further hold is refused whatever author it
+    /// names.
     fn hold(
         &mut self,
         author: AuthorKey,
@@ -289,6 +333,9 @@ where
         event: E,
         now_ms: u64,
     ) -> Result<(), WaitRefusal> {
+        if self.len() >= self.limits.total() {
+            return Err(WaitRefusal::PoolFull);
+        }
         if self.waiting_count(author) >= self.limits.per_author() {
             return Err(WaitRefusal::AuthorFull);
         }
@@ -424,6 +471,7 @@ mod tests {
     fn test_defaults_are_256_per_author_and_seven_days() {
         let limits = WaitingLimits::default();
         assert_eq!(limits.per_author(), 256);
+        assert_eq!(limits.total(), DEFAULT_TOTAL);
         assert_eq!(limits.max_age_ms(), 604_800_000);
     }
 
@@ -431,6 +479,8 @@ mod tests {
     fn test_limits_are_set_per_world() {
         let limits = WaitingLimits::new(2, 1_000);
         assert_eq!((limits.per_author(), limits.max_age_ms()), (2, 1_000));
+        assert_eq!(limits.total(), DEFAULT_TOTAL);
+        assert_eq!(limits.with_total(7).total(), 7);
         let mut pool = WaitingPool::new(limits);
         pool.insert(author(1), 1, [10], "a", 0).unwrap();
         pool.insert(author(1), 2, [10], "b", 0).unwrap();
@@ -665,5 +715,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_total_cap_refuses_across_authors_below_the_per_author_cap() {
+        // The (total+1)-th held event is refused even though every author is
+        // far below the per-author cap: minting authors does not mint room.
+        let limits = WaitingLimits::new(256, WEEK_MS).with_total(3);
+        let mut pool = WaitingPool::new(limits);
+        for n in 1..=3u8 {
+            pool.insert(author(n), u32::from(n), [100], "held", 0)
+                .unwrap();
+            assert_eq!(pool.waiting_count(author(n)), 1);
+        }
+        assert_eq!(pool.len(), 3);
+        assert_eq!(
+            pool.insert(author(4), 4, [100], "refused", 0),
+            Err(WaitRefusal::PoolFull)
+        );
+        assert_eq!(pool.len(), 3);
+        assert!(!pool.contains(&4), "a refused event is not held");
+    }
+
+    #[test]
+    fn test_total_cap_bounds_park_and_restore_too() {
+        // Every path into the pool funnels through the one hold, so the total
+        // cap binds parked and restored events as it binds inserts.
+        let limits = WaitingLimits::new(256, WEEK_MS).with_total(1);
+        let mut pool = WaitingPool::new(limits);
+        pool.park(author(1), 1, "parked", 0).unwrap();
+        assert_eq!(
+            pool.insert(author(2), 2, [100], "refused", 0),
+            Err(WaitRefusal::PoolFull)
+        );
+        assert_eq!(
+            pool.restore(author(2), 2, [100], "refused", 0),
+            Err(WaitRefusal::PoolFull)
+        );
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn test_restore_over_a_lowered_total_keeps_the_earliest_arrivals() {
+        // Rows written under a larger total, restored under a smaller one:
+        // the earliest arrivals are held and the excess is refused, so the
+        // store that owns the rows can drop them and open.
+        let limits = WaitingLimits::new(256, WEEK_MS).with_total(2);
+        let mut pool = WaitingPool::new(limits);
+        pool.restore(author(1), 1, [100], "first", 0).unwrap();
+        pool.restore(author(2), 2, [100], "second", 1).unwrap();
+        assert_eq!(
+            pool.restore(author(3), 3, [100], "excess", 2),
+            Err(WaitRefusal::PoolFull)
+        );
+        assert_eq!(pool.len(), 2);
+        assert!(pool.contains(&1) && pool.contains(&2) && !pool.contains(&3));
     }
 }

@@ -257,6 +257,27 @@ export interface QuotaPool {
   /** Gatherer freshness for this pool (#1151), set when
    * quota-current.json carried an entry for it. */
   freshness?: PoolFreshness;
+  /** Per-credential rows (#1113): set only when the gatherer carried
+   * two or more credentials for this pool's service whose reads
+   * genuinely differ (windows or state). Absent when the credentials
+   * share one pool read — never a fake split. The pool's own windows
+   * stay the headline. */
+  credentials?: QuotaCredentialRow[];
+}
+
+/** One credential's own quota read within a pool (#1113). */
+export interface QuotaCredentialRow {
+  /** The gatherer's credential label (e.g. "OpenAI 2"), or the
+   * provider name/id when the entry carried no label. */
+  label: string;
+  /** The stable credential id, when the entry carried one. Rows are
+   * keyed by this, never by label alone (#2978 Codex finding). */
+  credentialId?: string;
+  providerId: string;
+  /** This credential's percent windows; empty when its newest read
+   * is an error or stale — the state rides on freshness instead. */
+  windows: QuotaWindow[];
+  freshness: PoolFreshness;
 }
 
 /** Per-pool freshness from the quota gatherer (#1151). */
@@ -409,7 +430,7 @@ export interface JulesSummary {
   at: string | null;
   /** Sessions the keeper currently tracks in its `items` map. */
   tracked: number;
-  /** Totals from the keeper's freshest run note, when it parses. */
+  /** Totals from the note written by the keeper's last run, when it parses. */
   total?: number;
   completed?: number;
   failed?: number;

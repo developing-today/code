@@ -10,6 +10,13 @@
 //! [`Reassembly`] on the joiner's side refuses an altered chunk as it arrives, refuses a chunk out
 //! of sequence, and refuses the whole when its digest does not match. The envelope is decoded only
 //! after the whole checks out.
+//!
+//! The receive side is bounded, so a forged chunk stream cannot make a joiner buffer without
+//! limit: a chunk carrying more than [`CHUNK_PAYLOAD_BYTES`] is refused before it is buffered,
+//! a first chunk declaring more chunks than [`MAX_WELCOME_BYTES`] allows is refused outright,
+//! and any chunk that would push the buffered payload over [`MAX_WELCOME_BYTES`] is refused.
+//! The buffered-payload bound is what actually caps memory however small the sender's frames
+//! are; the declared-total refusal just fails absurd totals fast.
 
 use std::num::TryFromIntError;
 
@@ -30,6 +37,15 @@ pub const CHUNK_HEADER_BYTES: usize = 256;
 
 /// The payload one chunk carries in a world frame: the frame less its header budget.
 pub const CHUNK_PAYLOAD_BYTES: usize = MAX_FRAME_BYTES - CHUNK_HEADER_BYTES;
+
+/// The largest welcome a [`Reassembly`] will buffer, in bytes.
+///
+/// A welcome grows by about 40 bytes an epoch, so one frame already carries some 26,000
+/// rotations; 64 frames' worth is far beyond any plausible epoch history. The bound exists so
+/// a forged chunk stream — a first chunk declaring `u32::MAX` chunks, say — cannot make a
+/// joiner accumulate payload without limit while the whole-digest check waits for a completion
+/// that never comes.
+pub const MAX_WELCOME_BYTES: usize = 64 * MAX_FRAME_BYTES;
 
 /// One part of a welcome.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +125,22 @@ pub enum WelcomeError {
     /// A chunk claims no chunks at all.
     #[error("a chunk claims a welcome of no chunks")]
     NoChunks,
+    /// A chunk carries more payload than one frame's payload budget, so it could not have come
+    /// from [`split`] and is refused before it is buffered.
+    #[error("chunk {index} carries {size} payload bytes, over the chunk payload cap")]
+    ChunkTooLarge {
+        /// The position of the oversized chunk.
+        index: u32,
+        /// The payload size the chunk carries.
+        size: usize,
+    },
+    /// The welcome is over [`MAX_WELCOME_BYTES`]: either the first chunk declares more
+    /// chunks than the byte bound allows, or this chunk would push the buffered payload over it.
+    #[error("a welcome of {total} chunks is over the welcome size bound")]
+    WelcomeTooLarge {
+        /// The total the first chunk declares.
+        total: u32,
+    },
     /// A chunk names a different welcome from the one being reassembled.
     #[error("the chunk belongs to a different welcome")]
     OtherWelcome,
@@ -164,11 +196,23 @@ impl Reassembly {
     /// Takes the next chunk. Returns the envelope when the last chunk arrives and the whole matches
     /// its digest. Until then, and on every error, nothing is decoded.
     pub fn push(&mut self, chunk: &Chunk) -> Result<Option<Envelope>, WelcomeError> {
+        if chunk.bytes.len() > CHUNK_PAYLOAD_BYTES {
+            return Err(WelcomeError::ChunkTooLarge {
+                index: chunk.index,
+                size: chunk.bytes.len(),
+            });
+        }
         if Hash::digest(&chunk.bytes) != chunk.check {
             return Err(WelcomeError::AlteredChunk { index: chunk.index });
         }
         if chunk.total == 0 {
             return Err(WelcomeError::NoChunks);
+        }
+        // A first chunk declaring more chunks than the byte bound allows is refused outright:
+        // every chunk from [`split`] carries at least one payload byte, so such a total is over
+        // [`MAX_WELCOME_BYTES`] whatever frame size the sender used.
+        if self.whole.is_none() && u64::from(chunk.total) > MAX_WELCOME_BYTES as u64 {
+            return Err(WelcomeError::WelcomeTooLarge { total: chunk.total });
         }
         if let Some((total, digest)) = self.whole
             && (chunk.total != total || chunk.digest != digest)
@@ -181,6 +225,11 @@ impl Reassembly {
                 expected,
                 got: chunk.index,
             });
+        }
+        // The tight bound, checked on every chunk right before buffering: whatever the declared
+        // total, the joiner never holds more than [`MAX_WELCOME_BYTES`] of payload.
+        if self.payload.len() + chunk.bytes.len() > MAX_WELCOME_BYTES {
+            return Err(WelcomeError::WelcomeTooLarge { total: chunk.total });
         }
 
         self.whole = Some((chunk.total, chunk.digest));

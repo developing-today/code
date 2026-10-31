@@ -130,6 +130,31 @@ export function parseSessionRequest(body: unknown): SessionRequest {
   };
 }
 
+/** Session-directory scoping for POST /v1/sessions (issue #2903).
+ * OIDC callers (workflows in allowlisted repos) may only run inside the
+ * target repo's laptop primary clone: directory omitted (default) or
+ * exactly the repo's scoped directory. Anything else is rejected BEFORE
+ * any issue/task/session is created. Bearer callers hold the laptop
+ * secret, so they keep the free-form directory — a deliberate choice,
+ * documented in the README. */
+export function resolveSessionDirectory(
+  callerType: "oidc" | "bearer",
+  repo: string,
+  directory: string | undefined,
+  repoDirs: Record<string, string>,
+): string {
+  const scoped = repoDirs[repo];
+  if (directory === undefined) return scoped!;
+  if (callerType === "bearer") return directory;
+  const norm = (d: string) => (d.length > 1 ? d.replace(/\/+$/, "") : d);
+  if (scoped === undefined || norm(directory) !== norm(scoped)) {
+    throw new ValidationError(
+      `directory: OIDC callers may only omit directory or use the repo clone (${scoped ?? "unknown"})`,
+    );
+  }
+  return scoped;
+}
+
 export interface TaskRequest {
   repo: string;
   title: string;
@@ -182,6 +207,10 @@ export function parseTaskRequest(body: unknown): TaskRequest {
 
 /** First line of a prompt, trimmed and length-capped — the fallback title. */
 export function titleFromPrompt(prompt: string, max = 120): string {
-  const first = prompt.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "dispatch request";
+  const first =
+    prompt
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "dispatch request";
   return first.length > max ? first.slice(0, max - 1) + "…" : first;
 }

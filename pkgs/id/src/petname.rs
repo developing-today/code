@@ -47,9 +47,14 @@ impl Petnames {
 
     /// Open the store at `path`, replaying every line already there.
     ///
+    /// A torn final line — a partial record left by a crash mid-append,
+    /// unterminated and unparseable — is dropped and truncated away,
+    /// mirroring `Outbox::open` and the world journal; any other
+    /// malformed line still fails the open.
+    ///
     /// # Errors
     ///
-    /// Fails if a line is malformed.
+    /// Fails if the file cannot be read, or a complete line is malformed.
     pub fn open(path: &Path) -> Result<Self> {
         let mut store = Self {
             names: BTreeMap::new(),
@@ -60,13 +65,31 @@ impl Petnames {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(store),
             Err(error) => return Err(error.into()),
         };
-        for (number, line) in text.lines().enumerate() {
+        let mut kept = 0;
+        for (number, line) in text.split_inclusive('\n').enumerate() {
             if line.trim().is_empty() {
+                kept += line.len();
                 continue;
             }
-            let record: Record = serde_json::from_str(line)
-                .with_context(|| format!("petname journal line {} is malformed", number + 1))?;
-            store.apply(record);
+            let complete = line.ends_with('\n');
+            match serde_json::from_str::<Record>(line.trim_end()) {
+                Ok(record) => {
+                    store.apply(record);
+                    kept += line.len();
+                }
+                Err(_) if !complete => break,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("petname journal line {} is malformed", number + 1)
+                    });
+                }
+            }
+        }
+        if kept < text.len() {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .set_len(kept as u64)?;
         }
         Ok(store)
     }
@@ -443,10 +466,42 @@ mod tests {
 
     #[test]
     fn a_malformed_line_fails_the_open() {
+        // A malformed line that is newline-terminated (here: mid-file,
+        // with a valid record after it) is corruption, not a torn tail.
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("petnames.jsonl");
-        std::fs::write(&path, "not json\n").unwrap();
+        let mut store = Petnames::open(&path).unwrap();
+        store.set(OWNER, ALICE, "Ali", names()).unwrap();
+        drop(store);
+        let good = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, format!("{good}not json\n{good}")).unwrap();
         assert!(Petnames::open(&path).is_err());
+    }
+
+    #[test]
+    fn a_torn_final_line_is_dropped_and_truncated() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("petnames.jsonl");
+        let mut store = Petnames::open(&path).unwrap();
+        store.set(OWNER, ALICE, "Ali", names()).unwrap();
+        drop(store);
+        let good = std::fs::read_to_string(&path).unwrap();
+        // A crash mid-append leaves a partial record, no trailing newline.
+        let mut torn = good.clone();
+        torn.push_str(&format!(
+            "{{\"op\":\"set\",\"owner\":\"{OWNER}\",\"account\":\"{CAROL}\",\"name\":\"Car"
+        ));
+        std::fs::write(&path, torn).unwrap();
+        let mut store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
+        assert!(store.get(OWNER, CAROL).is_none());
+        // The torn bytes are truncated, so the next append is not glued
+        // onto them and replays cleanly on the next open.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+        store.set(OWNER, CAROL, "Carol", names()).unwrap();
+        drop(store);
+        let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, CAROL), Some("Carol"));
     }
 
     #[test]

@@ -2188,6 +2188,105 @@ mod tests {
         assert!(store.waiting_ids().unwrap().is_empty());
     }
 
+    /// #2690, at the mirror itself: a release whose `arrived` expires another
+    /// held event must delete that event's row in the releasing transaction --
+    /// not leave it for a later, unrelated expire to count, or for a restart
+    /// to drop silently. Driven through the mirror directly, because the
+    /// ingest path's own expire-first composition would mask a mirror that
+    /// forgot the flush.
+    #[test]
+    fn test_a_mirror_release_flushes_the_events_it_expires() {
+        let signer = key(39);
+        let events = chain_of(&signer, 3);
+        let (_dir, mut store) = open();
+        // events[2] is held at 0, waiting for events[1]. It is due at WEEK_MS.
+        store
+            .transact(0, |m| {
+                m.hold(events[2].clone(), vec![events[1].id], false, 0)?;
+                Ok(((), true))
+            })
+            .unwrap();
+        // events[1] is held just before the cap, waiting for events[0]: fresh.
+        store
+            .transact(WEEK_MS - 1_000, |m| {
+                m.hold(
+                    events[1].clone(),
+                    vec![events[0].id],
+                    false,
+                    WEEK_MS - 1_000,
+                )?;
+                Ok(((), true))
+            })
+            .unwrap();
+        // Releasing events[0] at the cap releases events[1]; inside that
+        // release, events[2] reaches the age cap and expires.
+        let released = store
+            .transact(WEEK_MS, |m| {
+                let released = m.release(&events[0].id, WEEK_MS)?;
+                Ok((released, true))
+            })
+            .unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].id, events[1].id);
+        // The released event's row stays until its caller decides it; the
+        // expired event's row is gone in the same transaction, and nothing
+        // remains for a later expire to count.
+        let rows = store.waiting_ids().unwrap();
+        assert!(rows.contains(&events[1].id), "rows after release: {rows:?}");
+        assert!(
+            !rows.contains(&events[2].id),
+            "the expired event's row survived the release: {rows:?}"
+        );
+        // Decide the released event the way its caller would, so the store
+        // is back at a transaction boundary it accepts; then nothing remains
+        // for a later expire to count.
+        store
+            .transact(WEEK_MS, |m| {
+                m.drop_row(&events[1].id)?;
+                Ok(((), true))
+            })
+            .unwrap();
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    /// #2690: a release whose `arrived` expires another held event must delete
+    /// that event's row in the releasing transaction -- not leave it for a
+    /// later, unrelated expire to count, or for a restart to drop silently.
+    #[test]
+    fn test_a_release_flushes_the_events_it_expires() {
+        let signer = key(38);
+        let events = chain_of(&signer, 3);
+        let (_dir, mut store) = open();
+        // events[2] is held at 0, waiting for events[1]. It is due at WEEK_MS.
+        assert_eq!(
+            ingest(&mut store, &events[2]),
+            Ingest::Waiting { id: events[2].id }
+        );
+        // events[1] is held just before the cap, waiting for events[0]: fresh.
+        assert_eq!(
+            store.ingest(&events[1].bytes, WEEK_MS - 1_000).unwrap(),
+            Ingest::Waiting { id: events[1].id }
+        );
+        // events[0] arrives at the cap and is accepted, releasing events[1].
+        // Inside that release, events[2] reaches the age cap and expires.
+        assert_eq!(
+            store.ingest(&events[0].bytes, WEEK_MS).unwrap(),
+            Ingest::Accepted {
+                id: events[0].id,
+                released: vec![events[1].id],
+            }
+        );
+        // The expiry belonged to the releasing call: nothing remains for a
+        // later expire to count, the pool holds nothing, and no row for
+        // events[2] (or any waiting row) survives.
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 0);
+        assert_eq!(store.waiting_len(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_a_refused_waiting_event_leaves_no_row() {
         let dir = tempfile::tempdir().unwrap();
@@ -2231,6 +2330,37 @@ mod tests {
         assert!(!store.is_waiting(&events[3].id));
         assert_eq!(store.waiting_ids().unwrap().len(), 2);
         store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_smaller_total_on_reopen_drops_the_excess_and_still_opens() {
+        // Three authors each hold one waiting event under the default total.
+        // Reopening under a total of two must not brick the store: the excess
+        // row is dropped, the store opens, and the drop is durable.
+        let dir = tempfile::tempdir().unwrap();
+        let mut ids = Vec::new();
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            for n in 41..=43 {
+                let signer = key(n);
+                let events = chain_of(&signer, 2);
+                assert_eq!(
+                    ingest(&mut store, &events[1]),
+                    Ingest::Waiting { id: events[1].id }
+                );
+                ids.push(events[1].id);
+            }
+            assert_eq!(store.waiting_ids().unwrap().len(), 3);
+        }
+        let limits = WaitingLimits::default().with_total(2);
+        {
+            let store = reopen(&dir, limits, 0);
+            assert_eq!(store.waiting_ids().unwrap().len(), 2);
+            assert_eq!(ids.iter().filter(|id| store.is_waiting(id)).count(), 2);
+            store.check_invariants().unwrap();
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(store.waiting_ids().unwrap().len(), 2);
     }
 
     #[test]
