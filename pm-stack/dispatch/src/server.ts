@@ -159,12 +159,27 @@ async function launchSession(
   }
 
   if (issue) {
-    await github.comment(
-      req.repo,
-      issue.number,
-      `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
-    );
-    await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    // Post-launch annotations are best-effort: the session is already
+    // running and the task already claimed, so a GitHub failure here
+    // must not reject the launch — callers cancel the task on a
+    // rejected launch (#2901), which would orphan a live session.
+    // Noted on the task instead, like the lane-ledger failure above.
+    try {
+      await github.comment(
+        req.repo,
+        issue.number,
+        `Dispatch launch confirmed.\n\n- Queue task: #${task.id} (${REPO_QUEUES[req.repo]}, status: claimed, worker: dispatch-opencode)\n- OpenCode session: ${session.id}\n- Launched by: ${describeCaller(caller)}`,
+      );
+      await github.addLabels(req.repo, issue.number, ["queue/claimed", "work/assigned"]);
+    } catch (e) {
+      try {
+        await requireQueue().patchTask(task.id, {
+          last_error: `launch annotation failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
+        });
+      } catch {
+        /* nothing more to do — the claim stands */
+      }
+    }
   }
   return session.id;
 }
