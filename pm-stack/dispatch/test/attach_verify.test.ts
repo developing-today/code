@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { verifyAttachTarget, type AttachTargetInfo } from "../src/server.ts";
-import { GitHubClient } from "../src/github.ts";
+import { GitHubClient, isNotFoundError } from "../src/github.ts";
 
 const REPO = "developing-today/code";
 const found = (partial: Partial<AttachTargetInfo>): (() => Promise<AttachTargetInfo | null>) =>
@@ -171,5 +171,17 @@ describe("GitHubClient.getIssue with stubbed GitHub (#3007)", () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+});
+
+describe("isNotFoundError (#3007, Codex P2 on PR #3149)", () => {
+  test("an HTTP 404 status in the gh error is a not-found", () => {
+    expect(isNotFoundError("gh api repos/x/issues/9 failed: gh: Not Found (HTTP 404)")).toBe(true);
+  });
+
+  test("issue NUMBER 404 in the echoed path is not a not-found", () => {
+    expect(isNotFoundError("gh api repos/x/issues/404 failed: gh: Forbidden (HTTP 403)")).toBe(false);
+    expect(isNotFoundError("gh api repos/x/issues/404 failed: gh: rate limit (HTTP 429)")).toBe(false);
+    expect(isNotFoundError("gh api repos/x/issues/404 failed: gh: server error (HTTP 500)")).toBe(false);
   });
 });

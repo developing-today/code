@@ -33,6 +33,17 @@ function b64url(data: Buffer | string): string {
   return Buffer.from(data).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/**
+ * True only when a gh CLI error reports an actual HTTP 404. Matches the
+ * status text ("HTTP 404" / "(HTTP 404)"), never the bare digits: the gh
+ * error prefix echoes the request path, so an issue literally numbered
+ * 404 (".../issues/404") must not turn an auth/rate-limit/transient
+ * failure into a definitive not-found (Codex P2 on PR #3149).
+ */
+export function isNotFoundError(message: string): boolean {
+  return /HTTP 404\b/.test(message);
+}
+
 export interface IssueInfo {
   number: number;
   state: string;
@@ -238,7 +249,7 @@ export class GitHubClient {
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (/\b404\b|Not Found/i.test(msg)) return null;
+      if (isNotFoundError(msg)) return null;
       if (appError) {
         throw new GitHubError(
           `issue lookup failed via app (${appError instanceof Error ? appError.message : String(appError)}) and via gh (${msg})`,
