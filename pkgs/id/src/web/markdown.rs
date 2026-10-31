@@ -108,6 +108,15 @@ fn commonmark_options() -> Options<'static> {
 /// ```
 #[must_use]
 pub fn markdown_to_prosemirror(markdown: &str) -> Value {
+    markdown_to_prosemirror_inner(markdown, true)
+}
+
+/// The conversion itself. `recover_orphans` is false for the synthesis
+/// probes `synthesize_footnote_definition` parses: a probe must never
+/// run recovery again, so even a block comrak does not recognize as a
+/// definition terminates with no node instead of recursing (#1565,
+/// Codex P1 on the first cut).
+fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value {
     let arena = Arena::new();
     let options = commonmark_options();
     // #1423: comrak (per CommonMark) cannot parse a link destination
@@ -129,10 +138,1549 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
     let mut doc = convert_node(root, &[]);
-    if let Some(token) = newline_token {
+    if let Some(token) = &newline_token {
         restore_attr_newlines(&mut doc, &token);
     }
+    // #1565: comrak never emits a footnote definition that nothing
+    // references, so the conversion above cannot see one -- and a save
+    // then deletes it permanently (a definitions-only document saved
+    // as an empty file). Recover unreferenced definitions from the
+    // source and append them as the same PM nodes the referenced path
+    // produces.
+    if recover_orphans {
+        preserve_unreferenced_footnote_definitions(
+            &mut doc,
+            &protected,
+            newline_token.as_deref(),
+        );
+    }
     doc
+}
+
+/// Fence tracking for the source scans below: a fence opens with a
+/// run of >= 3 backticks or tildes and closes only with a run of the
+/// SAME character at least as long (CommonMark) -- a three-backtick
+/// line inside a four-backtick block is content, not a close (Codex
+/// P2 on the first #1565 cut, which toggled on any fence-shaped line).
+#[derive(Default)]
+struct FenceTracker {
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// Feed one line (already stripped of up to three leading
+    /// spaces). Returns true when the line is a fence delimiter.
+    fn feed(&mut self, stripped: &str) -> bool {
+        let ch = match stripped.chars().next() {
+            Some(c @ ('`' | '~')) => c,
+            _ => return false,
+        };
+        let run = stripped.chars().take_while(|&c| c == ch).count();
+        if run < 3 {
+            return false;
+        }
+        if self.open.is_none() && ch == '`' && stripped[run..].contains('`') {
+            // A backtick fence's info string cannot contain a
+            // backtick (CommonMark), so a line like ```a`b opens
+            // no fence at all (Codex P2 on #1565's eighth cut).
+            return false;
+        }
+        match self.open {
+            None => {
+                self.open = Some((ch, run));
+                true
+            }
+            Some((open_ch, open_run)) => {
+                if ch == open_ch && run >= open_run && stripped[run..].trim().is_empty() {
+                    self.open = None;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn in_fence(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Forget any open fence: a fence opened inside a container
+    /// ends implicitly when the container ends, with no closing
+    /// delimiter line (Codex P2 on #1565's tenth cut).
+    fn reset(&mut self) {
+        self.open = None;
+    }
+}
+
+/// HTML-block tracking for the source scans below (Codex P2 on
+/// #1565's second cut): comrak parses a raw HTML block -- a comment,
+/// a script/pre/style/textarea element, a block-level tag, or a lone
+/// complete tag -- as literal content until its CommonMark end
+/// condition (the closing marker for comments/CDATA/PIs/tag-bodies,
+/// a blank line for plain block tags). A definition-shaped line in
+/// that interior is literal text, exactly as in a fence; without this
+/// tracking the pre-scan synthesized a live footnote out of a
+/// comment's interior and a save then moved it outside the comment.
+#[derive(Default)]
+struct HtmlBlockTracker {
+    /// What ends the open block: a literal closing marker, or a
+    /// blank line for block-tag (type 6/7) blocks.
+    end: Option<HtmlBlockEnd>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum HtmlBlockEnd {
+    Marker(&'static str),
+    BlankLine,
+}
+
+/// The CommonMark type-6 block-level tag names.
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
+    "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
+    "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
+    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
+];
+
+/// Whether `trimmed` (a whole line, both ends trimmed) is exactly
+/// one complete HTML open or closing tag -- CommonMark type 7: a
+/// tag name (a letter, then letters/digits/`-`), then for an open
+/// tag any number of whitespace-separated attributes (a name, with
+/// an optional `=` and an unquoted, single-quoted, or
+/// double-quoted value), optional whitespace, an optional `/`,
+/// and the final `>`. A closing tag is `</name`, optional
+/// whitespace, `>`. Anything else angle-delimited is NOT a tag:
+/// an autolink like `<https://example.com>` (the `:` after the
+/// name is not whitespace, `/`, or `>`), or a tag-shaped line with
+/// junk where an attribute should be. Treating every
+/// angle-delimited string as an HTML block opened a
+/// blank-line-ended block on the autolink line and swallowed the
+/// heading and the valid orphan definition after it (Codex P2 on
+/// #1565's seventeenth cut).
+fn is_complete_html_tag(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 3 || bytes[0] != b'<' || bytes[bytes.len() - 1] != b'>' {
+        return false;
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let b = inner.as_bytes();
+    let (closing, mut pos) = if b.first() == Some(&b'/') {
+        (true, 1)
+    } else {
+        (false, 0)
+    };
+    if !b.get(pos).is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    let name_start = pos;
+    pos += 1;
+    while b.get(pos).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-') {
+        pos += 1;
+    }
+    // Type 1 names never open a type 7 block (they are handled as
+    // marker-ended blocks above); a line naming one that reaches
+    // here did not match the type-1 boundary rule either.
+    if ["script", "pre", "style", "textarea"]
+        .contains(&inner[name_start..pos].to_ascii_lowercase().as_str())
+    {
+        return false;
+    }
+    if closing {
+        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
+            pos += 1;
+        }
+        return pos == inner.len();
+    }
+    loop {
+        let ws_start = pos;
+        while b.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
+            pos += 1;
+        }
+        let had_ws = pos > ws_start;
+        match b.get(pos) {
+            None => return true,
+            Some(b'/') => return pos + 1 == inner.len(),
+            Some(_) if had_ws => {
+                // Attribute name, then an optional `= value`.
+                if !b
+                    .get(pos)
+                    .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_' || *c == b':')
+                {
+                    return false;
+                }
+                pos += 1;
+                while b.get(pos).is_some_and(|c| {
+                    c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b':')
+                }) {
+                    pos += 1;
+                }
+                let mut p2 = pos;
+                while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
+                    p2 += 1;
+                }
+                if b.get(p2) == Some(&b'=') {
+                    p2 += 1;
+                    while b.get(p2).is_some_and(|c| c.is_ascii_whitespace()) {
+                        p2 += 1;
+                    }
+                    match b.get(p2) {
+                        Some(q @ (b'"' | b'\'')) => {
+                            let q = *q;
+                            p2 += 1;
+                            while b.get(p2).is_some_and(|c| *c != q) {
+                                p2 += 1;
+                            }
+                            if b.get(p2).is_none() {
+                                return false;
+                            }
+                            p2 += 1;
+                        }
+                        Some(_) => {
+                            let vstart = p2;
+                            while b.get(p2).is_some_and(|c| {
+                                !c.is_ascii_whitespace()
+                                    && !matches!(c, b'"' | b'\'' | b'=' | b'<' | b'>' | b'`')
+                            }) {
+                                p2 += 1;
+                            }
+                            if p2 == vstart {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                    pos = p2;
+                }
+            }
+            Some(_) => return false,
+        }
+    }
+}
+
+impl HtmlBlockTracker {
+    fn in_html(&self) -> bool {
+        self.end.is_some()
+    }
+
+    /// Forget any open block: a block opened inside a container
+    /// ends implicitly when the container ends, with no closing
+    /// line (Codex P2 on #1565's eleventh cut, mirroring
+    /// FenceTracker::reset).
+    fn reset(&mut self) {
+        self.end = None;
+    }
+
+    /// Feed one line (already stripped of up to three leading
+    /// spaces). Returns true when the line belongs to an HTML block
+    /// (its opening line, interior, or closing line).
+    /// `may_open_type7` is the caller's paragraph context: a type-7
+    /// block (a lone complete inline tag) cannot interrupt a
+    /// paragraph, so when the previous line is paragraph content
+    /// the caller passes false and a type-7 opening is refused
+    /// (Codex P2 on #1565's eighteenth cut). Types 1-6 can
+    /// interrupt a paragraph and are always eligible.
+    fn feed(&mut self, stripped: &str, may_open_type7: bool) -> bool {
+        if let Some(end) = self.end {
+            match end {
+                HtmlBlockEnd::Marker(marker) => {
+                    if stripped.to_ascii_lowercase().contains(marker) {
+                        self.end = None;
+                    }
+                }
+                HtmlBlockEnd::BlankLine => {
+                    if stripped.trim().is_empty() {
+                        self.end = None;
+                    }
+                }
+            }
+            return true;
+        }
+        let Some(rest) = stripped.strip_prefix('<') else {
+            return false;
+        };
+        let lower = stripped.to_ascii_lowercase();
+        // Marker-ended blocks (CommonMark types 1-5). The tag-named
+        // prefixes require a name boundary: `<prefix>` is not a
+        // `<pre>` block (nor `<scripture>` a `<script>`), it is a
+        // generic tag block ending at a blank line (Codex P2 on
+        // #1565's sixth cut).
+        for (prefix, marker) in [
+            ("<!--", "-->"),
+            ("<![cdata[", "]]>"),
+            ("<?", "?>"),
+            ("<script", "</script>"),
+            ("<pre", "</pre>"),
+            ("<style", "</style>"),
+            ("<textarea", "</textarea>"),
+        ] {
+            // The tag-named prefixes follow the CommonMark type-1
+            // boundary exactly: whitespace, '>', or end-of-line
+            // after the name. Anything else (`<pre/>`, `<prex>`)
+            // is a generic tag block ending at a blank line, not a
+            // marker-ended block (Codex P2 on #1565's tenth cut).
+            let boundary_ok = !prefix[1..].chars().all(|c| c.is_ascii_alphabetic())
+                || match lower.as_bytes().get(prefix.len()) {
+                    None => true,
+                    Some(b) => b.is_ascii_whitespace() || *b == b'>',
+                };
+            // CDATA is case-sensitive (CommonMark): only the
+            // exact uppercase `<![CDATA[` opens a marker-ended
+            // block; `<![cdata[` is ordinary text (Codex P2 on
+            // #1565's sixteenth cut). Tag names stay
+            // case-insensitive.
+            let (hay, prefix) = if prefix == "<![cdata[" {
+                (stripped, "<![CDATA[")
+            } else {
+                (lower.as_str(), prefix)
+            };
+            if boundary_ok && hay.starts_with(prefix) {
+                if !hay[prefix.len()..].contains(marker) {
+                    self.end = Some(HtmlBlockEnd::Marker(marker));
+                }
+                return true;
+            }
+        }
+        if rest.starts_with('!')
+            && rest[1..].chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        {
+            // Declaration (type 5 covers <![CDATA[ above; a <!X
+            // declaration ends at '>').
+            if !rest.contains('>') {
+                self.end = Some(HtmlBlockEnd::Marker(">"));
+            }
+            return true;
+        }
+        // Tag-ended blocks (types 6 and 7): a block-level tag, or a
+        // lone complete open/closing tag on the line.
+        let tag_body = rest.strip_prefix('/').unwrap_or(rest);
+        let tag_name: String = tag_body
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if tag_name.is_empty() {
+            return false;
+        }
+        if HTML_BLOCK_TAGS.contains(&tag_name.as_str())
+            && tag_name_boundary_ok(tag_body, tag_name.len())
+        {
+            self.end = Some(HtmlBlockEnd::BlankLine);
+            return true;
+        }
+        let trimmed = stripped.trim_end();
+        if is_complete_html_tag(trimmed) {
+            if !may_open_type7 {
+                return false;
+            }
+            self.end = Some(HtmlBlockEnd::BlankLine);
+            return true;
+        }
+        let _ = rest;
+        false
+    }
+}
+
+/// Strip block-container prefixes (blockquote `>`, list markers
+/// `-`/`*`/`+`/ordered) from a line, repeatedly, for fence detection:
+/// a fence opened inside a list item or blockquote still makes its
+/// content literal (Codex P2 on #1565's fourth cut -- `- ```` followed
+/// by an indented definition-shaped line parsed as code by comrak,
+/// but the scanner missed the opening fence behind the `- ` marker
+/// and recovered the interior line as a live definition).
+fn strip_container_prefixes(line: &str) -> &str {
+    let mut rest = line;
+    loop {
+        let t = rest.trim_start_matches(' ');
+        if let Some(r) = t.strip_prefix('>') {
+            rest = r.strip_prefix(' ').unwrap_or(r);
+            continue;
+        }
+        let bytes = t.as_bytes();
+        let marker_len = if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            Some(1)
+        } else {
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits >= 1
+                && digits <= 9
+                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+            {
+                Some(digits + 1)
+            } else {
+                None
+            }
+        };
+        let Some(marker_len) = marker_len else { break };
+        rest = t[marker_len..].trim_start_matches([' ', '\t']);
+    }
+    rest
+}
+
+/// The container structure of a recorded container prefix, as
+/// a string of marker kinds with all spacing removed: `> ` and
+/// `>` are the same blockquote level, so a fence opened under
+/// one spelling closes under the other (Codex P2 on #1565's
+/// nineteenth cut). Byte-exact prefix matching left such a
+/// fence open and suppressed the definitions after it.
+fn container_signature(prefix: &str) -> String {
+    let mut sig = String::new();
+    let mut rest = prefix;
+    loop {
+        let t = rest.trim_start_matches([' ', '\t']);
+        if let Some(r) = t.strip_prefix('>') {
+            sig.push('>');
+            rest = r;
+            continue;
+        }
+        let bytes = t.as_bytes();
+        if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            sig.push('*');
+            rest = &t[1..];
+            continue;
+        }
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits >= 1
+            && digits <= 9
+            && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+            && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+        {
+            sig.push('#');
+            rest = &t[digits + 1..];
+            continue;
+        }
+        break;
+    }
+    sig
+}
+
+/// Strip at most `levels` container levels (blockquote `>`,
+/// list markers) from a line, mirroring
+/// strip_container_prefixes' per-level shapes.
+fn strip_container_levels(line: &str, levels: usize) -> &str {
+    let mut rest = line;
+    for _ in 0..levels {
+        let t = rest.trim_start_matches(' ');
+        if let Some(r) = t.strip_prefix('>') {
+            rest = r.strip_prefix(' ').unwrap_or(r);
+            continue;
+        }
+        let bytes = t.as_bytes();
+        let marker_len = if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            Some(1)
+        } else {
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits >= 1
+                && digits <= 9
+                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+            {
+                Some(digits + 1)
+            } else {
+                None
+            }
+        };
+        let Some(marker_len) = marker_len else { break };
+        rest = t[marker_len..].trim_start_matches([' ', '\t']);
+    }
+    rest
+}
+
+/// Whether `stripped` (a line stripped of up to three leading
+/// spaces) carries the recorded container `prefix`, matched
+/// STRUCTURALLY rather than byte-for-byte: the line's own
+/// leading container levels (as many as the recorded prefix
+/// has) must have the same signature as the recorded prefix.
+fn carries_container_prefix(stripped: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+    let levels = container_signature(prefix).chars().count();
+    if levels == 0 {
+        return false;
+    }
+    let own = &stripped[..stripped.len() - strip_container_levels(stripped, levels).len()];
+    !own.is_empty() && container_signature(own) == container_signature(prefix)
+}
+
+/// A footnote definition block found by the source pre-scan (#1565):
+/// its label and the block's verbatim source (the `[^label]:` line
+/// plus any indented continuation lines, trailing blank lines cut).
+struct FootnoteDefinitionBlock {
+    label: String,
+    source: String,
+    /// Zero-based line index of the definition's opening line, for
+    /// interleaving with other source segments in document order.
+    line: usize,
+}
+
+/// The label of a footnote definition starting on `line` (already
+/// stripped of up to three leading spaces), or `None` when the line
+/// does not start one. A definition opens as `[^label]:`.
+fn footnote_definition_label(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("[^")?;
+    // The label ends at the FIRST ']' and a ':' must follow it
+    // immediately. Searching for "]:" instead accepted `a]b` as the
+    // label of `[^a]b]: note` -- a definition comrak does not
+    // recognize, whose probe then looped recovery forever (Codex P1).
+    let close = rest.find(']')?;
+    if !rest[close + 1..].starts_with(':') {
+        return None;
+    }
+    let label = &rest[..close];
+    if label.is_empty() || label.contains('[') {
+        return None;
+    }
+    Some(label.to_string())
+}
+
+/// A thematic break: at least three of the same `-`, `*`, or `_`,
+/// spaces and tabs aside (CommonMark).
+fn is_thematic_break(stripped: &str) -> bool {
+    let compact: String = stripped
+        .chars()
+        .filter(|c| *c != ' ' && *c != '\t')
+        .collect();
+    let first = compact.chars().next();
+    compact.len() >= 3
+        && matches!(first, Some('-' | '*' | '_'))
+        && compact.chars().all(|c| Some(c) == first)
+}
+
+/// A setext heading underline: only `=`s (level 1) or `-`s (level 2).
+fn is_setext_underline(stripped: &str) -> bool {
+    let t = stripped.trim();
+    (!t.is_empty() && t.chars().all(|c| c == '='))
+        || (!t.is_empty() && t.chars().all(|c| c == '-'))
+}
+
+/// Whether a line starts a new block and so cannot be a lazy
+/// paragraph continuation of a footnote definition: another
+/// definition, an ATX heading, a fence, a blockquote, a thematic
+/// break, an HTML block opener, or a list/blockquote container line.
+/// Whether a line is an ATX heading: 1-6 `#`s followed by a
+/// space, a tab, or end-of-line (CommonMark). `#hashtag` is
+/// paragraph text, not a heading (Codex P2 on #1565's tenth cut).
+fn is_atx_heading(stripped: &str) -> bool {
+    let hashes = stripped.bytes().take_while(|&b| b == b'#').count();
+    (1..=6).contains(&hashes)
+        && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
+}
+
+
+/// Whether the character after a block-level tag name is a valid
+/// name boundary: whitespace, `/`, `>`, or end-of-line (CommonMark
+/// type 6). `<div=foo>` has no boundary after `div`, so it is
+/// literal paragraph text, not an HTML block (Codex P2 on
+/// #1565's sixteenth cut).
+fn tag_name_boundary_ok(tag_body: &str, name_len: usize) -> bool {
+    matches!(
+        tag_body.as_bytes().get(name_len),
+        None | Some(b' ') | Some(b'\t') | Some(b'>') | Some(b'/')
+    )
+}
+
+/// Whether a line opens an HTML block that can INTERRUPT a
+/// paragraph (CommonMark types 1-6): a comment, a CDATA section,
+/// a processing instruction, a declaration, a script/pre/style/
+/// textarea element, or a block-level tag (opening or closing).
+/// A lone inline tag (`<em>`, `<a>`) is type 7, which cannot
+/// interrupt a paragraph: as a footnote definition's next line it
+/// is a lazy continuation of the definition's paragraph, not a
+/// new block (Codex P2 on #1565's eleventh cut).
+fn is_html_block_start(stripped: &str) -> bool {
+    let Some(rest) = stripped.strip_prefix('<') else {
+        return false;
+    };
+    let lower = stripped.to_ascii_lowercase();
+    if lower.starts_with("<!--") || stripped.starts_with("<![CDATA[") || lower.starts_with("<?") {
+        return true;
+    }
+    if rest.starts_with('!')
+        && rest[1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+    {
+        return true;
+    }
+    // Type 1 elements, with the tracker's name boundary
+    // (whitespace, '>', or end-of-line after the name).
+    for name in ["script", "pre", "style", "textarea"] {
+        if lower[1..].starts_with(name)
+            && matches!(
+                lower.as_bytes().get(1 + name.len()),
+                None | Some(b' ') | Some(b'\t') | Some(b'>')
+            )
+        {
+            return true;
+        }
+    }
+    let tag_body = rest.strip_prefix('/').unwrap_or(rest);
+    let tag_name: String = tag_body
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    HTML_BLOCK_TAGS.contains(&tag_name.as_str()) && tag_name_boundary_ok(tag_body, tag_name.len())
+}
+
+/// Whether a stripped line is an ordered list marker whose
+/// start number cannot interrupt a paragraph: CommonMark lets
+/// only a list starting at 1 do that, so `2. text` after a
+/// paragraph line is its lazy continuation, not a new block
+/// (Codex P2 on #1565's thirteenth cut).
+fn is_non_interrupting_ordered_marker(stripped: &str) -> bool {
+    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || digits > 9 {
+        return false;
+    }
+    if !matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')')) {
+        return false;
+    }
+    if !matches!(stripped.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t')) {
+        return false;
+    }
+    stripped[..digits].parse::<u64>().ok() != Some(1)
+}
+
+/// Whether a stripped line opens a code fence: a run of >= 3
+/// backticks or tildes whose info string is valid -- a backtick
+/// fence's info string cannot contain a backtick (CommonMark), so
+/// a line like ```a`b is paragraph text, not a fence (Codex P2 on
+/// #1565's fifteenth cut). Mirrors FenceTracker's opening rule.
+fn is_fence_opener(stripped: &str) -> bool {
+    let Some(ch) = stripped.chars().next() else {
+        return false;
+    };
+    if ch != '`' && ch != '~' {
+        return false;
+    }
+    let run = stripped.chars().take_while(|&c| c == ch).count();
+    run >= 3 && !(ch == '`' && stripped[run..].contains('`'))
+}
+
+/// The indentation of a line in columns: a space is one column
+/// and a tab advances to the next multiple of four, so the two
+/// spellings ` \t` and `    ` are the same four columns
+/// (CommonMark) -- a literal prefix check accepts neither the
+/// mixed spelling nor other space/tab combinations (Codex P2 on
+/// #1565's fifteenth cut).
+fn indentation_columns(line: &str) -> usize {
+    let mut col = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => col += 1,
+            '\t' => col += 4 - (col % 4),
+            _ => break,
+        }
+    }
+    col
+}
+
+/// Whether a stripped line carries a list marker as its outermost
+/// container prefix (a bullet, or an ordered marker): such a line
+/// starts a new list item. The marker shapes mirror
+/// strip_container_prefixes' first level.
+fn starts_with_list_marker(stripped: &str) -> bool {
+    let bytes = stripped.as_bytes();
+    if bytes.len() >= 2
+        && matches!(bytes[0], b'-' | b'*' | b'+')
+        && (bytes[1] == b' ' || bytes[1] == b'\t')
+    {
+        return true;
+    }
+    let digits = stripped.chars().take_while(|c| c.is_ascii_digit()).count();
+    digits >= 1
+        && digits <= 9
+        && matches!(stripped.as_bytes().get(digits), Some(b'.') | Some(b')'))
+        && matches!(
+            stripped.as_bytes().get(digits + 1),
+            Some(b' ') | Some(b'\t')
+        )
+}
+
+fn starts_new_block(stripped: &str) -> bool {
+    // A link reference definition is deliberately NOT here: it
+    // cannot interrupt a paragraph, so a reference-shaped line
+    // after a footnote definition's first line is a lazy
+    // continuation of that paragraph (Codex P2 on #1565's
+    // twelfth cut).
+    footnote_definition_label(stripped).is_some()
+        || is_atx_heading(stripped)
+        || stripped.starts_with('>')
+        || is_fence_opener(stripped)
+        || is_thematic_break(stripped)
+        || (strip_container_prefixes(stripped) != stripped
+            && !is_non_interrupting_ordered_marker(stripped))
+        || is_html_block_start(stripped)
+}
+
+/// Scan `markdown` for top-level footnote definition blocks (#1565).
+/// Fence-aware like `protect_newline_destinations`: a definition-shaped
+/// line inside a fenced code block is literal text, not a definition.
+/// A block runs from its `[^label]:` line through the following blank
+/// or indented (>= 4 spaces / tab) lines -- the CommonMark continuation
+/// rule for footnote definitions. The harness is shape-generic so the
+/// #1004 link-reference-definition fix can share it later.
+fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBlock> {
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut blocks = Vec::new();
+    let mut fence = FenceTracker::default();
+    let mut fence_prefix = String::new();
+    let mut html_prefix = String::new();
+    let mut html = HtmlBlockTracker::default();
+    // Block-start eligibility, mirroring
+    // collect_link_reference_definitions: a type-7 HTML opening
+    // cannot interrupt a paragraph, so the tracker may only open
+    // one where a block can start (Codex P2 on #1565's eighteenth
+    // cut: `Body` / `<em>` / `# Heading` / `[^real]: note` -- the
+    // tracker opened at `<em>` and swallowed the heading and the
+    // definition as HTML interior). Blank lines, block starts,
+    // fences, HTML blocks and definitions leave the next line
+    // eligible; paragraph text does not.
+    let mut at_block_start = true;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let stripped = line.trim_start_matches(' ');
+        // An already-open HTML block sees every line, however
+        // indented: an indented closing marker still closes it,
+        // and gating this feed on indent left the tracker open
+        // forever, suppressing every later definition (Codex P2
+        // on #1565's seventh cut). The indent limit applies only
+        // to recognizing an OPENING line.
+        // Container prefixes are stripped for an HTML block's
+        // OPENING line too: a block opened inside a list item
+        // (`- <!--`) still makes its interior literal, and feeding
+        // only the unstripped line missed the opening behind the
+        // marker (Codex P2 on #1565's eighth cut).
+        let container_stripped = strip_container_prefixes(stripped);
+        // While an HTML block is open, feed it lines relative to
+        // the container it opened in: a blank line inside a
+        // blockquote is just `>` once spaces are stripped, and
+        // feeding that literal line kept the tracker open past the
+        // block's end, suppressing what follows it (Codex P2 on
+        // #1565's ninth cut). Mirrors fence_prefix below.
+        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
+        // on a blank quote line -- so relativity is computed by
+        // re-stripping this line's own container prefixes.)
+        // An HTML block opened inside a blockquote ends implicitly
+        // when the container ends, exactly like a fence (tenth
+        // cut): a following line carrying no container prefix at
+        // all is outside the quote, so a marker-ended block (a
+        // comment) is over even without its closing marker (Codex
+        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
+        // blank / `[^real]: note` -- the tracker stayed open and
+        // treated the real definition as comment interior).
+        // (The blockquote clause above is the tenth/eleventh cut;
+        // the list clause is the fifteenth: a non-blank line at
+        // column zero carrying no container prefix is outside the
+        // item, exactly as for a list-scoped fence.)
+        if html.in_html()
+            && !html_prefix.is_empty()
+            && !stripped.starts_with(&html_prefix)
+            && strip_container_prefixes(stripped) == stripped
+            && (html_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
+        {
+            html.reset();
+            html_prefix.clear();
+        }
+        let html_line = if html.in_html() && !html_prefix.is_empty() {
+            container_stripped
+        } else {
+            stripped
+        };
+        let was_in_html = html.in_html();
+        if !fence.in_fence()
+            && (indent <= 3 || html.in_html())
+            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+        {
+            if !was_in_html && html.in_html() {
+                // Opened on this line (via the container-stripped
+                // form when a container prefix is present): remember
+                // the prefix for the block's interior lines.
+                html_prefix =
+                    stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            if !html.in_html() {
+                html_prefix.clear();
+            }
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        // Container prefixes are stripped to find a fence's OPENING
+        // line, and the opening line's prefix is remembered: while
+        // the fence is open, only lines carrying THAT prefix are
+        // de-prefixed (a fence genuinely inside a blockquote closes
+        // on a prefixed delimiter), while a container-shaped line
+        // inside a top-level fence stays literal (Codex P2 on
+        // #1565's fifth and sixth cuts).
+        // A fence opened inside a blockquote ends implicitly
+        // when the container ends: a following line carrying no
+        // container prefix at all is outside the quote, so the
+        // fence is over even without a closing delimiter (Codex
+        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
+        // `[^real]: note` -- the scanner kept the fence open and
+        // skipped the real definition).
+        // A fence opened inside a list item ends the same way
+        // (fourteenth cut): a non-blank line at column zero carrying
+        // no container prefix is outside the item, so the fence is
+        // over even without a closing delimiter (`- ``` ` / `  code`
+        // / blank / `[^real]: note` -- the scanner kept the
+        // list-scoped fence open and skipped the real definition).
+        if fence.in_fence()
+            && !fence_prefix.is_empty()
+            && !carries_container_prefix(stripped, &fence_prefix)
+            && strip_container_prefixes(stripped) == stripped
+            && (fence_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
+        {
+            fence.reset();
+            fence_prefix.clear();
+        }
+        let fence_line = if fence.in_fence() {
+            if carries_container_prefix(stripped, &fence_prefix) {
+                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
+            } else {
+                stripped
+            }
+        } else {
+            container_stripped
+        };
+        let was_in_fence = fence.in_fence();
+        if indent <= 3 && fence.feed(fence_line) {
+            if was_in_fence {
+                fence_prefix.clear();
+            } else {
+                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            // A fence delimiter is a block boundary: after an
+            // (empty) fenced block the next line is block-eligible
+            // again, so a type-7 HTML block may open there -- the
+            // reference collector already reset this; without it
+            // `Body` / ``` ``` ``` / `<em>` / `[^fake]: ...` kept
+            // the paragraph's ineligibility, refused the tag, and
+            // recovered the fake definition (Codex P2 on #1565's
+            // nineteenth cut).
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        if fence.in_fence() || html.in_html() || indent > 3 {
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        if stripped.trim().is_empty() {
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        let Some(label) = footnote_definition_label(stripped) else {
+            // A plain line is paragraph text (next line not
+            // block-eligible) unless it starts a block itself (a
+            // heading, a list item, a thematic break, ...).
+            at_block_start = starts_new_block(stripped);
+            i += 1;
+            continue;
+        };
+        let mut source_lines: Vec<&str> = vec![line];
+        let mut last_content = 0;
+        // Lazy continuation eligibility: the previous line carried
+        // paragraph content (the opening line counts only when it
+        // has text after the colon).
+        let mut prev_is_content = !stripped[label.len() + 4..].trim().is_empty();
+        let mut j = i + 1;
+        while j < lines.len() {
+            let next = lines[j];
+            if next.trim().is_empty() {
+                source_lines.push(next);
+                prev_is_content = false;
+                j += 1;
+                continue;
+            }
+            if indentation_columns(next) >= 4 {
+                source_lines.push(next);
+                last_content = source_lines.len() - 1;
+                prev_is_content = true;
+                j += 1;
+                continue;
+            }
+            // Lazy paragraph continuation (Codex P2 on #1565's
+            // eighth cut): comrak continues a footnote definition's
+            // paragraph onto a following unindented line that does
+            // not start a new block (`[^a]: First line.` /
+            // `second line.`); collecting only indented lines
+            // truncated the definition and lost the continuation
+            // on save.
+            if prev_is_content && !starts_new_block(next.trim_start_matches(' ')) {
+                source_lines.push(next);
+                last_content = source_lines.len() - 1;
+                j += 1;
+                continue;
+            }
+            break;
+        }
+        source_lines.truncate(last_content + 1);
+        blocks.push(FootnoteDefinitionBlock {
+            label,
+            source: source_lines.join("\n"),
+            line: i,
+        });
+        at_block_start = true;
+        i = j;
+    }
+    blocks
+}
+
+/// Append a PM `footnote_definition` node for every definition in
+/// `markdown` that the comrak conversion did not already carry (#1565).
+/// A label comrak emitted a node for is referenced (or at least
+/// carried) and is left exactly as today; only the definitions comrak
+/// dropped are synthesized, in source order, at the end of the doc.
+/// The document's link reference definitions (`[label]: dest` lines,
+/// footnote definitions excluded), verbatim, for the synthesis probe:
+/// a reference-style link inside an unreferenced footnote resolves
+/// against definitions elsewhere in the document, and a probe without
+/// them converts the link to literal text (Codex P2).
+/// The text after a link reference definition's destination, given
+/// everything after its `]:` (accumulated across the definition's
+/// lines). None while the destination itself is still incomplete --
+/// nothing collected yet, or an unterminated angle destination.
+fn link_reference_definition_title_text(after: &str) -> Option<&str> {
+    let text = after.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let rest = if let Some(inner) = text.strip_prefix('<') {
+        let pos = inner.find('>')?;
+        &inner[pos + 1..]
+    } else {
+        let end = text.find(char::is_whitespace).unwrap_or(text.len());
+        &text[end..]
+    };
+    Some(rest.trim_start())
+}
+
+/// Whether `s` contains `closer` outside a backslash escape: a
+/// `\x` pair makes `x` literal text, and a `\\` pair is a
+/// literal backslash, so the character after it counts again.
+fn contains_unescaped(s: &str, closer: char) -> bool {
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == closer {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a link reference definition needs more lines: its
+/// destination has not arrived yet, or a title that was started
+/// (double quote, single quote, or open paren) has not closed
+/// (Codex P2 on #1565's seventh cut -- definitions legitimately
+/// span lines, with the destination or the title on a following
+/// line).
+fn link_reference_definition_needs_more(after: &str) -> bool {
+    let Some(title) = link_reference_definition_title_text(after) else {
+        return true;
+    };
+    if title.is_empty() {
+        return false;
+    }
+    let closer = match title.as_bytes()[0] {
+        b'"' => '"',
+        0x27 => 0x27 as char,
+        b'(' => ')',
+        _ => return false,
+    };
+    // An ESCAPED delimiter is title text, not the closer: in
+    // `"first \"quoted` the title is still open, and treating it
+    // as complete stopped collection before the closing line, so
+    // the probe received an unterminated definition and the
+    // recovered footnote lost its link (Codex P2 on #1565's
+    // seventeenth cut).
+    !contains_unescaped(&title[1..], closer)
+}
+
+/// Whether anything follows the destination in the accumulated
+/// after-colon text (a title, complete or still arriving).
+fn link_reference_definition_has_title(after: &str) -> bool {
+    link_reference_definition_title_text(after).is_some_and(|t| !t.is_empty())
+}
+
+/// Whether a stripped line opens a link reference definition
+/// (`[label]:`), footnote definitions excluded by the caller.
+/// The index of the first UNESCAPED `]` in `s`: a `\]` inside
+/// a reference label is label text, not the label's end (Codex
+/// P2 on #1565's twelfth cut). Shared by the shape check and the
+/// collector's destination extraction so they can never disagree
+/// about where the label ends.
+fn find_label_close(s: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == ']' {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn is_link_reference_definition_start(stripped: &str) -> bool {
+    if !stripped.starts_with('[') {
+        return false;
+    }
+    match find_label_close(stripped) {
+        Some(close) => stripped[close + 1..].starts_with(':'),
+        None => false,
+    }
+}
+
+fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
+    let mut fence = FenceTracker::default();
+    let mut fence_prefix = String::new();
+    let mut html_prefix = String::new();
+    let mut html = HtmlBlockTracker::default();
+    let mut defs = Vec::new();
+    // A link reference definition is only a definition where it can
+    // START a block: a definition-shaped line continuing a paragraph
+    // is paragraph text, and promoting it into the synthesis context
+    // would resolve references the document itself does not honor
+    // (Codex P2 on #1565's fifth cut). Track block-start eligibility:
+    // blank lines, headings, fences, HTML blocks, list/blockquote
+    // lines and other definitions leave the next line block-eligible;
+    // paragraph text does not.
+    let mut at_block_start = true;
+    // Inside a footnote definition's block (until a blank line or
+    // a new block starter), a reference-shaped line is the
+    // footnote's own lazy continuation, not a standalone
+    // definition: collecting it would make the synthesis context
+    // resolve as a link what the document keeps literal (Codex
+    // P2 on #1565's twelfth cut).
+    let mut in_footnote_block = false;
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        // Indentation in COLUMNS: a tab advances to the next
+        // multiple of 4, so a tab-indented line is indented code
+        // (indent 4), not a paragraph line at indent 0 (Codex P2
+        // on #1565's sixteenth cut).
+        let indent = {
+            let mut col = 0usize;
+            for c in line.chars() {
+                match c {
+                    ' ' => col += 1,
+                    '\t' => col += 4 - (col % 4),
+                    _ => break,
+                }
+            }
+            col
+        };
+        let stripped = line.trim_start_matches(' ');
+        if stripped.trim().is_empty() {
+            // A blank line ENDS a blank-line-terminated HTML block;
+            // the tracker must see it or it suppresses every later
+            // definition (Codex P2 on #1565's sixth cut).
+            // A fully blank line carries no container prefix, so a
+            // container-scoped HTML block is over (eleventh cut).
+            if html.in_html() && html_prefix.contains('>') {
+                html.reset();
+                html_prefix.clear();
+            }
+            html.feed(stripped, true);
+            in_footnote_block = false;
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        // An already-open HTML block sees every line, however
+        // indented: an indented closing marker still closes it,
+        // and gating this feed on indent left the tracker open
+        // forever, suppressing every later definition (Codex P2
+        // on #1565's seventh cut). The indent limit applies only
+        // to recognizing an OPENING line.
+        let container_stripped = strip_container_prefixes(stripped);
+        // While an HTML block is open, feed it lines relative to
+        // the container it opened in: a blank line inside a
+        // blockquote is just `>` once spaces are stripped, and
+        // feeding that literal line kept the tracker open past the
+        // block's end, suppressing what follows it (Codex P2 on
+        // #1565's ninth cut). Mirrors fence_prefix below.
+        // (The recorded prefix's exact bytes vary -- `> ` vs `>`
+        // on a blank quote line -- so relativity is computed by
+        // re-stripping this line's own container prefixes.)
+        // An HTML block opened inside a blockquote ends implicitly
+        // when the container ends, exactly like a fence (tenth
+        // cut): a following line carrying no container prefix at
+        // all is outside the quote, so a marker-ended block (a
+        // comment) is over even without its closing marker (Codex
+        // P2 on #1565's eleventh cut: `> <!--` / `> hidden` /
+        // blank / `[^real]: note` -- the tracker stayed open and
+        // treated the real definition as comment interior).
+        // (The blockquote clause above is the tenth/eleventh cut;
+        // the list clause is the fifteenth: a non-blank line at
+        // column zero carrying no container prefix is outside the
+        // item, exactly as for a list-scoped fence.)
+        if html.in_html()
+            && !html_prefix.is_empty()
+            && !stripped.starts_with(&html_prefix)
+            && strip_container_prefixes(stripped) == stripped
+            && (html_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
+        {
+            html.reset();
+            html_prefix.clear();
+        }
+        let html_line = if html.in_html() && !html_prefix.is_empty() {
+            container_stripped
+        } else {
+            stripped
+        };
+        let was_in_html = html.in_html();
+        if !fence.in_fence()
+            && (indent <= 3 || html.in_html())
+            && (html.feed(html_line, at_block_start) || html.feed(container_stripped, at_block_start))
+        {
+            if !was_in_html && html.in_html() {
+                // Opened on this line (via the container-stripped
+                // form when a container prefix is present): remember
+                // the prefix for the block's interior lines.
+                html_prefix =
+                    stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            if !html.in_html() {
+                html_prefix.clear();
+            }
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        // A fence opened inside a blockquote ends implicitly
+        // when the container ends: a following line carrying no
+        // container prefix at all is outside the quote, so the
+        // fence is over even without a closing delimiter (Codex
+        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
+        // `[^real]: note` -- the scanner kept the fence open and
+        // skipped the real definition).
+        // A fence opened inside a list item ends the same way
+        // (fourteenth cut): a non-blank line at column zero carrying
+        // no container prefix is outside the item, so the fence is
+        // over even without a closing delimiter (`- ``` ` / `  code`
+        // / blank / `[^real]: note` -- the scanner kept the
+        // list-scoped fence open and skipped the real definition).
+        if fence.in_fence()
+            && !fence_prefix.is_empty()
+            && !carries_container_prefix(stripped, &fence_prefix)
+            && strip_container_prefixes(stripped) == stripped
+            && (fence_prefix.contains('>')
+                || (indent == 0 && !stripped.is_empty()))
+        {
+            fence.reset();
+            fence_prefix.clear();
+        }
+        let fence_line = if fence.in_fence() {
+            if carries_container_prefix(stripped, &fence_prefix) {
+                strip_container_levels(stripped, container_signature(&fence_prefix).chars().count())
+            } else {
+                stripped
+            }
+        } else {
+            container_stripped
+        };
+        let was_in_fence = fence.in_fence();
+        if indent <= 3 && fence.feed(fence_line) {
+            if was_in_fence {
+                fence_prefix.clear();
+            } else {
+                fence_prefix = stripped[..stripped.len() - container_stripped.len()].to_string();
+            }
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        if fence.in_fence() || html.in_html() || indent > 3 {
+            i += 1;
+            continue;
+        }
+        if footnote_definition_label(stripped).is_some() {
+            // A footnote definition is its own leaf block; a link
+            // definition after it starts a fresh block.
+            in_footnote_block = true;
+            at_block_start = true;
+            i += 1;
+            continue;
+        }
+        // Reference definitions inside a container are
+        // document-global (Codex P2 on #1565's tenth cut):
+        // detect the definition on the container-stripped line;
+        // the original line is still collected verbatim below.
+        let def_stripped = if is_link_reference_definition_start(stripped) {
+            stripped
+        } else {
+            container_stripped
+        };
+        // A reference label may itself span lines (fourteenth
+        // cut): `[long\nlabel]: https://example.com` is a valid
+        // definition whose label normalizes to `long label`, but
+        // the single-line shape check sees only `[long` and
+        // rejects it before the continuation logic can run, so the
+        // definition never reaches the synthesis context and a
+        // recovered footnote's `[target][long label]` saves as
+        // literal brackets instead of a hyperlink. When neither
+        // stripped form closes a label on this line, accumulate
+        // lines until the closing `]:` arrives.
+        let multiline_start: Option<(Vec<&str>, String, usize)> =
+            if is_link_reference_definition_start(def_stripped) {
+                None
+            } else {
+                let candidate = if stripped.starts_with('[') {
+                    stripped
+                } else {
+                    container_stripped
+                };
+                if !candidate.starts_with('[')
+                    || candidate.starts_with("[^")
+                    || find_label_close(candidate).is_some()
+                {
+                    None
+                } else {
+                    let mut text = candidate.to_string();
+                    let mut j = i + 1;
+                    let mut found = None;
+                    while j < lines.len() && text.len() < 1000 {
+                        let next = lines[j].trim_start_matches(' ');
+                        if next.trim().is_empty() {
+                            break;
+                        }
+                        text.push('\n');
+                        text.push_str(next);
+                        if let Some(close) = find_label_close(&text) {
+                            if text[close + 1..].starts_with(':') {
+                                found = Some((
+                                    lines[i..=j].to_vec(),
+                                    text[close + 2..].to_string(),
+                                    j + 1,
+                                ));
+                            }
+                            break;
+                        }
+                        j += 1;
+                    }
+                    found
+                }
+            };
+        let single_start = is_link_reference_definition_start(def_stripped).then(|| {
+            let close = find_label_close(def_stripped).expect("start shape checked");
+            (vec![line], def_stripped[close + 2..].to_string(), i + 1)
+        });
+        // A line carrying a list marker starts a NEW list item
+        // and so a fresh block: `- [url]: ...` after `- Body` is a
+        // definition in its own item, not a continuation of the
+        // first item's paragraph, and it likewise ends any footnote
+        // block in progress (Codex P2 on #1565's fifteenth cut). A
+        // non-1 ordered marker is excepted: it cannot interrupt a
+        // paragraph (thirteenth cut), so it starts no item here.
+        let new_list_item = starts_with_list_marker(stripped)
+            && !is_non_interrupting_ordered_marker(stripped);
+        if (at_block_start || new_list_item)
+            && (!in_footnote_block || new_list_item)
+            && (single_start.is_some() || multiline_start.is_some())
+        {
+            let (mut block, mut after, mut j) =
+                single_start.or(multiline_start).expect("start checked");
+            // Collect the COMPLETE definition block: the destination
+            // or the title may sit on following lines, and collecting
+            // only the opening line degraded the reference to literal
+            // text or silently dropped its title (Codex P2 on
+            // #1565's seventh cut).
+            while j < lines.len() {
+                let next = lines[j];
+                let next_stripped = next.trim_start_matches(' ');
+                if next_stripped.trim().is_empty() {
+                    break;
+                }
+                if link_reference_definition_needs_more(&after) {
+                    // Still waiting for the destination or an
+                    // unclosed title. A definition-shaped line while
+                    // the destination is missing starts its own
+                    // block instead of serving as a destination. A
+                    // `#fragment` line is NOT definition-shaped: it
+                    // is a valid destination token (an ATX heading
+                    // needs whitespace or end-of-line after the
+                    // hashes), so it is collected below (Codex P2
+                    // on #1565's seventeenth cut).
+                    // The boundary check also applies while an
+                    // angle destination is still unterminated: a
+                    // block-starting line cannot be swallowed
+                    // into the destination, and consuming it took
+                    // the heading AND the valid definition after
+                    // it down with the discarded candidate (Codex
+                    // P2 on #1565's nineteenth cut). A line
+                    // containing an unescaped '>' may still close
+                    // the destination and is consumed.
+                    let pending_angle_destination = {
+                        let t = after.trim_start();
+                        t.starts_with('<') && !contains_unescaped(&t[1..], '>')
+                    };
+                    if (after.trim().is_empty()
+                        || (pending_angle_destination
+                            && !contains_unescaped(next_stripped, '>')))
+                        && (footnote_definition_label(next_stripped).is_some()
+                            || is_link_reference_definition_start(next_stripped)
+                            || is_atx_heading(next_stripped)
+                            || next_stripped.starts_with('>')
+                            || next_stripped.starts_with('`'))
+                    {
+                        break;
+                    }
+                    block.push(next);
+                    after.push('\n');
+                    after.push_str(next_stripped);
+                    j += 1;
+                    continue;
+                }
+                // Complete so far, but a title line still belongs to
+                // this definition.
+                if !link_reference_definition_has_title(&after)
+                    && matches!(
+                        next_stripped.as_bytes().first().copied(),
+                        Some(b'"') | Some(0x27) | Some(b'(')
+                    )
+                {
+                    block.push(next);
+                    after.push('\n');
+                    after.push_str(next_stripped);
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            if link_reference_definition_title_text(&after).is_some() {
+                defs.push((i, block.join("\n")));
+            }
+            at_block_start = true;
+            i = j;
+            continue;
+        }
+        // Any other line: headings and container lines end a
+        // paragraph (next line may start a block); plain text is a
+        // paragraph line (next line is its continuation).
+        // Thematic breaks and setext underlines also end a
+        // paragraph: after `---` a reference definition starts a
+        // new block and comrak honors it, but treating `---` as
+        // paragraph text left the next line ineligible and the
+        // definition was omitted from the synthesis context
+        // (Codex P2 on #1565's eighth cut).
+        // A setext underline ends a paragraph only when a
+        // paragraph precedes it: a lone `=` at a block start is
+        // itself paragraph text, and a definition-shaped line
+        // after it is that paragraph's continuation, not a
+        // definition (Codex P2 on #1565's ninth cut).
+        if is_atx_heading(stripped) || is_thematic_break(stripped) || starts_new_block(stripped) {
+            in_footnote_block = false;
+        }
+        let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
+        // A blockquote line's eligibility follows its CONTENT
+        // (eleventh cut): `> Body` is paragraph text inside the
+        // quote, so a definition-shaped line continuing it inside
+        // the quote is paragraph text too, not a definition --
+        // promoting it resolved references the document does not
+        // honor. Only quote content that itself ends or starts a
+        // block (blank, heading, break, setext, a new block)
+        // leaves the next line eligible. Non-quote container
+        // lines (list items) keep the older rule.
+        let quote_eligible = stripped.starts_with('>').then(|| {
+            let c = container_stripped;
+            c.trim().is_empty()
+                || is_atx_heading(c)
+                || is_thematic_break(c)
+                || (is_setext_underline(c) && !at_block_start)
+                || starts_new_block(c)
+        });
+        // A list item line's eligibility follows its CONTENT too
+        // (fourteenth cut): `- Body` is paragraph text inside the
+        // item, so an indented definition-shaped line continuing
+        // it (`  [url]: ...`) is paragraph text, not a reference
+        // definition -- the older rule left every container line
+        // block-eligible and promoted it into the synthesis
+        // context. Only item content that itself ends or starts a
+        // block leaves the next line eligible, mirroring the
+        // blockquote rule above.
+        let list_eligible = if quote_eligible.is_none()
+            && strip_container_prefixes(stripped) != stripped
+        {
+            let c = container_stripped;
+            Some(
+                c.trim().is_empty()
+                    || is_atx_heading(c)
+                    || is_thematic_break(c)
+                    || (is_setext_underline(c) && !at_block_start)
+                    || starts_new_block(c),
+            )
+        } else {
+            None
+        };
+        at_block_start = is_atx_heading(stripped)
+            || quote_eligible
+                .or(list_eligible)
+                .unwrap_or_else(|| strip_container_prefixes(stripped) != stripped)
+            || is_thematic_break(stripped)
+            || setext_ends_paragraph;
+        i += 1;
+    }
+    defs
+}
+
+fn preserve_unreferenced_footnote_definitions(
+    doc: &mut Value,
+    markdown: &str,
+    newline_token: Option<&str>,
+) {
+    let carried: Vec<String> = doc["content"]
+        .as_array()
+        .map(|content| {
+            content
+                .iter()
+                .filter(|n| n["type"] == "footnote_definition")
+                .filter_map(|n| n["attrs"]["label"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let reference_defs = collect_link_reference_definitions(markdown);
+    let blocks = scan_footnote_definition_blocks(markdown);
+    let orphans: Vec<&FootnoteDefinitionBlock> = blocks
+        .iter()
+        .filter(|block| !carried.contains(&block.label))
+        .collect();
+    // ONE augmented parse recovers every orphan (Codex P2 on #1565's
+    // fifth cut): the probe references every orphan label and carries
+    // EVERY scanned definition block (orphan and carried alike) plus
+    // the document's link reference definitions as resolution context
+    // -- an unreferenced definition may itself reference a footnote
+    // the main parse already carried (`[^outer]: See [^inner].` where
+    // [^inner] is carried), and a probe without that definition
+    // degrades the reference to escaped literal text (third cut). A
+    // per-orphan probe scaled quadratically with the number of
+    // orphans.
+    let recovered = synthesize_footnote_definitions(&orphans, &blocks, &reference_defs);
+    let mut synthesized = Vec::new();
+    // Duplicate labels (fourteenth cut): the scanner keeps every
+    // source block, but synthesis resolves one node per label, so
+    // appending per block cloned the same node for each duplicate
+    // and overwrote the later bodies on save. Append the resolved
+    // definition once per label -- the first definition wins,
+    // matching how the document itself resolves duplicates.
+    let mut seen_labels = std::collections::HashSet::new();
+    for block in &orphans {
+        if !seen_labels.insert(block.label.clone()) {
+            continue;
+        }
+        if let Some(node) = recovered.get(&block.label) {
+            let mut node = node.clone();
+            // The probe parsed the PROTECTED source, whose link
+            // destinations carry the newline placeholder token; the
+            // outer restore ran before this node existed, so restore
+            // the token here or it would be saved into the URL
+            // (Codex P2).
+            if let Some(token) = newline_token {
+                restore_attr_newlines(&mut node, token);
+            }
+            synthesized.push(node);
+        }
+    }
+    if !synthesized.is_empty()
+        && let Some(content) = doc["content"].as_array_mut()
+    {
+        content.extend(synthesized);
+    }
+}
+
+/// Build the PM nodes for every unreferenced definition in ONE
+/// augmented parse: a probe document that references every orphan
+/// label (so comrak emits each definition) and carries every
+/// definition block plus the document's link reference definitions
+/// as resolution context, so references inside a definition resolve
+/// exactly as they would in the document. Going through the same
+/// conversion guarantees the synthesized nodes have exactly the
+/// shape the referenced path produces (#1031 block children
+/// included). Returns the first node per label, keyed by label.
+fn synthesize_footnote_definitions(
+    orphans: &[&FootnoteDefinitionBlock],
+    all_blocks: &[FootnoteDefinitionBlock],
+    reference_defs: &[(usize, String)],
+) -> std::collections::HashMap<String, Value> {
+    let mut nodes = std::collections::HashMap::new();
+    if orphans.is_empty() {
+        return nodes;
+    }
+    let mut probe = String::new();
+    for block in orphans {
+        probe.push_str(&format!("x[^{}]\n\n", block.label));
+    }
+    // Footnote blocks and link reference definitions interleave in
+    // DOCUMENT order (Codex P2 on #1565's eighth cut): reference
+    // definitions are global and the first definition wins, so
+    // appending every collected definition after the footnote
+    // blocks reversed precedence whenever a footnote block carried
+    // a nested (indented) definition of a label the document had
+    // already defined at top level.
+    let mut segments: Vec<(usize, &str)> = all_blocks
+        .iter()
+        .map(|block| (block.line, block.source.as_str()))
+        .chain(
+            reference_defs
+                .iter()
+                .map(|(line, text)| (*line, text.as_str())),
+        )
+        .collect();
+    segments.sort_by_key(|(line, _)| *line);
+    for (_, text) in segments {
+        probe.push_str(text);
+        probe.push_str("\n\n");
+    }
+    let doc = markdown_to_prosemirror_inner(&probe, false);
+    if let Some(content) = doc["content"].as_array() {
+        for n in content {
+            if n["type"] == "footnote_definition" {
+                if let Some(label) = n["attrs"]["label"].as_str() {
+                    nodes.entry(label.to_string()).or_insert_with(|| n.clone());
+                }
+            }
+        }
+    }
+    nodes
 }
 
 /// Replace each newline inside an angle-form link/image destination
@@ -3642,6 +5190,1125 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_unreferenced_footnote_definition_survives_save() {
+        // #1565: a definition nothing references is dropped by comrak
+        // before conversion, so it used to vanish on save. The pre-scan
+        // preserves it, and the round-trip is a fixpoint.
+        let original = "Body text with no reference.\n\n[^orphan]: The orphan note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("unreferenced definition carried into the PM doc");
+        assert_eq!(definition["attrs"]["label"], "orphan");
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^orphan]:"),
+            "orphan definition survives save: {first:?}"
+        );
+        assert!(
+            first.contains("The orphan note."),
+            "orphan body survives save: {first:?}"
+        );
+        assert_eq!(first, second, "orphan round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_mixed_referenced_and_unreferenced_footnotes() {
+        // #1565: the referenced definition keeps today's exact path;
+        // the unreferenced one is appended by the pre-scan, not
+        // duplicated or dropped.
+        let original =
+            "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .filter_map(|n| n["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["used", "unused"]);
+        let (first, second) = two_saves(original);
+        for needle in ["[^used]:", "Used note.", "[^unused]:", "Unused note."] {
+            assert!(first.contains(needle), "{needle} survives save: {first:?}");
+        }
+        assert_eq!(first, second, "mixed round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definitions_only_document_does_not_save_empty() {
+        // #1565: a document that is only a footnote definition saved
+        // as an empty file -- the data-loss case from the issue.
+        let original = "[^only]: The only content.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^only]:") && first.contains("The only content."),
+            "definitions-only document keeps its definition: {first:?}"
+        );
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_reference_label_resolves_in_recovered_footnote() {
+        // #1565 fourteenth cut (Codex P2): a link reference
+        // definition's label may span lines (`[long\nlabel]:`);
+        // the collector's single-line eligibility check rejected
+        // it, so the recovered footnote's [target][long label]
+        // saved as literal brackets instead of a hyperlink.
+        let original =
+            "[^orphan]: [target][long label]\n\n[long\nlabel]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[target](https://example.com)"),
+            "multiline-label reference resolves into a link: {first:?}"
+        );
+        assert_eq!(first, second, "multiline-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_duplicate_footnote_definitions_appended_once() {
+        // #1565 fourteenth cut (Codex P2): two orphan blocks with
+        // the same label resolved to ONE synthesized node, which
+        // the append loop cloned for both blocks -- both saved
+        // definitions carried the same body and one original body
+        // was overwritten. The resolved definition is appended
+        // once per label (first definition wins).
+        let original = "[^a]: First.\n\n[^a]: Second.\n";
+        let doc = markdown_to_prosemirror(original);
+        let defs: Vec<&Value> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .collect();
+        assert_eq!(defs.len(), 1, "duplicate label yields one definition node");
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[^a]:").count(),
+            1,
+            "duplicate definition saved once: {first:?}"
+        );
+        assert!(
+            first.contains("First."),
+            "first definition body wins: {first:?}"
+        );
+        assert_eq!(first, second, "duplicate-label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_list_paragraph_line_is_not_a_reference_definition() {
+        // #1565 fourteenth cut (Codex P2): `  [url]: ...`
+        // continuing a list item's paragraph is paragraph text,
+        // not a link reference definition, so the orphan
+        // footnote's literal [target][url] must NOT resolve into
+        // a hyperlink.
+        let original =
+            "- Body\n  [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            !first.contains("](https://example.com)")
+                && first.contains("\\[target\\]"),
+            "list-continued reference stays literal (no link formed): {first:?}"
+        );
+        assert_eq!(first, second, "list-paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definition_after_list_scoped_fence_survives() {
+        // #1565 fourteenth cut (Codex P2): an unterminated fence
+        // inside a list item ends when the item ends; the
+        // top-level definition after it is a real definition, not
+        // fence interior.
+        let original = "- ```\n  code\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after list fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "list-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definition_after_container_scoped_html_comment_survives() {
+        // #1565 eleventh cut (Codex P2): an HTML comment opened
+        // inside a blockquote ends when the quote ends, even
+        // without its --> marker; the top-level definition after
+        // it is a real definition, not comment interior.
+        let original = "> <!--\n> hidden\n\n[^real]: note\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after container-ended comment survives: {first:?}"
+        );
+        assert_eq!(first, second, "container HTML round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_container_paragraph_line_is_not_a_reference_definition() {
+        // #1565 eleventh cut (Codex P2): `> [url]: ...` continuing
+        // a blockquote paragraph is paragraph text, not a link
+        // reference definition, so the orphan footnote's literal
+        // [target][url] must NOT resolve into a hyperlink.
+        let original =
+            "> Body\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            !first.contains("](https://example.com)")
+                && first.contains("\\[target\\]"),
+            "unresolved reference stays literal (no link formed): {first:?}"
+        );
+        assert_eq!(first, second, "container paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_inline_html_continuation_of_definition_survives() {
+        // #1565 eleventh cut (Codex P2): a line starting with an
+        // inline tag (<em>) continues the footnote definition's
+        // paragraph (HTML type 7 cannot interrupt a paragraph);
+        // only block-level HTML ends collection.
+        let original = "[^a]: First line.\n<em>second</em>\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("second"),
+            "inline HTML continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "inline HTML round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_type7_html_after_paragraph_does_not_swallow_footnote() {
+        // #1565 eighteenth cut (Codex P2): a lone inline tag cannot
+        // interrupt a paragraph (CommonMark type 7), so in
+        // `Body` / `<em>` / `# Heading` / `[^real]: note` the tag is
+        // paragraph text, the heading still starts a block, and the
+        // unreferenced definition after it is live -- the source
+        // pre-scan must recover it, not swallow it as the interior
+        // of an HTML block opened at the tag.
+        let original = "Body\n<em>\n# Heading\n[^real]: note\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after type-7 continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "type-7 paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_shaped_line_continues_footnote_paragraph() {
+        // #1565 twelfth cut (Codex P2): a link reference
+        // definition cannot interrupt a paragraph, so a
+        // reference-shaped line after a footnote definition's
+        // first line is its lazy continuation and must survive
+        // as literal text, not stop collection.
+        let original = "[^a]: First line.\n[url]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.")
+                && first.contains("\\[url\\]:")
+                && !first.contains("[url](https://example.com)")
+                && first.contains("https://example.com"),
+            "reference-shaped continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "reference continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_escaped_bracket_in_reference_label_resolves() {
+        // #1565 twelfth cut (Codex P2): a \] inside a reference
+        // label is label text; the definition must still be
+        // collected (at the unescaped close) so the orphan
+        // footnote's reference-style link resolves on save.
+        let original = "[a\\]b]: https://example.com\n\n[^orphan]: [target][a\\]b]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "escaped-label reference resolves to a link: {first:?}"
+        );
+        assert_eq!(first, second, "escaped label round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_ordered_list_marker_two_continues_footnote_paragraph() {
+        // #1565 thirteenth cut (Codex P2): an ordered list can
+        // interrupt a paragraph only when it starts at 1, so
+        // `2. ...` after a footnote definition's first line is a
+        // lazy continuation of the definition, not a new block.
+        let original = "[^a]: First line.\n2. second line.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("second line."),
+            "non-1 ordered marker continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "ordered continuation is a fixpoint");
+    }
+
+
+    #[test]
+    fn test_empty_bullet_ends_footnote_like_comrak() {
+        // #1565 nineteenth cut (Codex P2, DECLINED with evidence):
+        // Codex proposed that an empty bullet cannot interrupt a
+        // paragraph, so `* ` and `second line.` after
+        // `[^a]: First.` belong to the footnote. Ground truth is
+        // comrak, whose boundaries this codec mirrors: parsing
+        // the REFERENCED document (`x[^a]` + this definition)
+        // puts only `First.` in the definition -- comrak ends the
+        // definition at the empty bullet and parses the bullet as
+        // a top-level empty list item and `second line.` as a
+        // body paragraph. The round trip below preserves every
+        // line and is a fixpoint, so nothing is lost on save and
+        // the scanner keeps mirroring comrak (see the PR thread
+        // for the probe output).
+        let original = "[^a]: First.\n* \nsecond line.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.")
+                && first.contains("second line.")
+                && first.contains("- "),
+            "all lines survive the round trip: {first:?}"
+        );
+        assert_eq!(first, second, "empty-bullet round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unterminated_angle_destination_does_not_swallow_blocks() {
+        // #1565 nineteenth cut (Codex P2): `[bad]: <unclosed`
+        // is malformed; the heading after it ends the paragraph
+        // and `[url]:` is a valid definition. The collector's
+        // boundary checks ran only while nothing followed the
+        // colon, so the unterminated angle destination consumed
+        // both lines and the whole candidate was discarded,
+        // leaving the orphan's link literal.
+        let original = "[bad]: <unclosed\n# Heading\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "valid definition after malformed angle destination resolves: {first:?}"
+        );
+        assert_eq!(first, second, "angle-destination boundary is a fixpoint");
+    }
+
+    #[test]
+    fn test_empty_fence_resets_block_start_for_type7_html() {
+        // #1565 nineteenth cut (Codex P2): an empty fenced block
+        // ends the preceding paragraph, so `<em>` after it opens
+        // a type-7 HTML block and the definition-shaped line is
+        // its literal interior. The footnote scan's fence branch
+        // never reset block-start eligibility (the reference
+        // collector's did), so the tag was refused and the fake
+        // definition recovered as a live footnote.
+        let original = "Body\n```\n```\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        assert!(
+            doc["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["type"] != "footnote_definition"),
+            "definition-shaped HTML interior is not synthesized: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "type-7-after-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_blockquote_fence_closes_without_space_after_marker() {
+        // #1565 nineteenth cut (Codex P2): a fence opened under
+        // `> ` may close under `>` -- the space after the quote
+        // marker is optional, so byte-exact prefix matching left
+        // the fence open and suppressed the reference definition
+        // after it, degrading the orphan's link to literal text.
+        let original = "> ```\n> code\n>```\n> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "definition after structurally-closed quote fence resolves: {first:?}"
+        );
+        assert_eq!(first, second, "quote-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_multi_paragraph_definition_fixpoint() {
+        // #1565 + #1031: an unreferenced multi-paragraph definition is
+        // synthesized with its block children, not flattened.
+        let original = "Body.\n\n[^m]: First paragraph.\n\n    Second paragraph.\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("unreferenced multi-paragraph definition present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "paragraph"]);
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multi-paragraph orphan is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_in_new_list_item_resolves() {
+        // #1565 fifteenth cut (Codex P2): a new list item starts a
+        // fresh block, so a reference definition inside the second
+        // item is document-global even though the first item's
+        // content is paragraph text; the orphan footnote's
+        // reference-style link must resolve on save.
+        let original =
+            "- Body\n- [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "reference in a new list item resolves to a link: {first:?}"
+        );
+        assert_eq!(first, second, "list item reference round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_list_scoped_comment_ends_before_real_definition() {
+        // #1565 fifteenth cut (Codex P2): an HTML comment opened
+        // inside a list item ends when the item ends; a real
+        // definition at column zero after it must still be
+        // recovered, not treated as comment interior.
+        let original = "- <!--\n  hidden\n\n[^real]: note\n";
+        let (first, _second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "definition after list-scoped comment survives: {first:?}"
+        );
+        // Known residual (noted on the PR for the next cut): the
+        // first save re-emits the comment WITHOUT its list marker
+        // on the opening line (`- ` becomes a bare item line and
+        // `<!--` an indented line of its own), so on a second save
+        // the pre-scan reads the comment as a top-level block and
+        // the definition is inside it again. Fixing that shape
+        // needs list-context tracking across lines in the scans;
+        // the authored shape above is what the Codex finding
+        // names, and it now survives.
+    }
+
+    #[test]
+    fn test_invalid_backtick_fence_info_line_continues_definition() {
+        // #1565 fifteenth cut (Codex P2): a backtick fence's info
+        // string cannot contain a backtick, so ```a`b opens no
+        // fence at all -- it is paragraph text and a lazy
+        // continuation of the footnote definition, not a new block
+        // that truncates collection.
+        let original = "[^a]: First.\n```a`b\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.") && first.contains("a\\`b"),
+            "invalid fence line continues the definition: {first:?}"
+        );
+        assert_eq!(first, second, "invalid fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_space_tab_indented_continuation_belongs_to_definition() {
+        // #1565 fifteenth cut (Codex P2): indentation is counted
+        // in columns, so a space followed by a tab is four columns
+        // and the line is the footnote definition's second
+        // paragraph, not a truncation point.
+        let original = "[^a]: First.\n\n \tSecond paragraph.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First.") && first.contains("Second paragraph."),
+            "space+tab continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "space+tab continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_fence_not_synthesized() {
+        // #1565: a definition-shaped line inside a fenced code block
+        // is literal text; the pre-scan must not invent a definition
+        // for it.
+        let original = "Text.\n\n```\n[^fake]: Not a definition.\n```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "fenced definition-shaped text stays literal");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_html_comment_not_synthesized() {
+        // Codex P2 on #1565's second cut: a definition-shaped line in
+        // an HTML comment's interior is literal text (comrak keeps
+        // the whole comment as an HTML block); the pre-scan must not
+        // synthesize a live footnote out of it, while a real orphan
+        // definition after the comment is still recovered.
+        let original = "<!--\n[^fake]: literal\n-->\n\n[^real]: The real orphan.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "only the real orphan is recovered");
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[^fake]:").count(),
+            1,
+            "the fake definition appears only inside the preserved comment: {first:?}"
+        );
+        assert_eq!(first, second, "html-comment round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_referencing_another_footnote() {
+        // Codex P2 on #1565's third cut: the synthesis probe for an
+        // unreferenced definition that references another footnote
+        // must include the inner definition, or comrak restores the
+        // unresolved reference as escaped literal text and the
+        // recovered note loses its footnote_reference node.
+        let original = "Body.\n\n[^outer]: See [^inner].\n\n[^inner]: Inner note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let outer = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition" && n["attrs"]["label"] == "outer")
+            .expect("outer definition recovered");
+        let outer_json = outer.to_string();
+        assert!(
+            outer_json.contains("footnote_reference"),
+            "outer note keeps its footnote_reference node: {outer_json}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^inner]:") && first.contains("Inner note."),
+            "inner definition survives save: {first:?}"
+        );
+        assert!(
+            !first.contains("\\[^inner]"),
+            "inner reference is not escaped literal text: {first:?}"
+        );
+        assert_eq!(first, second, "nested-footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_list_contained_fence_not_synthesized() {
+        // Codex P2 on #1565's fourth cut: a fence opened inside a
+        // list item (`- ```) makes its indented interior literal
+        // code; the pre-scan must see the fence behind the list
+        // marker and not recover the interior line as a definition.
+        let original = "Text.\n\n- ```\n  [^fake]: literal\n  ```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "list-contained fenced text stays literal");
+    }
+
+    #[test]
+    fn test_container_marker_inside_open_fence_stays_literal() {
+        // Codex P2 on #1565's fifth cut: container prefixes are
+        // stripped only to find a fence's opening line -- a `> ````
+        // line inside an open top-level fence is literal content,
+        // not a closing delimiter.
+        let original = "Text.\n\n```\n> ```\n[^fake]: literal\n```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "fence interior stays literal past a container-shaped line");
+    }
+
+    #[test]
+    fn test_paragraph_continuation_reference_line_not_promoted() {
+        // Codex P2 on #1565's fifth cut: a definition-shaped line
+        // continuing a paragraph is paragraph text, not a link
+        // reference definition; the synthesis context must not
+        // promote it, or the recovered footnote's bracketed text
+        // becomes a hyperlink the document never had.
+        let original =
+            "Body line\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            !orphan.to_string().contains("example.com"),
+            "paragraph text is not a reference definition: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_blockquote_contained_fence_closes_and_real_definition_recovered() {
+        // Codex P2 on #1565's sixth cut: a fence genuinely inside a
+        // blockquote opens AND closes behind the container prefix;
+        // remembering the opening prefix lets the closing delimiter
+        // register, so the real definition after the quote is not
+        // swallowed by the still-open fence.
+        let original = "> ```\n> code\n> ```\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after a blockquote fence is recovered");
+    }
+
+
+    #[test]
+    fn test_lowercase_cdata_does_not_suppress_footnote() {
+        // #1565 sixteenth cut (Codex P2): a CDATA block requires
+        // the exact uppercase `<![CDATA[` opener; lowercase
+        // `<![cdata[` is ordinary text and must not open a
+        // marker-ended HTML block that suppresses the definition.
+        let original = "<![cdata[\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after lowercase cdata text is recovered");
+    }
+
+    #[test]
+    fn test_block_tag_name_boundary_lazy_continuation() {
+        // #1565 sixteenth cut (Codex P2): `<div=foo>` is not a
+        // type-6 HTML block (a tag name requires whitespace, `/`,
+        // `>`, or end-of-line after it), so the line lazily
+        // continues the footnote definition's paragraph.
+        let original = "[^a]: First line.\n<div=foo>\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("div=foo"),
+            "tag-like continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "tag-like continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_after_tab_indented_code_collected() {
+        // #1565 sixteenth cut (Codex P2): a tab-indented line is
+        // an indented code block (tab = columns to the next
+        // multiple of 4), so a reference definition on the next
+        // line starts a new block and is collected.
+        let original =
+            "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "reference resolves after tab-indented code: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_reference_definitions_after_html_block_collected() {
+        // Codex P2 on #1565's sixth cut: the blank line ending an
+        // HTML block must reach the HTML tracker, or the collector
+        // treats every later line as HTML and returns no reference
+        // definitions, degrading the orphan's reference-style link.
+        let original =
+            "<div>\n</div>\n\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "reference-style link resolves after an HTML block: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_multiline_link_reference_definition_destination_on_next_line() {
+        // Codex P2 on #1565's seventh cut: a valid definition with
+        // its destination on the following line was omitted from the
+        // synthesis context (the text after the colon is empty), so
+        // the orphan's reference-style link degraded to literal text.
+        let original = "[url]:\n    https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "multiline destination resolves the orphan link: {orphan}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multiline-definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiline_link_reference_definition_title_on_next_line() {
+        // Codex P2 on #1565's seventh cut: a definition whose title
+        // sits on the following line was collected without it, so
+        // the recovered footnote's link silently lost its title.
+        let original =
+            "[url]: https://example.com\n    \"Target title\"\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("Target title"),
+            "continuation-line title is kept on the orphan link: {orphan}"
+        );
+    }
+
+
+    #[test]
+    fn test_autolink_line_does_not_suppress_footnote() {
+        // #1565 seventeenth cut (Codex P2): `<https://example.com>`
+        // is an autolink, not a type-7 HTML block -- the generic
+        // tag check must validate complete tag syntax (a tag name
+        // cannot be followed by `:`), or the line opens a
+        // blank-line-ended HTML block that swallows the heading
+        // and the valid orphan definition after it.
+        let original = "<https://example.com>\n# Heading\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after an autolink line is recovered");
+    }
+
+    #[test]
+    fn test_escaped_quote_in_multiline_reference_title() {
+        // #1565 seventeenth cut (Codex P2): an escaped quote inside
+        // a multiline reference title is title text, not its closing
+        // delimiter; treating the title as complete stopped
+        // collection before the closing line, the probe received an
+        // unterminated definition, and the recovered orphan lost
+        // its hyperlink.
+        let original =
+            "[url]: https://example.com \"first \\\"quoted\nsecond\"\n\n[^a]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "escaped-quote title resolves the orphan link: {orphan}"
+        );
+        assert!(
+            orphan.to_string().contains("second"),
+            "title closing line is collected: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_fragment_destination_on_continuation_line() {
+        // #1565 seventeenth cut (Codex P2): `#section` on the line
+        // after `[url]:` is a valid fragment destination, not an
+        // ATX heading (a heading needs whitespace or end-of-line
+        // after the hashes); treating every `#` line as a block
+        // boundary discarded the incomplete definition.
+        let original = "[url]:\n#section\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("#section"),
+            "fragment destination resolves the orphan link: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_indented_html_comment_close_releases_reference_definitions() {
+        // Codex P2 on #1565's seventh cut: an indented closing
+        // marker ends the real HTML comment, but the collector's
+        // indent gate never fed it to the tracker, so the tracker
+        // stayed open and suppressed the valid definition after it.
+        let original =
+            "[^orphan]: [target][url]\n\n<!--\n    -->\n\n[url]: https://example.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "definition after an indented comment close is collected: {orphan}"
+        );
+    }
+
+    #[test]
+    fn test_indented_html_comment_close_releases_footnote_definitions() {
+        // Codex P2 on #1565's seventh cut, pre-scan half: the same
+        // indent gate in the footnote scan kept the comment open
+        // forever, so a real orphan after it was never recovered.
+        let original = "<!--\n    -->\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after an indented comment close is recovered");
+    }
+
+    #[test]
+    fn test_tag_with_special_prefix_name_is_blank_line_terminated() {
+        // Codex P2 on #1565's sixth cut: `<prefix>` is not a `<pre>`
+        // block -- tag-named HTML prefixes require a name boundary,
+        // so the generic block ends at the blank line and the real
+        // definition after it is recovered.
+        let original = "<prefix>\nHTML text\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after a <prefix> block is recovered");
+    }
+
+    #[test]
+    fn test_malformed_footnote_label_does_not_recurse() {
+        // Codex P1 on #1565's first cut: `[^a]b]: note` scanned as a
+        // definition with label `a]b`, which comrak does not
+        // recognize; synthesizing it re-ran recovery forever.
+        let original = "Text.\n\n[^a]b]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "malformed label is not a definition");
+    }
+
+    #[test]
+    fn test_footnote_shaped_text_inside_longer_fence_stays_literal() {
+        // Codex P2 on #1565's first cut: a ``` line inside a ````
+        // block is content, not the closing fence.
+        let original = "Text.\n\n````\n```\n[^fake]: literal\n````\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "definition inside a longer fence stays literal");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_with_reference_link_resolves() {
+        // Codex P2 on #1565's first cut: the probe needs the
+        // document's reference definitions or the footnote's
+        // reference-style link degrades to literal text.
+        let original =
+            "Visible [target][url].\n\n[^orphan]: [target][url]\n\n[url]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "reference link resolves in recovered footnote: {first:?}"
+        );
+        assert_eq!(first, second, "reference-context round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_list_html_comment_not_synthesized() {
+        // Codex P2 on #1565's eighth cut: an HTML block opened
+        // inside a list container (`- <!--`) still makes its
+        // interior literal, but the scan fed the tracker only the
+        // unstripped line and missed the opening behind the list
+        // marker, recovering the comment's interior as a live
+        // footnote.
+        let original = "- <!--\n  [^fake]: literal\n  -->\n\n[^real]: The real orphan.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "only the real orphan is recovered");
+        let (first, second) = two_saves(original);
+        assert_eq!(
+            first.matches("[^fake]:").count(),
+            1,
+            "the fake definition appears only inside the preserved comment: {first:?}"
+        );
+        assert_eq!(first, second, "list-comment round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_after_thematic_break_resolves() {
+        // Codex P2 on #1565's eighth cut: a thematic break ends a
+        // paragraph, so the reference definition after `---` starts
+        // a new block and comrak honors it; the collector treated
+        // `---` as paragraph text and omitted the definition from
+        // the synthesis context, degrading the footnote's link to
+        // literal brackets.
+        let original = "---\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "reference after thematic break resolves in recovered footnote: {first:?}"
+        );
+        assert_eq!(first, second, "thematic-break round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_after_blockquote_html_blank_line_recovered() {
+        // Codex P2 on #1565's ninth cut: an HTML block opened
+        // inside a blockquote ends at the quote's blank line
+        // (`>`), but the scan fed the tracker the unstripped `>`
+        // line, which is not blank, so the tracker stayed open
+        // and the footnote definition after the quote was
+        // suppressed. The tracker now sees lines relative to the
+        // container it opened in.
+        let original = "> <div>\n> html\n>\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after blockquote HTML is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "blockquote-html round-trip is a fixpoint");
+    }
+
+        #[test]
+    fn test_footnote_after_blockquote_fence_container_end_recovered() {
+        // Codex P2 on #1565's tenth cut: a fence opened inside a
+        // blockquote ends implicitly when the quote ends (blank
+        // line, no closing delimiter); the scanner kept the fence
+        // open and skipped the real definition after it.
+        let original = "> ```\n> code\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after blockquote fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "blockquote-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_reference_link_uses_blockquote_definition() {
+        // Codex P2 on #1565's tenth cut: a reference definition
+        // inside a blockquote is document-global, but the
+        // collector tested the unstripped line (still starting
+        // with `>`) and omitted it from the synthesis context.
+        let original = "> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "blockquote reference definition resolves in recovered footnote: {first:?}"
+        );
+        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_lazy_continuation_hashtag_line_preserved() {
+        // Codex P2 on #1565's tenth cut: `#hashtag` is paragraph
+        // text (no whitespace after the hashes), not an ATX
+        // heading, so it lazily continues the definition instead
+        // of ending it.
+        let original = "[^a]: First line.\n#hashtag\n";
+        let (first, second) = two_saves(original);
+        assert!(first.contains("First line."), "first line survives: {first:?}");
+        assert!(first.contains("#hashtag"), "hashtag continuation survives: {first:?}");
+        assert_eq!(first, second, "hashtag-continuation round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_after_self_closing_pre_recovered() {
+        // Codex P2 on #1565's tenth cut: `<pre/>` does not open a
+        // marker-ended `<pre>` block (the CommonMark type-1
+        // boundary is whitespace, `>`, or end-of-line); it is a
+        // generic tag block ending at the blank line, so the
+        // footnote after it is a real definition.
+        let original = "<pre/>\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after <pre/> is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "self-closing-pre round-trip is a fixpoint");
+    }
+
+#[test]
+    fn test_reference_after_lone_setext_marker_not_a_definition() {
+        // Codex P2 on #1565's ninth cut: a lone `=` with no
+        // preceding paragraph is paragraph text, so the
+        // definition-shaped line after it continues that
+        // paragraph and is NOT a reference definition. The
+        // collector promoted it anyway, resolving the recovered
+        // footnote's reference link against a definition the
+        // document does not honor.
+        let original = "=\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[target\\]\\[url\\]"),
+            "unresolved reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target](https"),
+            "unresolved reference is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "lone-setext round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_after_real_setext_heading_resolves() {
+        // Control for the ninth cut's setext gate: after an actual
+        // paragraph, `=` is a setext underline, the heading ends
+        // the paragraph, and the definition after it IS honored.
+        let original = "Title\n=\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "reference after setext heading resolves in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target][url]"),
+            "resolved reference does not stay literal: {first:?}"
+        );
+        assert_eq!(first, second, "setext-heading round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_backtick_fence_with_backtick_info_opens_no_fence() {
+        // Codex P2 on #1565's eighth cut: a backtick fence's info
+        // string cannot contain a backtick, so ```a`b opens no
+        // fence at all; the tracker opened one anyway and
+        // suppressed the valid orphan definition after it.
+        let original = "```a`b\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after invalid fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "invalid-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_precedence_preserved_in_recovery() {
+        // Codex P2 on #1565's eighth cut: reference definitions
+        // are global and the FIRST definition wins. The probe
+        // appended the document's top-level definitions after the
+        // footnote blocks, so a nested definition inside the
+        // footnote shadowed the earlier top-level one and the
+        // recovered footnote linked to the wrong destination.
+        let original = "[url]: https://original.com\n\n[^orphan]: [target][url]\n\n    [url]: https://shadow.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://original.com"),
+            "first definition wins in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("https://shadow.com"),
+            "shadow definition does not win: {first:?}"
+        );
+        assert_eq!(first, second, "precedence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_lazy_continuation_preserved() {
+        // Codex P2 on #1565's eighth cut: comrak treats an
+        // unindented second line as a lazy continuation of a
+        // footnote definition's paragraph; the scan collected only
+        // indented continuations and lost the line on save.
+        let original = "[^a]: First line.\nsecond line.\n";
+        let doc = markdown_to_prosemirror(original);
+        let definition = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("unreferenced definition carried into the PM doc");
+        assert_eq!(definition["attrs"]["label"], "a");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("First line."), "first line survives: {first:?}");
+        assert!(
+            first.contains("second line."),
+            "lazy continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "lazy-continuation round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_newline_destination_restored() {
+        // Codex P2 on #1565's first cut: a newline destination inside
+        // an unreferenced definition must not save the placeholder
+        // token into the URL.
+        let (first, second) = two_saves("[^n]: [x](<a\nb>)\n");
+        assert!(
+            !first.contains("idweb-newline"),
+            "no placeholder token in saved output: {first:?}"
+        );
+        assert_eq!(first, second, "newline-destination round-trip is a fixpoint");
+    }
+
     fn test_footnote_multi_paragraph_definition_fixpoint() {
         // #1031: a two-paragraph footnote definition must keep its
         // paragraph boundary — the flat #945 shape fused the two
