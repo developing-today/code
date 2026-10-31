@@ -254,8 +254,16 @@ export class CommentsStore {
       if (c.githubState === "posted") {
         // Posted is terminal. A repeat of the same url is an
         // idempotent no-op; a different url is a conflicting
-        // report — the first posted result stands.
-        if (c.githubUrl === result.url) return c;
+        // report — the first posted result stands. The no-op still
+        // persists first: the original report may have flipped the
+        // in-memory state and then failed its write, and
+        // acknowledging success here without flushing would leave
+        // the on-disk comment pending — a restart would post it
+        // again and duplicate the GitHub comment (#1686).
+        if (c.githubUrl === result.url) {
+          await this.persist();
+          return c;
+        }
         throw new Error("github comment already posted with a different url");
       }
       // From pending — or from failed, when a retry actually
@@ -268,7 +276,12 @@ export class CommentsStore {
       if (c.githubState === "posted") {
         throw new Error("github comment already posted; a later failure cannot un-post it");
       }
-      if (c.githubState === "failed") return c; // repeat failure: idempotent
+      if (c.githubState === "failed") {
+        // Repeat failure: idempotent — but persist first, for the
+        // same reason as the posted repeat above (#1686).
+        await this.persist();
+        return c;
+      }
       c.githubState = "failed";
     }
     await this.persist();

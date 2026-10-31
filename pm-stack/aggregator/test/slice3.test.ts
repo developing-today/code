@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommentsStore, validateNewComment } from "../src/comments.ts";
@@ -240,6 +240,60 @@ describe("dashboard comments", () => {
       url: "https://github.com/x#issuecomment-11",
     });
     expect(landed?.githubState).toBe("posted");
+  });
+
+  test("a repeat report after a failed persist still lands the result on disk (#1686)", async () => {
+    // Codex P2 on PR 3062: markGithubResult flips the in-memory state
+    // before persist() runs. If that write fails, a repeat report hit
+    // the idempotent early return and acknowledged success while the
+    // on-disk comment stayed pending — after a restart it would post
+    // again and duplicate the GitHub comment. The repeat must flush
+    // the state to disk before returning.
+    const dir2 = mkdtempSync(join(tmpdir(), "agg-comments-flush-"));
+    const file2 = join(dir2, "comments.json");
+    const store2 = new CommentsStore(file2);
+    const addGh2 = () =>
+      store2.add({
+        objectRef: "gh:developing-today/code#1686",
+        kind: "github",
+        author: agent,
+        body: "posting this",
+        githubRef: "developing-today/code#1686",
+      });
+
+    // Break the filesystem under the store: the store's directory is
+    // replaced by a regular file, so mkdir/write inside persist fail.
+    const breakFs = () => {
+      renameSync(dir2, `${dir2}-moved`);
+      writeFileSync(dir2, "not a directory");
+    };
+    const fixFs = () => {
+      rmSync(dir2);
+      renameSync(`${dir2}-moved`, dir2);
+    };
+    const onDisk = async (id: string) =>
+      (await new CommentsStore(file2).all()).find((c) => c.id === id);
+
+    // posted path
+    const ghP = await addGh2();
+    breakFs();
+    await expect(store2.markGithubResult(ghP.id, { url: "https://github.com/x#issuecomment-21" })).rejects.toThrow();
+    fixFs();
+    expect((await onDisk(ghP.id))?.githubState).toBe("pending"); // the failed write never landed
+    const repeatP = await store2.markGithubResult(ghP.id, { url: "https://github.com/x#issuecomment-21" });
+    expect(repeatP?.githubState).toBe("posted");
+    expect((await onDisk(ghP.id))?.githubState).toBe("posted");
+    expect((await onDisk(ghP.id))?.githubUrl).toBe("https://github.com/x#issuecomment-21");
+
+    // failed path: same shape via the failed-state early return
+    const ghF = await addGh2();
+    breakFs();
+    await expect(store2.markGithubResult(ghF.id, { error: "first attempt failed" })).rejects.toThrow();
+    fixFs();
+    expect((await onDisk(ghF.id))?.githubState).toBe("pending");
+    const repeatF = await store2.markGithubResult(ghF.id, { error: "first attempt failed" });
+    expect(repeatF?.githubState).toBe("failed");
+    expect((await onDisk(ghF.id))?.githubState).toBe("failed");
   });
 
   test("validation rejects anonymous authors, empty bodies, targetless github comments", () => {
