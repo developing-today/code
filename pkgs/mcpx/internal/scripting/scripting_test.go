@@ -159,6 +159,14 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after generic satisfies assertion", "const q = 4 satisfies Extract<number, number> / 2;\n"},
 		{"division after plain as assertion", "const q = x as number / 2;\n"},
 		{"object after ternary colon in block", "if (true) { const o = true ? {a: 1} : {}; const q = 4 / 2; }\n"},
+		{"division after function expression with nested callback default", "const n = function(a = () => { return 1; }) {} / 2;\n"},
+		{"regex after relational less-than following as assertion", "const q = 4 as number < /a+/.source.length;\n"},
+		{"regex after relational less-than following satisfies assertion", "const q = 4 satisfies number < /a+/.source.length;\n"},
+		{"regex in switch case after optional chain discriminant", "const obj = {x:1}; switch (obj?.x) { case 1: {} /a+/.test(\"aa\"); }\n"},
+		{"regex after instanceof operator", "const ok = \"a\" instanceof /a+/.constructor;\n"},
+		{"division after object literal following division", "const q = 4 / {} / 2;\n"},
+		{"regex after generic class declaration", "class C<T> {} /a+/.test(\"aa\");\n"},
+		{"regex after generic interface declaration", "interface C<T> {} /a+/.test(\"aa\");\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

@@ -168,6 +168,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// body and must not consume the marker (Codex P2 on #1659:
 	// function(a = {}) {} / 2).
 	expectFuncClassParenDepth := 0
+	// expectFuncClassStackDepth is len(stack) when the marker was
+	// set: a ';' only clears the marker from its own scope (F1).
+	expectFuncClassStackDepth := 0
+	// expectDeclBody mirrors expectFuncClassBody for DECLARATIONS
+	// (function/class in statement position, interface, enum): a
+	// declaration body '{' opens a statement block whose '}'
+	// returns to expression position — including after a generic
+	// type-parameter list, where prevChar is '>' and the brace
+	// would otherwise read as an object literal (Codex P2 on
+	// #1659: class C<T> {} /a+/.test(..)).
+	expectDeclBody := false
+	expectDeclParenDepth := 0
+	expectDeclStackDepth := 0
 	// pendingStmtColon is set by a ':' that introduces a statement
 	// (a switch case/default colon or a statement label) rather
 	// than an object entry or a ternary branch: a '{' right after
@@ -205,7 +218,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
 					prevSig = 'o'
 				}
-				if (lastIdent == "in" || lastIdent == "of") && lastIdentPrev != '.' && identPrevSig == 'x' {
+				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && identPrevSig == 'x' {
 					// Binary keyword operators: an expression follows,
 					// so a '/' opens a regex literal (Codex P2 on
 					// #1659: "source" in /a+/ and for (const m of
@@ -225,8 +238,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					typeAngleDepth = 0
 					typeSawAngle = false
 				}
-				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && isExprPositionStart(lastIdentPrev, prevIdent) {
-					expectFuncClassBody = true
+				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' {
+					if isExprPositionStart(lastIdentPrev, prevIdent) {
+						expectFuncClassBody = true
+						expectFuncClassStackDepth = len(stack)
+					} else {
+						expectDeclBody = true
+						expectDeclParenDepth = 0
+						expectDeclStackDepth = len(stack)
+					}
+				}
+				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' {
+					expectDeclBody = true
+					expectDeclParenDepth = 0
+					expectDeclStackDepth = len(stack)
 				}
 			}
 		}
@@ -392,8 +417,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				regexEscaped = false
 			} else {
 				// Division: an expression (and therefore possibly a
-				// regex literal) follows.
+				// regex literal) follows. The division operator is
+				// also the previous significant CHARACTER: leaving
+				// prevChar at the dividend made a following '{'
+				// classify by the dividend instead of the '/'
+				// (Codex P2 on #1659: 4 / {} / 2 — the object
+				// brace after division was read as a block).
 				prevSig = 'o'
+				prevChar = ch
 			}
 			continue
 		}
@@ -409,6 +440,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		case '(':
 			if expectFuncClassBody {
 				expectFuncClassParenDepth++
+			}
+			if expectDeclBody {
+				expectDeclParenDepth++
 			}
 			// A '(' right after a control keyword (if/for/while/
 			// switch/catch/with) opens a control header: its ')'
@@ -440,6 +474,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				exprAfter = false
 				expectFuncClassBody = false
 			}
+			if expectDeclBody && expectDeclParenDepth == 0 {
+				exprAfter = true
+				expectDeclBody = false
+			}
 			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter})
 			lastIdent = ""
 			lastIdentPrev = 0
@@ -459,6 +497,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			stack = stack[:len(stack)-1]
 			if top.char == '(' && expectFuncClassBody && expectFuncClassParenDepth > 0 {
 				expectFuncClassParenDepth--
+			}
+			if top.char == '(' && expectDeclBody && expectDeclParenDepth > 0 {
+				expectDeclParenDepth--
 			}
 			closedExprAfter = top.exprAfter
 			if !matchesDelim(top.char, ch) {
@@ -494,7 +535,15 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				typeSawAngle = false
 			}
 		case ch == '?':
-			ternaryDepth++
+			// Optional chaining ('?.', unless a digit follows the
+			// '.' — a ? .5 : b is a ternary with a fractional
+			// branch) and nullish coalescing ('??') are not
+			// conditional-expression openers: counting them makes
+			// a later statement colon look like a ternary branch
+			// (Codex P2 on #1659: switch (obj?.x) { case 1: ... }).
+			if !(i+1 < n && (chars[i+1] == '?' || (chars[i+1] == '.' && !(i+2 < n && unicode.IsDigit(chars[i+2]))))) {
+				ternaryDepth++
+			}
 			prevSig = 'o'
 		case ch == ':':
 			if ternaryDepth > 0 {
@@ -502,6 +551,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			} else if isStatementColon(stack, lastIdent, lastIdentPrev, prevChar) {
 				pendingStmtColon = true
 			}
+			prevSig = 'o'
+		case ch == '<' && inTypeAssert && typeAngleDepth == 0 && !typeSawAngle && (prevChar == ']' || isSimpleTypeName(lastIdent)):
+			// A completed simple type (4 as number < /a+/) or a
+			// bracketed type (x as T[] < y) cannot take a generic
+			// argument list, so this '<' is relational and the
+			// assertion context ends before it is classified
+			// (Codex P2 on #1659).
+			inTypeAssert = false
 			prevSig = 'o'
 		case ch == '<' && inTypeAssert:
 			typeAngleDepth++
@@ -536,8 +593,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		}
 		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
 		if ch == ';' {
-			expectFuncClassBody = false
-			expectFuncClassParenDepth = 0
+			// Only a ';' in the pending marker's own scope clears
+			// it: a ';' inside a nested parameter default
+			// (function(a = () => { return 1; })) belongs to the
+			// nested scope and must not clear the outer marker
+			// (Codex P2 on #1659).
+			if expectFuncClassParenDepth == 0 && len(stack) <= expectFuncClassStackDepth {
+				expectFuncClassBody = false
+				expectFuncClassParenDepth = 0
+			}
+			if expectDeclParenDepth == 0 && len(stack) <= expectDeclStackDepth {
+				expectDeclBody = false
+				expectDeclParenDepth = 0
+			}
 			ternaryDepth = 0
 			inTypeAssert = false
 			typeAngleDepth = 0
@@ -706,6 +774,17 @@ func isStatementColon(stack []delimToken, lastIdent string, lastIdentPrev, prevC
 		case 0, ';', '{', '}':
 			return true
 		}
+	}
+	return false
+}
+
+// isSimpleTypeName reports whether name is a TypeScript type that
+// cannot take generic arguments, so a '<' after it in an as/satisfies
+// assertion is a relational operator, not a type-argument opener.
+func isSimpleTypeName(name string) bool {
+	switch name {
+	case "number", "string", "boolean", "bigint", "symbol", "any", "unknown", "never", "void", "object", "undefined", "null", "this":
+		return true
 	}
 	return false
 }
