@@ -56,10 +56,38 @@ func (d daemonAsker) Begin(ctx context.Context, kind string, params json.RawMess
 		if err := json.Unmarshal(params, &p); err != nil {
 			return "", mcpserver.ErrNotInterruptible
 		}
+		// A raw tool (codemode=false) is an upstream call under a
+		// namespaced name -- <namespace>_<tool> -- and is just as likely
+		// to ask as a pass-through one. The request's own raw lookup
+		// resolves it to the namespace and the upstream's own name;
+		// without this the name fell to ErrNotInterruptible below and the
+		// call ran with no ask attribution. Known-and-unclaimed means
+		// the request asked for the raw surface and this name is not on
+		// it: not interruptible here either, and the ordinary path
+		// answers for the name. Checked before pass-through, as invoke
+		// checks the raw surface first on a raw request.
+		if ns, tool, known := mcpserver.RawToolOf(ctx, p.Name); known {
+			if ns == "" {
+				return "", mcpserver.ErrNotInterruptible
+			}
+			var raw struct {
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			_ = json.Unmarshal(params, &raw)
+			body["server"], body["tool"] = ns, tool
+			if len(raw.Arguments) > 0 {
+				body["args"] = raw.Arguments
+			}
+			// The upstream judges what the client can answer, as on the
+			// direct path (mcpBackend.Call).
+			ctx = mcpclient.WithClientCapabilities(ctx, mcpserver.DeclaredCapabilities(ctx))
+			break
+		}
 		// A pass-through tool is an upstream call under its own name, and
 		// the one most likely to ask: it was left to the broker, where no
-		// client could answer and the request hung. Checked first, because
-		// on a collision the upstream's tool is the one the name means.
+		// client could answer and the request hung. Checked before the
+		// gateway tools, because on a collision the upstream's tool is
+		// the one the name means.
 		if ns := d.passTool(ctx, p.Name); ns != "" {
 			var raw struct {
 				Arguments json.RawMessage `json:"arguments"`

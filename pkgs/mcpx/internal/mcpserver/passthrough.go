@@ -50,6 +50,16 @@ type passLookup struct {
 // decides tools.listChanged and whether a listen agrees to toolsListChanged.
 func (s *Server) toolsVary() bool { return len(s.Passthrough) > 0 || s.Reactive }
 
+// toolsListChangedFor reports whether this request's tools/list can change
+// while the server runs: toolsVary, or a raw-surface request (codemode=false),
+// whose list is every upstream's and changes when theirs does. It is the one
+// condition capabilities(), subscriptions/listen and the legacy notification
+// stream all decide tools.listChanged by, so the advertised promise and the
+// delivery cannot drift apart.
+func (s *Server) toolsListChangedFor(ctx context.Context) bool {
+	return s.toolsVary() || rawToolsRequested(ctx)
+}
+
 // withPass resolves the pass-through list for the rest of this request.
 func (s *Server) withPass(ctx context.Context) context.Context {
 	if len(s.Passthrough) == 0 {

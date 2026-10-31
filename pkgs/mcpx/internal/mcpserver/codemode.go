@@ -140,6 +140,26 @@ func (s *Server) rawSurface(ctx context.Context) ([]Tool, error) {
 	return l.tools, l.err
 }
 
+// RawToolOf reports what this request already knows about an exposed raw
+// name: the namespace and the upstream's own tool name that serve it.
+// known is false when the request did not ask for raw tools, or its raw
+// lookup was not made or failed -- the caller cannot tell raw names from
+// any other from this request. When known is true and ns is empty, the
+// request did ask for raw tools and this name is not one of them. Lets the
+// Asker bridge reuse the lookup the protocol layer made instead of
+// repeating it, as PassToolOf does for pass-through names.
+func RawToolOf(ctx context.Context, name string) (ns, tool string, known bool) {
+	l, ok := ctx.Value(rawKey{}).(*rawLookup)
+	if !ok || l == nil || l.err != nil {
+		return "", "", false
+	}
+	nt, found := l.owner[name]
+	if !found {
+		return "", "", true
+	}
+	return nt.Namespace, nt.Tool.Name, true
+}
+
 // rawOwner is the upstream serving an exposed raw name, or false when
 // the name is not a raw tool on this request.
 func (s *Server) rawOwner(ctx context.Context, name string) (NamespacedTool, bool, error) {

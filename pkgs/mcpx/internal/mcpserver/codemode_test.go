@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dezren39/mcpx/internal/mcpserver"
 )
@@ -41,6 +42,23 @@ func rawServer(b *rawBackend) *mcpserver.Server { return mcpserver.New(b, "mcpx"
 func postQuery(s *mcpserver.Server, query string, body []byte) map[string]any {
 	r := httptest.NewRequest(http.MethodPost, "/mcp?"+query, strings.NewReader(string(body)))
 	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		return map[string]any{"_unparsed": w.Body.String()}
+	}
+	return m
+}
+
+// postQueryModern is postQuery for a 2026-07-28 request, which the HTTP
+// transport requires the protocol headers of (modernHeaders).
+func postQueryModern(s *mcpserver.Server, query, method, name string, body []byte) map[string]any {
+	r := httptest.NewRequest(http.MethodPost, "/mcp?"+query, strings.NewReader(string(body)))
+	r.Header.Set("Content-Type", "application/json")
+	for k, v := range modernHeaders(method, name) {
+		r.Header.Set(k, v)
+	}
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)
 	var m map[string]any
@@ -135,5 +153,150 @@ func TestCodemodeFalseWithAnUnlistableBackendIsAnError(t *testing.T) {
 	m = postQuery(s, "codemode=false", frame(1, "tools/list", map[string]any{}))
 	if errCode(m) != -32603 {
 		t.Fatalf("tools/list, upstream down: want -32603, got %v", m)
+	}
+}
+
+// A raw call that becomes a task still runs on the raw surface: the task
+// store runs the body on a fresh background context, and the raw-surface
+// selection the request carried has to be carried into it explicitly, or
+// the inner call is judged against the gateway surface and a validated
+// raw name is refused with -32602.
+func TestCodemodeFalseTaskCallKeepsTheRawSurface(t *testing.T) {
+	b := &rawBackend{fakeBackend: newBackend()}
+	s := rawServer(b)
+	m := postQueryModern(s, "codemode=false", "tools/call", "db_query", frame(1, "tools/call",
+		modernWith(extCaps, map[string]any{
+			"name": "db_query", "arguments": map[string]any{}})))
+	if errCode(m) != 0 {
+		t.Fatalf("task-run raw tools/call db_query: %v", m)
+	}
+	res, _ := m["result"].(map[string]any)
+	content, _ := res["content"].([]any)
+	if len(content) == 0 || content[0].(map[string]any)["text"] != "called db.query" {
+		t.Fatalf("task result = %v, want the db upstream's answer", m)
+	}
+}
+
+// rawCaptureAsker records what RawToolOf reports for the name a call
+// carries, then declines: the call runs the ordinary way.
+type rawCaptureAsker struct {
+	ns, tool string
+	known    bool
+	began    int
+}
+
+func (a *rawCaptureAsker) Begin(ctx context.Context, _ string, params json.RawMessage) (string, error) {
+	a.began++
+	var p struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(params, &p)
+	a.ns, a.tool, a.known = mcpserver.RawToolOf(ctx, p.Name)
+	return "", mcpserver.ErrNotInterruptible
+}
+
+func (a *rawCaptureAsker) Poll(context.Context, string, time.Duration) (mcpserver.Outcome, error) {
+	return mcpserver.Outcome{Done: true, Text: "unused"}, nil
+}
+
+func (a *rawCaptureAsker) Reply(context.Context, string, map[string]json.RawMessage) error {
+	return nil
+}
+
+func (a *rawCaptureAsker) Abandon(string) {}
+
+// The Asker bridge resolves a raw name from the request's own raw lookup:
+// db_query is the db upstream's query tool. A call that did not ask for
+// the raw surface reports known=false, so the bridge cannot mistake a
+// gateway or pass-through name for a raw one.
+func TestRawToolOfResolvesRawNamesForTheAsker(t *testing.T) {
+	asker := &rawCaptureAsker{}
+	b := &rawBackend{fakeBackend: newBackend()}
+	s := rawServer(b)
+	s.Ask = asker
+
+	// Control: an ordinary mcpx_call, no raw surface in sight.
+	s.Handle(context.Background(), mcpserver.Request(1, "tools/call", modernCall(1, nil)))
+	if asker.began != 1 || asker.known {
+		t.Fatalf("mcpx_call: began=%d known=%v, want a begun call that is not raw",
+			asker.began, asker.known)
+	}
+
+	m := postQueryModern(s, "codemode=false", "tools/call", "db_query", frame(2, "tools/call",
+		modernWith(`{"elicitation":{"form":{}}}`, map[string]any{
+			"name": "db_query", "arguments": map[string]any{}})))
+	if asker.began != 2 || !asker.known || asker.ns != "db" || asker.tool != "query" {
+		t.Fatalf("raw call: began=%d known=%v ns=%q tool=%q, want db/query known",
+			asker.began, asker.known, asker.ns, asker.tool)
+	}
+	if errCode(m) != 0 {
+		t.Fatalf("raw tools/call db_query after the asker declined: %v", m)
+	}
+}
+
+// A raw-surface request advertises tools.listChanged (capabilities already
+// applied the raw condition), so a subscriptions/listen on that request
+// must agree to toolsListChanged and the notifier must be asked for tool
+// changes -- the pass-through case is
+// TestPassThroughToolsListChangedReachesListenStreams.
+func TestRawToolsListChangedReachesListenStreams(t *testing.T) {
+	n := &fakeNotifier{got: make(chan mcpserver.ListenFilter, 4), fire: make(chan [2]any, 4)}
+	s := rawServer(&rawBackend{fakeBackend: newBackend()})
+	s.Notify = n
+	s.SetPush(func(string, any) {})
+
+	m := postQuery(s, "codemode=false", frame(1, "initialize",
+		map[string]any{"protocolVersion": "2025-11-25"}))
+	b, _ := json.Marshal(m)
+	if !strings.Contains(string(b), `"listChanged":true`) {
+		t.Fatalf("a raw request should be promised tools.listChanged: %s", b)
+	}
+
+	rec := &recorder{}
+	c := s.ConnWithSend("sess-raw-tools", rec.send)
+	s.HandleOn(mcpserver.WithRawForTest(context.Background()), c,
+		mcpserver.Request(7, "subscriptions/listen",
+			modernParams(map[string]any{"notifications": map[string]any{"toolsListChanged": true}})))
+	ack := rec.wait(t, 1)[0]
+	agreed, _ := ack["params"].(map[string]any)["notifications"].(map[string]any)
+	if agreed["toolsListChanged"] != true {
+		t.Fatalf("toolsListChanged not agreed on a raw listen: %v", ack)
+	}
+	select {
+	case lf := <-n.got:
+		if !lf.ToolsListChanged {
+			t.Fatalf("the notifier was not asked for tool changes: %+v", lf)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no notifier started")
+	}
+	n.fire <- [2]any{"notifications/tools/list_changed", map[string]any{}}
+	if f := rec.wait(t, 2)[1]; f["method"] != "notifications/tools/list_changed" {
+		t.Fatalf("%v", f)
+	}
+}
+
+// The legacy delivery path for the same promise: a GET stream opened with
+// ?codemode=false starts the legacy notifier with ToolsListChanged set,
+// where a plain GET stream (TestLegacyGETStream) starts it without.
+func TestRawToolsListChangedReachesTheLegacyGETStream(t *testing.T) {
+	n := &fakeNotifier{got: make(chan mcpserver.ListenFilter, 4), fire: make(chan [2]any, 4)}
+	s := rawServer(&rawBackend{fakeBackend: newBackend()})
+	s.Notify = n
+	s.Timing.SSEKeepAlive = 20 * time.Millisecond
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+
+	id := legacySession(t, s, "2025-11-25")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resp, _ := openGET(t, ts.URL+"?codemode=false", id, ctx)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET stream status %d", resp.StatusCode)
+	}
+	lf := listened(t, n)
+	if !lf.ToolsListChanged {
+		t.Fatalf("a raw GET stream was not promised tool changes: %+v", lf)
 	}
 }
