@@ -110,6 +110,65 @@ fn a_link_without_an_inviter_key_is_refused() {
 }
 
 #[test]
+fn test_a_link_with_duplicate_fields_is_refused() {
+    let t7 = ticket(7);
+    let dup_ticket = ticket(8);
+    let invite_by = by(&inviter());
+    let other_by = "22".repeat(32);
+    let g1 = group(0xaa);
+    let g2 = group(0xbb);
+
+    // Duplicate group (both valid, invalid first, invalid last)
+    let cases = vec![
+        format!("id:join?group={g1}&group={g2}&ticket={t7}&by={invite_by}"),
+        format!("id:join?group=invalid&group={g1}&ticket={t7}&by={invite_by}"),
+        format!("id:join?group={g1}&group=invalid&ticket={t7}&by={invite_by}"),
+    ];
+    for text in cases {
+        let error = Invitation::parse(&text).expect_err(&text);
+        assert!(format!("{error:#}").contains("group"), "{text}: {error:#}");
+    }
+
+    // Duplicate by (both valid, invalid first, invalid last)
+    let cases = vec![
+        format!("id:join?group={g1}&ticket={t7}&by={invite_by}&by={other_by}"),
+        format!("id:join?group={g1}&ticket={t7}&by=invalid&by={invite_by}"),
+        format!("id:join?group={g1}&ticket={t7}&by={invite_by}&by=invalid"),
+    ];
+    for text in cases {
+        let error = Invitation::parse(&text).expect_err(&text);
+        assert!(format!("{error:#}").contains("by"), "{text}: {error:#}");
+    }
+
+    // Duplicate ticket (both valid, invalid first, invalid last)
+    let cases = vec![
+        format!("id:join?group={g1}&ticket={t7}&ticket={dup_ticket}&by={invite_by}"),
+        format!("id:join?group={g1}&ticket=invalid&ticket={t7}&by={invite_by}"),
+        format!("id:join?group={g1}&ticket={t7}&ticket=invalid&by={invite_by}"),
+    ];
+    for text in cases {
+        let error = Invitation::parse(&text).expect_err(&text);
+        assert!(format!("{error:#}").contains("ticket"), "{text}: {error:#}");
+    }
+
+    // Unknown fields keep current handling (ignored, even when repeated)
+    let text = format!("id:join?group={g1}&ticket={t7}&by={invite_by}&extra=1&extra=2");
+    let invitation = Invitation::parse(&text).expect("link with unknown fields parses");
+    match invitation {
+        Invitation::Link {
+            group,
+            by: inviter_by,
+            ticket: linked,
+        } => {
+            assert_eq!(linked.to_string(), t7.to_string());
+            assert_eq!(group, [0xaa; 32]);
+            assert_eq!(inviter_by, inviter().verifying_key().to_bytes());
+        }
+        Invitation::Ticket(_) => panic!("expected Link"),
+    }
+}
+
+#[test]
 fn malformed_input_is_refused_with_a_clear_error() {
     let ticket = ticket(7);
     let by = by(&inviter());
