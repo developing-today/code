@@ -286,6 +286,41 @@ the sessions that worked them. The OpenCode tool in
 
 Both render in the board cards (execution strip) and the item drill-down.
 
+## Ingest contract — validate once at the boundary (#2576)
+
+Every document this aggregator ingests — fleet feed files, quota
+exports, snapshot history, session lists, billing and provider
+exports — is validated **once, at its ingest boundary**, before any
+consumer, store append, or render sees it. Validation covers shape,
+element types, value ranges, and real calendar dates. The shared
+primitives live in `src/validate.ts` (no new dependency); boundaries
+compose them instead of re-deriving checks privately.
+
+A validation failure produces exactly one of three sanctioned
+outcomes, chosen per boundary and recorded in its guard:
+
+- **Reject and retain** — the document/section/entry is refused; the
+  previously retained value stays and ages.
+- **Drop the element, count it** — where elements are independent,
+  the malformed element alone is dropped and the drop is counted
+  somewhere visible, never silently and never at the cost of its
+  siblings.
+- **Refuse the append** — a snapshot record that fails validation is
+  not appended; the append reports the refusal. A record the store
+  cannot read back is a record it must not accept.
+
+Three outcomes are forbidden everywhere: throwing across the
+boundary and discarding valid siblings; fabricating rows, ids, or
+zeros from malformed input; and publishing an out-of-range value as
+live measured data. A genuine zero is a successful validation whose
+value is 0 — an unparseable value never becomes a zero.
+
+The contract's existing embodiment is `src/token-adapter.ts`
+(#1153): fail-closed parsing, a drifted payload raises
+`AdapterError("unparseable")`, the previous value is retained and
+ages, and an expired session is its own signal, never zero usage.
+The probe matrix for the primitives is `test/validate.test.ts`.
+
 ## Run it
 
 ```bash

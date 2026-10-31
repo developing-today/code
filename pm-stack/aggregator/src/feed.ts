@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isIsoDate } from "./validate.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -251,8 +252,10 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   const f = v as Partial<FleetFeed>;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" &&
-    Number.isFinite(Date.parse(f.generatedAt)) &&
+    // #2576 Phase 1 proof consumer: the strict date primitive, so an
+    // impossible generatedAt (2026-02-30, 2026-13-01) is rejected
+    // instead of rolling over via Date.parse.
+    isIsoDate(f.generatedAt) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&
