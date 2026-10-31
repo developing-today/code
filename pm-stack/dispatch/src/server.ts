@@ -22,6 +22,7 @@ import {
   ValidationError,
   parseSessionRequest,
   parseTaskRequest,
+  resolveSessionDirectory,
   titleFromPrompt,
   type SessionRequest,
   type TaskRequest,
@@ -188,7 +189,10 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   const body = parseSessionRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
-  const directory = body.directory ?? REPO_DIRS[body.repo]!;
+  // Directory scoping (issue #2903) runs before ANY side effect: the
+  // tracking issue, queue task and session below are all created after
+  // this line, so a rejected directory leaves nothing behind.
+  const directory = resolveSessionDirectory(caller.type, body.repo, body.directory, REPO_DIRS);
   const title = body.title ?? titleFromPrompt(body.prompt);
 
   // 1. Tracking issue (default on).
@@ -397,7 +401,9 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
 // Routing
 // ---------------------------------------------------------------------------
 
-async function handler(req: Request): Promise<Response> {
+// Exported for the HTTP-level tests (test/server.test.ts) — the only
+// import side effect below is Bun.serve, guarded by import.meta.main.
+export async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   try {
@@ -410,7 +416,9 @@ async function handler(req: Request): Promise<Response> {
         oidcAudience: cfg.oidcAudience,
         allowlist: cfg.repoAllowlist,
       });
-      return path === "/v1/sessions" ? handleSessions(req, caller) : handleTasks(req, caller);
+      return path === "/v1/sessions"
+        ? await handleSessions(req, caller)
+        : await handleTasks(req, caller);
     }
     return json(404, { error: "not found" });
   } catch (e) {
@@ -421,9 +429,11 @@ async function handler(req: Request): Promise<Response> {
   }
 }
 
-const servers = cfg.hosts.map((hostname) =>
-  Bun.serve({ hostname, port: cfg.port, fetch: handler }),
-);
-for (const server of servers) {
-  console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+if (import.meta.main) {
+  const servers = cfg.hosts.map((hostname) =>
+    Bun.serve({ hostname, port: cfg.port, fetch: handler }),
+  );
+  for (const server of servers) {
+    console.log(`dispatch listening on http://${server.hostname}:${server.port} (version: ${cfg.buildVersion})`);
+  }
 }
