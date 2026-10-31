@@ -806,11 +806,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 
 	// A script whose stdout is JSON almost always means it as its answer, so
 	// it is offered parsed as well as raw. The same rule `mcpx --json run`
-	// has always followed, kept identical so the two agree.
+	// has always followed, kept identical so the two agree. The parsed
+	// value is remembered so the truncation below can tell a
+	// stdout-derived Result from a hook replacement.
+	var stdoutParsed any
+	haveStdoutParsed := false
 	if trimmed := strings.TrimSpace(res.Stdout); trimmed != "" {
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
 			res.Result = parsed
+			stdoutParsed, haveStdoutParsed = parsed, true
 		}
 	}
 
@@ -889,6 +894,19 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if capped, truncated := truncateStdout(res.Stdout, s.Limits.StdoutLimit); truncated {
 		res.Stdout = capped
 		res.StdoutTruncated = true
+		// A Result that is still the stdout parse must not survive
+		// as a side channel around the cap: renderers (renderExec)
+		// treat a Result that no longer matches stdout as a hook
+		// replacement and re-present it in full. A hook replacement
+		// -- a value that differs from the stdout parse -- is the
+		// hook's own answer and is preserved.
+		if haveStdoutParsed && res.Result != nil {
+			if rb, err := json.Marshal(res.Result); err == nil {
+				if pb, err := json.Marshal(stdoutParsed); err == nil && string(rb) == string(pb) {
+					res.Result = nil
+				}
+			}
+		}
 	}
 	return res, sinkErr
 }

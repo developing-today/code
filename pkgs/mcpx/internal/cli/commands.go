@@ -1121,7 +1121,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if err != nil {
 			return err
 		}
-		env := runEnvelope(res, out.String(), collected, streamed)
+		// The envelope carries the service's capped stdout
+		// (res.Stdout), not the raw stream captured in out: the raw
+		// copy would hand back output the exec.maxOutputBytes cap
+		// already cut, with no truncation indication.
+		env := runEnvelope(res, res.Stdout, collected, streamed)
 		if s := errOut.String(); s != "" {
 			env["stderr"] = s
 		}
@@ -1190,6 +1194,9 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 	}
 	if res.TimedOut {
 		env["timedOut"] = true
+	}
+	if res.StdoutTruncated {
+		env["stdoutTruncated"] = true
 	}
 	// A script whose stdout is JSON almost always means it as its result, so
 	// offer it parsed as well as raw rather than making every caller re-parse.
