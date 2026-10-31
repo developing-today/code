@@ -43,6 +43,9 @@ func TestValidateResourceResult(t *testing.T) {
 		`{"contents":[{"uri":"file:///x","text":"a","blob":null}]}`,
 		`{"contents":[{"uri":"file:///x","text":null,"blob":"aGk="}]}`,
 		`{"contents":[{"uri":"file:///x","text":"a","mimeType":null}]}`,
+		`{"contents":[{"URI":"file:///x","TEXT":"body"}]}`,
+		`{"contents":[{"uri":"file:///x","TEXT":"body"}]}`,
+		`{"contents":[{"URI":"file:///x","text":"body"}]}`,
 	}
 	for _, raw := range invalid {
 		err := ValidateResourceResult(json.RawMessage(raw))

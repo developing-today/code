@@ -46,43 +46,55 @@ func ValidateResourceResult(raw json.RawMessage) error {
 
 // validateResourceEntry checks one contents entry: an object with a
 // string uri and exactly one of text/blob (a string; blob valid base64).
+// Field names are matched through exact map keys: decoding into a Go
+// struct would fold case, so an entry spelling "URI"/"TEXT" would
+// satisfy the required lowercase fields while the bytes passed on carry
+// neither — the schema requires the exact names.
 func validateResourceEntry(raw json.RawMessage) error {
-	var fields struct {
-		URI      json.RawMessage `json:"uri"`
-		Text     json.RawMessage `json:"text"`
-		Blob     json.RawMessage `json:"blob"`
-		MimeType json.RawMessage `json:"mimeType"`
-	}
+	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return fmt.Errorf("a resource contents entry must be an object: %w", err)
 	}
-	for name, value := range map[string]json.RawMessage{
-		"uri": fields.URI, "text": fields.Text, "blob": fields.Blob, "mimeType": fields.MimeType,
-	} {
-		if string(value) == "null" {
-			return fmt.Errorf("a resource contents entry's %s must be a string, not null", name)
+	stringField := func(name string) (*string, error) {
+		value, ok := fields[name]
+		if !ok {
+			return nil, nil
 		}
+		if string(value) == "null" {
+			return nil, fmt.Errorf("a resource contents entry's %s must be a string, not null", name)
+		}
+		var v string
+		if err := json.Unmarshal(value, &v); err != nil {
+			return nil, fmt.Errorf("a resource contents entry's %s must be a string: %w", name, err)
+		}
+		return &v, nil
 	}
-	var e struct {
-		URI      *string `json:"uri"`
-		Text     *string `json:"text"`
-		Blob     *string `json:"blob"`
-		MimeType *string `json:"mimeType"`
+	uri, err := stringField("uri")
+	if err != nil {
+		return err
 	}
-	if err := json.Unmarshal(raw, &e); err != nil {
-		return fmt.Errorf("a resource contents entry must be an object with string uri/text/blob fields: %w", err)
+	text, err := stringField("text")
+	if err != nil {
+		return err
 	}
-	if e.URI == nil || *e.URI == "" {
+	blob, err := stringField("blob")
+	if err != nil {
+		return err
+	}
+	if _, err := stringField("mimeType"); err != nil {
+		return err
+	}
+	if uri == nil || *uri == "" {
 		return fmt.Errorf("a resource contents entry carries no uri")
 	}
-	if e.Text != nil && e.Blob != nil {
+	if text != nil && blob != nil {
 		return fmt.Errorf("a resource contents entry carries both text and blob; exactly one is required")
 	}
-	if e.Text == nil && e.Blob == nil {
+	if text == nil && blob == nil {
 		return fmt.Errorf("a resource contents entry carries neither text nor blob; exactly one is required")
 	}
-	if e.Blob != nil {
-		if _, err := base64.StdEncoding.DecodeString(*e.Blob); err != nil {
+	if blob != nil {
+		if _, err := base64.StdEncoding.DecodeString(*blob); err != nil {
 			return fmt.Errorf("a resource contents entry's blob is not base64: %w", err)
 		}
 	}
