@@ -364,6 +364,21 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         }
     }
 
+    // Validate the pipe's trailing placeholder on the SOURCE line,
+    // before any stage that executes shell code: the $(...) and
+    // backtick stages below run substitutions while expanding the
+    // left side, so reaching the pipe stage's own check (after those
+    // stages) would already have executed `echo $(touch ...)`
+    // before reporting the placeholder error -- and a failing
+    // substitution would mask the diagnostic with its own error
+    // (Codex review, PR #3096).
+    if let Some(pos) = find_unquoted(line, "|>") {
+        let right = line[pos + 2..].trim();
+        if has_trailing_placeholder(right) {
+            return Err(trailing_placeholder_error());
+        }
+    }
+
     let mut result = line.to_owned();
 
     // Protected spans of stage-inserted text, in `result` coordinates.
@@ -745,6 +760,42 @@ mod tests {
         // must win, proving the rejection precedes pipe execution.
         let result = preprocess_repl_line("exit 3 |> put name -");
         assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_trailing_dash_rejected_before_substitution() {
+        // The substitution on the left would create a file if it ran;
+        // the placeholder error must win and the file must not exist:
+        // rejection precedes every stage that executes shell code
+        // (Codex review, PR #3096).
+        let marker = std::env::temp_dir().join(format!(
+            "mcpx-repl-side-effect-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let line = format!(
+            "echo $(touch {}) |> put name -",
+            marker.display()
+        );
+        let result = preprocess_repl_line(&line);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+        assert!(
+            !marker.exists(),
+            "substitution executed before the placeholder rejection"
+        );
+        // A failing substitution must not mask the diagnostic either.
+        let result = preprocess_repl_line("echo $(exit 3) |> put name -");
         assert!(
             result
                 .unwrap_err()
