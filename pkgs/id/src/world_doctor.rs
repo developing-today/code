@@ -199,7 +199,7 @@ pub fn check_toolchain(inputs: &DoctorInputs) -> Finding {
     };
     // A configured binary must exist. A bare name resolves through PATH.
     let exists = if roc_bin.contains('/') {
-        std::path::Path::new(roc_bin).is_file()
+        Path::new(roc_bin).is_file()
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .map(|dir| dir.join(roc_bin))
@@ -371,8 +371,8 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
             .map_err(|error| anyhow::anyhow!("entry {} is malformed: {error}", index + 1))?;
         match &entry {
             crate::world::JournalEntry::Created {
-                world_id: _,
-                version: created_version,
+
+                world_id: _, version: created_version,
             } => {
                 anyhow::ensure!(
                     entries == 0,
@@ -463,7 +463,7 @@ mod tests {
         // A missing resolution is a failure, independent of the host's PATH.
         let finding = check_toolchain(&DoctorInputs {
             roc_resolved: Some(Err("no roc binary".to_owned())),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
         assert!(!finding.fix.is_empty());
@@ -480,19 +480,19 @@ mod tests {
     fn a_ceiling_refuses_wildcards_and_unknown_names() {
         let finding = check_ceiling(&DoctorInputs {
             caps_ceiling: Some(vec!["*".to_owned()]),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
 
         let finding = check_ceiling(&DoctorInputs {
             caps_ceiling: Some(vec!["time.nwo".to_owned()]),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
 
         let finding = check_ceiling(&DoctorInputs {
             caps_ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Ok);
     }
@@ -502,9 +502,9 @@ mod tests {
         let finding = check_profile(&DoctorInputs {
             profile: Some(WorldExecutionProfile {
                 wasm_fuel: Some(0),
-                ..WorldExecutionProfile::default()
+                .. WorldExecutionProfile::default()
             }),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
         assert!(finding.detail.contains("wasm_fuel"), "{}", finding.detail);
@@ -609,7 +609,7 @@ mod tests {
         // findings out of 6 checks.
         let report = run(&DoctorInputs {
             roc_resolved: Some(Err("no roc binary".to_owned())),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(report.findings.len(), 6, "{report:#?}");
         assert_eq!(report.failure_count(), 2, "{report:#?}");
@@ -626,10 +626,10 @@ mod tests {
             caps_ceiling: Some(vec!["*".to_owned()]),
             profile: Some(WorldExecutionProfile {
                 wasm_fuel: Some(0),
-                ..WorldExecutionProfile::default()
+                .. WorldExecutionProfile::default()
             }),
             roc_resolved: Some(Err("no roc binary".to_owned())),
-            ..inputs()
+            .. inputs()
         });
         let ceiling = &report.findings[2];
         assert_eq!(ceiling.check, "ceiling");
@@ -644,7 +644,7 @@ mod tests {
     fn a_clock_before_the_epoch_fails() {
         let finding = check_clock(&DoctorInputs {
             now_ms: Some(0),
-            ..inputs()
+            .. inputs()
         });
         assert_eq!(finding.severity, Severity::Fail);
 

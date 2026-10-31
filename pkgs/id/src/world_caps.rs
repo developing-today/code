@@ -330,7 +330,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
 
 /// The event delivered when a subscription is refused.
 #[must_use]
-pub fn subscription_refused_event(spec: &str, error: CapError) -> String {
+pub fn subscription_refused_event(spec: &str, error: &CapError) -> String {
     let mut event =
         serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()});
     if let Some(reason) = error.reason() {

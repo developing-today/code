@@ -1481,7 +1481,7 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         // Skip whitespace: any `char::is_whitespace` char separates terms,
         // not only the ASCII space.
         while i < input.len() {
-            let ch = input[i..].chars().next().expect("i is a char boundary");
+            let Some(ch) = input[i..].chars().next() else { break; };
             if !ch.is_whitespace() {
                 break;
             }
@@ -1496,7 +1496,7 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         let start = i;
         let mut in_quotes = false;
         while i < input.len() {
-            let ch = input[i..].chars().next().expect("i is a char boundary");
+            let Some(ch) = input[i..].chars().next() else { break; };
             if ch == '"' {
                 in_quotes = !in_quotes;
                 i += 1;
@@ -1870,7 +1870,7 @@ mod tests {
     #[test]
     fn test_encode_alpha_key_with_value() {
         let key = encode_alpha_key(b"README.md", b"label", Some(b"rust"));
-        let fields = decode(&key).unwrap();
+        let fields = decode(&key).expect("i is a char boundary");
         assert_eq!(fields.len(), 3);
         assert_eq!(fields[0].as_str(), Some("README.md"));
         assert_eq!(fields[1].as_str(), Some("label"));
@@ -1880,7 +1880,7 @@ mod tests {
     #[test]
     fn test_encode_alpha_key_without_value() {
         let key = encode_alpha_key(b"README.md", b"pinned", None);
-        let fields = decode(&key).unwrap();
+        let fields = decode(&key).expect("i is a char boundary");
         assert_eq!(fields.len(), 3);
         assert_eq!(fields[0].as_str(), Some("README.md"));
         assert_eq!(fields[1].as_str(), Some("pinned"));
@@ -1890,7 +1890,7 @@ mod tests {
     #[test]
     fn test_encode_omega_key_with_value() {
         let key = encode_omega_key(b"README.md", b"label", Some(b"rust"));
-        let fields = decode(&key).unwrap();
+        let fields = decode(&key).expect("i is a char boundary");
         assert_eq!(fields.len(), 3);
         // Inverted order: (value, key, subject)
         assert_eq!(fields[0].as_str(), Some("rust"));
@@ -1901,7 +1901,7 @@ mod tests {
     #[test]
     fn test_encode_omega_key_without_value() {
         let key = encode_omega_key(b"README.md", b"pinned", None);
-        let fields = decode(&key).unwrap();
+        let fields = decode(&key).expect("i is a char boundary");
         assert_eq!(fields.len(), 3);
         // Inverted: (null, key, subject)
         assert!(fields[0].is_null());
@@ -1912,7 +1912,7 @@ mod tests {
     #[test]
     fn test_decode_alpha_key() {
         let raw = encode_alpha_key(b"file.txt", b"tag", Some(b"v1"));
-        let (subject, key, value) = decode_alpha_key(&raw).unwrap();
+        let (subject, key, value) = decode_alpha_key(&raw).expect("i is a char boundary");
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "tag");
         assert_eq!(value, Some(TagValue::from("v1")));
@@ -1921,7 +1921,7 @@ mod tests {
     #[test]
     fn test_decode_alpha_key_null_value() {
         let raw = encode_alpha_key(b"file.txt", b"pinned", None);
-        let (subject, key, value) = decode_alpha_key(&raw).unwrap();
+        let (subject, key, value) = decode_alpha_key(&raw).expect("i is a char boundary");
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "pinned");
         assert_eq!(value, None);
@@ -1930,7 +1930,7 @@ mod tests {
     #[test]
     fn test_decode_omega_key() {
         let raw = encode_omega_key(b"file.txt", b"label", Some(b"rust"));
-        let (subject, key, value) = decode_omega_key(&raw).unwrap();
+        let (subject, key, value) = decode_omega_key(&raw).expect("i is a char boundary");
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "label");
         assert_eq!(value, Some(TagValue::from("rust")));
@@ -1939,7 +1939,7 @@ mod tests {
     #[test]
     fn test_decode_omega_key_null() {
         let raw = encode_omega_key(b"file.txt", b"pinned", None);
-        let (subject, key, value) = decode_omega_key(&raw).unwrap();
+        let (subject, key, value) = decode_omega_key(&raw).expect("i is a char boundary");
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "pinned");
         assert_eq!(value, None);
@@ -2038,7 +2038,7 @@ mod tests {
             for key in keys {
                 for value in values {
                     let encoded = encode_alpha_key(subject, key, *value);
-                    let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+                    let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
                     assert_eq!(s.as_bytes(), *subject);
                     assert_eq!(k.as_bytes(), *key);
                     assert_eq!(v.as_ref().map(TagValue::as_bytes), value.as_deref());
@@ -2056,7 +2056,7 @@ mod tests {
             for key in keys {
                 for value in values {
                     let encoded = encode_omega_key(subject, key, *value);
-                    let (s, k, v) = decode_omega_key(&encoded).unwrap();
+                    let (s, k, v) = decode_omega_key(&encoded).expect("i is a char boundary");
                     assert_eq!(s.as_bytes(), *subject);
                     assert_eq!(k.as_bytes(), *key);
                     assert_eq!(v.as_ref().map(TagValue::as_bytes), value.as_deref());
@@ -2077,7 +2077,7 @@ mod tests {
             key: "label".to_owned(),
             value: Some("rust".to_owned()),
         };
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event).expect("i is a char boundary");
         assert!(json.contains("\"type\":\"set\""));
         assert!(json.contains("\"ns\":\"global\""));
         assert!(json.contains("\"subject\":\"README.md\""));
@@ -2093,7 +2093,7 @@ mod tests {
             key: "pinned".to_owned(),
             value: None,
         };
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event).expect("i is a char boundary");
         // value should be skipped when None
         assert!(!json.contains("\"value\""));
         assert!(json.contains("\"key\":\"pinned\""));
@@ -2107,7 +2107,7 @@ mod tests {
             key: "status".to_owned(),
             value: Some("draft".to_owned()),
         };
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event).expect("i is a char boundary");
         assert!(json.contains("\"type\":\"del\""));
         assert!(json.contains("\"ns\":\"node\""));
         assert!(json.contains("\"subject\":\"file.txt\""));
@@ -2119,7 +2119,7 @@ mod tests {
             ns: "global".to_owned(),
             subject: "old-file.md".to_owned(),
         };
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event).expect("i is a char boundary");
         assert!(json.contains("\"type\":\"del_all\""));
         assert!(json.contains("\"subject\":\"old-file.md\""));
         // Should not have key or value fields
@@ -2135,7 +2135,7 @@ mod tests {
             to: "new.md".to_owned(),
             count: 5,
         };
-        let json = serde_json::to_string(&event).unwrap();
+        let json = serde_json::to_string(&event).expect("i is a char boundary");
         assert!(json.contains("\"type\":\"transfer\""));
         assert!(json.contains("\"from\":\"old.md\""));
         assert!(json.contains("\"to\":\"new.md\""));
@@ -2157,7 +2157,7 @@ mod tests {
         ];
         for subject in subjects {
             let encoded = encode_alpha_key(subject, b"key", Some(b"val"));
-            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
             assert_eq!(s.as_bytes(), *subject, "subject roundtrip failed");
             assert_eq!(k, "key");
             assert_eq!(v, Some(TagValue::from("val")));
@@ -2174,7 +2174,7 @@ mod tests {
         ];
         for key in keys {
             let encoded = encode_alpha_key(b"file.txt", key, Some(b"val"));
-            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
             assert_eq!(s, "file.txt");
             assert_eq!(k.as_bytes(), *key, "key roundtrip failed");
             assert_eq!(v, Some(TagValue::from("val")));
@@ -2191,7 +2191,7 @@ mod tests {
         ];
         for value in values {
             let encoded = encode_alpha_key(b"file.txt", b"key", *value);
-            let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+            let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
             assert_eq!(s, "file.txt");
             assert_eq!(k, "key");
             assert_eq!(
@@ -2265,12 +2265,12 @@ mod tests {
             legacy_meta_imported: false,
         };
 
-        let json = serde_json::to_string_pretty(&registry).unwrap();
-        let parsed: Registry = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string_pretty(&registry).expect("i is a char boundary");
+        let parsed: Registry = serde_json::from_str(&json).expect("i is a char boundary");
 
         assert_eq!(parsed.version, 1);
         assert!(parsed.global.is_some());
-        let g = parsed.global.unwrap();
+        let g = parsed.global.expect("i is a char boundary");
         assert_eq!(g.alpha, "abcd1234");
         assert_eq!(g.omega, "5678efgh");
         assert_eq!(parsed.nodes.len(), 1);
@@ -2325,14 +2325,14 @@ mod tests {
     #[test]
     fn test_tag_value_serialize() {
         let tv = TagValue::from("hello");
-        let json = serde_json::to_string(&tv).unwrap();
+        let json = serde_json::to_string(&tv).expect("i is a char boundary");
         assert_eq!(json, "\"hello\"");
     }
 
     #[test]
     fn test_tag_value_serialize_binary() {
         let tv = TagValue::from(vec![0xFF, 0xFE]);
-        let json = serde_json::to_string(&tv).unwrap();
+        let json = serde_json::to_string(&tv).expect("i is a char boundary");
         // Should serialize as lossy UTF-8 with replacement chars
         assert!(json.contains('\u{FFFD}'));
     }
@@ -2345,7 +2345,7 @@ mod tests {
     fn test_binary_key_roundtrip() {
         let binary_key: &[u8] = &[0xFF, 0x00, 0xAB, 0xCD];
         let encoded = encode_alpha_key(b"file.txt", binary_key, Some(b"val"));
-        let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+        let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
         assert_eq!(s, "file.txt");
         assert_eq!(k.as_bytes(), binary_key);
         assert!(!k.is_utf8());
@@ -2356,10 +2356,10 @@ mod tests {
     fn test_binary_value_roundtrip() {
         let binary_val: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
         let encoded = encode_alpha_key(b"file.txt", b"data", Some(binary_val));
-        let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+        let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
         assert_eq!(s, "file.txt");
         assert_eq!(k, "data");
-        let v = v.unwrap();
+        let v = v.expect("i is a char boundary");
         assert_eq!(v.as_bytes(), binary_val);
         assert!(!v.is_utf8());
     }
@@ -2368,7 +2368,7 @@ mod tests {
     fn test_binary_subject_roundtrip() {
         let binary_subj: &[u8] = &[0x80, 0xFF, 0xFE];
         let encoded = encode_alpha_key(binary_subj, b"key", Some(b"val"));
-        let (s, k, v) = decode_alpha_key(&encoded).unwrap();
+        let (s, k, v) = decode_alpha_key(&encoded).expect("i is a char boundary");
         assert_eq!(s.as_bytes(), binary_subj);
         assert!(!s.is_utf8());
         assert_eq!(k, "key");
@@ -2379,10 +2379,10 @@ mod tests {
     fn test_binary_omega_roundtrip() {
         let binary_val: &[u8] = &[0xCA, 0xFE];
         let encoded = encode_omega_key(b"file.txt", b"key", Some(binary_val));
-        let (s, k, v) = decode_omega_key(&encoded).unwrap();
+        let (s, k, v) = decode_omega_key(&encoded).expect("i is a char boundary");
         assert_eq!(s, "file.txt");
         assert_eq!(k, "key");
-        let v = v.unwrap();
+        let v = v.expect("i is a char boundary");
         assert_eq!(v.as_bytes(), binary_val);
     }
 
@@ -2399,7 +2399,7 @@ mod tests {
         // UTF-8 data should use string encoding (type tag 0x02), not bytes (0x01)
         // This ensures backward compatibility with existing data
         let encoded = encode_alpha_key(b"file.txt", b"label", Some(b"rust"));
-        let fields = decode(&encoded).unwrap();
+        let fields = decode(&encoded).expect("i is a char boundary");
         // All fields should be String variants (not Bytes)
         assert!(fields[0].as_str().is_some(), "subject should be String");
         assert!(fields[1].as_str().is_some(), "key should be String");
@@ -2411,7 +2411,7 @@ mod tests {
         // Non-UTF-8 data should use bytes encoding (type tag 0x01)
         let binary: &[u8] = &[0xFF, 0x00];
         let encoded = encode_alpha_key(b"file.txt", binary, Some(b"val"));
-        let fields = decode(&encoded).unwrap();
+        let fields = decode(&encoded).expect("i is a char boundary");
         assert!(fields[0].as_str().is_some(), "UTF-8 subject → String");
         assert!(fields[1].as_bytes().is_some(), "binary key → Bytes");
         assert!(fields[2].as_str().is_some(), "UTF-8 value → String");
@@ -2618,17 +2618,17 @@ mod tests {
             .relay_mode(RelayMode::Disabled)
             .bind()
             .await
-            .unwrap();
+            .expect("i is a char boundary");
         let blobs: Store = MemStore::new().into();
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let docs = Docs::memory()
             .spawn(endpoint.clone(), blobs.clone(), gossip)
             .await
-            .unwrap();
-        let dir = tempfile::tempdir().unwrap();
+            .expect("i is a char boundary");
+        let dir = tempfile::tempdir().expect("i is a char boundary");
         let ts = TagStore::init_in(&docs, "test-node", dir.path().join(".iroh-meta"))
             .await
-            .unwrap();
+            .expect("i is a char boundary");
         (ts, blobs, dir, endpoint, docs)
     }
 
@@ -2648,17 +2648,17 @@ mod tests {
             Some(MetaLink::Name("other.md".to_owned())),
         );
         add_tag(&mut doc, "notes.md", "created", Some("100"), None);
-        save_meta(&blobs, &doc).await.unwrap();
+        save_meta(&blobs, &doc).await.expect("i is a char boundary");
 
         // The server already recorded a newer `created` for the same subject.
         ts.set_tag(&ts.global, b"notes.md", b"created", Some(b"999"), b"")
             .await
-            .unwrap();
+            .expect("i is a char boundary");
 
-        let imported = ts.migrate_legacy_meta(&blobs).await.unwrap();
+        let imported = ts.migrate_legacy_meta(&blobs).await.expect("i is a char boundary");
         assert_eq!(imported, 3, "created is kept, the other three are imported");
 
-        let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
+        let tags = ts.get_tags(&ts.global, b"notes.md").await.expect("i is a char boundary");
         let has = |k: &str, v: Option<&str>| {
             tags.iter().any(|t| {
                 t.key == k && t.value.as_ref().map(TagValue::as_bytes) == v.map(str::as_bytes)
@@ -2675,9 +2675,9 @@ mod tests {
 
         // Idempotent: a second run does nothing, even if more legacy tags appear.
         add_tag(&mut doc, "notes.md", "late", Some("x"), None);
-        save_meta(&blobs, &doc).await.unwrap();
-        assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 0);
-        let tags = ts.get_tags(&ts.global, b"notes.md").await.unwrap();
+        save_meta(&blobs, &doc).await.expect("i is a char boundary");
+        assert_eq!(ts.migrate_legacy_meta(&blobs).await.expect("i is a char boundary"), 0);
+        let tags = ts.get_tags(&ts.global, b"notes.md").await.expect("i is a char boundary");
         assert!(!tags.iter().any(|t| t.key == "late"));
 
         endpoint.close().await;
@@ -2686,7 +2686,7 @@ mod tests {
     #[tokio::test]
     async fn test_migrate_legacy_meta_with_no_legacy_blob_is_a_noop() {
         let (ts, blobs, _dir, endpoint, _docs) = memory_tag_store().await;
-        assert_eq!(ts.migrate_legacy_meta(&blobs).await.unwrap(), 0);
+        assert_eq!(ts.migrate_legacy_meta(&blobs).await.expect("i is a char boundary"), 0);
         endpoint.close().await;
     }
 }

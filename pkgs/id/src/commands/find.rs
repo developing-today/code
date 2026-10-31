@@ -209,8 +209,6 @@ fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
 /// # Errors
 ///
 /// Returns an error if no matches are found for any query.
-///
-
 /// # Example
 ///
 /// ```bash

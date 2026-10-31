@@ -410,7 +410,6 @@ impl EventStore {
         self.waiting.waiting_count(*author)
     }
 
-    /// Whether the event with this ID is held, waiting or parked.
     pub fn is_waiting(&self, id: &Hash) -> bool {
         self.waiting.contains(id)
     }
@@ -464,19 +463,6 @@ enum Staged {
 }
 
 impl Staged {
-    /// Whether the event is kept: stored, or held. A refused event and a fork are not.
-    fn keeps(&self) -> bool {
-        matches!(
-            self,
-            Self::Stored { .. }
-                | Self::Ready(
-                    Ingest::Accepted { .. }
-                        | Ingest::Voided { .. }
-                        | Ingest::Duplicate { .. }
-                        | Ingest::Waiting { .. },
-                )
-        )
-    }
 
     /// The outcome, with its labels read from the store as it is now.
     fn finish(self, txn: &WriteTransaction) -> Result<Ingest, StoreError> {
@@ -1035,7 +1021,6 @@ fn missing_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, Sto
     Ok(missing)
 }
 
-/// Whether the event with this ID applies, in the resolved state.
 pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
     let applied = txn.open_table(APPLIED)?;
     let found = applied.get(hash.as_bytes().as_slice())?.is_some();

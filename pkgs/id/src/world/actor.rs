@@ -449,7 +449,7 @@ impl WorldActor {
                 Decision::Deny(error) => {
                     let spec = sub.spec();
                     if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, error))
+                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
                             .await;
                     }
                 }

@@ -821,12 +821,6 @@ fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
 }
 
 /// Collect list item children of a list node.
-fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    node.children()
-        .map(|child| convert_node(child, &[]))
-        .filter(|v| !v.is_null())
-        .collect()
-}
 
 /// The literal of an `HtmlInline` node, if `node` is one.
 fn html_inline_literal<'a>(node: &'a AstNode<'a>) -> Option<String> {
@@ -2397,8 +2391,6 @@ fn insert_marked_chain<'a>(
 /// wrapper when a marked chain that shares that wrapper's mark is
 /// about to be inserted. The parse direction emits `html_inline`
 /// atoms markless (see the `NodeValue::HtmlInline` arm of
-/// `convert_node`), so a mark spanning an atom reaches the save
-/// direction as marked run, bare atom, marked run. Appending the
 /// atom as a sibling severs the tail wrapper: the next run opens a
 /// NEW wrapper and the span fragments (`[a <b>x</b> c](/y)` saved as
 /// `[a ](/y)<b>[x](/y)</b>[ c](/y)`, with `&#32;` leaks at emphasis
