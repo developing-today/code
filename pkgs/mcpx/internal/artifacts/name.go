@@ -101,7 +101,15 @@ func uniquePath(dir, name string) (string, error) {
 			candidate = fmt.Sprintf("%s-%d%s", stem, i, ext)
 		}
 		p := filepath.Join(base, candidate)
-		if !strings.HasPrefix(p, base+string(filepath.Separator)) {
+		// Containment via Rel, not a prefix test: Join cleans a "." (or
+		// "./") directory away, so "." + "shot.png" joins to the bare
+		// "shot.png", which a "."+separator prefix test wrongly rejects
+		// even though the file lands in the current directory (Codex
+		// finding on #2950). Rel expresses the real question -- is the
+		// destination at or below the directory -- for every base,
+		// including "." and the filesystem root.
+		rel, rerr := filepath.Rel(base, p)
+		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return "", fmt.Errorf("artifact name %q does not stay inside %s", name, dir)
 		}
 		// O_EXCL is the check and the claim in one step. Testing with Stat
