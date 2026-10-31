@@ -94,6 +94,41 @@ var exprKeywords = map[string]bool{
 	"class": true, "import": true, "extends": true, "default": true,
 }
 
+// controlKeywords are the statement-opening keywords whose following
+// parenthesised condition/head does not end a value, so a following "/"
+// opens a regex literal rather than dividing: if (true) /regex/.test(s)
+var controlKeywords = map[string]bool{
+	"if": true, "while": true, "for": true, "with": true, "switch": true,
+}
+
+func isControlConditionParen(toks []lexToken) bool {
+	if len(toks) == 0 || toks[len(toks)-1].text != ")" {
+		return false
+	}
+	depth := 0
+	for i := len(toks) - 1; i >= 0; i-- {
+		t := toks[i]
+		if t.kind != tPunct {
+			continue
+		}
+		if t.text == ")" {
+			depth++
+		} else if t.text == "(" {
+			depth--
+			if depth == 0 {
+				if i > 0 && toks[i-1].kind == tIdent && controlKeywords[toks[i-1].text] {
+					if i > 1 && toks[i-2].text == "." {
+						return false
+					}
+					return true
+				}
+				return false
+			}
+		}
+	}
+	return false
+}
+
 type lexer struct {
 	src       string
 	pos       int
@@ -130,7 +165,10 @@ func (l *lexer) valueEnd() bool {
 		}
 		return !exprKeywords[t.text]
 	case tPunct:
-		return t.text == ")" || t.text == "]" || t.text == "}" ||
+		if t.text == ")" {
+			return !isControlConditionParen(l.toks)
+		}
+		return t.text == "]" || t.text == "}" ||
 			t.text == "++" || t.text == "--"
 	}
 	return false
@@ -182,8 +220,16 @@ func (l *lexer) code(untilBrace bool) {
 			depth--
 		case c >= '0' && c <= '9':
 			j := l.pos
-			for j < len(l.src) && (isIdentByte(l.src[j]) || (l.src[j] == '.' && j+1 < len(l.src) && l.src[j+1] >= '0' && l.src[j+1] <= '9')) {
-				j++
+			hasDot := false
+			for j < len(l.src) {
+				if isIdentByte(l.src[j]) {
+					j++
+				} else if l.src[j] == '.' && !hasDot {
+					hasDot = true
+					j++
+				} else {
+					break
+				}
 			}
 			l.emit(tNumber, l.src[l.pos:j], false)
 			l.pos = j
@@ -562,7 +608,7 @@ func skipAnnotation(toks []lexToken, i int) int {
 				if angle < 0 {
 					angle = 0
 				}
-			case ",", "=":
+			case ",", "=", ";":
 				if depth == 0 && angle == 0 {
 					return i
 				}
@@ -578,6 +624,9 @@ func skipAnnotation(toks []lexToken, i int) int {
 func parseDeclarators(toks []lexToken, i int, out map[string]bool) {
 	for i < len(toks) {
 		i = parseTarget(toks, i, out)
+		if i < len(toks) && toks[i].kind == tPunct && toks[i].text == ":" {
+			i = skipAnnotation(toks, i+1)
+		}
 		i = skipDeclarator(toks, i)
 		if i < len(toks) && toks[i].text == "," {
 			i++
@@ -654,6 +703,13 @@ func parseImport(toks []lexToken, i int, out map[string]bool) {
 		return
 	}
 	if toks[i].kind == tIdent {
+		// A whole-statement type import (import type ...) binds no runtime values.
+		if toks[i].text == "type" && i+1 < len(toks) {
+			next := toks[i+1]
+			if next.text == "{" || next.text == "*" || (next.kind == tIdent && next.text != "from") {
+				return
+			}
+		}
 		out[toks[i].text] = true
 		i++
 		if i < len(toks) && toks[i].text == "," {
@@ -675,6 +731,19 @@ func parseImport(toks []lexToken, i int, out map[string]bool) {
 		for i < len(toks) && toks[i].text != "}" {
 			if toks[i].text == "," {
 				i++
+				continue
+			}
+			// An inline type-only specifier: "type <ident>" or "type <string>"
+			if toks[i].kind == tIdent && toks[i].text == "type" && i+1 < len(toks) &&
+				(toks[i+1].kind == tIdent || toks[i+1].kind == tString) &&
+				toks[i+1].text != "as" && toks[i+1].text != "," && toks[i+1].text != "}" {
+				i += 2
+				if i < len(toks) && toks[i].text == "as" {
+					i++
+					if i < len(toks) && (toks[i].kind == tIdent || toks[i].kind == tString) {
+						i++
+					}
+				}
 				continue
 			}
 			if toks[i].kind == tIdent || toks[i].kind == tString {
