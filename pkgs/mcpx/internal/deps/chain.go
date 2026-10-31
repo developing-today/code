@@ -401,18 +401,28 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}
-				if manifest == nil && len(m.Lockfiles) > 0 {
+				if manifest == nil {
 					// No project manifest competes, so the
-					// configuration layer's lockfile is the
-					// run's frozen resolution: preserve it on
-					// the set (as its manifest, which is what
-					// transports manifest + lockfile text) or
-					// a config declaration like foo@^1.0.0
-					// loses the exact resolution recorded
-					// beside its manifest (Codex review,
-					// PR #2589).
+					// configuration layer's manifest is
+					// preserved on the set (as its manifest,
+					// which is what transports manifest +
+					// lockfile text): with a lockfile it is
+					// the run's frozen resolution, and a
+					// config declaration like foo@^1.0.0
+					// would otherwise lose the exact
+					// resolution recorded beside its
+					// manifest; without one its ORIGIN is
+					// still load-bearing -- a relative
+					// file: declaration resolves against
+					// the configuration directory, and
+					// discarding the manifest discarded
+					// that directory before it could reach
+					// the transport as ManifestDir, so the
+					// runner looked for the artifact in the
+					// script's directory instead (Codex
+					// review, PR #2589).
 					set.Manifest = m
-					set.Frozen = true
+					set.Frozen = len(m.Lockfiles) > 0
 				}
 			}
 		}

@@ -627,3 +627,30 @@ func TestOptionalDependenciesInManifestAndConflicts(t *testing.T) {
 		t.Fatalf("compatible pin conflicted: %+v", noConflicts)
 	}
 }
+
+// TestConfigManifestOriginPreservedWithoutALockfile is the Codex finding
+// on PR #2589 (chain.go): with deps.source=config and no project
+// manifest, a config manifest carrying a relative file: declaration but
+// NO lockfile was discarded entirely, so its directory never reached
+// the transport as ManifestDir and the runner resolved the artifact
+// against the script's directory instead. The origin must be preserved
+// whether or not a lockfile exists; only Frozen depends on the lockfile.
+func TestConfigManifestOriginPreservedWithoutALockfile(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{"dependencies":{"localpkg":"file:./localpkg"}}`)
+
+	set, err := deps.Resolve(cfg(t, deps.SourceConfig, t.TempDir()), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Manifest == nil {
+		t.Fatal("config manifest was discarded for lack of a lockfile; its origin is lost")
+	}
+	if want := filepath.Join(configDir, "mcpx"); set.Manifest.Dir != want {
+		t.Fatalf("manifest dir = %q, want the configuration directory %q", set.Manifest.Dir, want)
+	}
+	if set.Frozen {
+		t.Error("no lockfile beside the config manifest, but the set is frozen")
+	}
+}

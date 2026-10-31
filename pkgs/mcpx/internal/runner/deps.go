@@ -228,6 +228,12 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	}
 	deps := d.effectiveDeps(manifest)
 
+	// lockRebases records path spellings to rewrite in a transported
+	// lockfile when a local artifact had to be rebased into the
+	// workdir (see the transport loop below): pairs of
+	// (spelling in the source project, spelling in the workdir).
+	var lockRebases [][2]string
+
 	// Local file dependencies (file:/link: with a relative path)
 	// resolve against the manifest's own directory, and the
 	// materialised copy lives somewhere else: copied unchanged, the
@@ -250,19 +256,70 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		if d.ManifestDir != "" {
 			base = d.ManifestDir
 		}
-		for _, spec := range deps {
+		for name, spec := range deps {
 			rel, ok := localFileRef(spec)
 			if !ok {
 				continue
 			}
 			src := filepath.Join(base, rel)
 			dst := filepath.Join(dir, rel)
-			if !withinDir(base, src) || !withinDir(dir, dst) {
-				return nil, fmt.Errorf("deps: local dependency %q escapes its base directory", spec)
+			if withinDir(dir, dst) {
+				// The verbatim spelling resolves inside the
+				// workdir at the same relative path. The
+				// source need not sit inside the manifest's
+				// own directory: a project declaring a
+				// sibling (file:../localpkg) is naming a
+				// real resolution relationship its locked
+				// installation already honours in place,
+				// and the manifest itself is the authority
+				// for reading the path it names -- exactly
+				// as the package manager would in place
+				// (Codex review, PR #2589).
+				if err := copyLocalArtifact(src, dst); err != nil {
+					return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
+				}
+				continue
+			}
+			// The verbatim spelling would land OUTSIDE the
+			// workdir (a sibling or parent-relative artifact):
+			// copying it there is not mcpx's to do, so the
+			// artifact is rebased into the workdir under
+			// .mcpx-local/<hash-of-source-path>/ and the
+			// requirement -- in the materialised manifest and
+			// in any transported lockfile -- is rewritten to
+			// the rebased spelling, preserving the resolution
+			// relationship in an isolated layout instead of
+			// rejecting it (Codex review, PR #2589).
+			abs, err := filepath.Abs(src)
+			if err != nil {
+				return nil, fmt.Errorf("deps: local dependency %q: %w", spec, err)
+			}
+			tail := filepath.ToSlash(rel)
+			for strings.HasPrefix(tail, "../") {
+				tail = strings.TrimPrefix(tail, "../")
+			}
+			tail = strings.TrimPrefix(tail, "./")
+			if tail == "" || tail == ".." || tail == "." {
+				return nil, fmt.Errorf("deps: local dependency %q has no transportable path", spec)
+			}
+			sum := sha256.Sum256([]byte(abs))
+			newRel := ".mcpx-local/" + hex.EncodeToString(sum[:4]) + "/" + tail
+			dst = filepath.Join(dir, filepath.FromSlash(newRel))
+			if !withinDir(dir, dst) {
+				return nil, fmt.Errorf("deps: local dependency %q escapes the exec workdir", spec)
 			}
 			if err := copyLocalArtifact(src, dst); err != nil {
 				return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
 			}
+			prefix := "file:"
+			if strings.HasPrefix(spec, "link:") {
+				prefix = "link:"
+			}
+			newSpec := prefix + "./" + newRel
+			deps[name] = newSpec
+			lockRebases = append(lockRebases,
+				[2]string{spec, newSpec},
+				[2]string{filepath.ToSlash(rel), newRel})
 		}
 	}
 
@@ -350,6 +407,18 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	}
 
 	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
+		if len(lockRebases) > 0 {
+			// A rebased local artifact's spellings inside the
+			// lockfile (its spec and its path keys) must name
+			// the rebased layout too, or the frozen install
+			// resolves the original path -- outside the
+			// workdir -- and fails (Codex review, PR #2589).
+			text := string(lockContent)
+			for _, pair := range lockRebases {
+				text = strings.ReplaceAll(text, pair[0], pair[1])
+			}
+			lockContent = []byte(text)
+		}
 		name := filepath.Base(lockName)
 		if name == "" || name == "." || name == ".." {
 			return nil, fmt.Errorf("deps: lockfile name %q is not a file name", lockName)

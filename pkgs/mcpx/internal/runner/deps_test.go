@@ -897,3 +897,43 @@ func TestMaterialiseDepsOptionalOverrides(t *testing.T) {
 		t.Fatalf("optional override lost: dependencies=%v optionalDependencies=%v", deps, optDeps)
 	}
 }
+
+// TestMaterialiseSiblingLocalDependency is the Codex finding on
+// PR #2589 (runner/deps.go): a project declaring a sibling dependency
+// (file:../localpkg) was rejected with "escapes its base directory"
+// even though the artifact exists and the project's locked install
+// works in place. The artifact must be transported into the workdir
+// under a rebased spelling and the materialised manifest must name
+// that spelling.
+func TestMaterialiseSiblingLocalDependency(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	sibling := filepath.Join(root, "localpkg")
+	workdir := filepath.Join(root, "work")
+	for _, d := range []string{project, sibling, workdir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "package.json"),
+		[]byte(`{"name":"localpkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := &Deps{
+		Manifest:    `{"name":"proj","version":"1.0.0","dependencies":{"localpkg":"file:../localpkg"}}`,
+		ManifestDir: project,
+	}
+	if _, err := materialiseDeps(workdir, KindNode, d, false, project); err != nil {
+		t.Fatalf("sibling file: dependency must materialise, got %v", err)
+	}
+	m := readJSON(t, filepath.Join(workdir, "package.json"))
+	depsMap, _ := m["dependencies"].(map[string]any)
+	spec, _ := depsMap["localpkg"].(string)
+	if !strings.HasPrefix(spec, "file:./.mcpx-local/") || !strings.HasSuffix(spec, "/localpkg") {
+		t.Fatalf("materialised spec = %q, want a rebased file:./.mcpx-local/.../localpkg", spec)
+	}
+	copied := filepath.Join(workdir, filepath.FromSlash(strings.TrimPrefix(spec, "file:./")), "package.json")
+	if _, err := os.Stat(copied); err != nil {
+		t.Fatalf("sibling artifact not transported to %s: %v", copied, err)
+	}
+}
