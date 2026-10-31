@@ -627,10 +627,10 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // startCallTask runs a tool call in the background and hands back a handle.
-// The task counts against the caller's session (cc.SessionID); a caller
-// with no session lands in the store's unbound bucket.
-func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallContext, args any) (tasks.Task, error) {
-	return s.taskStore().Start(cc.SessionID, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+// The task counts against requestor (the caller session, else its
+// run); an empty requestor lands in the store unbound bucket.
+func (s *Server) startCallTask(ttl int64, server, tool, requestor string, cc config.CallContext, args any) (tasks.Task, error) {
+	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {

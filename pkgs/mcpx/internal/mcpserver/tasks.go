@@ -541,11 +541,13 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: msg}}
 	}
 	// The tasks/* admission window (protoTasks.perMinute), counted per
-	// connection at admission for every tasks/* method, tasks/result
-	// included (triage settlement, task 3733).
-	if !s.tasks().Admit(c.id) {
-		return fail(codeInternal, tasks.ErrRateWindow.Error())
-	}
+	// resolved identity at admission for every tasks/* method,
+	// tasks/result included (triage settlement, task 3733). Keyed by
+	// identity, not connection: one identity naming several sessions
+	// shares one window. The result is enforced after the capability
+	// check below, so a non-declaring client gets its -32021 even when
+	// the window is full — but its call still counts.
+	admitted := s.tasks().Admit(IdentityFrom(ctx).Key)
 	var p struct {
 		TaskID string `json:"taskId"`
 	}
@@ -564,6 +566,9 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		// about which tasks exist. tasks/list and tasks/result are removed
 		// methods and keep their -32601.
 		return missingTasks(req.ID)
+	}
+	if !admitted {
+		return fail(codeInternal, tasks.ErrRateWindow.Error())
 	}
 	if req.Method != "tasks/list" && !s.visible(p.TaskID, c) {
 		// Said exactly as for a task that does not exist. Anything else

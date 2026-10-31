@@ -410,6 +410,9 @@ type Window struct {
 	mu     sync.Mutex
 	limit  int
 	counts map[string]*windowBucket
+	// lastSweep is when expired buckets were last removed; sweeping on
+	// every new key made admission O(N^2) over distinct requestors.
+	lastSweep time.Time
 }
 
 type windowBucket struct {
@@ -430,15 +433,18 @@ func (w *Window) Allow(key string, now time.Time) bool {
 	defer w.mu.Unlock()
 	b, ok := w.counts[key]
 	if !ok || now.Sub(b.start) >= time.Minute {
-		w.counts[key] = &windowBucket{start: now, n: 1}
-		// A bucket is created exactly when a new key arrives, so sweeping
-		// here bounds the map: distinct requestors on a long-lived daemon
-		// cannot accumulate entries past their windows.
-		for k, v := range w.counts {
-			if k != key && now.Sub(v.start) >= time.Minute {
-				delete(w.counts, k)
+		// Sweep at most once per minute so admission stays O(1) per new
+		// key; the sweep still bounds the map: distinct requestors on a
+		// long-lived daemon cannot accumulate entries past their windows.
+		if now.Sub(w.lastSweep) >= time.Minute {
+			for k, v := range w.counts {
+				if now.Sub(v.start) >= time.Minute {
+					delete(w.counts, k)
+				}
 			}
+			w.lastSweep = now
 		}
+		w.counts[key] = &windowBucket{start: now, n: 1}
 		return true
 	}
 	if b.n >= w.limit {
