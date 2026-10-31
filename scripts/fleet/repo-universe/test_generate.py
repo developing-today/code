@@ -106,6 +106,20 @@ class GenerateTest(unittest.TestCase):
                           "--output", str(live_out)])
         self.assertFalse(live_out.exists())
 
+    def test_offline_mode_requires_both_captures(self) -> None:
+        # Omitting a capture without --live must fail, not silently
+        # regenerate with that source emptied (deleting every
+        # GitHub-only repo from the omitted source).
+        proc = subprocess.run(
+            [sys.executable, str(GENERATE),
+             "--org-json", str(self.dir / "org.json"),
+             "--census", str(self.dir / "census.md"),
+             "--output", str(self.out)],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertFalse(self.out.exists())
+
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()
         second = self.run_gen()

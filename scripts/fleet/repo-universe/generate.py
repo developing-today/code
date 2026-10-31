@@ -266,6 +266,14 @@ def main(argv: list[str] | None = None) -> int:
         # build time — the census row was the only sign).
         user_repos = fetch_live("user/repos?per_page=100&affiliation=owner")
     else:
+        # Both captures are required offline: a missing one would
+        # silently regenerate with that source emptied, deleting its
+        # GitHub-only repos from the artifact.
+        missing = [flag for flag, value in
+                   (("--org-json", args.org_json), ("--user-json", args.user_json))
+                   if not value]
+        if missing:
+            ap.error("offline mode requires " + " and ".join(missing) + " (or use --live)")
         org_repos = load_enumeration(args.org_json)
         user_repos = load_enumeration(args.user_json)
 
