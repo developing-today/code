@@ -1046,7 +1046,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         // Verify that web path refuses non-canonical hex encodings (leading plus in key).
-        let bad_plus = format!("/invite?key=+{key}&node={node}&name=Ann");
+        let bad_plus = format!("/invite?key=+a11{}&node={node}&name=Ann", "a11".repeat(20));
         let (status, _, _) = send(
             &app,
             Request::builder().uri(&bad_plus).body(Body::empty()).unwrap(),
