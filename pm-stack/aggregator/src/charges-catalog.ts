@@ -2,7 +2,7 @@ import type { ChargeServiceRef } from "./charges-match.ts";
 import type { QuotaPool, SaasService } from "./model.ts";
 
 // Merchant names, not plan labels: generic plan words are unsafe aliases.
-const PROVIDER_ALIASES: Record<string, string[]> = {
+export const PROVIDER_ALIASES: Record<string, string[]> = {
   Anthropic: ["Claude"],
   OpenAI: ["ChatGPT", "Codex"],
   "Meta Model API": ["Meta", "MetaPay"],
