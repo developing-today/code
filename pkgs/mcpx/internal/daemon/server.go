@@ -1106,8 +1106,19 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	// from /v1/tasks, rather than holding this request open for however long
 	// the tool takes.
 	if req.Task != nil {
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"task": s.startCallTask(req.Task.TTL, req.Server, req.Tool, cc, args)})
+		// The task counts against the caller's session, else its run
+		// (as taskRequestor keys /v1/tasks), else the unbound bucket.
+		requestor := tasks.Caller(cc.SessionID)
+		if cc.SessionID == "" {
+			requestor = tasks.Caller(r.Header.Get("X-Mcpx-Run"))
+		}
+		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args)
+		if terr != nil {
+			// The store's per-requestor cap (protoTasks.maxPerRequestor).
+			writeErr(w, http.StatusTooManyRequests, terr)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"task": task})
 		return
 	}
 

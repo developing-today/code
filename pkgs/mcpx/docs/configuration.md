@@ -388,7 +388,7 @@ skipped launcher phases).
 | `artifacts.maxAge` | duration | `168h` | daemon | no | `--artifacts-max-age` | `MCPX_ARTIFACTS_MAX_AGE` | the absolute ceiling on a renewed artifact's life, however often it is read |
 | `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored |
 | `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold |
-| `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected; also the ceiling for a per-request `ttl` on artifact PUT — a per-request ttl may shorten retention but never extend it, and an over-ceiling ttl is rejected with 400 (raise this setting for longer retention) |
+| `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected |
 
 ### autonomy
 
@@ -689,6 +689,9 @@ skipped launcher phases).
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once |
+| `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped |
+| `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |
 | `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries |
 
 ### recipes

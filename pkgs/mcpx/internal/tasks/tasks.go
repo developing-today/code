@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,6 +51,10 @@ type Task struct {
 	// of this shape. Replaced whole, never mutated, so a snapshot may share
 	// it.
 	InputRequests map[string]any `json:"-"`
+
+	// requestor is the key the task counts against for the store's
+	// per-requestor limits (protoTasks.maxPerRequestor). Never on the wire.
+	requestor Requestor
 
 	result   any
 	fault    *Fault
@@ -92,6 +97,21 @@ type Store struct {
 	// PollInterval is the pollInterval each new task carries. Zero means
 	// the built-in default. Set before the store is shared.
 	PollInterval time.Duration
+
+	// MaxTTL clamps any requested TTL inside Start. Zero means
+	// DefaultMaxTTL. Wired from protoTasks.maxTTL by the seams.
+	MaxTTL time.Duration
+	// MaxPerRequestor caps one requestor's non-terminal tasks. Zero means
+	// DefaultMaxPerRequestor. Wired from protoTasks.maxPerRequestor.
+	MaxPerRequestor int
+	// PerMinute is the tasks/* admission window per requestor. Zero means
+	// DefaultPerMinute; a negative value disables the window. Wired from
+	// protoTasks.perMinute (whose 0 means disabled, translated by the
+	// wiring seam, not here).
+	PerMinute int
+
+	win      *Window
+	winLimit int
 
 	// watchers hear the id of every task whose state changed, after the
 	// change and outside the lock, so a watcher may read the store.
@@ -340,11 +360,187 @@ func (s *Store) ensure() {
 	}
 }
 
-// NewID is the handle a caller holds a task by.
+// NewID is the handle a caller holds a task by: 128 bits of randomness
+// (16 bytes), so an id is unguessable at the scale the per-requestor caps
+// now let the store grow to.
 func NewID() string {
-	var b [8]byte
+	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return "tsk-" + hex.EncodeToString(b[:])
+}
+
+// Requestor is the composite key a task counts against for the store's
+// per-requestor limits: a ROLE and an IDENTITY, as separate fields —
+// never a plain string, and never distinguished by a string prefix.
+//
+// The role field exists because one logical operation can create two
+// store tasks in different capacities: on the daemon's embedded MCP
+// surface a task-supporting call creates the /v1/ask backing (role
+// ask) and the MCP wrapper (role caller), and for a client-named
+// identity both carried the same plain string, so a per-requestor cap
+// of 1 refused — and abandoned — the operation, and the default cap
+// silently halved. Separate roles keep one operation to one slot in
+// each ledger (Codex + CodeRabbit review, PR #2869).
+//
+// The identity field is caller-supplied text (a session id, a run id,
+// an MCP identity key). Because the role is a separate field, no
+// caller-supplied identity can collide with a reserved bucket: a
+// session literally named "unbound" keys as {caller, "unbound"},
+// which is not the unbound bucket {, } (CodeRabbit review, PR #2869).
+type Requestor struct {
+	Role     string
+	Identity string
+}
+
+// The requestor roles. RoleCaller is an ordinary creation site
+// charging its caller; RoleAsk is the ask seam (/v1/ask backings,
+// handleAskBegin) charging in its asking capacity; RoleReport is the
+// reporting-call seam (handleCallReporting) charging in its reporting
+// capacity, separate from the execution wrappers that spawn it.
+const (
+	RoleCaller = "caller"
+	RoleAsk    = "ask"
+	RoleReport = "report"
+)
+
+// Caller names an ordinary requestor: the given caller identity in
+// the caller role. An empty identity is the unbound bucket.
+func Caller(identity string) Requestor {
+	if identity == "" {
+		return UnboundRequestor
+	}
+	return Requestor{Role: RoleCaller, Identity: identity}
+}
+
+// Ask names an ask-seam requestor: the given caller identity in the
+// ask role. An empty identity is the anonymous ask bucket.
+func Ask(identity string) Requestor {
+	return Requestor{Role: RoleAsk, Identity: identity}
+}
+
+// Report names a reporting-call requestor: the given caller identity
+// in the report role. An empty identity is the anonymous report
+// bucket.
+func Report(identity string) Requestor {
+	return Requestor{Role: RoleReport, Identity: identity}
+}
+
+// UnboundRequestor is the bucket a creation site passes when it holds
+// no caller identity. It is capped like any other requestor — "we
+// don't know who asked" must not mean "unlimited".
+var UnboundRequestor = Requestor{}
+
+// AskRequestor is the bucket anonymous ask-seam tasks count against.
+// It is its own bucket, not UnboundRequestor, for the two-ledgers
+// reason recorded on Requestor.
+var AskRequestor = Requestor{Role: RoleAsk}
+
+// ReportRequestor is the bucket anonymous reporting-call tasks count
+// against. It is its own bucket, not UnboundRequestor, for the
+// two-ledgers reason recorded on Requestor: a /v1/exec wrapper task
+// (caller role) stays non-terminal for the whole run while the
+// script's tool calls arrive as reporting tasks under the same
+// session identity, so charging both to one ledger lets the wrapper
+// starve its own calls -- at a per-requestor cap of 1 the first
+// reporting call is refused outright (Codex review, PR #2869).
+var ReportRequestor = Requestor{Role: RoleReport}
+
+// key is the window-counter spelling of the requestor: the two fields
+// joined by a separator neither can be confused across, because the
+// role is one of a fixed set spelled first.
+func (r Requestor) key() string { return r.Role + "\x00" + r.Identity }
+
+// The task-store limit defaults (protoTasks.*). A seam wires the settings
+// over these; the store applies them when its fields are unset.
+const (
+	DefaultMaxTTL          = time.Hour
+	DefaultMaxPerRequestor = 32
+	DefaultPerMinute       = 120
+)
+
+// ErrPerRequestorCap is the named sentinel Start returns when a requestor
+// already holds MaxPerRequestor non-terminal tasks. The seams map it to
+// -32603 (MCP) / 429 (/v1); the wrapped message names the limit.
+var ErrPerRequestorCap = errors.New("tasks: per-requestor task cap reached")
+
+// ErrRateWindow is the named sentinel Admit reports through the seams when
+// a requestor exceeds the tasks/* per-minute window: -32603 / 429, with
+// protoTasks.perMinute named.
+var ErrRateWindow = errors.New("tasks: protoTasks.perMinute admission window exceeded")
+
+// Window is a small fixed-window admission counter, one bucket per key.
+// It exists for the tasks/* seams (internal/tasks is the one package both
+// surfaces share); it is not a general rate-limit framework.
+type Window struct {
+	mu     sync.Mutex
+	limit  int
+	counts map[string]*windowBucket
+	// lastSweep is when expired buckets were last removed; sweeping on
+	// every new key made admission O(N^2) over distinct requestors.
+	lastSweep time.Time
+}
+
+type windowBucket struct {
+	start time.Time
+	n     int
+}
+
+// NewWindow returns a Window admitting at most limit calls per key per
+// minute.
+func NewWindow(limit int) *Window {
+	return &Window{limit: limit, counts: map[string]*windowBucket{}}
+}
+
+// Allow reports whether one more call for key is admitted in the current
+// fixed minute window, and records it when it is.
+func (w *Window) Allow(key string, now time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	b, ok := w.counts[key]
+	if !ok || now.Sub(b.start) >= time.Minute {
+		// Sweep at most once per minute so admission stays O(1) per new
+		// key; the sweep still bounds the map: distinct requestors on a
+		// long-lived daemon cannot accumulate entries past their windows.
+		if now.Sub(w.lastSweep) >= time.Minute {
+			for k, v := range w.counts {
+				if now.Sub(v.start) >= time.Minute {
+					delete(w.counts, k)
+				}
+			}
+			w.lastSweep = now
+		}
+		w.counts[key] = &windowBucket{start: now, n: 1}
+		return true
+	}
+	if b.n >= w.limit {
+		return false
+	}
+	b.n++
+	return true
+}
+
+// Admit counts one tasks/* call for requestor against the store's
+// per-minute window (PerMinute). Every tasks/* method counts, tasks/result
+// included: a long poll is admitted once and held server-side, so counting
+// at admission bounds the call rate without punishing the wait — and an
+// exemption would leave one method permanently unwindowed (triage
+// settlement, task 3733).
+func (s *Store) Admit(requestor Requestor) bool {
+	limit := s.PerMinute
+	if limit == 0 {
+		limit = DefaultPerMinute
+	}
+	if limit < 0 {
+		return true // window disabled (protoTasks.perMinute = 0)
+	}
+	s.mu.Lock()
+	if s.win == nil || s.winLimit != limit {
+		s.win = NewWindow(limit)
+		s.winLimit = limit
+	}
+	win := s.win
+	s.mu.Unlock()
+	return win.Allow(requestor.key(), time.Now())
 }
 
 // DefaultTTL is the retention a caller gets when it does not ask for one, in
@@ -382,22 +578,74 @@ func (s *Store) armRetentionLocked(t *Task) {
 	s.armExpiryLocked(t, time.Duration(t.TTL)*time.Millisecond)
 }
 
-// Start runs fn in the background and returns its handle at once. The
-// ttl is retention, not a deadline: it is measured from when the task
+// Start runs fn in the background and returns its handle at once.
+//
+// The requestor key is who the task counts against: Start clamps the
+// requested TTL to the store's MaxTTL and refuses with ErrPerRequestorCap
+// when the requestor already holds MaxPerRequestor non-terminal tasks. The
+// empty key is the UnboundRequestor bucket, capped like any other.
+//
+// The ttl is retention, not a deadline: it is measured from when the task
 // reaches a terminal state (see Task.TTL), so work that outlives its
 // ttl still runs to completion. A caller that needs the work itself
 // bounded uses StartWithDeadline.
-func (s *Store) Start(ttl int64, fn func(ctx context.Context) (any, *Fault)) Task {
-	return s.StartWithDeadline(ttl, 0, fn)
+func (s *Store) Start(requestor Requestor, ttl int64, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
+	return s.StartWithDeadline(requestor, ttl, 0, fn)
 }
 
 // StartWithDeadline is Start with an explicit bound on the work itself:
 // a task still not terminal deadline after it starts is cancelled, as
 // if Cancel had been called, and its retention clock starts from that
-// cancellation. A zero deadline leaves the work unbounded.
-func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) Task {
+// cancellation. A zero deadline leaves the work unbounded. The
+// requestor key, TTL clamp and per-requestor cap are Start's, above.
+//
+// A deadline task's retention is floored at two poll intervals, under
+// the clamp: both deadline seams in the tree are internal tasks whose
+// result a wrapper collects by polling at the interval the task itself
+// advertises (the daemon-backed ask path: driveAsked polls, sleeping a
+// full TaskPoll between looks while a question is open). A clamped TTL
+// below one poll cycle -- protoTasks.maxTTL=100ms against a 1s poll --
+// would delete a finished backing result before the wrapper's next
+// look, and its poll would meet a 404 and record a successful call as
+// failed (Codex on #2869, round 6). The floor is on the returned task's
+// TTL, so what a client is told is what the store does.
+func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.Duration, fn func(ctx context.Context) (any, *Fault)) (Task, error) {
 	if ttl <= 0 {
 		ttl = DefaultTTL()
+	}
+	maxTTL := s.MaxTTL
+	if maxTTL <= 0 {
+		maxTTL = DefaultMaxTTL
+	}
+	if ttl > maxTTL.Milliseconds() {
+		ttl = maxTTL.Milliseconds()
+	}
+	if deadline > 0 {
+		poll := s.PollInterval
+		if poll <= 0 {
+			poll = defaults.TaskPollInterval
+		}
+		if floor := (2 * poll).Milliseconds(); ttl < floor {
+			ttl = floor
+		}
+	}
+	capN := s.MaxPerRequestor
+	if capN <= 0 {
+		capN = DefaultMaxPerRequestor
+	}
+	s.mu.Lock()
+	s.ensure()
+	live := 0
+	for _, ot := range s.tasks {
+		if ot.requestor == requestor && !Terminal(ot.Status) {
+			live++
+		}
+	}
+	if live >= capN {
+		// Counted and inserted under the one lock: concurrent bursts for
+		// the same requestor cannot each observe the same free slot.
+		s.mu.Unlock()
+		return Task{}, fmt.Errorf("%w: protoTasks.maxPerRequestor allows %d non-terminal tasks per requestor", ErrPerRequestorCap, capN)
 	}
 	now := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -409,11 +657,10 @@ func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx
 		TaskID: NewID(), Status: Working,
 		CreatedAt: now, LastUpdatedAt: now,
 		TTL: ttl, PollInterval: poll.Milliseconds(),
-		cancel: cancel, done: make(chan struct{}),
+		requestor: requestor,
+		cancel:    cancel, done: make(chan struct{}),
 	}
 	ctx = context.WithValue(ctx, idKey{}, t.TaskID)
-	s.mu.Lock()
-	s.ensure()
 	s.tasks[t.TaskID] = t
 	s.saveTaskLocked(t)
 	s.mu.Unlock()
@@ -439,7 +686,7 @@ func (s *Store) StartWithDeadline(ttl int64, deadline time.Duration, fn func(ctx
 	// while the goroutine above is writing the original.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return *t
+	return *t, nil
 }
 
 // finish records what a task's body produced, and reports whether that
