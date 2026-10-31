@@ -34,6 +34,8 @@ var implementedEffectProbes = map[string]string{
 	"pool.scope":                 "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"output.json":                "TestOutputJSONIsReachableFromTheEnvironment",
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
+	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
+	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",

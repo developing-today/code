@@ -85,6 +85,17 @@ type Options struct {
 	Export string
 	// Permissions is the sandbox setting; empty means wide open.
 	Permissions string
+	// Interpreter is the script.interpreter setting: a command line that
+	// runs the script instead of a JavaScript runtime, when the script
+	// does not name its own interpreter with a shebang. See dispatch.go
+	// for the full order.
+	Interpreter string
+	// CwdPolicy is the script.cwd setting: caller, script, config or
+	// workdir. Empty means caller.
+	CwdPolicy string
+	// ConfigDir is the directory holding the configuration in force,
+	// for CwdPolicy "config". Empty makes that policy an explicit error.
+	ConfigDir string
 	// GlobalsSource is the ambient declaration file written beside the client.
 	GlobalsSource string
 	// CaptureConsole mirrors console output into the record stream.
@@ -157,6 +168,10 @@ type Result struct {
 	Script   string
 	Client   string
 	TimedOut bool
+	// Notice is set on a dispatched (non-JavaScript) run: the one
+	// statement of what the run does not have (a generated client,
+	// enforced permission profiles). See dispatch.go.
+	Notice string
 	// Stdout is captured only when Options.Stdout is nil.
 	Stdout string
 }
@@ -180,9 +195,39 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
 		return nil, errors.New("runner: need Source or File")
 	}
+	// Dispatch ranks 1-2 (#2167): a shebang or a configured interpreter
+	// runs the script under that interpreter, before any JavaScript
+	// runtime is considered. Rank 3 (language/extension) is reserved
+	// for #1917; rank 4 is everything below, unchanged.
+	var jsEnv jsChoice
+	if d, js, derr := decideDispatch(opts); derr != nil {
+		return nil, derr
+	} else if d != nil {
+		return runDispatched(ctx, opts, d)
+	} else if js.runtime != "" {
+		// A JavaScript shebang chose this runtime (rank 1); the harness
+		// below runs under it instead of the configured preference.
+		// The env(1) wrapper's environment changes ride along, so the
+		// harness path honours what the raw path preserves.
+		opts.Runtime = js.runtime
+		jsEnv = js
+	}
 	rt, err := Resolve(opts.Runtime, opts.Permissions, opts.Setup)
 	if err != nil {
-		return nil, err
+		// A JavaScript shebang's runtime is looked up against the PATH
+		// the shebang establishes, below, once the run's directory is
+		// known. Rejecting here searched mcpx's inherited PATH instead,
+		// so `#!/usr/bin/env -S PATH=/project/node/bin node` failed
+		// before the shebang's own PATH was ever consulted (#2611
+		// review). The later block fills in Bin, and reports a runtime
+		// that is missing from both.
+		if jsEnv.runtime == "" {
+			return nil, err
+		}
+		rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	workDir := opts.WorkDir
@@ -283,6 +328,38 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	// The execution directory is resolved here, once, because three
+	// consumers must agree on it: import preflight (a --config=./deno.json
+	// argument means the directory the run executes in, not the caller's),
+	// a JavaScript shebang's runtime lookup (relative PATH entries mean
+	// the directory the run moves to), and the subprocess itself. It was
+	// previously computed only for the subprocess, after preflight had
+	// already run against opts.Dir (Codex review, PR #2611).
+	execDir, derr := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
+	if derr != nil {
+		return nil, derr
+	}
+	execDir = applyChdir(execDir, jsEnv.chdir)
+
+	// A JavaScript shebang's runtime is resolved against the PATH the
+	// shebang itself establishes and the run's effective directory,
+	// the way env(1) resolves it: Resolve above used mcpx's inherited
+	// PATH, so #!/usr/bin/env -S PATH=/opt/project/node/bin node picked
+	// the wrong Node -- or none, when Node lived only there. Declared
+	// runtimes keep their configured binary; a path in the shebang is
+	// already verbatim.
+	if jsEnv.runtime != "" && !strings.Contains(jsEnv.runtime, "/") {
+		_, declared := opts.Setup.Runtimes[jsEnv.runtime]
+		_, declaredBase := opts.Setup.Runtimes[filepath.Base(jsEnv.runtime)]
+		if !declared && !declaredBase {
+			abs, lerr := lookPathInDir(jsEnv.runtime, jsEnv.path, execDir)
+			if lerr != nil {
+				return nil, fmt.Errorf("runner: shebang runtime %q not found on the shebang's PATH %q: %w", jsEnv.runtime, jsEnv.path, lerr)
+			}
+			rt.Bin = abs
+		}
+	}
+
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
 	// also means a broken import is found before a single server starts.
@@ -339,7 +416,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				rt.ConfigArgs, opts.Dir)
+				rt.ConfigArgs, execDir)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
@@ -361,14 +438,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	args := append(rt.Args(scriptPath), opts.Args...)
 
 	cmd := exec.Command(rt.Bin, args...)
-	// Inherit the caller's working directory rather than the script's. A
-	// relative path in a script should mean what it means on the command line;
-	// the client import still resolves against the script file, because ESM
-	// resolves relative specifiers against the importing module.
-	cmd.Dir = opts.Dir
+	// The script.cwd policy decides the working directory. The default,
+	// caller, inherits the caller's directory rather than the script's:
+	// a relative path in a script should mean what it means on the
+	// command line; the client import still resolves against the script
+	// file, because ESM resolves relative specifiers against the
+	// importing module.
+	cmd.Dir = execDir
 	// The kind, not the configured name: a script branching on its runtime
 	// cares whether it is under Deno, not what somebody called the binary.
-	cmd.Env = append(os.Environ(), "MCPX_RUNTIME="+rt.Kind)
+	// A JavaScript shebang's env(1) changes apply here too, and names the
+	// run owns are never inherited (a stale outer value would shadow the
+	// contract: first duplicate wins).
+	cmd.Env = append(childBaseEnv(jsEnv.set, jsEnv.unset, jsEnv.clear), "MCPX_RUNTIME="+rt.Kind)
 	// Resolved here rather than by the caller: only the runner knows the final
 	// location of the entry script and the client it wrote beside it.
 	cmd.Env = append(cmd.Env, "MCPX_ENTRY="+scriptPath, "MCPX_CLIENT="+clientPath)

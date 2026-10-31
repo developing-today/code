@@ -356,6 +356,21 @@ field. This is deliberately not a setting: it is how `mcpx init` wrote
 `"mode": "session"` into every new config for months without anyone noticing,
 and a switch to turn the report off would have kept it quiet.
 
+A script whose first line names its interpreter (`#!`) runs under that
+interpreter, ahead of every setting below: a `-S`/`--split-string`
+payload is re-split with shell quoting rules (so `-S sh -c "printf
+hello"` keeps `printf hello` one argument; an unterminated quote fails
+the run), `VAR=value` assignments reach the child even when the value
+contains `/`, `env -u`/`env -i` apply (the child starts from the parent's
+environment minus what they remove, or from an empty one), and
+`env -C`/`env --chdir` moves the run, beating `script.cwd` the way the
+interpreter choice beats `script.runtime`. An env option mcpx does not
+implement fails the run rather than being dropped. A dispatched run
+never inherits `MCPX_CLIENT`, `MCPX_RUNTIME`, `MCPX_ENTRY` or
+`MCPX_DISPATCH` from an outer run, and its notice names anything else it
+goes without (no generated client, no enforced permission profiles,
+skipped launcher phases).
+
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
 ### artifacts
@@ -711,9 +726,11 @@ and a switch to turn the report off would have kept it quiet.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
+| `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
 | `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
+| `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
 | `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing |

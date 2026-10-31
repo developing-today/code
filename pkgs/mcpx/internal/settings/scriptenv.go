@@ -273,8 +273,15 @@ func ScriptEnv() []EnvVar {
 		{
 			Name:    "MCPX_RUNTIME",
 			SetBy:   []Setter{SetByRunner},
-			Meaning: "deno, bun or node",
-			ReadBy:  client,
+			Meaning: "deno, bun or node; on a dispatched run, the interpreter's name (sh, python3)",
+			ReadBy:  client + "; on a dispatched run, the script itself",
+		},
+		{
+			Name:    "MCPX_DISPATCH",
+			SetBy:   []Setter{SetByRunner},
+			When:    "only on a dispatched (non-JavaScript) run",
+			Meaning: "how the interpreter was chosen: shebang or interpreter (script.interpreter)",
+			ReadBy:  "the script itself, and anyone reading its environment",
 		},
 		{
 			Name:    "MCPX_ALLOW_READ",

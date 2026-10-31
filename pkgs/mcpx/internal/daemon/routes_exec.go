@@ -59,6 +59,11 @@ func (s *Server) execSettings() *settings.Set {
 		}
 		set := settings.NewSet(sch)
 		if s.cfg != nil && s.cfg.Path != "" {
+			// The path the settings were read from, kept with them:
+			// script.cwd=config has to resolve against the directory
+			// of the file this policy came from, not of whichever file
+			// a later reload moved s.cfg to (#2611 review).
+			s.execSetPath = s.cfg.Path
 			if b, rerr := os.ReadFile(s.cfg.Path); rerr == nil {
 				var doc map[string]any
 				if json.Unmarshal(config.StripJSONC(b), &doc) == nil {
@@ -173,6 +178,8 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Timeout = set.Duration("exec.timeout")
 	lim.Runtime = set.String("script.runtime")
 	lim.Permissions = set.String("script.permissions")
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	// A malformed definition is reported by the run that needs it, rather
 	// than failing every other route that builds a service.
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),
@@ -187,12 +194,26 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
 	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 
+	// script.cwd=config resolves against the directory holding the
+	// configuration the exec policy was built from -- the file
+	// execSettings read, not whichever file a reload has since moved
+	// s.cfg to. Without it every /v1/exec run under that policy fails in
+	// ResolveCwd before the script starts; with s.cfg it could point at
+	// the wrong directory after a reload (#2611 review).
+	configDir := ""
+	if s.execSetPath != "" {
+		configDir = filepath.Dir(s.execSetPath)
+	} else if cfg := s.currentConfig(); cfg != nil && cfg.Path != "" {
+		configDir = filepath.Dir(cfg.Path)
+	}
+
 	svc := &execsvc.Service{
-		Calls:    s.callRegistry(),
-		Src:      registrySource{reg: s.reg, endpoint: s.endpoint},
-		Store:    store,
-		Endpoint: s.endpoint,
-		Socket:   s.paths.Socket,
+		Src:       registrySource{reg: s.reg, endpoint: s.endpoint},
+		Store:     store,
+		Endpoint:  s.endpoint,
+		Socket:    s.paths.Socket,
+		ConfigDir: configDir,
+		Calls:     s.callRegistry(),
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
@@ -517,6 +538,11 @@ type artifactState struct {
 	artifactsErr  error
 	execSetOnce   sync.Once
 	execSet       *settings.Set
+	// execSetPath is the configuration file execSettings built execSet
+	// from. script.cwd=config resolves against its directory, so a
+	// reload that moves s.cfg cannot redirect a policy already in force
+	// (#2611 review).
+	execSetPath string
 }
 
 // InlineArtifact renders one artifact as an MCP resource body.
