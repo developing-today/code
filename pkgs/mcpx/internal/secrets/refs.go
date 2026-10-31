@@ -168,6 +168,13 @@ func (l *lexer) valueEnd() bool {
 		if t.text == ")" {
 			return !isControlConditionParen(l.toks)
 		}
+		if t.text == "!" {
+			// A postfix non-null assertion (n! / 2) ends a value, so
+			// the slash divides; a prefix negation (!/re/.test(s))
+			// does not, so the slash opens a regex. Which one this
+			// "!" is depends on the token before it.
+			return len(l.toks) >= 2 && endsValue(l.toks[len(l.toks)-2])
+		}
 		return t.text == "]" || t.text == "}" ||
 			t.text == "++" || t.text == "--"
 	}
@@ -375,11 +382,19 @@ func (l *lexer) blockEnd(i int) int {
 // use of one of them is a local, whatever namespace it shares a name with.
 func declaredNames(toks []lexToken) map[string]bool {
 	out := map[string]bool{}
+	typeOnly := typeAliasMask(toks)
 	for i, t := range toks {
+		if typeOnly[i] {
+			// A type alias is erased at runtime: nothing inside it
+			// binds a name, including a function type's parameters.
+			continue
+		}
 		if t.kind == tPunct && t.text == "(" {
 			// An arrow function's parameter list: (...) => ...
 			if close := matchParen(toks, i); close >= 0 && close+1 < len(toks) && toks[close+1].text == "=>" {
-				parseParams(toks, i, out)
+				if !isAnnotationTypeParen(toks, i) {
+					parseParams(toks, i, out)
+				}
 			}
 			continue
 		}
@@ -409,7 +424,7 @@ func declaredNames(toks []lexToken) map[string]bool {
 			if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].text == ":" {
 				continue
 			}
-			parseDeclarators(toks, i+1, out)
+			parseDeclarators(toks, i+1, out, inForHead(toks, i))
 		case "function":
 			j := i + 1
 			if j < len(toks) && toks[j].text == "*" {
@@ -631,15 +646,165 @@ func skipAnnotation(toks []lexToken, i int) int {
 	return i
 }
 
+// inForHead reports whether the declaration keyword at decl opens a
+// for statement's head: the unmatched "(" before it belongs to a
+// "for". In a for head, "in"/"of" at the head's own level separates
+// the bindings from the iterated expression — it never continues an
+// initialiser — so declarator collection must stop there:
+// for (const x in {}, demo.echo()) binds x alone, and the comma in
+// the right-hand expression is not a declaration separator.
+func inForHead(toks []lexToken, decl int) bool {
+	depth := 0
+	for j := decl - 1; j >= 0; j-- {
+		t := toks[j]
+		if t.kind != tPunct {
+			continue
+		}
+		switch t.text {
+		case ")":
+			depth++
+		case "(":
+			if depth == 0 {
+				return j > 0 && toks[j-1].kind == tIdent && toks[j-1].text == "for" &&
+					(j < 2 || toks[j-2].text != ".")
+			}
+			depth--
+		case "{", "}":
+			return false
+		}
+	}
+	return false
+}
+
+// isAnnotationTypeParen reports whether the parenthesised list at i,
+// followed by "=>", is a function TYPE in an annotation rather than a
+// runtime arrow: a variable annotation (let g: (demo: string) =>
+// string) or a return annotation (function f(): (demo) => string).
+// An object-literal value ({ f: (demo) => ... }) is a runtime arrow:
+// its colon is preceded by "{" or ",", never by a declaration keyword
+// or a parameter list's ")".
+func isAnnotationTypeParen(toks []lexToken, i int) bool {
+	if i < 2 || toks[i-1].text != ":" {
+		return false
+	}
+	prev := toks[i-2]
+	if prev.kind == tPunct && prev.text == ")" {
+		return true
+	}
+	if prev.kind == tIdent && i >= 3 && toks[i-3].kind == tIdent {
+		switch toks[i-3].text {
+		case "const", "let", "var":
+			return true
+		}
+	}
+	return false
+}
+
+// skipAngles returns the index just past a generic angle-bracket list
+// opening at i, or -1 when the brackets do not balance.
+func skipAngles(toks []lexToken, i int) int {
+	angle := 0
+	for j := i; j < len(toks); j++ {
+		t := toks[j]
+		if t.kind != tPunct {
+			continue
+		}
+		switch t.text {
+		case "<":
+			angle++
+		case ">":
+			angle--
+		case ">>":
+			angle -= 2
+		case ">>>":
+			angle -= 3
+		}
+		if angle < 0 {
+			return -1
+		}
+		if angle == 0 {
+			return j + 1
+		}
+	}
+	return -1
+}
+
+// typeAliasMask marks the tokens of every type alias declaration
+// (type Name<...> = ... ;) — a region that is erased at runtime and
+// therefore binds nothing, function-type parameters included. The
+// region ends at its ";" at the alias's own level, at an enclosing
+// block's "}", or at an ASI boundary, so a following statement is
+// never swallowed.
+func typeAliasMask(toks []lexToken) []bool {
+	mask := make([]bool, len(toks))
+	for i := 0; i+2 < len(toks); i++ {
+		if mask[i] || toks[i].kind != tIdent || toks[i].text != "type" {
+			continue
+		}
+		if i > 0 {
+			p := toks[i-1]
+			if !(p.kind == tPunct && (p.text == ";" || p.text == "{" || p.text == "}")) {
+				continue
+			}
+		}
+		if toks[i+1].kind != tIdent {
+			continue
+		}
+		j := i + 2
+		if j < len(toks) && toks[j].text == "<" {
+			if e := skipAngles(toks, j); e >= 0 {
+				j = e
+			}
+		}
+		if j >= len(toks) || toks[j].text != "=" {
+			continue
+		}
+		depth := 0
+		end := len(toks)
+		for k := i; k < len(toks); k++ {
+			t := toks[k]
+			if k > i && depth == 0 && t.kind == tPunct && t.text == "}" {
+				end = k
+				break
+			}
+			if k > i && depth == 0 && t.nl && endsValue(toks[k-1]) && startsStatement(t) {
+				end = k
+				break
+			}
+			if t.kind != tPunct {
+				continue
+			}
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				depth--
+			case ";":
+				if depth == 0 {
+					end = k + 1
+					k = len(toks)
+				}
+			}
+		}
+		for k := i; k < end && k < len(toks); k++ {
+			mask[k] = true
+		}
+		if end > i {
+			i = end - 1
+		}
+	}
+	return mask
+}
+
 // parseDeclarators records the bindings of a const/let/var statement
 // whose first declarator starts at i.
-func parseDeclarators(toks []lexToken, i int, out map[string]bool) {
+func parseDeclarators(toks []lexToken, i int, out map[string]bool, forHead bool) {
 	for i < len(toks) {
 		i = parseTarget(toks, i, out)
 		if i < len(toks) && toks[i].kind == tPunct && toks[i].text == ":" {
 			i = skipAnnotation(toks, i+1)
 		}
-		i = skipDeclarator(toks, i)
+		i = skipDeclarator(toks, i, forHead)
 		if i < len(toks) && toks[i].text == "," {
 			i++
 			continue
@@ -690,11 +855,15 @@ func skipTypeArgs(toks []lexToken, i int) int {
 	return -1
 }
 
-func skipDeclarator(toks []lexToken, i int) int {
+func skipDeclarator(toks []lexToken, i int, forHead bool) int {
 	depth := 0
 	for i < len(toks) {
 		t := toks[i]
 		if depth == 0 && t.nl && i > 0 && endsValue(toks[i-1]) && startsStatement(t) {
+			return i
+		}
+		if forHead && depth == 0 && t.kind == tIdent && (t.text == "in" || t.text == "of") &&
+			!(i > 0 && toks[i-1].text == ".") {
 			return i
 		}
 		if t.kind != tPunct {

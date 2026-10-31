@@ -133,6 +133,16 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"a declaration in a string declares nothing", "const s = \"let demo\"; demo.echo();", only("demo"), []string{"demo"}},
 		{"a declaration in template text declares nothing", "const s = `const demo`; demo.echo();", only("demo"), []string{"demo"}},
 		{"a parameter shape in a comment declares nothing", "// function f(demo) {}\ndemo.echo();", only("demo"), []string{"demo"}},
+
+		// Codex round 4 on PR #3042 (head 0aa195e73): three more shapes.
+		{"a function-type parameter in a type alias is not a runtime binding", "type F = (demo: string) => string; demo.echo();", only("demo"), []string{"demo"}},
+		{"a function-type annotation on a variable is not a runtime binding", "let g: (demo: string) => string; demo.echo();", only("demo"), []string{"demo"}},
+		{"a runtime arrow after a type alias still binds", "type F = (x: string) => string; const f = (demo) => demo.echo();", only("demo"), nil},
+		{"division after a non-null assertion is not a regex", "let n: number | undefined = 2; n! / 2; tools.fs.read();", none, []string{"fs"}},
+		{"a regex after a prefix negation is not code", "const ok = !/demo.echo/.test(s);", only("demo"), nil},
+		{"a for-in right-hand call is not a declaration", "for (const x in {}, demo.echo()) {}", only("demo"), []string{"demo"}},
+		{"a for-in binding is still declared", "for (const demo in obj) { demo.echo(); }", only("demo"), nil},
+		{"a for-of binding is still declared", "for (const demo of items) { demo.echo(); }", only("demo"), nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
