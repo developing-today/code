@@ -717,9 +717,7 @@ fn print_peek_lines(
         writeln!(
             out,
             "hash: {}  lines: {}  files: {}",
-            hash_short,
-            total_lines,
-            total_files
+            hash_short, total_lines, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
@@ -783,9 +781,7 @@ fn print_peek_chars(
         writeln!(
             out,
             "hash: {}  chars: {}  files: {}",
-            hash_short,
-            total_chars,
-            total_files
+            hash_short, total_chars, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
@@ -845,9 +841,7 @@ fn print_peek_words(
         writeln!(
             out,
             "hash: {}  words: {}  files: {}",
-            hash_short,
-            total_words,
-            total_files
+            hash_short, total_words, total_files
         )?;
         writeln!(out, "───────────────────────────────────────")?;
     }
