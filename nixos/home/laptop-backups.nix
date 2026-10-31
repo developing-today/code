@@ -56,6 +56,19 @@
 #   Jan/Apr/Jul/Oct): restore drill for the cold-store backups.
 #   Script: ~/tools/cold-store-drill.sh (code#1723).
 #
+# - laptop-backups-watchdog (a few times daily): the freshness check
+#   from code#1841 (design dezren39/nix#1024 phase 3, implementation
+#   ported from dezren39/nix#1026) — read-only, attempts no repair.
+#   It names a stopped backup: pm-dashboard-backup's durable run
+#   record (.last-run.json, written on every exit path by its script)
+#   must be complete and fresher than services.laptop-backups.
+#   watchdog.maxAgeHours, and both backup timers must have triggered
+#   within the same threshold; any violation exits non-zero naming
+#   the job/timer. repo-archive-backup is covered via its timer's
+#   last-trigger time ONLY: its script (~/tools/repo-archive-
+#   backup.sh) and its restic credentials live outside this repo, so
+#   no run record is required of it.
+#
 # Pruning discipline: each job prunes only the dated directories it
 # created itself. The sandbox's backup job writes into its own tree under
 # ~/backups on this host; nothing here rotates files it did not create.
@@ -76,6 +89,9 @@ let
   );
   atlasPkg = pkgs.writeShellScriptBin "atlas-backup" (
     builtins.readFile ./atlas-backup.sh
+  );
+  watchdogPkg = pkgs.writeShellScriptBin "laptop-backups-watchdog" (
+    builtins.readFile ./laptop-backups-watchdog.sh
   );
   servicePath = lib.makeBinPath [
     pkgs.coreutils
@@ -206,6 +222,24 @@ in
         description = "Path of the cold-store drill wrapper script to run.";
       };
     };
+
+    watchdog = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Freshness watchdog for the laptop backups (code#1841): names a stopped or failing backup.";
+      };
+      maxAgeHours = lib.mkOption {
+        type = lib.types.int;
+        default = 26;
+        description = "Maximum age (hours) of pm-dashboard-backup's last complete run record and of both backup timers' last triggers before the watchdog fails naming the job.";
+      };
+      onCalendar = lib.mkOption {
+        type = lib.types.str;
+        default = "*-*-* 06,12,18:30:00";
+        description = "Times of day the watchdog runs (systemd calendar).";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -277,6 +311,16 @@ in
             Type = "oneshot";
             ExecStart = cfg.coldStoreDrill.script;
             TimeoutStartSec = "15m";
+          };
+        };
+      })
+      (lib.mkIf cfg.watchdog.enable {
+        laptop-backups-watchdog = {
+          Unit.Description = "Freshness watchdog for the laptop backups - names a stopped backup (code#1841)";
+          Service = {
+            Type = "oneshot";
+            ExecStart = "${watchdogPkg}/bin/laptop-backups-watchdog ${toString cfg.watchdog.maxAgeHours}";
+            Environment = "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin";
           };
         };
       })
@@ -356,6 +400,17 @@ in
             OnCalendar = cfg.coldStoreDrill.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+      })
+      (lib.mkIf cfg.watchdog.enable {
+        laptop-backups-watchdog = {
+          Unit.Description = "Run the laptop-backups freshness watchdog a few times daily (code#1841)";
+          Timer = {
+            OnCalendar = cfg.watchdog.onCalendar;
+            Persistent = true;
+            RandomizedDelaySec = "10m";
           };
           Install.WantedBy = [ "timers.target" ];
         };
