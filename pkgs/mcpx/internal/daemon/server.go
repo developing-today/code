@@ -904,7 +904,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		cfgPath = cfg.Path
 	}
 	writeJSON(w, 200, map[string]any{
-		"version":  s.version,
+		"version": s.version,
+		// #1877: this daemon's instance identity, so an `mcpx serve`
+		// shim backed by this daemon can report the DAEMON's identity
+		// (not the shim process's) to its host.
+		"instance": pool.OwnInstanceID,
 		"pid":      os.Getpid(),
 		"uptime":   time.Since(s.started).Truncate(time.Second).String(),
 		"endpoint": s.endpoint,
