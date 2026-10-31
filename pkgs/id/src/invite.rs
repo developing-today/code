@@ -89,9 +89,18 @@ impl Invite {
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (field, value) = pair.split_once('=').context("a query pair needs =")?;
             match field {
-                "key" => key = Some(value),
-                "node" => node = Some(value),
-                "name" => name = Some(decode(value)?),
+                "key" => {
+                    ensure!(key.is_none(), "duplicate key field in invite query");
+                    key = Some(value);
+                }
+                "node" => {
+                    ensure!(node.is_none(), "duplicate node field in invite query");
+                    node = Some(value);
+                }
+                "name" => {
+                    ensure!(name.is_none(), "duplicate name field in invite query");
+                    name = Some(decode(value)?);
+                }
                 _ => {}
             }
         }
@@ -215,5 +224,48 @@ mod tests {
     fn an_empty_name_is_refused() {
         assert!(Invite::new(KEY, NODE, "   ").is_err());
         assert!(Invite::new(KEY, NODE, &"x".repeat(65)).is_err());
+    }
+
+    #[test]
+    fn duplicate_fields_are_refused() {
+        let other_key = "11".repeat(32);
+        let other_node = "33".repeat(32);
+
+        // Duplicate key (both valid, invalid first, invalid last)
+        let err = Invite::from_query(&format!("key={KEY}&key={other_key}&node={NODE}&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("key"), "{err:#}");
+        let err = Invite::from_query(&format!("key=invalid&key={KEY}&node={NODE}&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("key"), "{err:#}");
+        let err = Invite::from_query(&format!("key={KEY}&key=invalid&node={NODE}&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("key"), "{err:#}");
+
+        // Duplicate node (both valid, invalid first, invalid last)
+        let err = Invite::from_query(&format!("key={KEY}&node={NODE}&node={other_node}&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("node"), "{err:#}");
+        let err = Invite::from_query(&format!("key={KEY}&node=invalid&node={NODE}&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("node"), "{err:#}");
+        let err = Invite::from_query(&format!("key={KEY}&node={NODE}&node=invalid&name=Ann"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("node"), "{err:#}");
+
+        // Duplicate name
+        let err = Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=Eve"))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("name"), "{err:#}");
+        // Invalid escapes are refused whether they occur first or last
+        assert!(Invite::from_query(&format!("key={KEY}&node={NODE}&name=%zz&name=Eve")).is_err());
+        assert!(Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=%zz")).is_err());
+
+        // Unknown fields keep current handling (ignored, even when repeated)
+        let invite = Invite::from_query(&format!(
+            "key={KEY}&node={NODE}&name=Ann&extra=1&extra=2&other=test"
+        ))
+        .unwrap();
+        assert_eq!(invite.name, "Ann");
     }
 }
