@@ -169,6 +169,10 @@ export function isNotChargeSubject(subject: string): boolean {
 export function amountFromBody(text: string): string | undefined {
   const paid =
     /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit
+    // payment confirmation too — it must win over a trailing due line
+    // (#3120, Codex P2 on PR #3193).
+    /\b(?:charged|paid)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
     /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
   if (paid !== undefined) return paid;
   // #3120: due language is not payment evidence. An invoice body whose

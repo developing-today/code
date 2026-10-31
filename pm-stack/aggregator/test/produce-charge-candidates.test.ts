@@ -66,6 +66,10 @@ describe("amountFromBody (#3120)", () => {
     expect(amountFromBody("Amount paid $21.60\nAmount due $0.00")).toBe("21.60");
   });
 
+  test("charged wording beats a trailing balance-due line (Codex P2 on PR #3193)", () => {
+    expect(amountFromBody("Receipt\nYou were charged $20.00 for OpenAI\nBalance due $0.00")).toBe("20.00");
+  });
+
   test("a genuine receipt body still yields its amount", () => {
     expect(amountFromBody("Receipt\nYou were charged $20.00 for OpenAI")).toBe("20.00");
   });
