@@ -616,6 +616,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	// The file write and the reload are one transaction: two live
+	// changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success
+	// (#2674). The adapters handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	scope := config.WriteScope(req.Scope)
 	if scope == "" {
 		scope = config.ScopeProject
@@ -641,6 +647,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServersRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The defining-file lookup, the file write and the reload are one
+	// transaction under reloadMu, like the add handler (#2674): a
+	// concurrent add must not resurrect what this removes, and a
+	// concurrent remove must not be overwritten by this reload.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	path := ""
 	if scope := config.WriteScope(r.URL.Query().Get("scope")); scope != "" {
 		p, err := config.ResolveWritePath(scope, s.configPathFor(scope))
