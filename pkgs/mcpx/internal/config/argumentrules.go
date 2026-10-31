@@ -1231,7 +1231,7 @@ func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]
 		}
 		inst[name] = pinVals[name]
 	}
-	inlined, ok := inlineLocalRefs(schema, root, resolving)
+	inlined, ok := inlineLocalRefs(schema, root, resolving, dialectIgnoresRefSiblings(root))
 	if !ok {
 		return false, false
 	}
@@ -1421,12 +1421,33 @@ func collectConditionNames(v any, root map[string]any, resolving map[string]bool
 	return true
 }
 
+// dialectIgnoresRefSiblings reports whether the document's
+// declared dialect predates 2019-09: in draft-07 and earlier a
+// $ref replaces its containing schema outright and its siblings
+// are ignored, where 2019-09 and later evaluate the siblings
+// alongside the reference. No $schema (or an unrecognized one)
+// takes the modern reading.
+func dialectIgnoresRefSiblings(root map[string]any) bool {
+	dialect, ok := root["$schema"].(string)
+	if !ok {
+		return false
+	}
+	for _, old := range []string{"draft-04", "draft-06", "draft-07", "draft/4", "draft/6", "draft/7"} {
+		if strings.Contains(dialect, old) {
+			return true
+		}
+	}
+	return false
+}
+
 // inlineLocalRefs returns a copy of a schema with every resolvable
 // local $ref replaced by the conjunction of its target and its
 // siblings, recursively, so the result stands alone for compilation.
-// It reports false when a reference cannot be resolved or is
-// recursive.
-func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any, bool) {
+// Under a dialect that ignores $ref siblings (draft-07 and
+// earlier), the target alone replaces the reference, matching what
+// enforcement evaluates (Codex P2 on PR #2976). It reports false
+// when a reference cannot be resolved or is recursive.
+func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool, ignoreSiblings bool) (any, bool) {
 	switch t := v.(type) {
 	case map[string]any:
 		// A subschema carrying its own $id is a separate
@@ -1450,14 +1471,26 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 				return nil, false
 			}
 			resolving[ref] = true
-			inTarget, okT := inlineLocalRefs(target, root, resolving)
+			inTarget, okT := inlineLocalRefs(target, root, resolving, ignoreSiblings)
+			if ignoreSiblings {
+				// The dialect ignores the siblings: the
+				// reference alone is the schema enforcement
+				// evaluates, so inlining the siblings as
+				// conjuncts would judge a different --
+				// stricter -- condition.
+				delete(resolving, ref)
+				if !okT {
+					return nil, false
+				}
+				return inTarget, true
+			}
 			siblings := make(map[string]any, len(t))
 			for k, val := range t {
 				if k != "$ref" {
 					siblings[k] = val
 				}
 			}
-			inSiblings, okS := inlineLocalRefs(siblings, root, resolving)
+			inSiblings, okS := inlineLocalRefs(siblings, root, resolving, ignoreSiblings)
 			delete(resolving, ref)
 			if !okT || !okS {
 				return nil, false
@@ -1482,13 +1515,13 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 			case literalValueKey(k):
 				out[k] = val
 			case nameMapKey(k):
-				inlined, ok := inlineLocalRefsInNames(val, root, resolving)
+				inlined, ok := inlineLocalRefsInNames(val, root, resolving, ignoreSiblings)
 				if !ok {
 					return nil, false
 				}
 				out[k] = inlined
 			default:
-				inlined, ok := inlineLocalRefs(val, root, resolving)
+				inlined, ok := inlineLocalRefs(val, root, resolving, ignoreSiblings)
 				if !ok {
 					return nil, false
 				}
@@ -1499,7 +1532,7 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 	case []any:
 		out := make([]any, len(t))
 		for i, e := range t {
-			inlined, ok := inlineLocalRefs(e, root, resolving)
+			inlined, ok := inlineLocalRefs(e, root, resolving, ignoreSiblings)
 			if !ok {
 				return nil, false
 			}
@@ -1513,14 +1546,14 @@ func inlineLocalRefs(v any, root map[string]any, resolving map[string]bool) (any
 
 // inlineLocalRefsInNames inlines a name -> schema map: every value
 // is a schema, whatever its key spells.
-func inlineLocalRefsInNames(v any, root map[string]any, resolving map[string]bool) (any, bool) {
+func inlineLocalRefsInNames(v any, root map[string]any, resolving map[string]bool, ignoreSiblings bool) (any, bool) {
 	t, ok := v.(map[string]any)
 	if !ok {
 		return v, true
 	}
 	out := make(map[string]any, len(t))
 	for name, sub := range t {
-		inlined, ok := inlineLocalRefs(sub, root, resolving)
+		inlined, ok := inlineLocalRefs(sub, root, resolving, ignoreSiblings)
 		if !ok {
 			return nil, false
 		}

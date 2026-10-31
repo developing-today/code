@@ -1162,6 +1162,51 @@ func TestEffectiveSchemaPinnedKeepsDraft07DependenciesBranches(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: reference inlining for a pin-decided
+// verdict must honor the enclosing dialect. In draft-07 a $ref's
+// siblings are ignored, but the inliner conjoined them, so an
+// `if` of {"$ref": sel, "not": {}} -- true at enforcement, where
+// the sibling is ignored -- evaluated always-false after inlining
+// and the projection advertised the else requirements instead of
+// the enforced then requirements.
+func TestEffectiveSchemaPinnedHonorsDraft07RefSiblings(t *testing.T) {
+	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"sel":{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]}},"if":{"$ref":"#/definitions/sel","not":{}},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"limit":{"type":"number"},"cursor":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	if !strings.Contains(string(eff), `"required":["limit"]`) {
+		t.Errorf("the enforced then requirement must be advertised (the draft-07 $ref sibling is ignored at enforcement): %s", eff)
+	}
+	if strings.Contains(string(eff), `"required":["cursor"]`) {
+		t.Errorf("the else requirement must not be advertised for a condition that holds at enforcement: %s", eff)
+	}
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{"limit":1}`, true},
+		{`{}`, false},
+		{`{"cursor":"c"}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
 func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
 	set, err := CompileArgumentRules([]ArgumentRuleSource{
 		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$defs":{"t":true},"$ref":"#/$defs/t","required":["tailnet","limit"]}`)},
