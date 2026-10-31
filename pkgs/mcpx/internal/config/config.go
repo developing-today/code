@@ -159,6 +159,14 @@ type Extras struct {
 	// server alone: ask, allow or deny (#1979). Empty means inherit the
 	// daemon mode.
 	WritePolicy string `json:"writePolicy,omitempty"`
+	// ArgumentRules constrains calls by their arguments (#1986): keys
+	// are tool patterns matched exactly as Tools/ExcludeTools match,
+	// values are JSON Schema objects a call's arguments must validate
+	// against (every matching rule; allOf). In the pool block it
+	// applies to every server; a server's own rules add to the pool's,
+	// and across layered files rules only ever tighten. See
+	// argumentrules.go.
+	ArgumentRules map[string]json.RawMessage `json:"argumentRules,omitempty"`
 	// RequiresSecrets names environment variables that must be non-empty for this server to be active.
 	RequiresSecrets []string `json:"requiresSecrets,omitempty"`
 	// RequiresServers names other upstream server namespaces that must be enabled.
@@ -493,6 +501,12 @@ type Resolved struct {
 	// daemon policy.write setting (#1979).
 	WritePolicy string
 
+	// ArgumentRules is this server's compiled argument rules (#1986):
+	// the pool block's rules and the server's own, compiled at Resolve
+	// time so a bad pattern or schema is a load-time error. Consumed by
+	// the daemon's write-policy gate and by schema advertising.
+	ArgumentRules *ArgumentRuleSet
+
 	// Runtime, when set, returns the value the daemon holds in memory for a
 	// secret: see internal/secrets. It is consulted before this server's own
 	// environment and the daemon's, and nothing here keeps what it returns.
@@ -746,6 +760,28 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		return nil, fmt.Errorf("server %q: excludeTools: %w", name, err)
 	}
 
+	// Argument rules (#1986): pool rules and the server's own add up,
+	// compiled here so a bad pattern or schema fails the load, naming
+	// the server, instead of silently constraining nothing at call
+	// time. Origins name the file each rule came from, so a refusal
+	// can say whose rule it was.
+	poolOrigin := "the pool block"
+	if c.Path != "" {
+		poolOrigin = "the pool block in " + c.Path
+	}
+	serverOrigin := fmt.Sprintf("server %q", name)
+	if f := c.Origin[name]; f != "" {
+		serverOrigin = fmt.Sprintf("server %q in %s", name, f)
+	} else if c.Path != "" {
+		serverOrigin = fmt.Sprintf("server %q in %s", name, c.Path)
+	}
+	rules, err := CompileArgumentRules(append(
+		argumentRuleSources(d.ArgumentRules, poolOrigin),
+		argumentRuleSources(ex.ArgumentRules, serverOrigin)...))
+	if err != nil {
+		return nil, fmt.Errorf("server %q: %w", name, err)
+	}
+
 	sharing := Sharing(pick(string(ex.Sharing), string(d.Sharing), string(SharingShared)))
 	switch sharing {
 	case SharingShared, SharingExclusive:
@@ -820,6 +856,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		Tools:           allow,
 		ExcludeTools:    deny,
 		WritePolicy:     pick(ex.WritePolicy, d.WritePolicy),
+		ArgumentRules:   rules,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
 		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
 		ToolTags:        mergeToolTags(d.ToolTags, ex.ToolTags),
@@ -1001,7 +1038,20 @@ func LoadFrom(explicit, wd string) (*Config, error) {
 // taken, so nearer always wins without needing to know which fields exist.
 func mergeInto(near, far *Config, farPath string) {
 	for name, s := range far.MCPServers {
-		if _, taken := near.MCPServers[name]; taken {
+		if existing, taken := near.MCPServers[name]; taken {
+			// The nearer file's server definition wins, as for
+			// every other field -- but argument rules are the one
+			// exception, by their own guarantee (#1986): rules
+			// only tighten, so a nearer file that repeats a server
+			// without restating its rules must not silently drop
+			// the farther file's. Compose them into the surviving
+			// definition, as mergeExtras does for the pool block.
+			if s.Mcpx != nil && len(s.Mcpx.ArgumentRules) > 0 {
+				if existing.Mcpx == nil {
+					existing.Mcpx = &Extras{}
+				}
+				existing.Mcpx.ArgumentRules = mergeArgumentRules(existing.Mcpx.ArgumentRules, s.Mcpx.ArgumentRules)
+			}
 			continue
 		}
 		near.MCPServers[name] = s
@@ -1061,6 +1111,10 @@ func mergeExtras(near, far Extras) Extras {
 	}
 	// Appending is the point of the field, across files as within one.
 	near.ExtraIncludeTools = concat(far.ExtraIncludeTools, near.ExtraIncludeTools)
+	// Rules only tighten (#1986): a farther file's argument rules
+	// survive into the nearer config, and a key both files use
+	// composes with allOf rather than being replaced.
+	near.ArgumentRules = mergeArgumentRules(near.ArgumentRules, far.ArgumentRules)
 	return near
 }
 

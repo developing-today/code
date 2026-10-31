@@ -111,7 +111,41 @@ func ArgsTypeFor(raw json.RawMessage, indent string) (ts string, optional bool) 
 		return "Record<string, unknown>", true
 	}
 	r := &renderer{root: &s, seen: map[string]bool{}}
-	return r.render(&s, indent), len(s.Required) == 0
+	return r.render(&s, indent), !requiresArgs(&s, &s, map[string]bool{})
+}
+
+// requiresArgs reports whether the schema makes the argument object
+// itself mandatory: a non-empty required list at the root or in any
+// allOf member (resolving $refs into the root $defs). Argument rules
+// (#1986) place their required lists under allOf via EffectiveSchema,
+// so looking only at the root list would render a parameter optional
+// that the argument-rule gate necessarily rejects when omitted.
+// anyOf/oneOf members do not count: a caller may satisfy the schema
+// through a branch that requires nothing.
+func requiresArgs(s *schema, root *schema, seen map[string]bool) bool {
+	if s == nil {
+		return false
+	}
+	if len(s.Required) > 0 {
+		return true
+	}
+	if s.Ref != "" {
+		if seen[s.Ref] {
+			return false
+		}
+		seen[s.Ref] = true
+		r := &renderer{root: root}
+		if target := r.resolve(s.Ref); target != nil {
+			return requiresArgs(target, root, seen)
+		}
+		return false
+	}
+	for _, m := range s.AllOf {
+		if requiresArgs(m, root, seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // ResultTypeFor renders the return type expression for a tool. If outputSchema
@@ -173,7 +207,20 @@ func (r *renderer) render(s *schema, indent string) string {
 		return r.union(s.AnyOf, indent)
 	}
 	if len(s.AllOf) > 0 {
-		parts := make([]string, 0, len(s.AllOf))
+		parts := make([]string, 0, len(s.AllOf)+1)
+		// Constraints written beside the allOf are part of the schema
+		// too: EffectiveSchema (#1986) keeps the upstream properties
+		// and required list at the root and puts the argument rules
+		// under allOf, so rendering only the members would drop the
+		// tool's own arguments from `mcpx types` and let generated
+		// clients reject object literals that use them.
+		if s.Type != nil || len(s.Properties) > 0 || len(s.Items) > 0 || len(s.PrefixItems) > 0 {
+			sibling := *s
+			sibling.AllOf = nil
+			if root := r.render(&sibling, indent); root != "unknown" && root != "" {
+				parts = append(parts, root)
+			}
+		}
 		for _, sub := range s.AllOf {
 			parts = append(parts, r.render(sub, indent))
 		}
