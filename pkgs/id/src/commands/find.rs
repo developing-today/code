@@ -709,6 +709,7 @@ fn print_peek_lines(
     let lines: Vec<&str> = content.lines().collect();
     let total_lines = lines.len();
     let n = opts.lines;
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     // Print header if not quiet
     if !opts.quiet {
@@ -716,7 +717,7 @@ fn print_peek_lines(
         writeln!(
             out,
             "hash: {}  lines: {}  files: {}",
-            &hash[..12],
+            hash_short,
             total_lines,
             total_files
         )?;
@@ -775,13 +776,14 @@ fn print_peek_chars(
 ) -> Result<()> {
     let total_chars = content.chars().count();
     let n = opts.lines; // reuse lines as char count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
         writeln!(out, "─── {name} ───")?;
         writeln!(
             out,
             "hash: {}  chars: {}  files: {}",
-            &hash[..12],
+            hash_short,
             total_chars,
             total_files
         )?;
@@ -836,13 +838,14 @@ fn print_peek_words(
     let words: Vec<&str> = content.split_whitespace().collect();
     let total_words = words.len();
     let n = opts.lines; // reuse lines as word count
+    let hash_short = if hash.len() >= 12 { &hash[..12] } else { hash };
 
     if !opts.quiet {
         writeln!(out, "─── {name} ───")?;
         writeln!(
             out,
             "hash: {}  words: {}  files: {}",
-            &hash[..12],
+            hash_short,
             total_words,
             total_files
         )?;
@@ -1464,5 +1467,59 @@ mod tests {
         assert!(result.contains("one two")); // First 2 words
         assert!(result.contains("seven eight")); // Last 2 words
         assert!(result.contains("omitted")); // Should show truncation
+    }
+
+    #[test]
+    fn test_print_peek_lines_short_hash() {
+        let opts = PeekOptions {
+            lines: 2,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("lines:"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_short_hash() {
+        let opts = PeekOptions {
+            lines: 100,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("chars:"));
+    }
+
+    #[test]
+    fn test_print_peek_words_short_hash() {
+        let opts = PeekOptions {
+            lines: 10,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: false, // Show header, which prints the hash
+        };
+        let mut output = Vec::new();
+        let content = "Hello beautiful world";
+        print_peek_words(&mut output, "test.txt", "abc123", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert!(result.contains("hash: abc123")); // Whole short hash prints, no panic
+        assert!(result.contains("words:"));
     }
 }
