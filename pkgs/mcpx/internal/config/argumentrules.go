@@ -918,6 +918,20 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 							}
 						}
 					}
+					// The dialect rides along the same way: it is
+					// not an assertion sibling draft-07 ignores,
+					// it is the language the projected constraints
+					// are written in. Dropping it leaves draft-07
+					// keywords (dependencies) to be read under the
+					// upstream schema's dialect, where they are
+					// not keywords at all, so the advertised
+					// schema accepts calls enforcement rejects
+					// (Codex P2 on PR #2976).
+					if _, carried := pm["$schema"]; !carried {
+						if dialect, ok := m["$schema"]; ok {
+							pm["$schema"] = dialect
+						}
+					}
 				}
 				return projected
 			}
