@@ -29,7 +29,7 @@ func TestMaterialiseDepsSynthesisesManifestForBun(t *testing.T) {
 	flags, err := materialiseDeps(dir, KindBun, &Deps{
 		Packages:    []string{"lodash@4.17.21", "@scope/pkg", "zod@^3.0.0"},
 		AutoInstall: "off",
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestMaterialiseDepsManifestWinsAndLockfileVerbatim(t *testing.T) {
 		Lockfile:     lock,
 		LockfileName: "bun.lockb",
 		AutoInstall:  "off",
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestMaterialiseDepsDenoImportsMap(t *testing.T) {
 	dir := t.TempDir()
 	flags, err := materialiseDeps(dir, KindDeno, &Deps{
 		Packages: []string{"zod@^3.0.0", "lodash"},
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestDepsFlagsMatrix(t *testing.T) {
 
 func TestMaterialiseDepsRejectsBadManifest(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := materialiseDeps(dir, KindNode, &Deps{Manifest: "{nope"}); err == nil {
+	if _, err := materialiseDeps(dir, KindNode, &Deps{Manifest: "{nope"}, false); err == nil {
 		t.Fatal("invalid manifest accepted")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "package.json")); !os.IsNotExist(err) {
@@ -183,7 +183,7 @@ func TestMaterialiseDepsAliasKeepsNpmSpecifier(t *testing.T) {
 	if _, err := materialiseDeps(dir, KindBun, &Deps{
 		Packages:    []string{"alias@npm:@scope/pkg@2.0.0"},
 		AutoInstall: "off",
-	}); err != nil {
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 	m := readJSON(t, filepath.Join(dir, "package.json"))
@@ -213,7 +213,7 @@ func TestSelectedLockfileFollowsTheRuntime(t *testing.T) {
 	}
 	// Materialising a node set writes the npm lockfile, not bun's.
 	dir := t.TempDir()
-	if _, err := materialiseDeps(dir, KindNode, d); err != nil {
+	if _, err := materialiseDeps(dir, KindNode, d, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); err != nil {
@@ -246,7 +246,7 @@ func TestDepsFingerprintSeparatesSets(t *testing.T) {
 func TestMaterialiseDepsStripsScriptsAndKeepsESM(t *testing.T) {
 	dir := t.TempDir()
 	d := &Deps{Manifest: `{"name":"p","type":"commonjs","scripts":{"prepare":"node ./scripts/prepare.js","preinstall":"x"},"dependencies":{"foo":"1.0.0"}}`}
-	if _, err := materialiseDeps(dir, KindNode, d); err != nil {
+	if _, err := materialiseDeps(dir, KindNode, d, false); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
@@ -394,7 +394,7 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
 		ManifestName: "package.json",
 		AutoInstall:  "off",
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 		Packages:     []string{"foo@1.3.0"},
 		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
 		ManifestName: "package.json",
-	}); err != nil {
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 	dj := readJSON(t, filepath.Join(dir2, "deno.json"))
@@ -439,4 +439,53 @@ func TestLockScriptDirSerializes(t *testing.T) {
 	// A different directory is not serialized against this one.
 	other := lockScriptDir(t.TempDir())
 	other()
+}
+
+func TestMaterialiseDepsCanonicalisesSelectedManifestName(t *testing.T) {
+	dir := t.TempDir()
+	_, err := materialiseDeps(dir, KindNode, &Deps{
+		Manifest:     `{"name":"proj","dependencies":{"foo":"^1.0.0"}}`,
+		ManifestName: "alt-manifest.json",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); err != nil {
+		t.Fatalf("materialised manifest is not package.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "alt-manifest.json")); !os.IsNotExist(err) {
+		t.Fatalf("selected basename was preserved in the workdir: %v", err)
+	}
+}
+
+func TestMaterialiseDepsDenoFileRunGetsConfigFlag(t *testing.T) {
+	dir := t.TempDir()
+	flags, err := materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"zod@^3.0.0"},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "deno.json")
+	found := false
+	for i, f := range flags {
+		if f == "--config" && i+1 < len(flags) && flags[i+1] == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("flags = %v, want --config %s for a deno file run", flags, want)
+	}
+
+	flags, err = materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"zod@^3.0.0"},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range flags {
+		if f == "--config" {
+			t.Fatalf("flags = %v, inline runs discover the workdir config and must not get --config", flags)
+		}
+	}
 }

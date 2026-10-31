@@ -280,7 +280,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// The dependency set is materialised before the launcher and the
 	// type check, because both resolve the script's imports (#1913).
 	if opts.Deps != nil {
-		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps)
+		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "")
 		if derr != nil {
 			return nil, derr
 		}

@@ -197,7 +197,7 @@ func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
 //     each bare specifier to its npm: equivalent, so a script's imports
 //     resolve to the resolved set rather than whatever deno would pick.
 //   - a lockfile is written byte-for-byte and never rewritten by mcpx.
-func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
+func materialiseDeps(dir, kind string, d *Deps, fileRun bool) ([]string, error) {
 	var manifest map[string]any
 	if strings.TrimSpace(d.Manifest) != "" {
 		if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
@@ -226,10 +226,14 @@ func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
 			}
 			manifest["dependencies"] = merged
 		}
-		name := filepath.Base(d.ManifestName)
-		if name == "" || name == "." || !strings.HasSuffix(name, ".json") {
-			name = "package.json"
-		}
+		// The materialised copy is always package.json, whatever
+		// name resolution read: deps.manifest may select an
+		// alt-manifest.json, but npm ci and the runtimes look for
+		// package.json beside the lockfile, so preserving the
+		// selected basename would strand the frozen install
+		// (Codex review, PR #2589). The transport already does
+		// the same for JSONC manifests.
+		name := "package.json"
 		// The materialised copy is an installation + resolution
 		// manifest for THIS runner's workdir, not the project:
 		// - its lifecycle scripts must not travel with it. Only the
@@ -292,7 +296,19 @@ func materialiseDeps(dir, kind string, d *Deps) ([]string, error) {
 		}
 	}
 
-	return depsFlags(kind, d), nil
+	flags := depsFlags(kind, d)
+	if fileRun && kind == KindDeno && len(deps) > 0 {
+		// A file script runs from its own directory, and deno
+		// discovers configuration from the working directory and
+		// its ancestors \u2014 never from this workdir. Without an
+		// explicit --config the imports map above governs
+		// nothing for file runs: their imports resolve against
+		// the project (or fail), not the resolved set (Codex
+		// review, PR #2589). Inline scripts live in the workdir,
+		// so discovery already finds the map for them.
+		flags = append(flags, "--config", filepath.Join(dir, "deno.json"))
+	}
+	return flags, nil
 }
 
 // depsFlags maps the resolved set onto runtime flags.
