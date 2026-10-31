@@ -206,6 +206,11 @@ describe("world screen presenter", () => {
       "\u{231A}\u{FE0E}",
       "\u{2B50}\u{FE0E}",
       "\u{1F550}\u{FE0E}",
+      // A trailing ZWJ does not undo the narrowing: the ZWJ shortcut
+      // must apply text-presentation narrowing first, so
+      // U+2B1B U+FE0E U+200D still measures 1 (Codex review on #2945).
+      "\u{2B1B}\u{FE0E}\u{200D}",
+      "\u{1F550}\u{FE0E}\u{200D}",
     ]) {
       expectNarrow(symbol);
     }

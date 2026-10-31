@@ -307,7 +307,16 @@ function graphemeWidth(symbol: string): number {
   const characters = Array.from(symbol);
   const codePoints = characters.map((character) => character.codePointAt(0) ?? 0);
   if (codePoints.includes(0x200d)) {
-    return codePoints.some((codePoint) => isWideCodePoint(codePoint)) ? 2 : 1;
+    // U+FE0E narrowing applies before the ZWJ shortcut: a
+    // text-presentation code point immediately followed by U+FE0E
+    // counts 1, so a ZWJ sequence whose only wide point is narrowed
+    // (e.g. U+2B1B U+FE0E U+200D) measures 1 under unicode-width
+    // 0.2.2, not 2 (#1581, Codex review on PR #2945).
+    const narrowed = new Set<number>();
+    codePoints.forEach((codePoint, i) => {
+      if (codePoint === 0xfe0e && i > 0 && isTextPresentationCodePoint(codePoints[i - 1])) narrowed.add(i - 1);
+    });
+    return codePoints.some((codePoint, i) => !narrowed.has(i) && isWideCodePoint(codePoint)) ? 2 : 1;
   }
   if (codePoints.includes(0xfe0f)) return 2;
   const isModifier = (codePoint: number) => codePoint >= 0x1f3fb && codePoint <= 0x1f3ff;
