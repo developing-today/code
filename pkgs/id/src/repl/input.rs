@@ -49,7 +49,7 @@
 //! # Quoting Contract
 //!
 //! Every operator scan in this module — heredoc (`<<`), here-string
-//! (`<<<`), `$(` and its closing paren, backticks, and the pipe
+//! (`<<<`), `$(` and its closing paren, the opening backtick, and the pipe
 //! operator (`|>`) — skips single- and double-quoted spans:
 //!
 //! - A quoted span is literal until its closing quote; operator
@@ -58,6 +58,9 @@
 //!   character preceded by `\` still opens or closes a span.
 //! - An unterminated quote makes the rest of the line quoted, so no
 //!   operators are recognized in it.
+//! - The closing backtick is not quote-aware. The next backtick that is
+//!   not inside captured output closes the substitution, even when that
+//!   backtick lies inside quotes. The substitution body is shell code.
 //! - Quote state tracks the original input only. Captured substitution
 //!   output is data, never source: it is appended to the result without
 //!   being rescanned, so an apostrophe in a captured filename cannot
@@ -836,7 +839,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_preprocess_substitution_output_quotes_do_not_hide_later_substitutions() {
         // Captured output is data, not source: an unmatched apostrophe in
         // the first substitution's output must not open a quote span that
@@ -873,6 +875,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_preprocess_backtick_substitution() {
         match preprocess_repl_line("get `echo hello`").unwrap() {
             ReplInput::Ready(s) => assert_eq!(s, "get hello"),
