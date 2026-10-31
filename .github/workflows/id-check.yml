@@ -50,6 +50,11 @@ on:
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
+  # Merge queue pilot (see .github/ci-policy.md): the queue validates
+  # the combined merge-group head, and this workflow's PR-tier jobs
+  # are main's required status checks — it must run on merge groups
+  # too, or the queue can never see its required context and stalls.
+  merge_group:
   pull_request:
     paths:
       - "pkgs/id/**"
