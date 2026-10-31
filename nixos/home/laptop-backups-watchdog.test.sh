@@ -32,7 +32,7 @@ STUB
 chmod +x "$BIN/systemctl"
 
 iso_ago() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
-trig_ago() { date -d "$1" '+%a %Y-%m-%d %H:%M:%S UTC'; }
+trig_ago() { date -u -d "$1" '+%a %Y-%m-%d %H:%M:%S UTC'; }
 
 set_triggers() { # $1 pm trigger spec, $2 repo-archive trigger spec
   trig_ago "$1" >"$TRIG/pm-dashboard-backup.timer"
@@ -124,10 +124,7 @@ run_watchdog; expect_named_failure future-record pm-dashboard-backup
 
 # future timer trigger (beyond skew tolerance) -> non-zero naming the job
 RECORD_OUT="$RECORD" write_record complete "1 hour ago"
-# (8 hours, not 2: trig_ago labels local wall time as UTC, shifting the
-# parsed epoch back by the UTC offset; the spec must clear the tolerance
-# after that shift too)
-set_triggers "1 hour ago" "8 hours"
+set_triggers "1 hour ago" "2 hours"
 run_watchdog; expect_named_failure future-timer repo-archive-backup
 
 if (( failures > 0 )); then
