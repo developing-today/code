@@ -46,6 +46,23 @@
 //! cat file.txt |> put - backup
 //! ```
 //!
+//! # Quoting Contract
+//!
+//! Every operator scan in this module — heredoc (`<<`), here-string
+//! (`<<<`), `$(` and its closing paren, backticks, and the pipe
+//! operator (`|>`) — skips single- and double-quoted spans:
+//!
+//! - A quoted span is literal until its closing quote; operator
+//!   characters inside it are text, not operators.
+//! - The scanner does NOT interpret backslash escapes: a quote
+//!   character preceded by `\` still opens or closes a span.
+//! - An unterminated quote makes the rest of the line quoted, so no
+//!   operators are recognized in it.
+//!
+//! Full shell grammar is out of scope. The contract exists so quoted
+//! arguments containing operator characters (`get "a<<b"`,
+//! `get $(echo ')')`) preprocess the way a shell user expects.
+//!
 //! # Content Markers
 //!
 //! When preprocessing detects inline content (from `$()`, here-strings, or pipes),
@@ -151,6 +168,34 @@ pub fn shell_capture(cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Find the first occurrence of `needle` in `haystack` that lies
+/// outside single- and double-quoted spans, returning its byte index.
+///
+/// Implements the module's quoting contract: a quoted span is literal
+/// until its closing quote, backslash escapes are not interpreted, and
+/// an unterminated quote makes the rest of the line quoted (so no
+/// occurrence is found in it).
+fn find_unquoted(haystack: &str, needle: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (i, c) in haystack.char_indices() {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => {
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                } else if haystack[i..].starts_with(needle) {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Preprocess a REPL input line, handling shell-like features.
 ///
 /// This function transforms the input line by:
@@ -212,7 +257,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Check for heredoc: put - name <<EOF
-    if let Some(heredoc_start) = line.find("<<") {
+    if let Some(heredoc_start) = find_unquoted(line, "<<") {
         let after = &line[heredoc_start + 2..];
         // Check it's not <<< (here-string)
         if !after.starts_with('<') {
@@ -231,7 +276,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     let mut result = line.to_owned();
 
     // Process here-string: <<< 'content' or <<< "content" or <<< content
-    while let Some(pos) = result.find("<<<") {
+    while let Some(pos) = find_unquoted(&result, "<<<") {
         let before = &result[..pos];
         let after = &result[pos + 3..].trim_start();
 
@@ -264,20 +309,29 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Process $(...) command substitution
-    while let Some(start) = result.find("$(") {
+    while let Some(start) = find_unquoted(&result, "$(") {
         let mut depth = 1;
         let mut end = start + 2;
+        let mut quote: Option<char> = None;
         for (i, c) in result[start + 2..].char_indices() {
-            match c {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = start + 2 + i;
-                        break;
+            match quote {
+                Some(q) => {
+                    if c == q {
+                        quote = None;
                     }
                 }
-                _ => {}
+                None => match c {
+                    '\'' | '"' => quote = Some(c),
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = start + 2 + i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                },
             }
         }
         if depth != 0 {
@@ -301,7 +355,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Process `...` backtick substitution
-    while let Some(start) = result.find('`') {
+    while let Some(start) = find_unquoted(&result, "`") {
         if let Some(end) = result[start + 1..].find('`') {
             let cmd = &result[start + 1..start + 1 + end];
             let output = shell_capture(cmd)?;
@@ -329,7 +383,7 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     }
 
     // Process |> pipe operator: echo hello |> put - name
-    if let Some(pos) = result.find("|>") {
+    if let Some(pos) = find_unquoted(&result, "|>") {
         let left = result[..pos].trim().to_owned();
         let right = result[pos + 2..].trim().to_owned();
 
@@ -538,6 +592,78 @@ mod tests {
                 .to_string()
                 .contains("unterminated double quote")
         );
+    }
+
+    #[test]
+    fn test_preprocess_quoted_close_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo ')')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get )"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_open_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo '(')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get ("),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_double_quoted_close_paren_in_substitution() {
+        match preprocess_repl_line("get $(echo \")\")").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get )"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_heredoc_marker_inside_substitution() {
+        match preprocess_repl_line("get $(printf 'a<<b')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get a<<b"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_heredoc_marker_in_argument() {
+        match preprocess_repl_line("get \"a<<b\"").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get \"a<<b\""),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_unterminated_quote_makes_rest_of_line_quoted() {
+        match preprocess_repl_line("get \"a<<b").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get \"a<<b"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_backtick_is_not_substitution() {
+        match preprocess_repl_line("get 'a`b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a`b'"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_here_string_marker_is_not_an_operator() {
+        match preprocess_repl_line("get 'a<<<b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a<<<b'"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_quoted_pipe_is_not_an_operator() {
+        match preprocess_repl_line("get 'a|>b'").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get 'a|>b'"),
+            _ => panic!("expected Ready"),
+        }
     }
 
     #[test]
