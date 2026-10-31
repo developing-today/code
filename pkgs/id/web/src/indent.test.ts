@@ -76,7 +76,9 @@ function createMixedState(children: ReturnType<typeof codeBlock>[], from: number
 /** Get the text content of every top-level child in the doc */
 function getChildTexts(state: EditorState): string[] {
   const out: string[] = [];
-  state.doc.forEach((child) => out.push(child.textContent));
+  state.doc.forEach((child) => {
+    out.push(child.textContent);
+  });
   return out;
 }
 

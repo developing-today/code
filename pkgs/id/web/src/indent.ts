@@ -139,7 +139,12 @@ export const indentCommand: Command = (state, dispatch) => {
       // Strict overlap: a selection merely touching the block's edge
       // covers none of its characters, so the block is skipped.
       if (contentStart >= to || contentEnd <= from) continue;
-      for (const lineStart of selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd), to > contentEnd)) {
+      for (const lineStart of selectedLineStarts(
+        lineStarts,
+        Math.max(from, contentStart),
+        Math.min(to, contentEnd),
+        to > contentEnd,
+      )) {
         inserts.push(lineStart);
       }
     }
@@ -180,12 +185,16 @@ export const dedentCommand: Command = (state, dispatch) => {
       // Strict overlap: a non-empty selection merely touching the block's
       // edge covers none of its characters, so the block is skipped. (An
       // empty selection/cursor at the edge still belongs to its line.)
-      if (from === to ? contentStart > from || contentEnd < from : contentStart >= to || contentEnd <= from)
-        continue;
+      if (from === to ? contentStart > from || contentEnd < from : contentStart >= to || contentEnd <= from) continue;
       const blockText = state.doc.textBetween(contentStart, contentEnd);
 
       // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
-      const linesToDedent = selectedLineStarts(lineStarts, Math.max(from, contentStart), Math.min(to, contentEnd), to > contentEnd);
+      const linesToDedent = selectedLineStarts(
+        lineStarts,
+        Math.max(from, contentStart),
+        Math.min(to, contentEnd),
+        to > contentEnd,
+      );
 
       for (const lineStart of linesToDedent) {
         // Check how many leading spaces this line has, using the
