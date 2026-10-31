@@ -394,10 +394,13 @@ type Requestor struct {
 
 // The requestor roles. RoleCaller is an ordinary creation site
 // charging its caller; RoleAsk is the ask seam (/v1/ask backings,
-// handleAskBegin) charging in its asking capacity.
+// handleAskBegin) charging in its asking capacity; RoleReport is the
+// reporting-call seam (handleCallReporting) charging in its reporting
+// capacity, separate from the execution wrappers that spawn it.
 const (
 	RoleCaller = "caller"
 	RoleAsk    = "ask"
+	RoleReport = "report"
 )
 
 // Caller names an ordinary requestor: the given caller identity in
@@ -415,6 +418,13 @@ func Ask(identity string) Requestor {
 	return Requestor{Role: RoleAsk, Identity: identity}
 }
 
+// Report names a reporting-call requestor: the given caller identity
+// in the report role. An empty identity is the anonymous report
+// bucket.
+func Report(identity string) Requestor {
+	return Requestor{Role: RoleReport, Identity: identity}
+}
+
 // UnboundRequestor is the bucket a creation site passes when it holds
 // no caller identity. It is capped like any other requestor — "we
 // don't know who asked" must not mean "unlimited".
@@ -424,6 +434,16 @@ var UnboundRequestor = Requestor{}
 // It is its own bucket, not UnboundRequestor, for the two-ledgers
 // reason recorded on Requestor.
 var AskRequestor = Requestor{Role: RoleAsk}
+
+// ReportRequestor is the bucket anonymous reporting-call tasks count
+// against. It is its own bucket, not UnboundRequestor, for the
+// two-ledgers reason recorded on Requestor: a /v1/exec wrapper task
+// (caller role) stays non-terminal for the whole run while the
+// script's tool calls arrive as reporting tasks under the same
+// session identity, so charging both to one ledger lets the wrapper
+// starve its own calls -- at a per-requestor cap of 1 the first
+// reporting call is refused outright (Codex review, PR #2869).
+var ReportRequestor = Requestor{Role: RoleReport}
 
 // key is the window-counter spelling of the requestor: the two fields
 // joined by a separator neither can be confused across, because the

@@ -81,8 +81,15 @@ func TestHandleCallReportingChargesRunForSessionlessCallers(t *testing.T) {
 		}
 		t.Cleanup(func() { store.Cancel(tsk.TaskID) })
 	}
-	occupy(tasks.Caller("run-1"))
-	occupy(tasks.Caller("sess-1"))
+	occupy(tasks.Report("run-1"))
+	occupy(tasks.Report("sess-1"))
+	// An execution wrapper for a session holds the session's CALLER
+	// slot for its whole run; that must not refuse the session's own
+	// reporting calls, which charge the separate report ledger
+	// (Codex P2, PR #2869). Occupying Caller("sess-3") here makes the
+	// sess-3 case below the regression: before the report role it
+	// returned 429 at this cap of 1.
+	occupy(tasks.Caller("sess-3"))
 
 	call := func(session, run string) int {
 		t.Helper()
@@ -113,5 +120,10 @@ func TestHandleCallReportingChargesRunForSessionlessCallers(t *testing.T) {
 	// names.
 	if code := call("sess-1", "run-2"); code != http.StatusTooManyRequests {
 		t.Errorf("sess-1 via run-2: status %d, want 429 (cap)", code)
+	}
+	// The session whose caller slot is held by its exec wrapper still
+	// gets its first reporting call admitted (the Codex P2 case).
+	if code := call("sess-3", ""); code != http.StatusBadRequest {
+		t.Errorf("sess-3 reporting call under its own wrapper: status %d, want 400 (admitted)", code)
 	}
 }

@@ -107,9 +107,16 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	// Charging the session alone put every session-less reporting
 	// call in the shared unbound bucket, so one run's pending call
 	// could refuse another run's first (Codex review, PR #2869).
-	reportingRequestor := tasks.Caller(cc.SessionID)
+	// It charges in the REPORT role, not the caller role: a /v1/exec
+	// wrapper task holds its session's caller slot for the whole run,
+	// and the script's tool calls arrive here under that same session,
+	// so one shared ledger let the wrapper starve its own calls -- at
+	// a per-requestor cap of 1 the first reporting call was refused
+	// (Codex review, PR #2869). The report ledger is still capped per
+	// identity; it is a separate ledger, not an exemption.
+	reportingRequestor := tasks.Report(cc.SessionID)
 	if cc.SessionID == "" {
-		reportingRequestor = tasks.Caller(run)
+		reportingRequestor = tasks.Report(run)
 	}
 	askTTL := s.set.Duration("proto.askTTL")
 	t, terr := s.taskStore().StartWithDeadline(reportingRequestor, askTTL.Milliseconds(), askTTL,

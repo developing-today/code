@@ -414,6 +414,38 @@ func TestCompositeRequestorSeparatesRolesAndReservedNames(t *testing.T) {
 	}
 }
 
+// Codex round (PR #2869): an execution wrapper and its reporting
+// calls are two ledgers. A /v1/exec wrapper task (caller role) stays
+// non-terminal for the whole run while the script's tool calls create
+// reporting tasks (report role) under the same session identity, so
+// at a per-requestor cap of 1 the wrapper must leave the report
+// ledger's slot free -- and the report ledger still caps its own kind.
+func TestReportAndCallerBucketsAreSeparateLedgers(t *testing.T) {
+	st := tasks.New()
+	st.MaxPerRequestor = 1
+	block := make(chan struct{})
+	defer close(block)
+	fn := func(ctx context.Context) (any, *tasks.Fault) {
+		<-block
+		return "ok", nil
+	}
+	if _, err := st.Start(tasks.Caller("sess-1"), 60000, fn); err != nil {
+		t.Fatalf("exec wrapper start: %v", err)
+	}
+	if _, err := st.Start(tasks.Report("sess-1"), 60000, fn); err != nil {
+		t.Fatalf("the wrapper's first reporting call is a separate ledger and still starts at cap 1: %v", err)
+	}
+	if _, err := st.Start(tasks.Report("sess-1"), 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Errorf("a second reporting call for the session is refused, got %v", err)
+	}
+	if _, err := st.Start(tasks.Caller("sess-1"), 60000, fn); !errors.Is(err, tasks.ErrPerRequestorCap) {
+		t.Errorf("a second caller task for the session is refused, got %v", err)
+	}
+	if _, err := st.Start(tasks.Report("sess-2"), 60000, fn); err != nil {
+		t.Errorf("another session's reporting call is unaffected: %v", err)
+	}
+}
+
 func TestAWorkingTaskOutlivesItsTTLAndItsResultStaysCollectable(t *testing.T) {
 	// Regression (#1653, Bug A): the TTL is retention from completion,
 	// not a runtime deadline — a task still working when its TTL passes
