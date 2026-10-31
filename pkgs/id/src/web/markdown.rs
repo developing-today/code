@@ -1560,7 +1560,125 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for (placeholder, raw) in substitutions {
         output = output.replace(&placeholder, &format!("<{raw}>"));
     }
-    Ok(output)
+    Ok(strip_end_list_separators(doc, &output))
+}
+
+fn list_kind(node: &Value) -> Option<&str> {
+    match node["type"].as_str() {
+        Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
+        _ => None,
+    }
+}
+
+/// #1397: comrak's renderer separates adjacent list siblings with an
+/// `<!-- end list -->` comment - renderer-internal markup that lands in
+/// the user's file. Where the two lists are of DIFFERENT PM kinds the
+/// comment is the only thing keeping them apart, and it is not needed:
+/// a change of list type ends a list on reparse all by itself (and the
+/// #1370 parse-side split rebuilds task/plain runs), so the separator
+/// line is dropped and the lists sit directly adjacent in the text -
+/// tight lists stay tight, loose lists keep their blank lines. Where
+/// the kinds are the SAME (two ordered lists, two task lists) dropping
+/// it would merge the lists and lose restart/order information, so the
+/// separator stays for those pairs. If the lines found in the output
+/// do not line up one-to-one with the boundaries computed from the doc,
+/// the output is returned untouched.
+fn strip_end_list_separators(doc: &Value, output: &str) -> String {
+    // Recompute with kinds: the drop decision needs them, so collect
+    // (prev_kind, kind, tight_pair) triples alongside.
+    let mut kinds: Vec<(String, String, bool)> = Vec::new();
+    collect_boundary_kinds(doc, &mut kinds);
+    if kinds.is_empty() {
+        return output.to_string();
+    }
+    let is_separator_line = |line: &str| {
+        line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->"
+    };
+    let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
+    let lines: Vec<&str> = output.lines().collect();
+    let found = lines.iter().filter(|l| is_separator_line(l)).count();
+    if found != kinds.len() {
+        return output.to_string();
+    }
+    let mut boundary = kinds.iter();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut idx = 0;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if is_separator_line(line) {
+            match boundary.next() {
+                Some((a, b, tight_pair)) if a != b => {
+                    // Drop the separator. The renderer also puts a blank
+                    // line on each side of it; with the comment gone,
+                    // blanks between the lists would fuse them into ONE
+                    // loose list on reparse. A tight pair keeps no blank
+                    // line at all; a loose pair keeps exactly one.
+                    let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
+                    let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
+                    if prev_blank && next_blank {
+                        if *tight_pair {
+                            kept.pop();
+                        }
+                        idx += 1; // skip the following blank line too
+                    }
+                }
+                _ => kept.push(line),
+            }
+        } else {
+            kept.push(line);
+        }
+        idx += 1;
+    }
+    let mut out = kept.join("\n");
+    if output.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// (prev PM kind, PM kind, both tight) for every list adjacency in the
+/// doc, in render order, interleaved with authored htmlBlocks (recorded
+/// as ("", "", false) so they consume a separator-line slot but are
+/// never dropped - see strip_end_list_separators' caller contract).
+fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool)>) {
+    let Some(content) = node["content"].as_array() else {
+        return;
+    };
+    let mut prev_list: Option<&Value> = None;
+    for child in content {
+        let kind = list_kind(child);
+        if let (Some(prev), Some(kind)) = (prev_list, kind)
+            && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
+        {
+            let tight_pair = [prev, child]
+                .iter()
+                .all(|l| l["attrs"]["tight"].as_bool() == Some(true));
+            out.push((
+                list_kind(prev).unwrap_or_default().to_string(),
+                kind.to_string(),
+                tight_pair,
+            ));
+        }
+        if child["type"].as_str() == Some("code_block")
+            && child["attrs"]["htmlBlock"].as_bool() == Some(true)
+            && child["content"].as_array().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|n| n["text"].as_str())
+                    .collect::<String>()
+                    .trim()
+                    == "<!-- end list -->"
+            })
+        {
+            out.push((String::new(), String::new(), false));
+        }
+        collect_boundary_kinds(child, out);
+        if kind.is_some() {
+            prev_list = Some(child);
+        } else {
+            prev_list = None;
+        }
+    }
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -3076,6 +3194,72 @@ mod tests {
             assert!(first.contains(needle), "item {needle} preserved: {first:?}");
         }
         assert_eq!(first, second, "blockquote lists are a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_no_end_list_artefact() {
+        // #1397: adjacent lists of DIFFERENT kinds (bullet vs ordered vs
+        // task) must save separated by blank lines only - never with the
+        // renderer's <!-- end list --> comment, which used to reopen as a
+        // phantom html code_block between the lists.
+        for original in [
+            "- a\n\n1. b\n",
+            "1. a\n\n- b\n",
+            "- a\n- b\n\n1. c\n2. d\n",
+            "1. [ ] a\n\n- b\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.contains("```html"),
+                "no html-fence artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_in_blockquote_fixpoint() {
+        // #1397: the blockquote shape was not even a save fixpoint.
+        let (first, second) = two_saves("> - a\n>\n> 1. b\n");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert_eq!(first, second, "blockquote shape is a fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let quote = &doc["content"][0];
+        assert_eq!(quote["type"], "blockquote");
+        let kinds: Vec<&str> = quote["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
+    }
+
+    #[test]
+    fn test_saved_end_list_artefact_reopens_without_phantom_block() {
+        // #1397: a file already saved WITH the renderer artefact between
+        // two lists reopens as exactly the two lists - no phantom
+        // code_block between them.
+        let doc = markdown_to_prosemirror("- a\n\n<!-- end list -->\n\n1. b\n");
+        let kinds: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
     }
 
     #[test]
