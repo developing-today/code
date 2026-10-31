@@ -198,6 +198,12 @@ jobs:
           fi
           echo "all legs succeeded"
       - name: Print the #140 measurement table
+        # Step-level always(): the job-level `always()` does not override
+        # a step's default success() condition, so the failing gate above
+        # would skip this step on exactly the red runs whose timings the
+        # #140 baseline needs (Codex P2). The gate keeps its exit 1 and
+        # the job conclusion stays failed.
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
