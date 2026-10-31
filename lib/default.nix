@@ -607,6 +607,20 @@ let
         inherit mcpx idMailDeploy;
         mcpx-docs = mcpxDocs;
       };
+      checks = {
+        # The packaging test (#1981): run the built mcpx artifact --
+        # never the source tree -- with an empty HOME: --version,
+        # the wrapper PATH (via `mcpx doctor` in a scrubbed
+        # environment), the man page and completions, and a stdio
+        # serve handshake. The script is the single source, shared
+        # with the hand-run command in pkgs/mcpx/AGENTS.md.
+        mcpx-packaging = pkgs.runCommand "mcpx-packaging-test" {
+          nativeBuildInputs = [ pkgs.bash pkgs.gzip ];
+        } ''
+          bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
+          touch $out
+        '';
+      };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         mcpx = {
