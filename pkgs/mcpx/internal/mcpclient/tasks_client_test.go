@@ -505,6 +505,106 @@ func TestSeedToolExecPopulatesRequired(t *testing.T) {
 	}
 }
 
+// TestSeedToolExecRefreshReplacesSeed: a refreshed catalogue replaces
+// an earlier seed. A persistent serving client seeded while a tool was
+// optional must honour the tool's later redeclaration as required --
+// the pool re-seeds from its current catalogue before every call, and
+// a first-seed-wins snapshot would keep sending plain calls the
+// upstream rejects (Codex review on 5c9f8f497).
+func TestSeedToolExecRefreshReplacesSeed(t *testing.T) {
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "initialize":
+			return map[string]any{
+				"protocolVersion": "2025-11-25",
+				"serverInfo":      map[string]any{"name": "fake", "version": "1"},
+				"capabilities":    map[string]any{},
+			}
+		case "tools/call":
+			if _, ok := params["task"]; !ok {
+				return map[string]any{"content": []any{map[string]any{"type": "text", "text": "plain"}}}
+			}
+			return map[string]any{"task": map[string]any{
+				"taskId": "t1", "status": "completed", "ttl": 60000, "pollInterval": 1,
+			}}
+		case "tasks/result":
+			return map[string]any{"content": []any{map[string]any{"type": "text", "text": "seeded-done"}}}
+		}
+		return nil
+	})
+	c := dialLegacy(t, s)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c.SeedToolExec([]mcpclient.Tool{
+		{Name: "flips", Execution: json.RawMessage(`{"taskSupport":"optional"}`)},
+	})
+	raw, err := c.CallTool(ctx, "flips", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "plain") {
+		t.Fatalf("optional seed: result = %s, want the plain-call payload", raw)
+	}
+
+	// The catalogue refresh learns the tool is now required; the new
+	// seed must replace the old one.
+	c.SeedToolExec([]mcpclient.Tool{
+		{Name: "flips", Execution: json.RawMessage(`{"taskSupport":"required"}`)},
+	})
+	raw, err = c.CallTool(ctx, "flips", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "seeded-done") {
+		t.Fatalf("refreshed required seed: result = %s, want the tasks/result payload", raw)
+	}
+}
+
+// TestSeedToolExecNeverOverridesOwnList: seeding fills gaps only -- a
+// tool the client listed itself keeps its listed declaration even when
+// the seed disagrees.
+func TestSeedToolExecNeverOverridesOwnList(t *testing.T) {
+	s := newScripted(func(method string, params map[string]any) any {
+		switch method {
+		case "initialize":
+			return map[string]any{
+				"protocolVersion": "2025-11-25",
+				"serverInfo":      map[string]any{"name": "fake", "version": "1"},
+				"capabilities":    map[string]any{},
+			}
+		case "tools/list":
+			return toolList()
+		case "tools/call":
+			if _, ok := params["task"]; ok {
+				return map[string]any{"task": map[string]any{
+					"taskId": "t1", "status": "completed", "ttl": 60000, "pollInterval": 1,
+				}}
+			}
+			return map[string]any{"content": []any{map[string]any{"type": "text", "text": "plain"}}}
+		case "tasks/result":
+			return map[string]any{"content": []any{map[string]any{"type": "text", "text": "task-done"}}}
+		}
+		return nil
+	})
+	c := dialLegacy(t, s)
+	listFirst(t, c)
+	// The client's own list says opt is optional; a seed claiming
+	// required must not change that.
+	c.SeedToolExec([]mcpclient.Tool{
+		{Name: "opt", Execution: json.RawMessage(`{"taskSupport":"required"}`)},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := c.CallTool(ctx, "opt", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "plain") {
+		t.Fatalf("result = %s, want the plain-call payload (own list wins over seed)", raw)
+	}
+}
+
 // TestLegacyTaskRelayRidesTheCall: a downstream relay's _meta reaches
 // the task-augmented tools/call, as it does on the plain path.
 func TestLegacyTaskRelayRidesTheCall(t *testing.T) {

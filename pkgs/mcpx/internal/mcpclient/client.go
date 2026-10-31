@@ -171,6 +171,14 @@ type Client struct {
 	// taskSupport "required" handling (tasks.go). A nil map means this
 	// client has never listed, and its calls take the plain path.
 	toolExec map[string]string
+	// toolExecSeeded holds taskSupport declarations seeded from the
+	// pool's cached catalogue (SeedToolExec) for tools this client has
+	// not listed itself. It is tracked separately from toolExec so a
+	// refreshed catalogue can replace earlier seeds -- a tool that
+	// changed from optional to required must not keep the stale seeded
+	// value -- while never overriding the client's own list, which
+	// resolveTaskSupport consults first.
+	toolExecSeeded map[string]string
 	// invalidTools are tools excluded for invalid annotations, with why.
 	invalidTools map[string]string
 	// listen is the subscriptions/listen stream of a modern connection.
@@ -1378,29 +1386,30 @@ func (c *Client) recordToolHints(tools []Tool) {
 	c.mu.Unlock()
 }
 
-// SeedToolExec merges taskSupport declarations learned elsewhere -- the
-// pool's cached catalogue -- into this client's snapshot, for names the
-// client has not listed itself. Pool.refreshSchemas lists on whichever
-// instance the schema lease happens to hold; a session- or call-scoped
-// serving client, or a restarted global instance behind a retained
-// catalogue, may never have listed, and its snapshot would otherwise
-// stay empty so a taskSupport-"required" tool silently took the plain
-// path (#1556 Codex review). The client's own list always wins:
-// seeding only fills gaps.
+// SeedToolExec records taskSupport declarations learned elsewhere --
+// the pool's cached catalogue -- for names the client has not listed
+// itself. Pool.refreshSchemas lists on whichever instance the schema
+// lease happens to hold; a session- or call-scoped serving client, or
+// a restarted global instance behind a retained catalogue, may never
+// have listed, and its snapshot would otherwise stay empty so a
+// taskSupport-"required" tool silently took the plain path (#1556
+// Codex review). The seeds live in their own map, replaced whole on
+// every call as recordToolHints replaces the listed snapshot: the
+// pool re-seeds from its current catalogue before every pooled call,
+// so a refreshed catalogue must be able to replace an earlier seed (a
+// tool redeclared from optional to required), while the client's own
+// list -- consulted first by resolveTaskSupport -- is never touched.
 func (c *Client) SeedToolExec(tools []Tool) {
 	if len(tools) == 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.toolExec == nil {
-		c.toolExec = make(map[string]string, len(tools))
-	}
+	seeded := make(map[string]string, len(tools))
 	for _, t := range tools {
-		if _, ok := c.toolExec[t.Name]; !ok {
-			c.toolExec[t.Name] = parseTaskSupport(t.Execution)
-		}
+		seeded[t.Name] = parseTaskSupport(t.Execution)
 	}
+	c.mu.Lock()
+	c.toolExecSeeded = seeded
+	c.mu.Unlock()
 }
 
 // ListResources returns static resources plus resource templates.

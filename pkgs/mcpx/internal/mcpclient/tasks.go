@@ -87,13 +87,19 @@ func parseTaskSupport(raw json.RawMessage) string {
 // pool also seeds it from its cached catalogue before a pooled call
 // (Client.SeedToolExec): refreshSchemas lists on whichever instance the
 // schema lease happens to hold, which is not necessarily the client
-// that later serves a session- or call-scoped call. A client that has
+// that later serves a session- or call-scoped call. Seeds are kept
+// apart from the listed snapshot and replaced on every seed, so a
+// refreshed catalogue supersedes an earlier seed; the client's own
+// list, when it has one for the name, always wins. A client that has
 // neither listed nor been seeded resolves "" -- the plain path, exactly
 // what it did before task execution existed.
 func (c *Client) resolveTaskSupport(name string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.toolExec[name]
+	if v, ok := c.toolExec[name]; ok {
+		return v
+	}
+	return c.toolExecSeeded[name]
 }
 
 // taskPollInterval is how long to wait between tasks/get polls: the
