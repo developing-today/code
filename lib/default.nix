@@ -601,10 +601,13 @@ let
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
+      pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
+        cf = pkgs.callPackage ../pkgs/cf { };
+      };
     in
     {
       packages = {
-        inherit mcpx idMailDeploy;
+        inherit mcpx idMailDeploy pkarrDeploy;
         mcpx-docs = mcpxDocs;
       };
       checks = {
@@ -623,6 +626,7 @@ let
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";

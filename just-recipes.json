@@ -85,6 +85,35 @@
               "namepath": "id::root::chown",
               "shebang": true
             },
+            "deploy-pkarr": {
+              "attributes": [{ "group": "pkarr" }],
+              "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
+              "dependencies": [],
+              "doc": "Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+              "name": "deploy-pkarr",
+              "parameters": [
+                {
+                  "default": null,
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "star",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "args",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                }
+              ],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::deploy-pkarr",
+              "shebang": false
+            },
             "fix": {
               "attributes": [{ "group": "format" }],
               "body": [],
@@ -256,6 +285,70 @@
               "quiet": false,
               "namepath": "id::root::mcpx-stop",
               "shebang": false
+            },
+            "mcpx-test-affected": {
+              "attributes": [{ "group": "util" }],
+              "body": [
+                [
+                  "python3 pkgs/mcpx/scripts/affected-tests.py --base ",
+                  [["variable", "base"]],
+                  " ",
+                  [["variable", "args"]]
+                ]
+              ],
+              "dependencies": [],
+              "doc": "agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)",
+              "name": "mcpx-test-affected",
+              "parameters": [
+                {
+                  "default": "origin/main",
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "singular",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "base",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                },
+                {
+                  "default": null,
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "star",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "args",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                }
+              ],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::mcpx-test-affected",
+              "shebang": false
+            },
+            "rebuild": {
+              "attributes": [{ "group": "nixos" }],
+              "body": [["#!/usr/bin/env bash"], ["set -euo pipefail"], ["just update-inputs-all"], ["just switch"]],
+              "dependencies": [],
+              "doc": "Update all flake inputs, then rebuild and switch NixOS configuration",
+              "name": "rebuild",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::rebuild",
+              "shebang": true
             },
             "stage-docs": {
               "attributes": [{ "group": "docs" }],
@@ -672,7 +765,7 @@
             "windows_shell": null,
             "working_directory": null
           },
-          "source": "/tmp/wt-tf2/root.just",
+          "source": "/home/hatch/git/wt-pkarr/root.just",
           "unexports": [],
           "warnings": []
         }
@@ -753,6 +846,35 @@
           "private": false,
           "quiet": false,
           "namepath": "id::audit",
+          "shebang": false
+        },
+        "bench": {
+          "attributes": [],
+          "body": [["cargo bench --bench world_bench -- ", [["variable", "args"]]]],
+          "dependencies": [],
+          "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
+          "name": "bench",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "star",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "args",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::bench",
           "shebang": false
         },
         "build": {
@@ -1391,6 +1513,72 @@
           "namepath": "id::crash-gate",
           "shebang": false
         },
+        "crash-gate-control": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            [
+              "cargo test --release --features web --test crash -- --include-ignored full_lying_sync_control_produces_failures"
+            ],
+            ["@echo \"✓ Crash gate (full lying-sync controls) passed\""]
+          ],
+          "dependencies": [],
+          "doc": null,
+          "name": "crash-gate-control",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::crash-gate-control",
+          "shebang": false
+        },
+        "crash-gate-ingest": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --release --features web --test crash -- --include-ignored ingest_survives_every_crash_point"],
+            ["@echo \"✓ Crash gate (full ingest sweep) passed\""]
+          ],
+          "dependencies": [],
+          "doc": null,
+          "name": "crash-gate-ingest",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::crash-gate-ingest",
+          "shebang": false
+        },
+        "crash-gate-sampled": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --release --features web --test crash -- --skip write_corpus"],
+            ["@echo \"✓ Crash gate (sampled + corpus replay) passed\""]
+          ],
+          "dependencies": [],
+          "doc": "losing all PR coverage.",
+          "name": "crash-gate-sampled",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::crash-gate-sampled",
+          "shebang": false
+        },
+        "crash-gate-sweep": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --release --features web --test crash -- --include-ignored full_sweep_has_no_failures"],
+            ["@echo \"✓ Crash gate (full sweeps) passed\""]
+          ],
+          "dependencies": [],
+          "doc": null,
+          "name": "crash-gate-sweep",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::crash-gate-sweep",
+          "shebang": false
+        },
         "default": {
           "attributes": [],
           "body": [],
@@ -1523,6 +1711,19 @@
           "private": false,
           "quiet": false,
           "namepath": "id::just-recipes",
+          "shebang": false
+        },
+        "just-recipes-check": {
+          "attributes": [{ "group": "deps" }],
+          "body": [["bash scripts/just-recipes-check.sh"]],
+          "dependencies": [],
+          "doc": "Fail when just-recipes.json has drifted from this justfile (#2729)",
+          "name": "just-recipes-check",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::just-recipes-check",
           "shebang": false
         },
         "kill": {
@@ -2426,7 +2627,7 @@
           "attributes": [{ "group": "test" }],
           "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
           "dependencies": [],
-          "doc": "pair (#869).",
+          "doc": "pair (#869; 3 → 4 shards in #551 to rebalance the ~12.5 min shards).",
           "name": "test-shard-sandbox",
           "parameters": [
             {
@@ -3010,7 +3211,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/tmp/wt-tf2/pkgs/id/justfile",
+      "source": "/home/hatch/git/wt-pkarr/pkgs/id/justfile",
       "unexports": [],
       "warnings": []
     }
@@ -3092,6 +3293,35 @@
       "private": false,
       "quiet": false,
       "namepath": "default",
+      "shebang": false
+    },
+    "deploy-pkarr": {
+      "attributes": [{ "group": "pkarr" }],
+      "body": [["nix run .#pkarr-deploy -- ", [["variable", "args"]]]],
+      "dependencies": [],
+      "doc": "Deploy the pkarr Worker via the nix flake app (cf versions flow; extra args go to deploy.mjs, e.g. --dry-run, --deploy-version <id> to roll back)",
+      "name": "deploy-pkarr",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "deploy-pkarr",
       "shebang": false
     },
     "fix": {
@@ -3265,6 +3495,65 @@
       "quiet": false,
       "namepath": "mcpx-stop",
       "shebang": false
+    },
+    "mcpx-test-affected": {
+      "attributes": [{ "group": "util" }],
+      "body": [
+        ["python3 pkgs/mcpx/scripts/affected-tests.py --base ", [["variable", "base"]], " ", [["variable", "args"]]]
+      ],
+      "dependencies": [],
+      "doc": "agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)",
+      "name": "mcpx-test-affected",
+      "parameters": [
+        {
+          "default": "origin/main",
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "singular",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "base",
+          "pattern": null,
+          "short": null,
+          "value": null
+        },
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "mcpx-test-affected",
+      "shebang": false
+    },
+    "rebuild": {
+      "attributes": [{ "group": "nixos" }],
+      "body": [["#!/usr/bin/env bash"], ["set -euo pipefail"], ["just update-inputs-all"], ["just switch"]],
+      "dependencies": [],
+      "doc": "Update all flake inputs, then rebuild and switch NixOS configuration",
+      "name": "rebuild",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "rebuild",
+      "shebang": true
     },
     "stage-docs": {
       "attributes": [{ "group": "docs" }],
@@ -3678,7 +3967,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/tmp/wt-tf2/justfile",
+  "source": "/home/hatch/git/wt-pkarr/justfile",
   "unexports": [],
   "warnings": []
 }
