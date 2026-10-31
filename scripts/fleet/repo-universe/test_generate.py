@@ -10,12 +10,14 @@ Covers the packet's three named tests:
   #1511/#1650 are present and class `owned`.
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 GENERATE = HERE / "generate.py"
@@ -80,6 +82,29 @@ class GenerateTest(unittest.TestCase):
         out = self.run_gen()
         for name in FLEET_AND_SIDE:
             self.assertIn(name, out)
+
+    def test_live_refuses_wrong_authenticated_account(self) -> None:
+        # --live enumerates user/repos?affiliation=owner, i.e. the
+        # AUTHENTICATED account's repos. Run as anyone but dezren39 it
+        # must fail before writing, never overwrite the artifact with
+        # the wrong universe.
+        spec = importlib.util.spec_from_file_location("generate", GENERATE)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+
+        def fake_run(cmd, **kwargs):
+            if "--paginate" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"login": "some-collaborator"}), stderr="")
+
+        live_out = self.dir / "live-out.yaml"
+        with mock.patch.object(gen.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(SystemExit):
+                gen.main(["--live",
+                          "--census", str(self.dir / "census.md"),
+                          "--output", str(live_out)])
+        self.assertFalse(live_out.exists())
 
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()

@@ -90,6 +90,31 @@ def load_enumeration(path: str | None) -> list[dict]:
     return decode_pages(Path(path).read_text())
 
 
+EXPECTED_USER_LOGIN = "dezren39"
+
+
+def authenticated_login() -> str:
+    out = subprocess.run(
+        ["gh", "api", "user"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    return json.loads(out)["login"]
+
+
+def require_expected_account() -> None:
+    """--live guard: user/repos?affiliation=owner enumerates the
+    AUTHENTICATED account, so running as anyone but dezren39 would
+    silently overwrite the artifact with the wrong universe. Fail
+    before fetching or writing anything."""
+    login = authenticated_login()
+    if login != EXPECTED_USER_LOGIN:
+        raise SystemExit(
+            f"error: --live must run authenticated as {EXPECTED_USER_LOGIN} "
+            f"(authenticated as {login!r}); refusing to regenerate the "
+            "repo-universe artifact from the wrong account"
+        )
+
+
 def fetch_live(endpoint: str) -> list[dict]:
     out = subprocess.run(
         ["gh", "api", "--paginate", endpoint],
@@ -230,6 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.live:
+        require_expected_account()
         org_repos = fetch_live("orgs/developing-today/repos?per_page=100&type=all")
         # user/repos?affiliation=owner, NOT users/dezren39/repos: the
         # latter returns public repos only and silently misses private
