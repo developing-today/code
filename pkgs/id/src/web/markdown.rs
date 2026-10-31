@@ -204,6 +204,13 @@ impl FenceTracker {
     fn in_fence(&self) -> bool {
         self.open.is_some()
     }
+
+    /// Forget any open fence: a fence opened inside a container
+    /// ends implicitly when the container ends, with no closing
+    /// delimiter line (Codex P2 on #1565's tenth cut).
+    fn reset(&mut self) {
+        self.open = None;
+    }
 }
 
 /// HTML-block tracking for the source scans below (Codex P2 on
@@ -280,11 +287,16 @@ impl HtmlBlockTracker {
             ("<style", "</style>"),
             ("<textarea", "</textarea>"),
         ] {
+            // The tag-named prefixes follow the CommonMark type-1
+            // boundary exactly: whitespace, '>', or end-of-line
+            // after the name. Anything else (`<pre/>`, `<prex>`)
+            // is a generic tag block ending at a blank line, not a
+            // marker-ended block (Codex P2 on #1565's tenth cut).
             let boundary_ok = !prefix[1..].chars().all(|c| c.is_ascii_alphabetic())
-                || lower
-                    .as_bytes()
-                    .get(prefix.len())
-                    .is_some_and(|b| !b.is_ascii_alphanumeric() && *b != b'-');
+                || match lower.as_bytes().get(prefix.len()) {
+                    None => true,
+                    Some(b) => b.is_ascii_whitespace() || *b == b'>',
+                };
             if boundary_ok && lower.starts_with(prefix) {
                 if !lower[prefix.len()..].contains(marker) {
                     self.end = Some(HtmlBlockEnd::Marker(marker));
@@ -421,10 +433,19 @@ fn is_setext_underline(stripped: &str) -> bool {
 /// paragraph continuation of a footnote definition: another
 /// definition, an ATX heading, a fence, a blockquote, a thematic
 /// break, an HTML block opener, or a list/blockquote container line.
+/// Whether a line is an ATX heading: 1-6 `#`s followed by a
+/// space, a tab, or end-of-line (CommonMark). `#hashtag` is
+/// paragraph text, not a heading (Codex P2 on #1565's tenth cut).
+fn is_atx_heading(stripped: &str) -> bool {
+    let hashes = stripped.bytes().take_while(|&b| b == b'#').count();
+    (1..=6).contains(&hashes)
+        && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
+}
+
 fn starts_new_block(stripped: &str) -> bool {
     footnote_definition_label(stripped).is_some()
         || is_link_reference_definition_start(stripped)
-        || stripped.starts_with('#')
+        || is_atx_heading(stripped)
         || stripped.starts_with('>')
         || stripped.starts_with("```")
         || stripped.starts_with("~~~")
@@ -507,6 +528,21 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // on a prefixed delimiter), while a container-shaped line
         // inside a top-level fence stays literal (Codex P2 on
         // #1565's fifth and sixth cuts).
+        // A fence opened inside a blockquote ends implicitly
+        // when the container ends: a following line carrying no
+        // container prefix at all is outside the quote, so the
+        // fence is over even without a closing delimiter (Codex
+        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
+        // `[^real]: note` -- the scanner kept the fence open and
+        // skipped the real definition).
+        if fence.in_fence()
+            && fence_prefix.contains('>')
+            && !stripped.starts_with(&fence_prefix)
+            && strip_container_prefixes(stripped) == stripped
+        {
+            fence.reset();
+            fence_prefix.clear();
+        }
         let fence_line = if fence.in_fence() {
             if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
                 &stripped[fence_prefix.len()..]
@@ -721,6 +757,21 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             i += 1;
             continue;
         }
+        // A fence opened inside a blockquote ends implicitly
+        // when the container ends: a following line carrying no
+        // container prefix at all is outside the quote, so the
+        // fence is over even without a closing delimiter (Codex
+        // P2 on #1565's tenth cut: `> ``` ` / `> code` / blank /
+        // `[^real]: note` -- the scanner kept the fence open and
+        // skipped the real definition).
+        if fence.in_fence()
+            && fence_prefix.contains('>')
+            && !stripped.starts_with(&fence_prefix)
+            && strip_container_prefixes(stripped) == stripped
+        {
+            fence.reset();
+            fence_prefix.clear();
+        }
         let fence_line = if fence.in_fence() {
             if !fence_prefix.is_empty() && stripped.starts_with(&fence_prefix) {
                 &stripped[fence_prefix.len()..]
@@ -752,15 +803,24 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             i += 1;
             continue;
         }
-        if at_block_start && is_link_reference_definition_start(stripped) {
-            let close = stripped.find(']').expect("start shape checked");
+        // Reference definitions inside a container are
+        // document-global (Codex P2 on #1565's tenth cut):
+        // detect the definition on the container-stripped line;
+        // the original line is still collected verbatim below.
+        let def_stripped = if is_link_reference_definition_start(stripped) {
+            stripped
+        } else {
+            container_stripped
+        };
+        if at_block_start && is_link_reference_definition_start(def_stripped) {
+            let close = def_stripped.find(']').expect("start shape checked");
             // Collect the COMPLETE definition block: the destination
             // or the title may sit on following lines, and collecting
             // only the opening line degraded the reference to literal
             // text or silently dropped its title (Codex P2 on
             // #1565's seventh cut).
             let mut block: Vec<&str> = vec![line];
-            let mut after = stripped[close + 2..].to_string();
+            let mut after = def_stripped[close + 2..].to_string();
             let mut j = i + 1;
             while j < lines.len() {
                 let next = lines[j];
@@ -826,7 +886,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // after it is that paragraph's continuation, not a
         // definition (Codex P2 on #1565's ninth cut).
         let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
-        at_block_start = stripped.starts_with('#')
+        at_block_start = is_atx_heading(stripped)
             || stripped.starts_with('>')
             || strip_container_prefixes(stripped) != stripped
             || is_thematic_break(stripped)
@@ -4907,7 +4967,78 @@ mod tests {
         assert_eq!(first, second, "blockquote-html round-trip is a fixpoint");
     }
 
+        #[test]
+    fn test_footnote_after_blockquote_fence_container_end_recovered() {
+        // Codex P2 on #1565's tenth cut: a fence opened inside a
+        // blockquote ends implicitly when the quote ends (blank
+        // line, no closing delimiter); the scanner kept the fence
+        // open and skipped the real definition after it.
+        let original = "> ```\n> code\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after blockquote fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "blockquote-fence round-trip is a fixpoint");
+    }
+
     #[test]
+    fn test_footnote_reference_link_uses_blockquote_definition() {
+        // Codex P2 on #1565's tenth cut: a reference definition
+        // inside a blockquote is document-global, but the
+        // collector tested the unstripped line (still starting
+        // with `>`) and omitted it from the synthesis context.
+        let original = "> [url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "blockquote reference definition resolves in recovered footnote: {first:?}"
+        );
+        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_lazy_continuation_hashtag_line_preserved() {
+        // Codex P2 on #1565's tenth cut: `#hashtag` is paragraph
+        // text (no whitespace after the hashes), not an ATX
+        // heading, so it lazily continues the definition instead
+        // of ending it.
+        let original = "[^a]: First line.\n#hashtag\n";
+        let (first, second) = two_saves(original);
+        assert!(first.contains("First line."), "first line survives: {first:?}");
+        assert!(first.contains("#hashtag"), "hashtag continuation survives: {first:?}");
+        assert_eq!(first, second, "hashtag-continuation round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_after_self_closing_pre_recovered() {
+        // Codex P2 on #1565's tenth cut: `<pre/>` does not open a
+        // marker-ended `<pre>` block (the CommonMark type-1
+        // boundary is whitespace, `>`, or end-of-line); it is a
+        // generic tag block ending at the blank line, so the
+        // footnote after it is a real definition.
+        let original = "<pre/>\n\n[^real]: The note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .map(|n| n["attrs"]["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, ["real"], "definition after <pre/> is recovered");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("The note."), "note survives save: {first:?}");
+        assert_eq!(first, second, "self-closing-pre round-trip is a fixpoint");
+    }
+
+#[test]
     fn test_reference_after_lone_setext_marker_not_a_definition() {
         // Codex P2 on #1565's ninth cut: a lone `=` with no
         // preceding paragraph is paragraph text, so the
