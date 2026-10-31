@@ -149,3 +149,33 @@ func TestCheckHugeIntegerLiteralBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckExponentOverflowNotCancellable pins the fourth Codex
+// finding on PR 2955: the exponent clamp must not be a fixed sentinel
+// a long mantissa can cancel. "1" followed by 4,096,000 zeros with
+// e-1000000 is 10^3096000 (far outside the safe range), not 1; the
+// fractional permutation is a tiny nonzero fraction, not 1.
+func TestCheckExponentOverflowNotCancellable(t *testing.T) {
+	params := []Param{{Name: "n", Path: []string{"n"}}}
+	h1 := func(string) (string, bool) { return "1", true }
+	hugeInt := `{"n": 1` + strings.Repeat("0", 4096000) + `e-1000000}`
+	err := Check(params, json.RawMessage(hugeInt), h1)
+	if err == nil || !strings.Contains(err.Error(), "outside the JavaScript safe-integer range") {
+		t.Errorf("Check(1<4096000 zeros>e-1000000, header 1) = %v, want safe-range error", err)
+	}
+	tinyFrac := `{"n": 0.` + strings.Repeat("0", 4095999) + `1e1000000}`
+	err = Check(params, json.RawMessage(tinyFrac), h1)
+	if err == nil || !strings.Contains(err.Error(), "is not an integer") {
+		t.Errorf("Check(0.<4095999 zeros>1e1000000, header 1) = %v, want not-an-integer error", err)
+	}
+	// The same literals in the header must not compare equal to 1 either.
+	for _, hdr := range []string{
+		"1" + strings.Repeat("0", 4096000) + "e-1000000",
+		"0." + strings.Repeat("0", 4095999) + "1e1000000",
+	} {
+		h := func(string) (string, bool) { return hdr, true }
+		if err := Check(params, json.RawMessage(`{"n": 1}`), h); err == nil {
+			t.Errorf("Check(body 1, header %.20q...) = nil, want a mismatch error", hdr)
+		}
+	}
+}

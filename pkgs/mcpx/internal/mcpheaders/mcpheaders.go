@@ -488,15 +488,29 @@ func parseDecimal(s string) (decimal, bool) {
 		if i == es {
 			return decimal{}, false
 		}
-		// The exponent text itself is attacker-controlled length;
-		// anything past six significant digits is clamped to a
-		// sentinel far beyond the processing bounds.
+		// The exponent text itself is attacker-controlled length,
+		// so it is parsed exactly only up to a saturation bound --
+		// and the bound is tied to the input length, not fixed.
+		// Mantissa normalisation can shift the scale by at most
+		// len(s) (every input byte is at most one mantissa digit
+		// or cancelling zero), so an exponent beyond
+		// len(s)+maxDecimalDigits can never be cancelled back
+		// into the processing bounds, while every exponent up to
+		// it keeps its exact value and classification (Codex
+		// review on PR 2955: a fixed sentinel of 4096000 was
+		// exactly cancelled by a mantissa carrying that many
+		// zeros, resurrecting 10^3096000 -- and a tiny fraction
+		// -- as the integer 1).
 		et := strings.TrimLeft(s[es:i], "0")
-		if len(et) > 6 {
-			exp = sign * (maxDecimalDigits * 1000)
-		} else if et != "" {
-			e, _ := strconv.Atoi(et)
-			exp = sign * e
+		if et != "" {
+			sat := len(s) + maxDecimalDigits + 1
+			if len(et) > 9 {
+				exp = sign * sat
+			} else if e, _ := strconv.Atoi(et); e > sat {
+				exp = sign * sat
+			} else {
+				exp = sign * e
+			}
 		}
 	}
 	if i != len(s) {
