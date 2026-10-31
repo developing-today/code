@@ -496,8 +496,12 @@ fn is_html_block_start(stripped: &str) -> bool {
 }
 
 fn starts_new_block(stripped: &str) -> bool {
+    // A link reference definition is deliberately NOT here: it
+    // cannot interrupt a paragraph, so a reference-shaped line
+    // after a footnote definition's first line is a lazy
+    // continuation of that paragraph (Codex P2 on #1565's
+    // twelfth cut).
     footnote_definition_label(stripped).is_some()
-        || is_link_reference_definition_start(stripped)
         || is_atx_heading(stripped)
         || stripped.starts_with('>')
         || stripped.starts_with("```")
@@ -742,11 +746,34 @@ fn link_reference_definition_has_title(after: &str) -> bool {
 
 /// Whether a stripped line opens a link reference definition
 /// (`[label]:`), footnote definitions excluded by the caller.
+/// The index of the first UNESCAPED `]` in `s`: a `\]` inside
+/// a reference label is label text, not the label's end (Codex
+/// P2 on #1565's twelfth cut). Shared by the shape check and the
+/// collector's destination extraction so they can never disagree
+/// about where the label ends.
+fn find_label_close(s: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == ']' {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn is_link_reference_definition_start(stripped: &str) -> bool {
     if !stripped.starts_with('[') {
         return false;
     }
-    match stripped.find(']') {
+    match find_label_close(stripped) {
         Some(close) => stripped[close + 1..].starts_with(':'),
         None => false,
     }
@@ -767,6 +794,13 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
     // lines and other definitions leave the next line block-eligible;
     // paragraph text does not.
     let mut at_block_start = true;
+    // Inside a footnote definition's block (until a blank line or
+    // a new block starter), a reference-shaped line is the
+    // footnote's own lazy continuation, not a standalone
+    // definition: collecting it would make the synthesis context
+    // resolve as a link what the document keeps literal (Codex
+    // P2 on #1565's twelfth cut).
+    let mut in_footnote_block = false;
     let lines: Vec<&str> = markdown.lines().collect();
     let mut i = 0;
     while i < lines.len() {
@@ -784,6 +818,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                 html_prefix.clear();
             }
             html.feed(stripped);
+            in_footnote_block = false;
             at_block_start = true;
             i += 1;
             continue;
@@ -886,6 +921,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         if footnote_definition_label(stripped).is_some() {
             // A footnote definition is its own leaf block; a link
             // definition after it starts a fresh block.
+            in_footnote_block = true;
             at_block_start = true;
             i += 1;
             continue;
@@ -899,8 +935,8 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         } else {
             container_stripped
         };
-        if at_block_start && is_link_reference_definition_start(def_stripped) {
-            let close = def_stripped.find(']').expect("start shape checked");
+        if at_block_start && !in_footnote_block && is_link_reference_definition_start(def_stripped) {
+            let close = find_label_close(def_stripped).expect("start shape checked");
             // Collect the COMPLETE definition block: the destination
             // or the title may sit on following lines, and collecting
             // only the opening line degraded the reference to literal
@@ -972,6 +1008,9 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         // itself paragraph text, and a definition-shaped line
         // after it is that paragraph's continuation, not a
         // definition (Codex P2 on #1565's ninth cut).
+        if is_atx_heading(stripped) || is_thematic_break(stripped) || starts_new_block(stripped) {
+            in_footnote_block = false;
+        }
         let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
         // A blockquote line's eligibility follows its CONTENT
         // (eleventh cut): `> Body` is paragraph text inside the
@@ -4723,6 +4762,40 @@ mod tests {
             "inline HTML continuation survives save: {first:?}"
         );
         assert_eq!(first, second, "inline HTML round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_shaped_line_continues_footnote_paragraph() {
+        // #1565 twelfth cut (Codex P2): a link reference
+        // definition cannot interrupt a paragraph, so a
+        // reference-shaped line after a footnote definition's
+        // first line is its lazy continuation and must survive
+        // as literal text, not stop collection.
+        let original = "[^a]: First line.\n[url]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.")
+                && first.contains("\\[url\\]:")
+                && !first.contains("[url](https://example.com)")
+                && first.contains("https://example.com"),
+            "reference-shaped continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "reference continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_escaped_bracket_in_reference_label_resolves() {
+        // #1565 twelfth cut (Codex P2): a \] inside a reference
+        // label is label text; the definition must still be
+        // collected (at the unescaped close) so the orphan
+        // footnote's reference-style link resolves on save.
+        let original = "[a\\]b]: https://example.com\n\n[^orphan]: [target][a\\]b]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("](https://example.com)"),
+            "escaped-label reference resolves to a link: {first:?}"
+        );
+        assert_eq!(first, second, "escaped label round-trip is a fixpoint");
     }
 
     #[test]
