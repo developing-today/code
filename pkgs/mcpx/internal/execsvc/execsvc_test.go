@@ -470,3 +470,35 @@ for (let i = 0; i < 200; i++) { console.log("out " + i); emit({ i }); }
 		t.Fatalf("the sink was entered concurrently %d times", n)
 	}
 }
+
+// A shebang file runs through the shared service entry point -- the one
+// /v1/exec and the CLI both pass through -- under its own interpreter,
+// with output and exit code propagating (#2167). No JavaScript runtime
+// is involved, so this test never skips for one.
+func TestRunWithShebangFile(t *testing.T) {
+	svc := service(t, store(t))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "greet.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho execsvc-shebang-$MCPX_RUNTIME\nexit 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var frames []execsvc.Frame
+	res, err := svc.RunWith(context.Background(), runner.Options{
+		File: path, Permissions: "all",
+	}, execsvc.Options{}, func(f execsvc.Frame) error {
+		frames = append(frames, f)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunWith: %v", err)
+	}
+	if res.ExitCode != 5 {
+		t.Errorf("ExitCode = %d, want 5", res.ExitCode)
+	}
+	if !strings.Contains(res.Stdout, "execsvc-shebang-sh") {
+		t.Errorf("Stdout = %q, want the script's output with MCPX_RUNTIME=sh", res.Stdout)
+	}
+	if res.Runtime != "sh" {
+		t.Errorf("Runtime = %q, want sh", res.Runtime)
+	}
+}

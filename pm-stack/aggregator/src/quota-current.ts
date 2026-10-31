@@ -76,6 +76,32 @@ function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   return "error";
 }
 
+/**
+ * Newest-pick ordering for gatherer entries (#2253): one shared
+ * comparator for every "newest entry wins" sort in this module. The
+ * sort key is the entry's parsed measuredAt, or -Infinity when the
+ * stamp does not parse to a finite time or sits beyond the
+ * future-skew bound — entryState already refuses such stamps the
+ * "ok" classification, but the stale-path pick must refuse them the
+ * win too, or a garbage or skewed write becomes the pool's displayed
+ * freshness (stamp + source) in place of the newest real read (the
+ * stale-path residual of the #1541 gate). Entries equal under the
+ * key (both unusable, or the same instant) keep their file order —
+ * Array.prototype.sort is stable — so all-finite inputs behave
+ * exactly as the raw Date.parse difference did.
+ */
+function newestFirst(nowMs: number): (a: QuotaCurrentEntry, b: QuotaCurrentEntry) => number {
+  const key = (e: QuotaCurrentEntry): number => {
+    const t = Date.parse(e.measuredAt);
+    return Number.isFinite(t) && t - nowMs <= QUOTA_CURRENT_FUTURE_SKEW_MS ? t : -Infinity;
+  };
+  return (a, b) => {
+    const ka = key(a);
+    const kb = key(b);
+    return ka === kb ? 0 : kb - ka;
+  };
+}
+
 function errorText(entry: QuotaCurrentEntry): string {
   if (entry.error) return entry.error;
   return entry.state === "unconfigured" ? "not configured on the gatherer host" : "gatherer could not read this pool";
@@ -164,7 +190,7 @@ function sameQuotaRead(a: QuotaCredentialRow, b: QuotaCredentialRow): boolean {
  * each get a row.
  */
 function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCredentialRow[] | undefined {
-  const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+  const newest = [...entries].sort(newestFirst(nowMs));
   const byCred = new Map<string, QuotaCurrentEntry>();
   for (const e of newest) {
     const key = e.credentialId ?? e.credentialLabel ?? e.providerId;
@@ -228,14 +254,14 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
     const freshOk = entries
       .filter((e) => entryState(e, nowMs) === "ok")
-      .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+      .sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
       if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
       const rows = credentialRows(entries, nowMs);
       if (rows) pool.credentials = rows;
       return pool;
     }
-    const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];
+    const newest = [...entries].sort(newestFirst(nowMs))[0];
     applyEntry(pool, newest, entryState(newest, nowMs));
     return pool;
   });
@@ -273,7 +299,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   const svc = services[idx];
   const freshOk = entries
     .filter((e) => entryState(e, nowMs) === "ok")
-    .sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt));
+    .sort(newestFirst(nowMs));
   const out = [...services];
   if (freshOk.length > 0) {
     const entry = freshOk[0];
@@ -304,7 +330,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
     };
     return out;
   }
-  const newest = [...entries].sort((a, b) => Date.parse(b.measuredAt) - Date.parse(a.measuredAt))[0];
+  const newest = [...entries].sort(newestFirst(nowMs))[0];
   const flag = `quota gatherer turso read ${entryState(newest, nowMs)} at ${newest.measuredAt}: ${errorText(newest)} — card keeps its last dated read`;
   if (svc.conflicts.includes(flag)) return services;
   out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };

@@ -27,11 +27,7 @@ let
   # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
-  commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
-  designCodeProxyPort = 18746;
-  agyProxyPort = 18743;
-  codexProxyPort = 18744;
   localProvider = port: models: {
     baseUrl = "http://127.0.0.1:${toString port}/v1";
     # The laptop proxies are loopback-only and do not check an API key;
@@ -196,7 +192,7 @@ in
           # Quota discipline (binding)
 
           - Plans only, never funds/PAYG. A 402 or quota error is a wall: one retry max on the same pool, then rotate or stop and report.
-          - Burn by expiry: use the pool that expires soonest; OpenAI (codex-proxy) is the final reserve — it is registered as a provider here but deliberately NOT in the default fallback chain.
+          - Burn by expiry: use the pool that expires soonest; OpenAI remains the final reserve but is reachable only as a leaf inside the OpenCode route pools, not as a direct OpenClaw provider.
           - Choose model AND effort per task, deliberately. Routine work: DeepSeek Flash. Flagships only for genuinely hard problems, right-sized effort.
           - Measure quotas before and during heavy work where a checker exists.
 
@@ -275,37 +271,15 @@ in
         };
       };
 
-      # Model routing: local plan proxies only (see QUOTAS.md). Primary is
-      # DeepSeek Flash on the CommandCode plan; fallbacks stay on plan
-      # routes; the Codex/OpenAI proxy is registered for explicit use as
-      # the final reserve, never as an automatic fallback.
+      # Model routing: OpenClaw uses only the opencode-route door
+      # (Drew, 2026-10-31). That door is pass-through only — it handles
+      # auth and translates pool routes; the underlying pools are
+      # reached exclusively through OpenCode routes (see QUOTAS.md).
       models = {
         mode = "merge";
         providers = {
-          commandcode = localProvider commandcodeProxyPort [
-            (model "deepseek/deepseek-v4-flash" "DeepSeek V4 Flash (CommandCode plan)")
-            (model "deepseek/deepseek-v4-pro" "DeepSeek V4 Pro (CommandCode plan)")
-            (model "moonshotai/kimi-k2.6" "Kimi K2.6 (CommandCode plan)")
-            (model "z-ai/glm-5.3-flash" "GLM 5.3 Flash (CommandCode plan)")
-          ];
-          design-code = localProvider designCodeProxyPort [
-            (model "deepseek-v4.1-flash" "DeepSeek V4.1 Flash (Open Design plan)")
-            (model "claude-haiku-5.5" "Claude Haiku 5.5 (Open Design plan)")
-            (model "gpt-6-luna" "GPT-6 Luna (Open Design plan)")
-          ];
-          agy = localProvider agyProxyPort [
-            (model "gemini-3.8-flash" "Gemini 3.8 Flash (Antigravity plan)")
-            (model "gemini-3.1-pro" "Gemini 3.1 Pro (Antigravity plan)")
-            (model "claude-sonnet-5-5" "Claude Sonnet 5.5 (Antigravity plan)")
-          ];
-          codex-proxy = localProvider codexProxyPort [
-            (model "gpt-5.6-luna" "GPT-5.6 Luna (ChatGPT plan — final reserve)")
-            (model "gpt-6-luna" "GPT-6 Luna (ChatGPT plan — final reserve)")
-            (model "gpt-5.6-sol" "GPT-5.6 Sol (ChatGPT plan — final reserve)")
-          ];
-          # The OpenCode server fronted by the route proxy (code#2229):
-          # each model id is an opencode-route pool, carried by the
-          # OpenCode build agent server-side.
+          # The route proxy (code#2229) fronts the OpenCode route
+          # pools (#2518): each model id is an opencode-route pool.
           opencode-route = localProvider opencodeRouteProxyPort [
             (model "workhorse" "Workhorse (OpenCode route pool)")
             (model "speed" "Speed (OpenCode route pool)")
@@ -325,11 +299,10 @@ in
       agents = {
         defaults = {
           model = {
-            primary = "commandcode/deepseek/deepseek-v4-flash";
+            primary = "opencode-route/workhorse";
             fallbacks = [
-              "design-code/deepseek-v4.1-flash"
-              "agy/gemini-3.8-flash"
-              "commandcode/moonshotai/kimi-k2.6"
+              "opencode-route/specialist"
+              "opencode-route/speed"
             ];
           };
           heartbeat = {
