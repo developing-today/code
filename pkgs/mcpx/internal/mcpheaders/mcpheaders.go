@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -290,14 +291,26 @@ func plain(root any, p Param) (string, bool, error) {
 	case bool:
 		return strconv.FormatBool(x), true, nil
 	case json.Number:
-		i, err := strconv.ParseInt(x.String(), 10, 64)
-		if err != nil {
+		if i, err := strconv.ParseInt(x.String(), 10, 64); err == nil {
+			if i > maxSafeInt || i < -maxSafeInt {
+				return "", false, fmt.Errorf("%s: %d is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), i)
+			}
+			return strconv.FormatInt(i, 10), true, nil
+		}
+		// A whole-valued number written in float form (42.0, 42.00,
+		// 4.2e1, -0.0) is an integer for comparison purposes: JSON
+		// Schema's integer type accepts it and the spec says integers
+		// compare numerically. Rejecting it here, before Check's
+		// numeric fallback can run, made the forgiveness one-sided —
+		// it only ever applied to the header's form (#1665).
+		f, err := strconv.ParseFloat(x.String(), 64)
+		if err != nil || math.Trunc(f) != f {
 			return "", false, fmt.Errorf("%s: %s is not an integer", strings.Join(p.Path, "."), x)
 		}
-		if i > maxSafeInt || i < -maxSafeInt {
-			return "", false, fmt.Errorf("%s: %d is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), i)
+		if f > float64(maxSafeInt) || f < -float64(maxSafeInt) {
+			return "", false, fmt.Errorf("%s: %s is outside the JavaScript safe-integer range", strings.Join(p.Path, "."), x)
 		}
-		return strconv.FormatInt(i, 10), true, nil
+		return strconv.FormatInt(int64(f), 10), true, nil
 	}
 	return "", false, fmt.Errorf("%s: a %T cannot be mirrored into a header", strings.Join(p.Path, "."), v)
 }

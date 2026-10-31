@@ -1,0 +1,50 @@
+package mcpheaders
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// TestCheckIntegerComparesNumericallyBothWays pins #1665: an integer
+// body value compares numerically against the header whichever side
+// carries the float form. Before the fix, plain() rejected any
+// float-form body literal as "not an integer" before the comparison
+// ran, so only a float-form header was forgiven.
+func TestCheckIntegerComparesNumericallyBothWays(t *testing.T) {
+	params := []Param{{Name: "n", Path: []string{"n"}}}
+	header := func(v string) func(string) (string, bool) {
+		return func(string) (string, bool) { return v, true }
+	}
+	accepted := []struct{ args, hdr string }{
+		{`{"n": 42}`, "42"},
+		{`{"n": 42}`, "42.0"},
+		{`{"n": 42.0}`, "42"},
+		{`{"n": 42.0}`, "42.0"},
+		{`{"n": 42.00}`, "42"},
+		{`{"n": 4.2e1}`, "42"},
+		{`{"n": -0.0}`, "0"},
+	}
+	for _, c := range accepted {
+		if err := Check(params, json.RawMessage(c.args), header(c.hdr)); err != nil {
+			t.Errorf("Check(%s, header %q) = %v, want nil", c.args, c.hdr, err)
+		}
+	}
+	rejected := []struct {
+		args, hdr, want string
+	}{
+		{`{"n": 42}`, "43", "does not match"},
+		{`{"n": 42.0}`, "43", "does not match"},
+		{`{"n": 42.5}`, "42", "is not an integer"},
+		{`{"n": 9007199254740993}`, "9007199254740993", "outside the JavaScript safe-integer range"},
+		{`{"n": 1e20}`, "100000000000000000000", "outside the JavaScript safe-integer range"},
+	}
+	for _, c := range rejected {
+		err := Check(params, json.RawMessage(c.args), header(c.hdr))
+		if err == nil {
+			t.Errorf("Check(%s, header %q) = nil, want error containing %q", c.args, c.hdr, c.want)
+		} else if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Check(%s, header %q) = %v, want error containing %q", c.args, c.hdr, err, c.want)
+		}
+	}
+}
