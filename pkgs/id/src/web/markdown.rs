@@ -132,7 +132,142 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     if let Some(token) = newline_token {
         restore_attr_newlines(&mut doc, &token);
     }
+    // #1565: comrak never emits a footnote definition that nothing
+    // references, so the conversion above cannot see one -- and a save
+    // then deletes it permanently (a definitions-only document saved
+    // as an empty file). Recover unreferenced definitions from the
+    // source and append them as the same PM nodes the referenced path
+    // produces.
+    preserve_unreferenced_footnote_definitions(&mut doc, &protected);
     doc
+}
+
+/// A footnote definition block found by the source pre-scan (#1565):
+/// its label and the block's verbatim source (the `[^label]:` line
+/// plus any indented continuation lines, trailing blank lines cut).
+struct FootnoteDefinitionBlock {
+    label: String,
+    source: String,
+}
+
+/// The label of a footnote definition starting on `line` (already
+/// stripped of up to three leading spaces), or `None` when the line
+/// does not start one. A definition opens as `[^label]:`.
+fn footnote_definition_label(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("[^")?;
+    let close = rest.find("]:")?;
+    let label = &rest[..close];
+    if label.is_empty() || label.contains('[') {
+        return None;
+    }
+    Some(label.to_string())
+}
+
+/// Scan `markdown` for top-level footnote definition blocks (#1565).
+/// Fence-aware like `protect_newline_destinations`: a definition-shaped
+/// line inside a fenced code block is literal text, not a definition.
+/// A block runs from its `[^label]:` line through the following blank
+/// or indented (>= 4 spaces / tab) lines -- the CommonMark continuation
+/// rule for footnote definitions. The harness is shape-generic so the
+/// #1004 link-reference-definition fix can share it later.
+fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBlock> {
+    let fence = "`".repeat(3);
+    let tilde_fence = "~".repeat(3);
+    let lines: Vec<&str> = markdown.lines().collect();
+    let mut blocks = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let stripped = line.trim_start_matches(' ');
+        if indent <= 3 && (stripped.starts_with(&fence) || stripped.starts_with(&tilde_fence)) {
+            in_fence = !in_fence;
+            i += 1;
+            continue;
+        }
+        if in_fence || indent > 3 {
+            i += 1;
+            continue;
+        }
+        let Some(label) = footnote_definition_label(stripped) else {
+            i += 1;
+            continue;
+        };
+        let mut source_lines: Vec<&str> = vec![line];
+        let mut last_content = 0;
+        let mut j = i + 1;
+        while j < lines.len() {
+            let next = lines[j];
+            if next.trim().is_empty() {
+                source_lines.push(next);
+                j += 1;
+                continue;
+            }
+            if next.starts_with("    ") || next.starts_with('\t') {
+                source_lines.push(next);
+                last_content = source_lines.len() - 1;
+                j += 1;
+                continue;
+            }
+            break;
+        }
+        source_lines.truncate(last_content + 1);
+        blocks.push(FootnoteDefinitionBlock {
+            label,
+            source: source_lines.join("\n"),
+        });
+        i = j;
+    }
+    blocks
+}
+
+/// Append a PM `footnote_definition` node for every definition in
+/// `markdown` that the comrak conversion did not already carry (#1565).
+/// A label comrak emitted a node for is referenced (or at least
+/// carried) and is left exactly as today; only the definitions comrak
+/// dropped are synthesized, in source order, at the end of the doc.
+fn preserve_unreferenced_footnote_definitions(doc: &mut Value, markdown: &str) {
+    let carried: Vec<String> = doc["content"]
+        .as_array()
+        .map(|content| {
+            content
+                .iter()
+                .filter(|n| n["type"] == "footnote_definition")
+                .filter_map(|n| n["attrs"]["label"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut synthesized = Vec::new();
+    for block in scan_footnote_definition_blocks(markdown) {
+        if carried.contains(&block.label) {
+            continue;
+        }
+        if let Some(node) = synthesize_footnote_definition(&block) {
+            synthesized.push(node);
+        }
+    }
+    if !synthesized.is_empty()
+        && let Some(content) = doc["content"].as_array_mut()
+    {
+        content.extend(synthesized);
+    }
+}
+
+/// Build the PM node for one unreferenced definition by parsing its
+/// verbatim source back through the full conversion with a reference
+/// attached, so comrak DOES emit it, and lifting the resulting
+/// `footnote_definition` node out. Going through the same conversion
+/// guarantees the synthesized node has exactly the shape the
+/// referenced path produces (#1031 block children included).
+fn synthesize_footnote_definition(block: &FootnoteDefinitionBlock) -> Option<Value> {
+    let probe = format!("x[^{}]\n\n{}\n", block.label, block.source);
+    let doc = markdown_to_prosemirror(&probe);
+    doc["content"].as_array()?.iter().find_map(|n| {
+        (n["type"] == "footnote_definition"
+            && n["attrs"]["label"].as_str() == Some(block.label.as_str()))
+        .then(|| n.clone())
+    })
 }
 
 /// Replace each newline inside an angle-form link/image destination
@@ -3642,6 +3777,104 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_unreferenced_footnote_definition_survives_save() {
+        // #1565: a definition nothing references is dropped by comrak
+        // before conversion, so it used to vanish on save. The pre-scan
+        // preserves it, and the round-trip is a fixpoint.
+        let original = "Body text with no reference.\n\n[^orphan]: The orphan note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("unreferenced definition carried into the PM doc");
+        assert_eq!(definition["attrs"]["label"], "orphan");
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^orphan]:"),
+            "orphan definition survives save: {first:?}"
+        );
+        assert!(
+            first.contains("The orphan note."),
+            "orphan body survives save: {first:?}"
+        );
+        assert_eq!(first, second, "orphan round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_mixed_referenced_and_unreferenced_footnotes() {
+        // #1565: the referenced definition keeps today's exact path;
+        // the unreferenced one is appended by the pre-scan, not
+        // duplicated or dropped.
+        let original =
+            "Text.[^used]\n\n[^used]: Used note.\n\n[^unused]: Unused note.\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .filter_map(|n| n["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["used", "unused"]);
+        let (first, second) = two_saves(original);
+        for needle in ["[^used]:", "Used note.", "[^unused]:", "Unused note."] {
+            assert!(first.contains(needle), "{needle} survives save: {first:?}");
+        }
+        assert_eq!(first, second, "mixed round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definitions_only_document_does_not_save_empty() {
+        // #1565: a document that is only a footnote definition saved
+        // as an empty file -- the data-loss case from the issue.
+        let original = "[^only]: The only content.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^only]:") && first.contains("The only content."),
+            "definitions-only document keeps its definition: {first:?}"
+        );
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_multi_paragraph_definition_fixpoint() {
+        // #1565 + #1031: an unreferenced multi-paragraph definition is
+        // synthesized with its block children, not flattened.
+        let original = "Body.\n\n[^m]: First paragraph.\n\n    Second paragraph.\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("unreferenced multi-paragraph definition present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "paragraph"]);
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multi-paragraph orphan is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_fence_not_synthesized() {
+        // #1565: a definition-shaped line inside a fenced code block
+        // is literal text; the pre-scan must not invent a definition
+        // for it.
+        let original = "Text.\n\n```\n[^fake]: Not a definition.\n```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "fenced definition-shaped text stays literal");
+    }
+
     fn test_footnote_multi_paragraph_definition_fixpoint() {
         // #1031: a two-paragraph footnote definition must keep its
         // paragraph boundary — the flat #945 shape fused the two
