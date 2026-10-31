@@ -121,6 +121,7 @@ const execOptionsSchema = `{"type":"object","properties":{
   "manifest":{"type":"string","description":"the manifest's text, already comment-stripped when it came from a package.jsonc"},
   "manifestName":{"type":"string","description":"the filename to write the manifest as: package.json by default"},
   "manifestDir":{"type":"string","description":"the directory the manifest was read from, on the caller's filesystem: the resolution base for its local file:/link: artifacts"},
+  "packageDirs":{"type":"object","additionalProperties":{"type":"string"},"description":"per-package resolution base for relative local specifiers, when a package's origin layer differs from the manifest's directory (a config-layer package's configuration directory)"},
   "lockfile":{"type":"string","contentEncoding":"base64","description":"the lockfile's content (base64, as a Go []byte crosses JSON), honoured frozen and never rewritten"},
   "lockfileName":{"type":"string","description":"the filename to write the lockfile as, such as bun.lock"},
   "lockfiles":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","contentEncoding":"base64"}},"additionalProperties":false},"description":"every lockfile found beside the manifest; which one governs depends on the runtime that finally executes"},

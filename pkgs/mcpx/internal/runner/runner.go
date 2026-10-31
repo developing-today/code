@@ -326,16 +326,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
-			if cerr := installFrozenNPM(ctx, workDir, opts.Deps); cerr != nil {
+			if cerr := installFrozenNPM(ctx, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
-			if cerr := installFrozenBun(ctx, rt.Bin, workDir, opts.Deps); cerr != nil {
+			if cerr := installFrozenBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
-			if cerr := installBun(ctx, rt.Bin, workDir, opts.Deps); cerr != nil {
+			if cerr := installBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		}

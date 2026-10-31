@@ -32,7 +32,7 @@ func TestExecOptionsSchemaDeclaresDeps(t *testing.T) {
 		t.Error("deps schema must set additionalProperties:false like its siblings")
 	}
 	depsProps, _ := depsProp["properties"].(map[string]any)
-	for _, field := range []string{"packages", "manifest", "manifestName", "manifestDir", "lockfile", "lockfileName", "lockfiles", "source", "autoInstall"} {
+	for _, field := range []string{"packages", "manifest", "manifestName", "manifestDir", "packageDirs", "lockfile", "lockfileName", "lockfiles", "source", "autoInstall"} {
 		if _, ok := depsProps[field]; !ok {
 			t.Errorf("deps schema is missing transported field %q", field)
 		}

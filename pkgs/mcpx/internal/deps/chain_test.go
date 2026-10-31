@@ -654,3 +654,33 @@ func TestConfigManifestOriginPreservedWithoutALockfile(t *testing.T) {
 		t.Error("no lockfile beside the config manifest, but the set is frozen")
 	}
 }
+
+// TestConfigPackageDirsPreservedWhenProjectManifestExists is the Codex
+// finding on PR #2589 (chain.go): with deps.source=config AND a project
+// manifest, a config-only package's origin was lost -- the set's single
+// ManifestDir names the project's directory, so the runner resolved the
+// config layer's relative file: artifacts against the project. The
+// per-package origin must survive resolution.
+func TestConfigPackageDirsPreservedWhenProjectManifestExists(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"proj-pkg":"1.0.0"}}`)
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	cfgDir := filepath.Join(xdg, "mcpx")
+	write(t, cfgDir, "package.json", `{"dependencies":{"helper":"file:./helper","proj-pkg":"9.9.9"}}`)
+
+	set, err := deps.Resolve(cfg(t, deps.SourceConfig), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Manifest == nil || set.Manifest.Dir != project {
+		t.Fatalf("selected manifest = %+v, want the project's", set.Manifest)
+	}
+	if got := set.PackageDirs["helper"]; got != cfgDir {
+		t.Fatalf("PackageDirs[helper] = %q, want the configuration directory %q", got, cfgDir)
+	}
+	if _, ok := set.PackageDirs["proj-pkg"]; ok {
+		t.Fatal("proj-pkg is supplied by the project manifest; it must not claim a config origin")
+	}
+}

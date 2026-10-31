@@ -296,6 +296,14 @@ type Set struct {
 	Packages []Package
 	// Manifest is the project manifest the run resolved against, if any.
 	Manifest *Manifest
+	// PackageDirs records, per package name, the directory a relative
+	// local (file:/link:) specifier from that package's layer resolves
+	// against, when it differs from the selected manifest's directory:
+	// a config-layer package keeps the configuration directory as its
+	// origin even when a project manifest also contributes packages, and
+	// the transport's single ManifestDir names only the project's
+	// (Codex review, PR #2589).
+	PackageDirs map[string]string
 	// Conflicts are explicit pins that contradict the project manifest. They
 	// are reported, never resolved.
 	Conflicts []Conflict
@@ -398,6 +406,24 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 					configWant = filtered
 				}
 				set.Conflicts = append(set.Conflicts, Conflicts(cfg.Packages, configWant)...)
+				if manifest != nil {
+					// A config-only package keeps the configuration
+					// directory as the resolution base for its local
+					// specifiers: the set's Manifest (and the
+					// transport's ManifestDir) names the project's
+					// directory, and resolving a config file:
+					// artifact against it looks in the wrong project
+					// -- ENOENT, or worse, the wrong artifact when
+					// that path happens to exist (Codex review,
+					// PR #2589). configWant is already filtered to
+					// the packages the project does not supply.
+					for name := range configWant {
+						if set.PackageDirs == nil {
+							set.PackageDirs = map[string]string{}
+						}
+						set.PackageDirs[name] = m.Dir
+					}
+				}
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}

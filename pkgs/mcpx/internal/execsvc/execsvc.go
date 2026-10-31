@@ -182,6 +182,12 @@ type DepsOptions struct {
 	// transported at all; a remote daemon cannot open it and the
 	// set's data fields remain the whole story there.
 	ManifestDir string `json:"manifestDir,omitempty"`
+	// PackageDirs records, per package name, the directory a relative
+	// local specifier for that package resolves against when it differs
+	// from ManifestDir -- a config-layer package's origin, carried so a
+	// set combining a project manifest with config-only file: packages
+	// resolves each artifact against its own layer's directory.
+	PackageDirs map[string]string `json:"packageDirs,omitempty"`
 	// Lockfile is the lockfile's content, honoured frozen and never
 	// rewritten. It is bytes, not a string, because a lockfile may be binary
 	// (bun.lockb): encoding/json carries []byte as base64, so the content
@@ -638,6 +644,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			Manifest:     opts.Deps.Manifest,
 			ManifestName: opts.Deps.ManifestName,
 			ManifestDir:  opts.Deps.ManifestDir,
+			PackageDirs:  opts.Deps.PackageDirs,
 			Lockfile:     opts.Deps.Lockfile,
 			LockfileName: opts.Deps.LockfileName,
 			Source:       opts.Deps.Source,

@@ -301,3 +301,40 @@ func TestDepsOptionsExplicitOffAutoInstallIsARequest(t *testing.T) {
 		t.Fatalf("autoInstall: %q", got.AutoInstall)
 	}
 }
+
+// TestDepsOptionsCarryConfigPackageDirs: the per-package origins the
+// resolver recorded must reach the wire payload, or a daemon-side
+// runner still resolves a config-layer file: package against the
+// project directory (Codex finding on PR #2589).
+func TestDepsOptionsCarryConfigPackageDirs(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "package.json"),
+		[]byte(`{"dependencies":{"proj-pkg":"1.0.0"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	xdg := t.TempDir()
+	cfgDir := filepath.Join(xdg, "mcpx")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "package.json"),
+		[]byte(`{"dependencies":{"helper":"file:./helper"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	a := &App{}
+	if err := a.Settings().SetRuntime("deps.source", "config"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.depsOptions(project, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("deps.source=config should carry a dependency set")
+	}
+	if got.PackageDirs["helper"] != cfgDir {
+		t.Fatalf("payload PackageDirs = %v, want helper -> %q", got.PackageDirs, cfgDir)
+	}
+}

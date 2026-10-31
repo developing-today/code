@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -523,7 +524,7 @@ func TestInstallFrozenNPMInstallsOncePerSet(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- installFrozenNPM(ctx, dir, d)
+			errs <- installFrozenNPM(ctx, dir, d, nil)
 		}()
 	}
 	wg.Wait()
@@ -542,7 +543,7 @@ func TestInstallFrozenNPMInstallsOncePerSet(t *testing.T) {
 	}
 	// A different set installs again.
 	d2 := &Deps{Lockfile: []byte("locked-v2"), LockfileName: "package-lock.json"}
-	if err := installFrozenNPM(ctx, dir, d2); err != nil {
+	if err := installFrozenNPM(ctx, dir, d2, nil); err != nil {
 		t.Fatal(err)
 	}
 	b, _ = os.ReadFile(calls)
@@ -935,5 +936,157 @@ func TestMaterialiseSiblingLocalDependency(t *testing.T) {
 	copied := filepath.Join(workdir, filepath.FromSlash(strings.TrimPrefix(spec, "file:./")), "package.json")
 	if _, err := os.Stat(copied); err != nil {
 		t.Fatalf("sibling artifact not transported to %s: %v", copied, err)
+	}
+}
+
+// TestMaterialiseDepsConfigPackageResolvesAgainstConfigDir is the
+// Codex finding on PR #2589 (chain.go): a config-layer file: package
+// combined with a project manifest resolved against the PROJECT
+// directory, copying the wrong artifact (or failing ENOENT). With a
+// per-package origin the artifact comes from the configuration
+// directory.
+func TestMaterialiseDepsConfigPackageResolvesAgainstConfigDir(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	config := filepath.Join(root, "cfg")
+	workdir := filepath.Join(root, "work")
+	for _, d := range []string{
+		filepath.Join(project, "helper"), filepath.Join(config, "helper"), workdir,
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(project, "helper", "package.json"),
+		[]byte(`{"name":"wrong-helper","version":"0.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "helper", "package.json"),
+		[]byte(`{"name":"helper","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := &Deps{
+		Manifest:    `{"name":"proj","version":"1.0.0","dependencies":{"proj-pkg":"1.0.0"}}`,
+		ManifestDir: project,
+		Packages:    []string{"helper@file:./helper"},
+		PackageDirs: map[string]string{"helper": config},
+	}
+	if _, err := materialiseDeps(workdir, KindNode, d, false, project); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(workdir, "helper", "package.json"))
+	if err != nil {
+		t.Fatalf("config artifact not transported: %v", err)
+	}
+	if !strings.Contains(string(b), `"name":"helper"`) {
+		t.Fatalf("transported artifact = %s, want the configuration directory's helper", b)
+	}
+}
+
+// TestMaterialiseDepsBinaryLockfileRebaseRefused is the Codex finding
+// on PR #2589 (runner/deps.go): rebasing a sibling local dependency
+// rewrote the transported lockfile by string replacement, which
+// corrupts a binary bun.lockb. The materialisation must refuse
+// loudly and write no lockfile, never a corrupted one.
+func TestMaterialiseDepsBinaryLockfileRebaseRefused(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "proj")
+	sibling := filepath.Join(root, "localpkg")
+	workdir := filepath.Join(root, "work")
+	for _, d := range []string{project, sibling, workdir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "package.json"),
+		[]byte(`{"name":"localpkg","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binLock := []byte{0x00, 0x01, 0x02, 'b', 'u', 'n', 0x00, 0xff}
+	d := &Deps{
+		Manifest:    `{"name":"proj","version":"1.0.0","dependencies":{"localpkg":"file:../localpkg"}}`,
+		ManifestDir: project,
+		Lockfiles:   []Lockfile{{Name: "bun.lockb", Content: binLock}},
+	}
+	_, err := materialiseDeps(workdir, KindBun, d, false, project)
+	if err == nil || !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("binary lockfile rebase must be refused with a binary-lockfile error, got %v", err)
+	}
+	if _, serr := os.Stat(filepath.Join(workdir, "bun.lockb")); !os.IsNotExist(serr) {
+		t.Fatalf("a lockfile was written despite the refusal (stat err = %v)", serr)
+	}
+}
+
+// TestMaterialiseDepsBinaryLockfileVerbatimWithoutRebase: a binary
+// lockfile with NO rebased local dependency is untouched by the
+// refusal -- it is written byte-for-byte, as before.
+func TestMaterialiseDepsBinaryLockfileVerbatimWithoutRebase(t *testing.T) {
+	workdir := t.TempDir()
+	binLock := []byte{0x00, 0x01, 0x02, 'b', 'u', 'n', 0x00, 0xff}
+	d := &Deps{
+		Manifest:  `{"name":"proj","version":"1.0.0","dependencies":{"left-pad":"1.3.0"}}`,
+		Lockfiles: []Lockfile{{Name: "bun.lockb", Content: binLock}},
+	}
+	if _, err := materialiseDeps(workdir, KindBun, d, false, ""); err != nil {
+		t.Fatalf("materialise: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(workdir, "bun.lockb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b, binLock) {
+		t.Fatalf("binary lockfile rewritten: %x, want verbatim %x", b, binLock)
+	}
+}
+
+// TestInstallersReceiveExecutionEnv is the Codex finding on PR #2589
+// (runner.go): the dependency installers ignored opts.Env, so
+// private-registry configuration supplied via --env/options.env never
+// reached npm ci / bun install. Stub installers record the marker
+// variable they were invoked with.
+func TestInstallersReceiveExecutionEnv(t *testing.T) {
+	binDir := t.TempDir()
+	npmSeen := filepath.Join(binDir, "npm-env")
+	npmStub := "#!/bin/sh\n" +
+		"printf '%s' \"$MCPX_TEST_MARKER\" > \"" + npmSeen + "\"\n" +
+		"prev=\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--prefix\" ]; then mkdir -p \"$a/node_modules\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := map[string]string{"MCPX_TEST_MARKER": "sentinel-3191"}
+
+	dir := t.TempDir()
+	d := &Deps{Lockfile: []byte("locked"), LockfileName: "package-lock.json"}
+	if err := installFrozenNPM(context.Background(), dir, d, env); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(npmSeen); string(b) != "sentinel-3191" {
+		t.Fatalf("npm ci saw MCPX_TEST_MARKER = %q, want the execution env value", b)
+	}
+
+	bunSeen := filepath.Join(binDir, "bun-env")
+	bunStub := "#!/bin/sh\n" +
+		"printf '%s' \"$MCPX_TEST_MARKER\" > \"" + bunSeen + "\"\n" +
+		"prev=\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--cwd\" ]; then mkdir -p \"$a/node_modules\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"done\n"
+	bunBin := filepath.Join(binDir, "bun")
+	if err := os.WriteFile(bunBin, []byte(bunStub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bdir := t.TempDir()
+	bd := &Deps{Lockfile: []byte("locked"), LockfileName: "bun.lock"}
+	if err := installFrozenBun(context.Background(), bunBin, bdir, bd, env); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(bunSeen); string(b) != "sentinel-3191" {
+		t.Fatalf("bun install saw MCPX_TEST_MARKER = %q, want the execution env value", b)
 	}
 }

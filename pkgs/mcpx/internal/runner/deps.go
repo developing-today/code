@@ -48,6 +48,13 @@ type Deps struct {
 	// transport already serves; a set that arrived as data only
 	// leaves it empty and falls back to the project directory.
 	ManifestDir string
+	// PackageDirs records, per package name, the directory that
+	// package's relative local specifier resolves against when it
+	// differs from ManifestDir: a package contributed by the
+	// configuration layer keeps the configuration directory as its
+	// origin even when a project manifest also contributes packages
+	// (Codex review, PR #2589).
+	PackageDirs map[string]string
 	// Lockfile is the lockfile's content, honoured frozen and never
 	// rewritten.
 	Lockfile []byte
@@ -69,6 +76,16 @@ type Deps struct {
 type Lockfile struct {
 	Name    string
 	Content []byte
+}
+
+// isBinaryLockfile reports whether a lockfile's content is binary:
+// bun.lockb by name, or any content carrying a NUL byte, which no
+// text lockfile (bun.lock, package-lock.json, yarn.lock) contains.
+func isBinaryLockfile(name string, content []byte) bool {
+	if strings.HasSuffix(name, ".lockb") {
+		return true
+	}
+	return bytes.IndexByte(content, 0) >= 0
 }
 
 // lockfilePreference names, per runtime kind, the lockfiles that
@@ -126,6 +143,14 @@ func (d *Deps) fingerprint() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "packages:%q\nmanifest:%q:%s\nsource:%s auto:%s\n",
 		d.Packages, d.ManifestName, d.Manifest, d.Source, d.AutoInstall)
+	pkgDirNames := make([]string, 0, len(d.PackageDirs))
+	for name := range d.PackageDirs {
+		pkgDirNames = append(pkgDirNames, name)
+	}
+	sort.Strings(pkgDirNames)
+	for _, name := range pkgDirNames {
+		fmt.Fprintf(h, "pkgdir:%s:%s\n", name, d.PackageDirs[name])
+	}
 	writeLock := func(name string, content []byte) {
 		sum := sha256.Sum256(content)
 		fmt.Fprintf(h, "lock:%s:%s\n", name, hex.EncodeToString(sum[:]))
@@ -252,14 +277,23 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 		// discovery may have found the manifest above the script,
 		// or the caller may have named one outside it (Codex
 		// review, PR #2589).
-		base := projectDir
+		defBase := projectDir
 		if d.ManifestDir != "" {
-			base = d.ManifestDir
+			defBase = d.ManifestDir
 		}
 		for name, spec := range deps {
 			rel, ok := localFileRef(spec)
 			if !ok {
 				continue
+			}
+			// A package whose origin layer differs from the selected
+			// manifest's (a config-layer package beside a project
+			// manifest) resolves its local specifier against its own
+			// layer's directory, not the project's (Codex review,
+			// PR #2589).
+			base := defBase
+			if pd := d.PackageDirs[name]; pd != "" {
+				base = pd
 			}
 			src := filepath.Join(base, rel)
 			dst := filepath.Join(dir, rel)
@@ -407,6 +441,17 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	}
 
 	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
+		if len(lockRebases) > 0 && isBinaryLockfile(lockName, lockContent) {
+			// A binary lockfile (bun.lockb) cannot be rebased by
+			// string replacement: variable-length substitutions
+			// corrupt its internal layout and the frozen install
+			// then fails on a file mcpx itself mangled. Refuse
+			// loudly instead of writing a corrupted lockfile
+			// (Codex review, PR #2589). With no rebased local
+			// dependency the same lockfile is written verbatim
+			// below, exactly as before.
+			return nil, fmt.Errorf("deps: lockfile %s is binary and cannot be rebased for a local dependency moved into the workdir; refusing to rewrite it as text (that corrupts it) -- use a text lockfile (bun.lock) or drop the sibling local dependency", lockName)
+		}
 		if len(lockRebases) > 0 {
 			// A rebased local artifact's spellings inside the
 			// lockfile (its spec and its path keys) must name
@@ -608,7 +653,27 @@ func lockInstallDir(ctx context.Context, dir string) (func(), error) {
 // runs with the same fingerprint and an intact node_modules skip the
 // install entirely. A changed set (different fingerprint), a missing
 // marker, or a pruned node_modules installs again.
-func installFrozenNPM(ctx context.Context, dir string, d *Deps) error {
+// installEnv is the environment an installation subprocess runs
+// with: the process environment plus the run's configured
+// execution environment, appended last so it wins -- the same
+// construction the runtime command itself gets in Run. Private-
+// registry configuration (NPM_CONFIG_USERCONFIG and friends)
+// reaches the installer exactly as it reaches the runtime
+// (Codex review, PR #2589).
+func installEnv(env map[string]string) []string {
+	out := append([]string{}, os.Environ()...)
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+func installFrozenNPM(ctx context.Context, dir string, d *Deps, env map[string]string) error {
 	unlock, err := lockInstallDir(ctx, dir)
 	if err != nil {
 		return err
@@ -623,6 +688,7 @@ func installFrozenNPM(ctx context.Context, dir string, d *Deps) error {
 		}
 	}
 	ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", dir, "--no-audit", "--no-fund")
+	ci.Env = installEnv(env)
 	out, cerr := ci.CombinedOutput()
 	if cerr != nil {
 		return fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
@@ -654,19 +720,19 @@ func (d *Deps) frozenBun(kind string) bool {
 // as installFrozenNPM. It uses the resolved bun executable (bunBin / rt.Bin)
 // so custom runtime paths work even when bun is not on PATH (Codex
 // review, PR #2589).
-func installFrozenBun(ctx context.Context, bunBin, dir string, d *Deps) error {
-	return runBunInstall(ctx, bunBin, dir, d, true)
+func installFrozenBun(ctx context.Context, bunBin, dir string, d *Deps, env map[string]string) error {
+	return runBunInstall(ctx, bunBin, dir, d, true, env)
 }
 
 // installBun runs bun install in dir when explicit packages or a manifest are
 // present without a lockfile, ensuring Bun resolves against the transported
 // requirements in package.json rather than runtime auto-install fetching
 // unpinned latest (Codex review, PR #2589).
-func installBun(ctx context.Context, bunBin, dir string, d *Deps) error {
-	return runBunInstall(ctx, bunBin, dir, d, false)
+func installBun(ctx context.Context, bunBin, dir string, d *Deps, env map[string]string) error {
+	return runBunInstall(ctx, bunBin, dir, d, false, env)
 }
 
-func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool) error {
+func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool, env map[string]string) error {
 	unlock, err := lockInstallDir(ctx, dir)
 	if err != nil {
 		return err
@@ -688,6 +754,7 @@ func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool
 		args = []string{"install", "--frozen-lockfile", "--cwd", dir}
 	}
 	ci := exec.CommandContext(ctx, bunBin, args...)
+	ci.Env = installEnv(env)
 	out, cerr := ci.CombinedOutput()
 	if cerr != nil {
 		op := "bun install"
@@ -796,20 +863,35 @@ func localDepsIdentity(d *Deps, base string) string {
 		}
 	}
 	deps := d.effectiveDeps(manifest)
-	rels := make([]string, 0, len(deps))
-	for _, spec := range deps {
+	type localRef struct{ base, rel string }
+	refs := make([]localRef, 0, len(deps))
+	for name, spec := range deps {
 		if rel, ok := localFileRef(spec); ok {
-			rels = append(rels, rel)
+			// Per-package origin, as in materialiseDeps: a
+			// config-layer artifact hashes from its own
+			// directory, not the project's (Codex review,
+			// PR #2589).
+			b := base
+			if pd := d.PackageDirs[name]; pd != "" {
+				b = pd
+			}
+			refs = append(refs, localRef{b, rel})
 		}
 	}
-	if len(rels) == 0 {
+	if len(refs) == 0 {
 		return ""
 	}
-	sort.Strings(rels)
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].base != refs[j].base {
+			return refs[i].base < refs[j].base
+		}
+		return refs[i].rel < refs[j].rel
+	})
 	h := sha256.New()
-	fmt.Fprintf(h, "base:%s\n", base)
-	for _, rel := range rels {
-		src := filepath.Join(base, rel)
+	for _, ref := range refs {
+		rel := ref.rel
+		src := filepath.Join(ref.base, rel)
+		fmt.Fprintf(h, "base:%s\n", ref.base)
 		fmt.Fprintf(h, "ref:%s:", rel)
 		info, err := os.Stat(src)
 		if err != nil {

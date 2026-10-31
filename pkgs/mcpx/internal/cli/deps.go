@@ -81,6 +81,9 @@ func (a *App) depsOptions(cwd string, scriptFile string) (*execsvc.DepsOptions, 
 			out.Packages = append(out.Packages, p.Name)
 		}
 	}
+	if len(set.PackageDirs) > 0 {
+		out.PackageDirs = set.PackageDirs
+	}
 	if m := set.Manifest; m != nil {
 		if text, err := m.JSON(); err == nil {
 			out.Manifest = string(text)
