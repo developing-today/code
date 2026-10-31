@@ -312,6 +312,45 @@ impl HtmlBlockTracker {
     }
 }
 
+/// Strip block-container prefixes (blockquote `>`, list markers
+/// `-`/`*`/`+`/ordered) from a line, repeatedly, for fence detection:
+/// a fence opened inside a list item or blockquote still makes its
+/// content literal (Codex P2 on #1565's fourth cut -- `- ```` followed
+/// by an indented definition-shaped line parsed as code by comrak,
+/// but the scanner missed the opening fence behind the `- ` marker
+/// and recovered the interior line as a live definition).
+fn strip_container_prefixes(line: &str) -> &str {
+    let mut rest = line;
+    loop {
+        let t = rest.trim_start_matches(' ');
+        if let Some(r) = t.strip_prefix('>') {
+            rest = r.strip_prefix(' ').unwrap_or(r);
+            continue;
+        }
+        let bytes = t.as_bytes();
+        let marker_len = if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            Some(1)
+        } else {
+            let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits >= 1
+                && digits <= 9
+                && matches!(t.as_bytes().get(digits), Some(b'.') | Some(b')'))
+                && matches!(t.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+            {
+                Some(digits + 1)
+            } else {
+                None
+            }
+        };
+        let Some(marker_len) = marker_len else { break };
+        rest = t[marker_len..].trim_start_matches([' ', '\t']);
+    }
+    rest
+}
+
 /// A footnote definition block found by the source pre-scan (#1565):
 /// its label and the block's verbatim source (the `[^label]:` line
 /// plus any indented continuation lines, trailing blank lines cut).
@@ -361,7 +400,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             i += 1;
             continue;
         }
-        if indent <= 3 && fence.feed(stripped) {
+        if indent <= 3 && fence.feed(strip_container_prefixes(stripped)) {
             i += 1;
             continue;
         }
@@ -421,7 +460,7 @@ fn collect_link_reference_definitions(markdown: &str) -> String {
         if indent <= 3 && !fence.in_fence() && html.feed(stripped) {
             continue;
         }
-        if indent <= 3 && fence.feed(stripped) {
+        if indent <= 3 && fence.feed(strip_container_prefixes(stripped)) {
             continue;
         }
         if fence.in_fence() || html.in_html() || indent > 3 || !stripped.starts_with('[') {
@@ -4188,6 +4227,22 @@ mod tests {
             "inner reference is not escaped literal text: {first:?}"
         );
         assert_eq!(first, second, "nested-footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_definition_inside_list_contained_fence_not_synthesized() {
+        // Codex P2 on #1565's fourth cut: a fence opened inside a
+        // list item (`- ```) makes its indented interior literal
+        // code; the pre-scan must see the fence behind the list
+        // marker and not recover the interior line as a definition.
+        let original = "Text.\n\n- ```\n  [^fake]: literal\n  ```\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "list-contained fenced text stays literal");
     }
 
     #[test]
