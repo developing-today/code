@@ -58,6 +58,10 @@
 //!   character preceded by `\` still opens or closes a span.
 //! - An unterminated quote makes the rest of the line quoted, so no
 //!   operators are recognized in it.
+//! - Quote state tracks the original input only. Captured substitution
+//!   output is data, never source: it is appended to the result without
+//!   being rescanned, so an apostrophe in a captured filename cannot
+//!   open a quote span and hide later substitutions.
 //!
 //! Full shell grammar is out of scope. The contract exists so quoted
 //! arguments containing operator characters (`get "a<<b"`,
@@ -308,78 +312,92 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         result = format!("{new_before}{rest}");
     }
 
-    // Process $(...) command substitution
-    while let Some(start) = find_unquoted(&result, "$(") {
-        let mut depth = 1;
-        let mut end = start + 2;
-        let mut quote: Option<char> = None;
-        for (i, c) in result[start + 2..].char_indices() {
-            match quote {
-                Some(q) => {
-                    if c == q {
-                        quote = None;
-                    }
-                }
-                None => match c {
-                    '\'' | '"' => quote = Some(c),
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = start + 2 + i;
-                            break;
+    // Process $(...) command substitution in a single pass over the
+    // source text. Quote state tracks the original input only: each
+    // search resumes right after the previous substitution's closing
+    // paren (a point where the source is known to be unquoted), and
+    // captured output is appended to `substituted` without ever being
+    // rescanned -- an unmatched quote in captured output (an apostrophe
+    // in a filename) must not read as source quoting and hide a later
+    // substitution (#1585, Codex review).
+    {
+        let source = std::mem::take(&mut result);
+        let mut substituted = String::with_capacity(source.len());
+        let mut pos = 0;
+        while let Some(rel) = find_unquoted(&source[pos..], "$(") {
+            let start = pos + rel;
+            let mut depth = 1;
+            let mut end = start + 2;
+            let mut quote: Option<char> = None;
+            for (i, c) in source[start + 2..].char_indices() {
+                match quote {
+                    Some(q) => {
+                        if c == q {
+                            quote = None;
                         }
                     }
-                    _ => {}
-                },
+                    None => match c {
+                        '\'' | '"' => quote = Some(c),
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = start + 2 + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    },
+                }
             }
-        }
-        if depth != 0 {
-            bail!("unterminated $(...) in command");
-        }
-        let cmd = &result[start + 2..end];
-        let output = shell_capture(cmd)?;
-
-        // Check if this $() is the first arg to put - if so, treat as content
-        let before = result[..start].trim();
-        if before == "put" || before.ends_with(" put") {
-            result = format!(
-                "{}__STDIN_CONTENT__:{}{}",
-                &result[..start],
-                output,
-                &result[end + 1..]
-            );
-        } else {
-            result = format!("{}{}{}", &result[..start], output, &result[end + 1..]);
-        }
-    }
-
-    // Process `...` backtick substitution
-    while let Some(start) = find_unquoted(&result, "`") {
-        if let Some(end) = result[start + 1..].find('`') {
-            let cmd = &result[start + 1..start + 1 + end];
+            if depth != 0 {
+                bail!("unterminated $(...) in command");
+            }
+            let cmd = &source[start + 2..end];
             let output = shell_capture(cmd)?;
 
-            // Check if this `` is the first arg to put - if so, treat as content
-            let before = result[..start].trim();
+            // Check if this $() is the first arg to put - if so, treat as content
+            let before = format!("{}{}", substituted, &source[pos..start]);
+            let before = before.trim();
+            substituted.push_str(&source[pos..start]);
             if before == "put" || before.ends_with(" put") {
-                result = format!(
-                    "{}__STDIN_CONTENT__:{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
-            } else {
-                result = format!(
-                    "{}{}{}",
-                    &result[..start],
-                    output,
-                    &result[start + 2 + end..]
-                );
+                substituted.push_str("__STDIN_CONTENT__:");
             }
-        } else {
-            bail!("unterminated backtick in command");
+            substituted.push_str(&output);
+            pos = end + 1;
         }
+        substituted.push_str(&source[pos..]);
+        result = substituted;
+    }
+
+    // Process `...` backtick substitution, with the same single-pass
+    // discipline as $(...) above: captured output is never rescanned,
+    // so a backtick or quote inside it cannot corrupt the scan.
+    {
+        let source = std::mem::take(&mut result);
+        let mut substituted = String::with_capacity(source.len());
+        let mut pos = 0;
+        while let Some(rel) = find_unquoted(&source[pos..], "`") {
+            let start = pos + rel;
+            if let Some(end) = source[start + 1..].find('`') {
+                let cmd = &source[start + 1..start + 1 + end];
+                let output = shell_capture(cmd)?;
+
+                // Check if this `` is the first arg to put - if so, treat as content
+                let before = format!("{}{}", substituted, &source[pos..start]);
+                let before = before.trim();
+                substituted.push_str(&source[pos..start]);
+                if before == "put" || before.ends_with(" put") {
+                    substituted.push_str("__STDIN_CONTENT__:");
+                }
+                substituted.push_str(&output);
+                pos = start + 2 + end;
+            } else {
+                bail!("unterminated backtick in command");
+            }
+        }
+        substituted.push_str(&source[pos..]);
+        result = substituted;
     }
 
     // Process |> pipe operator: echo hello |> put - name
@@ -708,6 +726,17 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_preprocess_substitution_output_quotes_do_not_hide_later_substitutions() {
+        // Captured output is data, not source: an unmatched apostrophe in
+        // the first substitution's output must not open a quote span that
+        // hides the second substitution (#1585, Codex review).
+        match preprocess_repl_line("get $(printf \"O'Reilly\")$(printf .txt)").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get O'Reilly.txt"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
     fn test_preprocess_backtick_substitution() {
         match preprocess_repl_line("get `echo hello`").unwrap() {
             ReplInput::Ready(s) => assert_eq!(s, "get hello"),
