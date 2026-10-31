@@ -814,8 +814,11 @@ func compactJSON(raw json.RawMessage) string {
 // trigger before the rule is enforced, so the trigger's remaining
 // dependencies are unconditional requirements of the caller, and the
 // advertised schema must say so or it understates what enforcement
-// demands. The projection follows same-instance applicators (allOf,
-// anyOf, oneOf, not, if/then/else, dependentSchemas) but never
+// demands. The same promotion applies to dependentSchemas entries
+// and, under a draft-07 dialect, to both forms of their predecessor
+// keyword dependencies. The projection follows same-instance
+// applicators (allOf, anyOf, oneOf, not, if/then/else,
+// dependentSchemas) but never
 // crosses into a nested instance scope (properties, items, $defs,
 // ...): a property there that shares a pinned name is a different
 // property, which the top-level pin does not satisfy (Codex P2s on
@@ -1137,6 +1140,72 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 			}
 		case "if", "then", "else":
 			out[k] = stripPinnedScope(val, pinned, pinVals, root, resolving)
+		case "dependencies":
+			// The draft-07 predecessor of dependentRequired /
+			// dependentSchemas: under a pre-2019-09 dialect it
+			// constrains the instance in both of its forms -- an
+			// array of names (the dependentRequired form) or a
+			// subschema (the dependentSchemas form) -- and the
+			// projection must treat a pinned trigger exactly like
+			// its modern successors, promoting what the pin always
+			// activates to unconditional constraints at this
+			// scope. Leaving it verbatim advertises {} as valid
+			// for a rule whose pinned trigger demands more, while
+			// enforcement inserts the pin and rejects the call
+			// (Codex P2 on PR #2976). Under a modern dialect the
+			// keyword does not exist, so the value is inert data
+			// and keeps its verbatim meaning.
+			if !dialectIgnoresRefSiblings(root) {
+				out[k] = val
+				continue
+			}
+			deps, ok := val.(map[string]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				depVal := deps[prop]
+				switch dep := depVal.(type) {
+				case []any:
+					kept := filterPinnedNames(dep, pinned)
+					if pinned[prop] {
+						for _, n := range kept {
+							if name, ok := n.(string); ok {
+								promoted = append(promoted, name)
+							}
+						}
+						continue
+					}
+					if len(kept) > 0 {
+						keptDeps[prop] = kept
+					}
+				case map[string]any, bool:
+					sub := stripPinnedScope(depVal, pinned, pinVals, root, resolving)
+					if pinned[prop] {
+						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
+							continue
+						}
+						if b, isBool := sub.(bool); isBool && b {
+							continue
+						}
+						promotedSubs = append(promotedSubs, sub)
+						continue
+					}
+					keptDeps[prop] = sub
+				default:
+					keptDeps[prop] = depVal
+				}
+			}
+			if len(keptDeps) > 0 {
+				out[k] = keptDeps
+			}
 		case "dependentSchemas":
 			if subs, ok := val.(map[string]any); ok {
 				projected := make(map[string]any, len(subs))

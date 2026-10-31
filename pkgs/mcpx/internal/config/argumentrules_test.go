@@ -1344,3 +1344,53 @@ func TestEffectiveSchemaPinnedKeepsNonObjectRefSiblings(t *testing.T) {
 		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
 	}
 }
+
+// Codex P2 on PR #2976: the draft-07 predecessor of dependentRequired /
+// dependentSchemas, `dependencies`, fell through the pinned projection
+// unchanged. With tailnet pinned and hidden, a rule carrying
+// required:[tailnet] and dependencies:{tailnet:[limit]} advertised {}
+// as valid -- projection removed the tailnet requirement and the
+// surviving dependency never activates for a caller who cannot supply
+// the trigger -- while enforcement inserts the pin and rejects the
+// same call for the missing limit. Both forms of draft-07
+// `dependencies` must project like their modern successors: a pinned
+// trigger's array-form names promote to unconditional requirements and
+// its schema-form subschema promotes to an unconditional same-instance
+// constraint; unpinned triggers keep their entries with pinned names
+// filtered.
+func TestEffectiveSchemaPinnedProjectsDraft07Dependencies(t *testing.T) {
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","required":["tailnet"],"dependencies":{"tailnet":["limit"],"verbose":["tailnet","format"]}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"format":{"type":"string"}}}`)
+	got := string(set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got, `"required":["limit"]`) {
+		t.Errorf("array-form dependencies of a pinned trigger must promote to required: %s", got)
+	}
+	if !strings.Contains(got, `"dependencies":{"verbose":["format"]}`) {
+		t.Errorf("unpinned triggers keep their dependencies entry with pinned names filtered: %s", got)
+	}
+	if strings.Contains(got, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got)
+	}
+
+	set2, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","dependencies":{"tailnet":{"required":["mode"]},"verbose":{"required":["format"]}}}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	got2 := string(set2.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"}))
+	if !strings.Contains(got2, `"allOf":[{"required":["mode"]}]`) {
+		t.Errorf("schema-form dependencies of a pinned trigger must promote to an unconditional constraint: %s", got2)
+	}
+	if !strings.Contains(got2, `"dependencies":{"verbose":{"required":["format"]}}`) {
+		t.Errorf("unpinned schema-form triggers keep their dependencies entry: %s", got2)
+	}
+	if strings.Contains(got2, "tailnet") {
+		t.Errorf("pinned property must not appear in the advertised projection: %s", got2)
+	}
+}
