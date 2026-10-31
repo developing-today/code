@@ -96,6 +96,16 @@ jobs:
           go-version-file: pkgs/mcpx/go.mod
           cache: true
           cache-dependency-path: pkgs/mcpx/go.sum
+      # Same runtimes as mcpx.yml's test job: non-e2e packages (examples)
+      # shell out to deno/bun/node too, and a missing runtime reads as a
+      # test failure (first run of this workflow, PR #2888).
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
       - name: Unit tests (everything except internal/e2e)
         working-directory: pkgs/mcpx
         run: |
