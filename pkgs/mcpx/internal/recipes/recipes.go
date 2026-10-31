@@ -314,7 +314,16 @@ func scanCode(src string) []bool {
 				code[i] = true
 			}
 		case stLineComment:
-			if c == '\n' {
+			// JavaScript ends a line comment at every line
+			// terminator -- LF, CR, U+2028 and U+2029 -- not just
+			// LF: code after a standalone CR is code again, and
+			// scanning it as comment text left its placeholders
+			// undiscovered and unsubstituted (Codex P2 on #2957).
+			switch {
+			case c == '\n' || c == '\r':
+				state = stCode
+				code[i] = true
+			case c == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && (src[i+2] == 0xA8 || src[i+2] == 0xA9):
 				state = stCode
 				code[i] = true
 			}

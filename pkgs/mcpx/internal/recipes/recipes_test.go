@@ -217,6 +217,33 @@ func TestACRLFLineContinuationKeepsTheStringOpen(t *testing.T) {
 	}
 }
 
+func TestALineCommentEndsAtEveryJavaScriptLineTerminator(t *testing.T) {
+	// Codex P2 on PR 2957: JavaScript ends a // comment at CR,
+	// U+2028 and U+2029 as well as LF. The scanner ended it only at
+	// LF, so code after a standalone CR was lexed as comment text
+	// and its placeholder was never discovered or substituted.
+	for name, term := range map[string]string{
+		"CR":     "",
+		"U+2028": " ",
+		"U+2029": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := "// note" + term + "await demo.echo({ message: @who });"
+			r := recipes.Parse("x", "/tmp/x.ts", src)
+			if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+				t.Fatalf("placeholders = %+v", r.Placeholders)
+			}
+			out, err := r.Render(map[string]any{"who": "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, `message: "hi"`) {
+				t.Errorf("the code reference after the terminator was not substituted:\n%q", out)
+			}
+		})
+	}
+}
+
 func TestADeclarationLineCannotLexTheBody(t *testing.T) {
 	// Codex P2 on PR 2957: refs and Render skip declaration lines,
 	// but the shared scan lexed their prose as script, so a /* in a
