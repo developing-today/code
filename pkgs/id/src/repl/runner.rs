@@ -651,6 +651,17 @@ impl FindArgs<'_> {
 /// - `--last [N]`: Return only last N matches (default 1)
 /// - `--count`: Print count instead of matches
 /// - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
+fn required_value<'a>(rest: &[&'a str], i: &mut usize) -> Result<&'a str> {
+    let flag = rest[*i];
+    let value = rest
+        .get(*i + 1)
+        .copied()
+        .filter(|value| !value.is_empty() && (!value.starts_with('-') || *value == "-"))
+        .ok_or_else(|| anyhow::anyhow!("{flag} requires a value"))?;
+    *i += 1;
+    Ok(value)
+}
+
 fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<FindArgs<'a>> {
     let mut args = FindArgs {
         queries: Vec::new(),
@@ -682,22 +693,23 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--file" {
             args.to_file = true;
         } else if let Some(path) = arg.strip_prefix('>') {
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
             args.output_file = Some(path);
             args.to_file = true;
+        } else if arg == "-o" || arg == "--output" {
+            args.output_file = Some(required_value(rest, &mut i)?);
+            args.to_file = true;
         } else if arg == "--dir" {
-            if i + 1 < rest.len() {
-                args.dir = Some(rest[i + 1]);
-                i += 1;
-            }
+            args.dir = Some(required_value(rest, &mut i)?);
         } else if arg == "--format" {
-            if i + 1 < rest.len() {
-                let value = rest[i + 1];
-                if matches!(value, "tag" | "group" | "union") {
-                    args.format = value;
-                } else {
-                    args.format_error = Some(value);
-                }
-                i += 1;
+            let value = required_value(rest, &mut i)?;
+            if matches!(value, "tag" | "group" | "union") {
+                args.format = value;
+            } else {
+                args.format_error = Some(value);
             }
         } else if arg == "--tag" {
             args.format = "tag";
@@ -742,11 +754,10 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--count" {
             args.count = true;
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
-        } else if !arg.starts_with('-') {
+            args.exclude.push(required_value(rest, &mut i)?);
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             args.queries.push(arg);
         }
         i += 1;
@@ -1282,13 +1293,14 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
         } else if arg == "--all" {
             find_args.all = true;
         } else if arg == "-o" || arg == "--output" {
-            if i + 1 < rest.len() {
-                find_args.output_file = Some(rest[i + 1]);
-                i += 1;
-            }
+            find_args.output_file = Some(required_value(rest, &mut i)?);
         } else if let Some(path) = arg.strip_prefix('>') {
             // Mirror parse_find_args: `>file` redirects the preview to
             // a file (the peek handler already honors output_file).
+            anyhow::ensure!(
+                !path.is_empty(),
+                "redirect > requires a non-empty output path"
+            );
             find_args.output_file = Some(path);
             find_args.to_file = true;
         } else if arg == "--first" {
@@ -1324,10 +1336,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 find_args.last = Some(1);
             }
         } else if arg == "--exclude" {
-            if i + 1 < rest.len() {
-                find_args.exclude.push(rest[i + 1]);
-                i += 1;
-            }
+            find_args.exclude.push(required_value(rest, &mut i)?);
         } else if arg == "--lines" || arg == "-n" {
             // Same redirection exclusion: `--lines >out.txt` keeps
             // the default line count and lets the `>` branch run.
@@ -1352,7 +1361,9 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
             peek_opts.words = true;
         } else if arg == "--quiet" || arg == "-q" {
             peek_opts.quiet = true;
-        } else if !arg.starts_with('-') {
+        } else if arg.starts_with('-') {
+            anyhow::bail!("unknown flag: {arg}");
+        } else {
             find_args.queries.push(arg);
         }
         i += 1;
@@ -1771,6 +1782,54 @@ mod tests {
         assert!(!args.prefer_name);
         assert!(!args.all);
         assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_find_rejects_malformed_flags_and_redirects() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "--dir"], "--dir"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--format"], "--format"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output", "--all"], "--output"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_find_args(&tokens, "union").err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // Invalid --format values are carried as format_error for the
+        // handlers to report (main's 3488a51ac design, which superseded
+        // this branch's original immediate parse error on rebase).
+        let args = parse_find_args(&["report", "--format", "yaml"], "union").unwrap();
+        assert_eq!(args.format_error, Some("yaml"));
+        assert_eq!(
+            parse_find_args(&["report", "-o", "out"], "union")
+                .unwrap()
+                .output_file,
+            Some("out")
+        );
+    }
+
+    #[test]
+    fn test_peek_rejects_malformed_flags_and_missing_values() {
+        for (tokens, expected) in [
+            (vec!["report", "--bogus"], "--bogus"),
+            (vec!["report", "--fist", "2"], "--fist"),
+            (vec!["report", "-o"], "-o"),
+            (vec!["report", "--output"], "--output"),
+            (vec!["report", "--exclude"], "--exclude"),
+            (vec!["report", "--lines", "wrong"], "wrong"),
+            (vec!["report", ">"], ">"),
+        ] {
+            let error = parse_peek_args(&tokens).err().unwrap().to_string();
+            assert!(error.contains(expected), "{tokens:?}: {error}");
+        }
+        // A bare --lines/-n keeps the default line count, matching the
+        // merged-first set's bare --first/--last default design (#4072).
+        assert_eq!(parse_peek_args(&["report", "--lines"]).unwrap().1.lines, 5);
+        assert_eq!(parse_peek_args(&["report", "-n", "--quiet"]).unwrap().1.lines, 5);
     }
 
     #[test]
