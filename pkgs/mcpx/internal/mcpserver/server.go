@@ -1081,7 +1081,8 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 			return fail(codeInvalidParams, err.Error())
 		}
 		text, err := s.invoke(s.withRelay(ctx, c, req, peer), p.Name, p.Arguments)
-		if up := (*UpstreamError)(nil); errors.As(err, &up) {
+		if up := (*UpstreamError)(nil); errors.As(err, &up) &&
+			(up.Code != codeURLElicitationRequired || peer.eligibleURLElicitationRequired()) {
 			return up.relay(req.ID)
 		}
 		// A client-side validation failure (the caller's arguments
