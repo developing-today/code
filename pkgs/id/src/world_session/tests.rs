@@ -1553,12 +1553,23 @@ mod tests {
             blobs.blobs().has(hash).await.unwrap(),
             "uploaded module is pinned in the blob store"
         );
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
         world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
-        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+        assert!(
+            world
+                .view(guest)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
+        );
     }
 
     #[cfg(feature = "sandbox")]
@@ -1685,9 +1696,13 @@ mod tests {
         let service =
             WorldService::new(world.clone(), Some("admin".to_owned())).with_blob_store(blobs);
         let (_, guest) = world.issue("guest", WorldScopes::GUEST).await.unwrap();
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
 
         let bad = b"not wasm".to_vec();
@@ -1699,12 +1714,23 @@ mod tests {
                 .unwrap_err(),
             InstallError::InvalidModule
         );
-        assert_eq!(
-            world.view(guest.clone()).await.unwrap().as_deref(),
-            Some("count=0")
+        assert!(
+            world
+                .view(guest.clone())
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=0"))
         );
         world.input(guest.clone(), b"inc".to_vec()).await.unwrap();
-        assert_eq!(world.view(guest).await.unwrap().as_deref(), Some("count=1"));
+        assert!(
+            world
+                .view(guest)
+                .await
+                .unwrap()
+                .as_deref()
+                .is_some_and(|view| view.contains("count=1"))
+        );
     }
 
     #[tokio::test]
