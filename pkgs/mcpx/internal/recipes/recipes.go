@@ -249,19 +249,106 @@ func splitDefault(s string) (value, tail string) {
 	return s, ""
 }
 
+// scanCode marks, for every byte of src, whether that byte sits in code
+// position: outside every comment and string literal. refs and substitute
+// share the one scan, so the two can never disagree about whether an
+// `@name` is a placeholder -- the defect behind #1670 was each of them
+// scanning statelessly while this file's own docs promised comment and
+// string skipping.
+//
+// The scan is lexical, carried across lines so block comments and
+// template literals span them, and deliberately small: line comments,
+// block comments, and single-, double- and backtick-quoted literals with
+// backslash escapes. Two known edges follow from that size and are
+// accepted rather than parsed around: a regex literal is not told apart
+// from division, so an `@name` after a `//`-shaped regex is read as a
+// comment; and `${...}` inside a template literal is treated as string
+// text, not as the interpolation it is.
+func scanCode(src string) []bool {
+	const (
+		stCode = iota
+		stLineComment
+		stBlockComment
+		stSingle
+		stDouble
+		stTemplate
+	)
+	code := make([]bool, len(src))
+	state := stCode
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch state {
+		case stCode:
+			switch {
+			case c == '/' && i+1 < len(src) && src[i+1] == '/':
+				state = stLineComment
+				i++
+			case c == '/' && i+1 < len(src) && src[i+1] == '*':
+				state = stBlockComment
+				i++
+			case c == '\'':
+				state = stSingle
+			case c == '"':
+				state = stDouble
+			case c == '`':
+				state = stTemplate
+			default:
+				code[i] = true
+			}
+		case stLineComment:
+			if c == '\n' {
+				state = stCode
+				code[i] = true
+			}
+		case stBlockComment:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				state = stCode
+				i++
+			}
+		case stSingle, stDouble:
+			quote := byte('"')
+			if state == stSingle {
+				quote = '\''
+			}
+			switch {
+			case c == '\\':
+				i++ // the escaped byte is string text, whatever it is
+			case c == quote:
+				state = stCode
+			case c == '\n':
+				// An unterminated literal ends at the line, so one bad
+				// string cannot swallow the rest of the script.
+				state = stCode
+				code[i] = true
+			}
+		case stTemplate:
+			switch {
+			case c == '\\':
+				i++
+			case c == '`':
+				state = stCode
+			}
+		}
+	}
+	return code
+}
+
 // refs finds every `@name` in the body, ignoring declarations, comments and
 // anything inside a string.
 func refs(src string) []string {
+	code := scanCode(src)
 	var out []string
 	seen := map[string]bool{}
+	offset := 0
 	for _, line := range strings.Split(src, "\n") {
 		if declLine.MatchString(line) || toolDecl.MatchString(line) {
 			// Declaration and marker lines describe the recipe; the
 			// `@param`/`@tool` words in them are not placeholders.
+			offset += len(line) + 1
 			continue
 		}
 		for i := 0; i < len(line); i++ {
-			if line[i] != '@' {
+			if line[i] != '@' || !code[offset+i] {
 				continue
 			}
 			// An email address or a decorator is not a placeholder, and the
@@ -284,6 +371,7 @@ func refs(src string) []string {
 			}
 			i = j - 1
 		}
+		offset += len(line) + 1
 	}
 	sort.Strings(out)
 	return out
@@ -341,25 +429,33 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 		}
 	}
 
+	code := scanCode(r.Source)
 	var b strings.Builder
+	offset := 0
 	for _, line := range strings.Split(r.Source, "\n") {
 		if declLine.MatchString(line) {
 			// The declaration is consumed. Leaving it in would be harmless
 			// but the rendered script is what a diagnostic reports line
 			// numbers against, and they should match what ran.
 			b.WriteString("//" + strings.TrimPrefix(strings.TrimSpace(line), "//") + "\n")
+			offset += len(line) + 1
 			continue
 		}
-		b.WriteString(substitute(line, lits))
+		b.WriteString(substitute(line, code[offset:offset+len(line)], lits))
 		b.WriteString("\n")
+		offset += len(line) + 1
 	}
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
-func substitute(line string, lits map[string]string) string {
+// substitute replaces `@name` placeholders on one line. code is the
+// scanCode mask for exactly this line's bytes: an `@name` outside code
+// position (in a comment or a string) is copied through untouched, so a
+// filled value is never spliced into a literal.
+func substitute(line string, code []bool, lits map[string]string) string {
 	var b strings.Builder
 	for i := 0; i < len(line); i++ {
-		if line[i] != '@' || (i > 0 && isWordByte(line[i-1])) {
+		if line[i] != '@' || !code[i] || (i > 0 && isWordByte(line[i-1])) {
 			b.WriteByte(line[i])
 			continue
 		}

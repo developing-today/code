@@ -127,6 +127,60 @@ func TestAnEmailAddressIsNotAPlaceholder(t *testing.T) {
 	}
 }
 
+func TestMentionsInCommentsAndStringsAreNotPlaceholders(t *testing.T) {
+	// #1670: refs() always promised to ignore comments and strings and
+	// never did, so a thank-you in a comment became a required input and
+	// Render spliced the value inside string literals. Each source below
+	// mentions @name somewhere it is not code; none may yield a
+	// placeholder, and rendering must leave the source untouched.
+	sources := map[string]string{
+		"line comment":       "// thanks @alice for the review\nawait demo.echo({ ok: true });",
+		"trailing comment":   "await demo.echo({ ok: true }); // cc @alice",
+		"block comment":      "/* ping @alice */\nawait demo.echo({ ok: true });",
+		"block comment span": "/* ping\n@alice\n*/\nawait demo.echo({ ok: true });",
+		"double quoted":      "const note = \"ask @admin first\";\nconsole.log(note);",
+		"single quoted":      "const note = 'ask @admin first';\nconsole.log(note);",
+		"escaped quote":      "const note = \"ask \\\"@admin\\\" first\";\nconsole.log(note);",
+		"template literal":   "const note = `ask @admin first`;\nconsole.log(note);",
+		"template span":      "const note = `ask\n@admin first`;\nconsole.log(note);",
+	}
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			r := recipes.Parse("x", "/tmp/x.ts", src)
+			if len(r.Placeholders) != 0 {
+				t.Fatalf("placeholders = %+v", r.Placeholders)
+			}
+			out, err := r.Render(map[string]any{"alice": "x", "admin": "root"})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			if out != src+"\n" {
+				t.Fatalf("render changed a comment/string mention:\n got %q\nwant %q", out, src+"\n")
+			}
+		})
+	}
+}
+
+func TestACodeReferenceBesideAStringMentionStillWorks(t *testing.T) {
+	// The string mention is prose; the code-position reference beside it
+	// is the placeholder, and only it is substituted.
+	src := "const note = \"ask @who first\";\nawait demo.echo({ message: @who });"
+	r := recipes.Parse("x", "/tmp/x.ts", src)
+	if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+		t.Fatalf("placeholders = %+v", r.Placeholders)
+	}
+	out, err := r.Render(map[string]any{"who": "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `const note = "ask @who first";`) {
+		t.Errorf("the string literal was rewritten:\n%s", out)
+	}
+	if !strings.Contains(out, `message: "hi"`) {
+		t.Errorf("the code reference was not substituted:\n%s", out)
+	}
+}
+
 func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 	r := recipes.Parse("x", "/tmp/x.ts",
 		"// @tool false\nawait demo.echo({ message: \"hi\" });")
