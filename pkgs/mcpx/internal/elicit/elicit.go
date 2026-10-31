@@ -455,11 +455,7 @@ func (b *Broker) Await(ctx context.Context, id string) (Answer, error) {
 				return Answer{}, fmt.Errorf("no elicitation %s", id)
 			}
 			if time.Now().After(r.ExpiresAt) {
-				a := Answer{ID: id, Action: Cancel, By: "expiry", At: time.Now()}
-				if err := b.Respond(a); err != nil {
-					return Answer{}, err
-				}
-				return a, nil
+				return b.expire(id)
 			}
 		}
 	}
@@ -483,7 +479,7 @@ func (b *Broker) Respond(a Answer) error {
 	if r.State != Pending {
 		// Answering twice is not an error worth failing a command over; the
 		// first answer stands and the caller is told so.
-		return fmt.Errorf("%s was already %s", a.ID, r.State)
+		return b.alreadyAnswered(a.ID)
 	}
 	// JSON null is content by length and nothing by meaning: it unmarshals
 	// into a nil map, and a null sampling answer crashed the daemon on its
@@ -513,13 +509,24 @@ func (b *Broker) Respond(a Answer) error {
 	if a.By == "expiry" {
 		state = Expired
 	}
+	// The claim is the update, not the read above: two processes can both
+	// have seen pending, and only the first writer must win. A loser finds
+	// zero rows and is told the documented already-answered outcome instead
+	// of tripping the answer table's primary key (#1691). Writers queue on
+	// the write lock (busy_timeout), so the loser reads the winner's state.
+	claimed, err := tx.Exec(`UPDATE elicitations SET state=? WHERE id=? AND state='pending'`,
+		string(state), a.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := claimed.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return b.alreadyAnswered(a.ID)
+	}
 	if _, err := tx.Exec(`INSERT INTO elicitation_answers
 		(id,action,content,answered_by,answered_ms,pid) VALUES (?,?,?,?,?,?)`,
 		a.ID, string(a.Action), string(a.Content), a.By, a.At.UnixMilli(), a.PID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`UPDATE elicitations SET state=? WHERE id=?`,
-		string(state), a.ID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -535,6 +542,35 @@ func (b *Broker) Respond(a Answer) error {
 	}
 	b.mu.Unlock()
 	return nil
+}
+
+// alreadyAnswered reports the documented loss for a question that stopped
+// being pending between Respond's first read and its claim: the winner's
+// state, never the store's complaint about it (#1691).
+func (b *Broker) alreadyAnswered(id string) error {
+	r, ok, err := b.get(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no elicitation %s", id)
+	}
+	return fmt.Errorf("%s was already %s", id, r.State)
+}
+
+// expire answers cancel on the asker's behalf and tolerates losing the
+// race to do it: a real answer (or another expiry) that claimed the
+// question after Await's last Lookup is what the asker was waiting for,
+// so it is handed over instead of the loss (#1691).
+func (b *Broker) expire(id string) (Answer, error) {
+	a := Answer{ID: id, Action: Cancel, By: "expiry", At: time.Now()}
+	if err := b.Respond(a); err != nil {
+		if landed, ok, lerr := b.Lookup(id); lerr == nil && ok {
+			return landed, nil
+		}
+		return Answer{}, err
+	}
+	return a, nil
 }
 
 // Get returns one question. An item read is use, so a pending

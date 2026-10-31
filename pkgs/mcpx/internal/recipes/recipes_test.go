@@ -276,3 +276,67 @@ func TestADeclarationLineCannotLexTheBody(t *testing.T) {
 		t.Errorf("the code reference was not substituted:\n%s", out)
 	}
 }
+// TestJSONDefaultsWithBracketsInsideStrings pins #1671: a JSON default
+// whose string values contain bracket characters must survive Parse
+// whole — splitDefault counted brackets with no string state, so the
+// default was truncated at the first bracket inside a string, the
+// remainder polluted the description, and FormSchema silently dropped
+// the (now invalid) default. The table covers the permutations: closing
+// brackets, opening brackets (which inflated depth the other way,
+// swallowing the description), escaped quotes (which kill a naive
+// string-skip without escape handling), and escaped backslashes.
+func TestJSONDefaultsWithBracketsInsideStrings(t *testing.T) {
+	cases := []struct {
+		name, def, desc string
+	}{
+		{"cfg", `{"note": "a}b"}`, "the config"},
+		{"list", `["a]b", "c"]`, "the list"},
+		{"nested", `[{"k": "v]"}]`, "the items"},
+		{"esc", `{"note": "a\"}b"}`, "escaped quote"},
+		{"open", `{"q": "a{b[c"}`, "openers in string"},
+		{"bslash", `{"p": "a\\b}c"}`, "escaped backslash"},
+	}
+	var src strings.Builder
+	src.WriteString("// Demo recipe.\n")
+	for _, c := range cases {
+		src.WriteString("// @param " + c.name + ":json = " + c.def + " " + c.desc + "\n")
+	}
+	src.WriteString("\nconst x = await demo.run({ cfg: @cfg });\n")
+	r := recipes.Parse("demo", "/tmp/demo.ts", src.String())
+	byName := map[string]recipes.Placeholder{}
+	for _, ph := range r.Placeholders {
+		byName[ph.Name] = ph
+	}
+	for _, c := range cases {
+		ph, ok := byName[c.name]
+		if !ok {
+			t.Errorf("%s: placeholder missing", c.name)
+			continue
+		}
+		if ph.Default == nil || *ph.Default != c.def {
+			t.Errorf("%s: default = %v, want %s", c.name, ph.Default, c.def)
+		}
+		if ph.Description != c.desc {
+			t.Errorf("%s: description = %q, want %q", c.name, ph.Description, c.desc)
+		}
+		if ph.Default != nil {
+			var v any
+			if err := json.Unmarshal([]byte(*ph.Default), &v); err != nil {
+				t.Errorf("%s: default is not valid JSON: %v", c.name, err)
+			}
+		}
+	}
+	// The defaults must also reach the form schema: a headless caller
+	// that never answers is run on them.
+	var doc struct {
+		Properties map[string]map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(recipes.FormSchema(r.Placeholders), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		if _, ok := doc.Properties[c.name]["default"]; !ok {
+			t.Errorf("%s default missing from form schema: %v", c.name, doc.Properties[c.name])
+		}
+	}
+}

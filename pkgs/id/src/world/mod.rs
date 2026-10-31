@@ -74,7 +74,8 @@ pub struct WorldLimits {
     /// Trim the journal behind a program snapshot once this many events were
     /// committed since the last one. `0` disables checkpointing.
     pub checkpoint_every: u64,
-    /// Slowest tick a program may subscribe to, in milliseconds.
+    /// Minimum tick interval a program may subscribe to, in milliseconds.
+    /// Subscriptions below this floor are refused at subscription time.
     pub min_tick_ms: u64,
     /// Whether a world's policy grants a capability on its first use.
     pub grant_on_use: bool,

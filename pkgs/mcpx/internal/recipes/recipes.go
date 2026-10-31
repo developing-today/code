@@ -231,6 +231,25 @@ func splitDefault(s string) (value, tail string) {
 		}
 		depth := 0
 		for i := 0; i < len(s); i++ {
+			// A bracket inside a quoted string is text, not
+			// structure: without string state, {"note": "a}b"}
+			// was truncated at the } inside the string, and the
+			// invalid fragment became the default (#1671). Skip
+			// strings the way the quoted branch above does,
+			// honouring backslash escapes.
+			if s[i] == '"' || s[i] == '\'' || s[i] == '`' {
+				q := s[i]
+				for i++; i < len(s); i++ {
+					if s[i] == '\\' {
+						i++
+						continue
+					}
+					if s[i] == q {
+						break
+					}
+				}
+				continue
+			}
 			switch s[i] {
 			case open:
 				depth++

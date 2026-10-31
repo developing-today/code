@@ -2303,17 +2303,30 @@ async fn handle_client_frame<I: SessionIo>(
             .await;
         }
         // Like `info`, the joined phase may read the world's metrics with
-        // the session's own capability.
-        ClientFrame::Metrics { .. } => match world.metrics().await {
-            Ok(metrics) => {
-                return send_json(service.frame_meter(), io, &ServerFrame::Metrics { metrics })
-                    .await;
+        // the session's own capability — gated on a snapshot with the
+        // session token first, so a revoked participant is refused here
+        // even when this frame wins the race against the revocation
+        // broadcast (#1506).
+        ClientFrame::Metrics { .. } => {
+            if world.snapshot(token.clone()).await.is_err() {
+                return send_error(service.frame_meter(), io, "join denied").await;
             }
-            Err(error) => {
-                return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            match world.metrics().await {
+                Ok(metrics) => {
+                    return send_json(service.frame_meter(), io, &ServerFrame::Metrics { metrics })
+                        .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
             }
-        },
+        }
         ClientFrame::Caps { .. } => {
+            // Same capability gate as the query phase (#1506): the
+            // session token must still name a live participant.
+            if world.participant_id(token.clone()).await.is_err() {
+                return send_error(service.frame_meter(), io, "join denied").await;
+            }
             match service.world().caps_report().await {
                 Ok(report) => {
                     let _ =
