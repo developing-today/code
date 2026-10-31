@@ -49,7 +49,7 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the accepting side waits, after a completed session, for the dialer
 /// to close the connection before it lets the router close it instead (see
 /// `EventSyncProtocol::accept`).
-const CLOSE_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 /// Membership answers for a gate that never asks. [`PullPolicy::Open`] admits every
 /// peer without reading membership (see the module docs), so these answers are never
