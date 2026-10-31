@@ -185,6 +185,7 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
 	lim.InterceptImages = set.Bool("artifacts.interceptImages")
+	lim.StdoutLimit = set.Bytes("exec.maxOutputBytes")
 
 	svc := &execsvc.Service{
 		Calls:    s.callRegistry(),

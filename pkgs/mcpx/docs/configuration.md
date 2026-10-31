@@ -411,6 +411,7 @@ and a switch to turn the report off would have kept it quiet.
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `exec.maxOutputBytes` | bytes | `64KiB` | call | yes | `--exec-max-output-bytes` | `MCPX_EXEC_MAX_OUTPUT_BYTES` | cap the stdout a run returns, with a truncation marker |
 | `exec.output` | enum | `text` | call | yes | `--exec-output`, `--output` | `MCPX_EXEC_OUTPUT` | text for a terminal, structured for one document, stream for frames |
 | `exec.timeout` | duration | `120s` | call | yes | `--exec-timeout` | `MCPX_EXEC_TIMEOUT` | kill a script after this long |
 | `exec.where` | enum | `auto` | call | yes | `--exec-where` | `MCPX_EXEC_WHERE` | in this process, or on the daemon |
@@ -695,7 +696,7 @@ and a switch to turn the report off would have kept it quiet.
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `tasks.resultWait` | duration | `2m0s` | call | yes | `--tasks-result-wait` | `MCPX_TASKS_RESULT_WAIT` | how long collecting a task result blocks before giving up |
-| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept, measured from when the task finishes; a still-running task is never expired by it |
+| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept |
 
 ### transport
 
