@@ -226,6 +226,12 @@ func (l *lexer) valueEnd() bool {
 		if len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "." {
 			return true
 		}
+		if t.text == "const" && len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "as" {
+			// An erased `as const` assertion ends a value even
+			// though const alone opens a declaration: in
+			// `2 as const / 2` the slash divides.
+			return true
+		}
 		if t.text == "of" {
 			// "of" is a keyword only as a for head's separator, where
 			// it directly follows the loop target (a name, or a
