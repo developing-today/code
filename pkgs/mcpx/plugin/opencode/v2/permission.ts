@@ -65,3 +65,27 @@ export function evaluateMcpxPermission(event: PermissionEvaluationLike): void {
   if (event.effect === "deny") return;
   event.effect = "ask";
 }
+
+/**
+ * Wire the gate into a host's permission domain, fail-closed.
+ *
+ * The assert callback daemon_select confirms through is handed out ONLY
+ * after the evaluate hook has registered successfully. Registration is
+ * awaited, never fire-and-forget: if it rejects, the gate is not wired
+ * (undefined) and daemon_select refuses the choice instead of applying
+ * it (tools.ts) — a host whose blanket allow rule would otherwise let
+ * `permission.assert` resolve silently, without the prompt this hook
+ * exists to force. A host with no permission domain gets the same
+ * refusal.
+ */
+export async function wirePermissionGate(
+  domain: PermissionDomainLike | undefined,
+): Promise<((input: PermissionAssertInput) => Promise<void>) | undefined> {
+  if (!domain) return undefined;
+  try {
+    await domain.hook("evaluate", evaluateMcpxPermission);
+  } catch {
+    return undefined;
+  }
+  return (input) => domain.assert(input);
+}

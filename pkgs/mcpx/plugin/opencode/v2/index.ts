@@ -13,7 +13,7 @@ import { targetKey, type Target } from "../mcpx/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
 import {
-  evaluateMcpxPermission,
+  wirePermissionGate,
   type PermissionDomainLike,
 } from "./permission.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
@@ -45,8 +45,9 @@ export type McpxV2Context = {
   /**
    * The v2 permission domain (permission.ts): setup registers the
    * evaluate hook and wires assert into daemon_select. Optional in the
-   * type because stub hosts omit it; a host without it gets a
-   * daemon_select that refuses to apply unconfirmed choices.
+   * type because stub hosts omit it; a host without it — or whose
+   * evaluate-hook registration fails — gets a daemon_select that
+   * refuses to apply unconfirmed choices.
    */
   permission?: PermissionDomainLike;
 };
@@ -145,11 +146,11 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
   // The permission gate (#1858 item (2)): the evaluate hook keeps
   // mcpx's confirmation action at "ask", and daemon_select asserts
   // through the same domain before applying a choice. Registration is
-  // best-effort like everything else in setup — a failed hook leaves
-  // daemon_select refusing, never silently applying.
-  if (ctx.permission) {
-    void ctx.permission.hook("evaluate", evaluateMcpxPermission).catch(() => undefined);
-  }
+  // awaited and fail-closed (wirePermissionGate in permission.ts):
+  // the assert callback exists only once the hook is registered, so
+  // a failed registration leaves daemon_select refusing, never
+  // silently applying.
+  const assertPermission = await wirePermissionGate(ctx.permission);
 
   runtime = createToolRuntime({
     directory,
@@ -157,9 +158,7 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     options,
     storage: ctx.storage,
     onTarget: noteTarget,
-    assertPermission: ctx.permission
-      ? (input) => ctx.permission!.assert(input)
-      : undefined,
+    assertPermission,
   });
   await registerTools(ctx.tool, runtime, {
     toolsEnabled: options.tools ?? false,
