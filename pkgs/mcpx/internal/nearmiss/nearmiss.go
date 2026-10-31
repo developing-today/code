@@ -87,12 +87,16 @@ func Threshold(normalisedLen int) int {
 // normalisation, one is a prefix of the other (for names longer than
 // two characters), or their distance is at most one. This is the
 // launcher's deliberately narrow test, unchanged in reach.
+//
+// The prefix rule keys on BOTH names' lengths, so the relation is
+// symmetric: guarding on the first argument alone made
+// Near("abcd", "ab") true while Near("ab", "abcd") was false (#3075).
 func Near(a, b string) bool {
 	na, nb := Normalize(a), Normalize(b)
 	if na == nb {
 		return true
 	}
-	if len(na) > 2 && (strings.HasPrefix(nb, na) || strings.HasPrefix(na, nb)) {
+	if len(na) > 2 && len(nb) > 2 && (strings.HasPrefix(nb, na) || strings.HasPrefix(na, nb)) {
 		return true
 	}
 	return damerau(na, nb) <= 1
