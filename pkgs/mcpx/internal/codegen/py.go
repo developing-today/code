@@ -955,9 +955,15 @@ func pyClassNames(nss []Namespace) ([]string, map[string]bool) {
 	// Python's keyword literals are reserved for the same reason: a
 	// namespace named "none" normalises to None, and `class None:` is
 	// a SyntaxError that takes down every tool in the module.
+	// The transport bindings are reserved too: case-preserving class
+	// names can spell them exactly (namespace "eNDPOINT" -> ENDPOINT),
+	// and a generated class with that name would overwrite the runtime
+	// global every call reads, breaking the whole client (#2591
+	// Codex round 10).
 	for _, name := range []string{"ToolError", "TypedDict", "Literal",
 		"Any", "Dict", "List", "Optional", "Union",
-		"None", "True", "False"} {
+		"None", "True", "False",
+		"ENDPOINT", "SESSION", "SOCKET"} {
 		used[name] = true
 	}
 	out := make([]string, 0, len(nss))

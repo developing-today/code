@@ -352,6 +352,45 @@ func TestPythonCodexRound2(t *testing.T) {
 	}
 }
 
+// TestPythonCodexRound10 covers the Codex round-10 finding on PR #2591:
+// the transport bindings ENDPOINT / SESSION / SOCKET were missing from
+// the class allocator's reservations, so a namespace whose case-preserved
+// class name spells one of them ("eNDPOINT" -> ENDPOINT) emitted a class
+// that overwrote the runtime global and broke every call in the module.
+func TestPythonCodexRound10(t *testing.T) {
+	l := pythonLang(t)
+	mk := func(name string) codegen.Namespace {
+		return codegen.Namespace{
+			Name:   name,
+			Server: name + "-server",
+			Tools: []codegen.Tool{{
+				Name:        "probe",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
+			}},
+		}
+	}
+	out := l.EmitModule([]codegen.Namespace{mk("eNDPOINT"), mk("sESSION"), mk("sOCKET")},
+		"http://127.0.0.1:1234", "sess-10")
+	for _, want := range []string{
+		"class ENDPOINT2:",
+		"class SESSION2:",
+		"class SOCKET2:",
+		// The runtime bindings survive as the module globals.
+		"ENDPOINT = os.environ.get(\"MCPX_ENDPOINT\")",
+		"SESSION = os.environ.get(\"MCPX_SESSION\")",
+		"SOCKET = os.environ.get(\"MCPX_SOCKET\")",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"class ENDPOINT:", "class SESSION:", "class SOCKET:"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("namespace class replaced a transport binding (%q):\n%s", bad, out)
+		}
+	}
+}
+
 func TestPythonCodexRound3(t *testing.T) {
 	l := pythonLang(t)
 	ns := codegen.Namespace{
