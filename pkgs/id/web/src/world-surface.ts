@@ -137,6 +137,13 @@ function isWideCodePoint(codePoint: number): boolean {
 // — a blanket \p{M} rule diverged on lone spacing marks (#1581).
 const NON_SPACING_MARK = /^(?:\p{Mn}|\p{Me})$/u;
 
+// Spacing marks that also carry Grapheme_Extend are the exception:
+// unicode-width 0.2 treats Grapheme_Extend as zero-width, so Bengali
+// U+09BE and Oriya U+0B3E (both Mc) measure 0 in a cluster — কা is
+// one column, not two — while U+0903 (Mc without Grapheme_Extend)
+// keeps measuring 1 above (#1581, Codex review on df6e0cf15).
+const GRAPHEME_EXTEND = /^\p{Grapheme_Extend}$/u;
+
 /** Width of one code point under unicode-width 0.2: wide = 2, combining/zero-width = 0, else 1. */
 function codePointWidth(character: string, codePoint: number): number {
   if (codePoint === 0x200d || codePoint === 0x200c || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)) return 0;
@@ -148,7 +155,7 @@ function codePointWidth(character: string, codePoint: number): number {
   // cluster measures 2 in total, not per component (#1581).
   if (codePoint >= 0x1160 && codePoint <= 0x11ff) return 0;
   if (isWideCodePoint(codePoint)) return 2;
-  if (NON_SPACING_MARK.test(character)) return 0;
+  if (NON_SPACING_MARK.test(character) || GRAPHEME_EXTEND.test(character)) return 0;
   return 1;
 }
 

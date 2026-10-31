@@ -151,6 +151,25 @@ describe("world screen presenter", () => {
     };
     expect(renderWorldSurface(root, markInWide)).toBe(false);
 
+    // Spacing marks with Grapheme_Extend measure 0 in a cluster, like
+    // unicode-width 0.2: Bengali কা (U+0995 U+09BE) and Oriya କା
+    // (U+0B15 U+0B3E) are single graphemes measuring 1 column in total
+    // — they render in 1 column and are refused in 2.
+    for (const symbol of ["\u{0995}\u{09BE}", "\u{0B15}\u{0B3E}"]) {
+      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(true);
+      const clusterInWide: ScreenSurface = {
+        kind: "screen",
+        version: 1,
+        width: 2,
+        height: 1,
+        cells: [
+          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
+          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+        ],
+      };
+      expect(renderWorldSurface(root, clusterInWide)).toBe(false);
+    }
+
     // One grapheme of 18 UTF-16 units (e + 17 combining acutes, width
     // 1) renders: there is no symbol-length cap, matching the Rust
     // validator.
