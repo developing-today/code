@@ -198,6 +198,7 @@ pub mod meta_client;
 pub mod petname;
 pub mod protocol;
 pub mod pull_policy;
+pub mod references;
 pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
