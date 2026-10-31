@@ -60,13 +60,34 @@ WATCHES = ("issues", "inventory-only")
 URL_RE = re.compile(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[\s|)'\"]|$)")
 
 
+def decode_pages(text: str) -> list[dict]:
+    """Decode one or more concatenated JSON documents.
+
+    `gh api --paginate` emits one JSON array (or object) per page, so a
+    captured enumeration file — like live --paginate output — is a
+    stream of documents, not a single JSON value. Decode them all and
+    flatten the entries.
+    """
+    entries: list[dict] = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        while idx < len(text) and text[idx].isspace():
+            idx += 1
+        if idx >= len(text):
+            break
+        doc, idx = decoder.raw_decode(text, idx)
+        if isinstance(doc, list):
+            entries.extend(doc)
+        else:
+            entries.append(doc)
+    return entries
+
+
 def load_enumeration(path: str | None) -> list[dict]:
     if path is None:
         return []
-    data = json.loads(Path(path).read_text())
-    if isinstance(data, dict):
-        data = [data]
-    return data
+    return decode_pages(Path(path).read_text())
 
 
 def fetch_live(endpoint: str) -> list[dict]:
@@ -75,17 +96,7 @@ def fetch_live(endpoint: str) -> list[dict]:
         capture_output=True, text=True, check=True,
     ).stdout
     # --paginate concatenates one JSON array per page.
-    repos: list[dict] = []
-    decoder = json.JSONDecoder()
-    idx = 0
-    while idx < len(out):
-        while idx < len(out) and out[idx].isspace():
-            idx += 1
-        if idx >= len(out):
-            break
-        page, idx = decoder.raw_decode(out, idx)
-        repos.extend(page)
-    return repos
+    return decode_pages(out)
 
 
 def parse_census(text: str) -> dict[str, dict]:

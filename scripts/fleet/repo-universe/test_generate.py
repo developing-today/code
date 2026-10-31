@@ -71,6 +71,16 @@ class GenerateTest(unittest.TestCase):
         )
         return self.out.read_text()
 
+    def test_multipage_capture_files_decode(self) -> None:
+        # Captures taken with the documented `gh api --paginate`
+        # commands hold one JSON array per page concatenated; the
+        # generator must decode every page, not just the first.
+        (self.dir / "org.json").write_text(json.dumps(ORG[:2]) + "\n" + json.dumps(ORG[2:]))
+        (self.dir / "user.json").write_text(json.dumps(USER[:1]) + json.dumps(USER[1:]))
+        out = self.run_gen()
+        for name in FLEET_AND_SIDE:
+            self.assertIn(name, out)
+
     def test_idempotent_zero_diff_on_unchanged_inputs(self) -> None:
         first = self.run_gen()
         second = self.run_gen()
