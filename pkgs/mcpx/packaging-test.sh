@@ -55,7 +55,7 @@ doctor_json="$(env -i HOME="$HOME" PATH=/nonexistent "$bin" --json doctor 2>/dev
 command -v jq >/dev/null || fail "jq is required to parse mcpx --json doctor output"
 check_detail() {
   printf '%s' "$doctor_json" | jq -r --arg n "$1" \
-    '[.[] | select(.name == $n) | .detail // ""] | first // ""' || true
+    '[.checks[] | select(.name == $n) | .detail // ""] | first // ""' || true
 }
 runtime_detail="$(check_detail runtime)"
 [ -n "$runtime_detail" ] || fail "mcpx --json doctor has no runtime check: $doctor_json"
