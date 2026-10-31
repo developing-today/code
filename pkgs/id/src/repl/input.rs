@@ -332,6 +332,34 @@ fn has_trailing_placeholder(cmd: &str) -> bool {
     t == "-" || t.ends_with(" -")
 }
 
+
+/// `cmd` with every here-string (`<<<` plus its content) removed.
+/// Here-string content is literal data, not command syntax: a `-`
+/// payload (`<<< -`) is not a trailing placeholder, and a quoted
+/// payload is not an operator. Source-level validation that inspects
+/// a command containing a here-string must look at the command with
+/// the data excluded, or it rejects lines the substitution stages
+/// handle correctly (Codex review, PR #3096). An unquoted payload
+/// consumes the rest of the line; an unterminated quote drops the
+/// remainder here too — the here-string stage itself reports that
+/// error when it runs.
+fn without_here_strings(cmd: &str) -> String {
+    let mut result = cmd.to_owned();
+    while let Some(pos) = find_unquoted_from(&result, "<<<", &[], 0) {
+        let before = result[..pos].to_owned();
+        let after = result[pos + 3..].trim_start().to_owned();
+        let rest = match after.chars().next() {
+            Some(quote @ ('\'' | '"')) => match after[1..].find(quote) {
+                Some(end) => after[1 + end + 1..].to_owned(),
+                None => String::new(),
+            },
+            _ => String::new(),
+        };
+        result = format!("{before}{rest}");
+    }
+    result
+}
+
 fn trailing_placeholder_error() -> anyhow::Error {
     anyhow::anyhow!(
         "unsupported trailing '-' content placeholder: place '-' before the name (put - name ...)"
@@ -399,7 +427,12 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     // (Codex review, PR #3096).
     if let Some(pos) = source_pipe_position(line) {
         let right = line[pos + 2..].trim();
-        if has_trailing_placeholder(right) {
+        // The right side may carry a here-string whose payload is
+        // literal data: `echo hi |> put - name <<< -` stores `-`
+        // under `name` (the payload fills the mid-line placeholder),
+        // so the trailing check must exclude here-string content or
+        // it rejects a supported line (Codex review, PR #3096).
+        if has_trailing_placeholder(&without_here_strings(right)) {
             return Err(trailing_placeholder_error());
         }
     }
@@ -786,6 +819,41 @@ mod tests {
             let error = preprocess_repl_line(&line).unwrap_err().to_string();
             assert!(error.contains("trailing '-' content placeholder"), "{error}");
         }
+    }
+
+
+    #[test]
+    fn test_pipe_rhs_here_string_dash_payload_is_literal() {
+        // Codex review, PR #3096: a real pipe before a here-string
+        // whose payload is `-` — the payload is data for the mid-line
+        // placeholder, not a trailing placeholder.
+        for line in [
+            "echo hi |> put - name <<< -",
+            "echo hi |> put - name <<< '-'",
+            "echo hi |> put - name <<< \"-\"",
+        ] {
+            match preprocess_repl_line(line).unwrap() {
+                ReplInput::Ready(s) => {
+                    assert_eq!(s, "put __STDIN_CONTENT__:- name", "{line}")
+                }
+                _ => panic!("expected Ready for {line}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_rhs_trailing_dash_with_here_string_still_rejected() {
+        // Excluding the here-string payload must not weaken the
+        // rejection: a trailing placeholder in the command itself is
+        // still an error, raised before the left side executes.
+        let result = preprocess_repl_line("exit 3 |> put name - <<< payload");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
     }
 
     #[test]
