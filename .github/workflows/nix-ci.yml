@@ -74,9 +74,18 @@ jobs:
           extra-conf: |
             lazy-trees = false
       - name: Evaluate NixOS host configurations (drvPath only)
+        # The hosts legitimately include unfree packages (Affinity
+        # Photo 2 via scripts.nix); the laptop allows them, CI does
+        # not by default, and drvPath evaluation refuses them
+        # (run 41223153158). This check guards evaluation health
+        # (#699-style breakage), not license policy, so allow unfree
+        # for the eval exactly as the laptop does. NIXPKGS_ALLOW_UNFREE
+        # is only honoured with --impure.
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
         run: |
-          nix eval .#nixosConfigurations.amd.config.system.build.toplevel.drvPath
-          nix eval .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath
+          nix eval --impure .#nixosConfigurations.amd.config.system.build.toplevel.drvPath
+          nix eval --impure .#nixosConfigurations.nixos.config.system.build.toplevel.drvPath
 
   flake-check:
     name: "full (main tier): Nix flake evaluation"
