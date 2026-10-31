@@ -449,10 +449,31 @@ pub struct ForkSpec {
 }
 
 /// Read a journal's entries without opening it for append.
+///
+/// A torn final fragment — a last chunk with no terminating newline, left by
+/// a crash mid-append — is excluded with a warning, mirroring
+/// [`FileJournal::open`]: that entry was never acknowledged, and a world its
+/// own open repairs must stay forkable (#1523). A newline-terminated line
+/// that does not parse was fully written, so it stays fatal corruption in
+/// any position, including the last line.
 fn read_journal_entries(path: &Path) -> Result<Vec<JournalEntry>> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if bytes.last() != Some(&b'\n') {
+        // The split's final chunk is an unterminated fragment (or the empty
+        // tail of an empty file); it is not a complete entry.
+        if let Some(fragment) = lines.pop() {
+            if !fragment.is_empty() {
+                tracing::warn!(
+                    "world journal {}: dropping torn final entry at byte {}",
+                    path.display(),
+                    bytes.len() - fragment.len()
+                );
+            }
+        }
+    }
     let mut entries = Vec::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
+    for line in lines {
         if line.is_empty() {
             continue;
         }
@@ -1562,9 +1583,7 @@ mod tests {
                 }
             ));
             journal
-                .append(&JournalEntry::ExecutionProfile {
-                    profile,
-                })
+                .append(&JournalEntry::ExecutionProfile { profile })
                 .unwrap();
         }
         let entries = journal_entries(dir.path());
