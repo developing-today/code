@@ -63,10 +63,10 @@ func (v ValidationResult) Summary() string {
 // Validate checks a script for obvious syntax/delimiter errors and compares
 // all tool calls against the available catalog schemas.
 // Crucial guarantee: It never marks a valid script as invalid.
-// One pinned blind spot: the delimiter scanner tells regex literals from
-// division with a previous-significant-token heuristic, so a regex literal
-// immediately after a keyword (e.g. "return /re/") is scanned as division;
-// see checkSyntaxAndDelimiters.
+// The delimiter scanner tells regex literals from division with a
+// previous-significant-token heuristic (keywords, control headers, block
+// closures and TypeScript postfix assertions included); see
+// checkSyntaxAndDelimiters for the pinned blind spots that remain.
 func Validate(src string, cat *diagnose.Catalog) ValidationResult {
 	res := ValidationResult{Valid: true}
 
@@ -101,8 +101,9 @@ func Validate(src string, cat *diagnose.Catalog) ValidationResult {
 }
 
 type delimToken struct {
-	char rune
-	line int
+	char      rune
+	line      int
+	exprAfter bool
 }
 
 func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
@@ -110,6 +111,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	var stack []delimToken
 
 	line := 1
+	closedExprAfter := false
 	inSingleLineComment := false
 	inMultiLineComment := false
 	inString := rune(0)
@@ -132,12 +134,27 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// to expression position and the slash opened a phantom
 	// regex).
 	signAfterOperand := false
+	var curIdent []rune
+	lastIdent := ""
+	prevChar := rune(0)
 
 	chars := []rune(src)
 	n := len(chars)
 
 	for i := 0; i < n; i++ {
 		ch := chars[i]
+
+		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
+			if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$' {
+				curIdent = append(curIdent, ch)
+			} else if len(curIdent) > 0 {
+				lastIdent = string(curIdent)
+				curIdent = nil
+				if isExprKeyword(lastIdent) && prevChar != '.' {
+					prevSig = 'o'
+				}
+			}
+		}
 
 		if ch == '\n' {
 			line++
@@ -254,10 +271,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// After an operand — identifier, number, string, regex, or
 		// closing delimiter — a '/' is division. This
 		// previous-significant-token heuristic is the standard scanner
-		// approximation; its known blind spot is a regex immediately
-		// after a keyword such as "return", whose final identifier
-		// character reads as an operand, so the pattern is scanned as
-		// division and code instead of as an opaque literal.
+		// approximation. Expression keywords (return, typeof, ...),
+		// control-header and statement-block closures, and postfix
+		// tokens are classified explicitly below; remaining blind
+		// spots are exotic shapes such as a regex after a member
+		// property named like a keyword (obj.return /re/).
 		if ch == '/' {
 			if prevSig == 0 || prevSig == 'o' {
 				inRegex = true
@@ -279,7 +297,21 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		// Delimiters
 		switch ch {
-		case '(', '{', '[':
+		case '(':
+			// A '(' right after a control keyword (if/for/while/
+			// switch/catch/with) opens a control header: its ')'
+			// returns to expression position, so a following '/'
+			// opens a regex (Codex P2 on #1659: if (true) /a+/.test(..)).
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControlKeyword(lastIdent) && prevChar != '.'})
+			lastIdent = ""
+		case '{':
+			// A '{' in statement position opens a block, whose '}'
+			// returns to expression position ({} /a+/.test(..)); a
+			// '{' in expression position opens an object literal,
+			// whose '}' is an operand (({}) / 2 divides).
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: !isObjectBrace(prevChar, lastIdent)})
+			lastIdent = ""
+		case '[':
 			stack = append(stack, delimToken{char: ch, line: line})
 		case ')', '}', ']':
 			if len(stack) == 0 {
@@ -293,6 +325,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			closedExprAfter = top.exprAfter
 			if !matchesDelim(top.char, ch) {
 				diags = append(diags, diagnose.Diagnostic{
 					Kind:    diagnose.Kind("syntax-error"),
@@ -306,7 +339,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// Track the previous significant token for the regex ruling.
 		wasOperand := prevSig == 'x'
 		switch {
+		case (ch == ')' || ch == '}') && closedExprAfter:
+			prevSig = 'o'
 		case ch == ')' || ch == '}' || ch == ']':
+			prevSig = 'x'
+		case ch == '!' && wasOperand:
 			prevSig = 'x'
 		case ch == ' ' || ch == '\t' || ch == '\r':
 			// Whitespace does not change the ruling.
@@ -326,6 +363,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			prevSig = 'o'
 		}
 		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
+		closedExprAfter = false
+		if ch != ' ' && ch != '\t' && ch != '\r' {
+			prevChar = ch
+		}
 	}
 
 	if inMultiLineComment {
@@ -363,6 +404,43 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	}
 
 	return diags
+}
+
+// isExprKeyword reports whether kw is a keyword after which an
+// expression (and therefore possibly a regex literal) follows:
+// return /re/, typeof /re/, case /re/:, and friends.
+func isExprKeyword(kw string) bool {
+	switch kw {
+	case "return", "throw", "case", "typeof", "void", "delete", "await", "yield", "else", "do":
+		return true
+	}
+	return false
+}
+
+// isControlKeyword reports whether kw heads a parenthesised control
+// header: if (...), for (...), while (...), switch (...), catch (...),
+// with (...).
+func isControlKeyword(kw string) bool {
+	switch kw {
+	case "if", "for", "while", "switch", "catch", "with":
+		return true
+	}
+	return false
+}
+
+// isObjectBrace reports whether a '{' whose previous significant
+// character is prevChar (and previous completed identifier lastIdent)
+// opens an object literal rather than a statement block.
+func isObjectBrace(prevChar rune, lastIdent string) bool {
+	switch lastIdent {
+	case "return", "throw", "case", "typeof":
+		return true
+	}
+	switch prevChar {
+	case '=', '(', ',', '[', ':', '!', '&', '|', '?', '+', '-', '*', '/', '%', '~', '^':
+		return true
+	}
+	return false
 }
 
 func isRegexFlag(ch rune) bool {

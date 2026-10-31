@@ -123,6 +123,12 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after postfix decrement", "let n = 4;\nconst ratio = n-- / 2;\n"},
 		{"division after trailing-dot number", "const ratio = 4. / 2;\n"},
 		{"division after leading-dot number", "const ratio = .5 / 2;\n"},
+		{"division after non-null assertion", "const n: number | undefined = 4;\nconst ratio = n! / 2;\n"},
+		{"regex after if control header", "if (true) /a+/.test(\"aa\");\n"},
+		{"regex after statement block", "{} /a+/.test(\"aa\");\n"},
+		{"division after expression parens", "const ratio = (1 + 2) / 2;\n"},
+		{"division after object literal parens", "const ratio = ({}) / 2;\n"},
+		{"regex after return keyword", "function f() { return /a+/.test(\"aa\"); }\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
