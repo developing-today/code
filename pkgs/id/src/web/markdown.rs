@@ -108,6 +108,15 @@ fn commonmark_options() -> Options<'static> {
 /// ```
 #[must_use]
 pub fn markdown_to_prosemirror(markdown: &str) -> Value {
+    markdown_to_prosemirror_inner(markdown, true)
+}
+
+/// The conversion itself. `recover_orphans` is false for the synthesis
+/// probes `synthesize_footnote_definition` parses: a probe must never
+/// run recovery again, so even a block comrak does not recognize as a
+/// definition terminates with no node instead of recursing (#1565,
+/// Codex P1 on the first cut).
+fn markdown_to_prosemirror_inner(markdown: &str, recover_orphans: bool) -> Value {
     let arena = Arena::new();
     let options = commonmark_options();
     // #1423: comrak (per CommonMark) cannot parse a link destination
@@ -129,7 +138,7 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
     let mut doc = convert_node(root, &[]);
-    if let Some(token) = newline_token {
+    if let Some(token) = &newline_token {
         restore_attr_newlines(&mut doc, &token);
     }
     // #1565: comrak never emits a footnote definition that nothing
@@ -138,8 +147,57 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     // as an empty file). Recover unreferenced definitions from the
     // source and append them as the same PM nodes the referenced path
     // produces.
-    preserve_unreferenced_footnote_definitions(&mut doc, &protected);
+    if recover_orphans {
+        preserve_unreferenced_footnote_definitions(
+            &mut doc,
+            &protected,
+            newline_token.as_deref(),
+        );
+    }
     doc
+}
+
+/// Fence tracking for the source scans below: a fence opens with a
+/// run of >= 3 backticks or tildes and closes only with a run of the
+/// SAME character at least as long (CommonMark) -- a three-backtick
+/// line inside a four-backtick block is content, not a close (Codex
+/// P2 on the first #1565 cut, which toggled on any fence-shaped line).
+#[derive(Default)]
+struct FenceTracker {
+    open: Option<(char, usize)>,
+}
+
+impl FenceTracker {
+    /// Feed one line (already stripped of up to three leading
+    /// spaces). Returns true when the line is a fence delimiter.
+    fn feed(&mut self, stripped: &str) -> bool {
+        let ch = match stripped.chars().next() {
+            Some(c @ ('`' | '~')) => c,
+            _ => return false,
+        };
+        let run = stripped.chars().take_while(|&c| c == ch).count();
+        if run < 3 {
+            return false;
+        }
+        match self.open {
+            None => {
+                self.open = Some((ch, run));
+                true
+            }
+            Some((open_ch, open_run)) => {
+                if ch == open_ch && run >= open_run && stripped[run..].trim().is_empty() {
+                    self.open = None;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn in_fence(&self) -> bool {
+        self.open.is_some()
+    }
 }
 
 /// A footnote definition block found by the source pre-scan (#1565):
@@ -155,7 +213,14 @@ struct FootnoteDefinitionBlock {
 /// does not start one. A definition opens as `[^label]:`.
 fn footnote_definition_label(line: &str) -> Option<String> {
     let rest = line.strip_prefix("[^")?;
-    let close = rest.find("]:")?;
+    // The label ends at the FIRST ']' and a ':' must follow it
+    // immediately. Searching for "]:" instead accepted `a]b` as the
+    // label of `[^a]b]: note` -- a definition comrak does not
+    // recognize, whose probe then looped recovery forever (Codex P1).
+    let close = rest.find(']')?;
+    if !rest[close + 1..].starts_with(':') {
+        return None;
+    }
     let label = &rest[..close];
     if label.is_empty() || label.contains('[') {
         return None;
@@ -171,22 +236,19 @@ fn footnote_definition_label(line: &str) -> Option<String> {
 /// rule for footnote definitions. The harness is shape-generic so the
 /// #1004 link-reference-definition fix can share it later.
 fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBlock> {
-    let fence = "`".repeat(3);
-    let tilde_fence = "~".repeat(3);
     let lines: Vec<&str> = markdown.lines().collect();
     let mut blocks = Vec::new();
-    let mut in_fence = false;
+    let mut fence = FenceTracker::default();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
         let indent = line.len() - line.trim_start_matches(' ').len();
         let stripped = line.trim_start_matches(' ');
-        if indent <= 3 && (stripped.starts_with(&fence) || stripped.starts_with(&tilde_fence)) {
-            in_fence = !in_fence;
+        if indent <= 3 && fence.feed(stripped) {
             i += 1;
             continue;
         }
-        if in_fence || indent > 3 {
+        if fence.in_fence() || indent > 3 {
             i += 1;
             continue;
         }
@@ -227,7 +289,44 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
 /// A label comrak emitted a node for is referenced (or at least
 /// carried) and is left exactly as today; only the definitions comrak
 /// dropped are synthesized, in source order, at the end of the doc.
-fn preserve_unreferenced_footnote_definitions(doc: &mut Value, markdown: &str) {
+/// The document's link reference definitions (`[label]: dest` lines,
+/// footnote definitions excluded), verbatim, for the synthesis probe:
+/// a reference-style link inside an unreferenced footnote resolves
+/// against definitions elsewhere in the document, and a probe without
+/// them converts the link to literal text (Codex P2).
+fn collect_link_reference_definitions(markdown: &str) -> String {
+    let mut fence = FenceTracker::default();
+    let mut defs = Vec::new();
+    for line in markdown.lines() {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let stripped = line.trim_start_matches(' ');
+        if indent <= 3 && fence.feed(stripped) {
+            continue;
+        }
+        if fence.in_fence() || indent > 3 || !stripped.starts_with('[') {
+            continue;
+        }
+        if footnote_definition_label(stripped).is_some() {
+            continue;
+        }
+        let Some(close) = stripped.find(']') else {
+            continue;
+        };
+        let Some(after) = stripped[close + 1..].strip_prefix(':') else {
+            continue;
+        };
+        if !after.trim().is_empty() {
+            defs.push(line);
+        }
+    }
+    defs.join("\n")
+}
+
+fn preserve_unreferenced_footnote_definitions(
+    doc: &mut Value,
+    markdown: &str,
+    newline_token: Option<&str>,
+) {
     let carried: Vec<String> = doc["content"]
         .as_array()
         .map(|content| {
@@ -238,12 +337,21 @@ fn preserve_unreferenced_footnote_definitions(doc: &mut Value, markdown: &str) {
                 .collect()
         })
         .unwrap_or_default();
+    let reference_defs = collect_link_reference_definitions(markdown);
     let mut synthesized = Vec::new();
     for block in scan_footnote_definition_blocks(markdown) {
         if carried.contains(&block.label) {
             continue;
         }
-        if let Some(node) = synthesize_footnote_definition(&block) {
+        if let Some(mut node) = synthesize_footnote_definition(&block, &reference_defs) {
+            // The probe parsed the PROTECTED source, whose link
+            // destinations carry the newline placeholder token; the
+            // outer restore ran before this node existed, so restore
+            // the token here or it would be saved into the URL
+            // (Codex P2).
+            if let Some(token) = newline_token {
+                restore_attr_newlines(&mut node, token);
+            }
             synthesized.push(node);
         }
     }
@@ -260,9 +368,17 @@ fn preserve_unreferenced_footnote_definitions(doc: &mut Value, markdown: &str) {
 /// `footnote_definition` node out. Going through the same conversion
 /// guarantees the synthesized node has exactly the shape the
 /// referenced path produces (#1031 block children included).
-fn synthesize_footnote_definition(block: &FootnoteDefinitionBlock) -> Option<Value> {
-    let probe = format!("x[^{}]\n\n{}\n", block.label, block.source);
-    let doc = markdown_to_prosemirror(&probe);
+fn synthesize_footnote_definition(
+    block: &FootnoteDefinitionBlock,
+    reference_defs: &str,
+) -> Option<Value> {
+    let mut probe = format!("x[^{}]\n\n{}\n", block.label, block.source);
+    if !reference_defs.is_empty() {
+        probe.push_str("\n");
+        probe.push_str(reference_defs);
+        probe.push('\n');
+    }
+    let doc = markdown_to_prosemirror_inner(&probe, false);
     doc["content"].as_array()?.iter().find_map(|n| {
         (n["type"] == "footnote_definition"
             && n["attrs"]["label"].as_str() == Some(block.label.as_str()))
@@ -3873,6 +3989,63 @@ mod tests {
             .iter()
             .any(|n| n["type"] == "footnote_definition");
         assert!(!found, "fenced definition-shaped text stays literal");
+    }
+
+    #[test]
+    fn test_malformed_footnote_label_does_not_recurse() {
+        // Codex P1 on #1565's first cut: `[^a]b]: note` scanned as a
+        // definition with label `a]b`, which comrak does not
+        // recognize; synthesizing it re-ran recovery forever.
+        let original = "Text.\n\n[^a]b]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "malformed label is not a definition");
+    }
+
+    #[test]
+    fn test_footnote_shaped_text_inside_longer_fence_stays_literal() {
+        // Codex P2 on #1565's first cut: a ``` line inside a ````
+        // block is content, not the closing fence.
+        let original = "Text.\n\n````\n```\n[^fake]: literal\n````\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(!found, "definition inside a longer fence stays literal");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_with_reference_link_resolves() {
+        // Codex P2 on #1565's first cut: the probe needs the
+        // document's reference definitions or the footnote's
+        // reference-style link degrades to literal text.
+        let original =
+            "Visible [target][url].\n\n[^orphan]: [target][url]\n\n[url]: https://example.com\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("https://example.com"),
+            "reference link resolves in recovered footnote: {first:?}"
+        );
+        assert_eq!(first, second, "reference-context round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_unreferenced_footnote_newline_destination_restored() {
+        // Codex P2 on #1565's first cut: a newline destination inside
+        // an unreferenced definition must not save the placeholder
+        // token into the URL.
+        let (first, second) = two_saves("[^n]: [x](<a\nb>)\n");
+        assert!(
+            !first.contains("idweb-newline"),
+            "no placeholder token in saved output: {first:?}"
+        );
+        assert_eq!(first, second, "newline-destination round-trip is a fixpoint");
     }
 
     fn test_footnote_multi_paragraph_definition_fixpoint() {
