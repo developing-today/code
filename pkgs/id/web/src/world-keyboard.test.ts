@@ -60,8 +60,72 @@ describe("terminal-compatible world key input", () => {
 
   it("leaves browser shortcuts and unsupported keys alone", () => {
     expect(key("s", { metaKey: true })).toBeNull();
-    expect(key("ArrowLeft", { ctrlKey: true })).toBeNull();
     expect(key("Dead")).toBeNull();
     expect(key("F5")).toBeNull();
+  });
+
+  it("encodes modified CSI tilde keys with the xterm modifier parameter", () => {
+    expect(key("Delete", { ctrlKey: true })).toBe("\x1b[3;5~");
+    expect(key("Delete", { shiftKey: true })).toBe("\x1b[3;2~");
+    expect(key("PageUp", { altKey: true })).toBe("\x1b[5;3~");
+    expect(key("PageDown", { ctrlKey: true, shiftKey: true })).toBe("\x1b[6;6~");
+  });
+
+  it("encodes modified CSI letter keys with the xterm modifier parameter", () => {
+    expect(key("ArrowUp", { altKey: true })).toBe("\x1b[1;3A");
+    expect(key("ArrowLeft", { ctrlKey: true })).toBe("\x1b[1;5D");
+    expect(key("ArrowDown", { shiftKey: true })).toBe("\x1b[1;2B");
+    expect(key("ArrowRight", { ctrlKey: true, altKey: true })).toBe("\x1b[1;7C");
+    expect(key("Home", { shiftKey: true })).toBe("\x1b[1;2H");
+    expect(key("End", { shiftKey: true })).toBe("\x1b[1;2F");
+    expect(key("Home", { ctrlKey: true, altKey: true, shiftKey: true })).toBe("\x1b[1;8H");
+  });
+
+  it("encodes Shift+Tab as backtab and keeps other modifiers on it", () => {
+    expect(key("Tab", { shiftKey: true })).toBe("\x1b[Z");
+    expect(key("Tab", { shiftKey: true, ctrlKey: true })).toBe("\x1b[1;6Z");
+  });
+
+  it("ESC-prefixes modified special keys that have no CSI form", () => {
+    expect(key("Backspace", { altKey: true })).toBe("\x1b\x7f");
+    expect(key("Enter", { altKey: true })).toBe("\x1b\r");
+    expect(key("Enter", { shiftKey: true })).toBe("\x1b\r");
+    expect(key("Tab", { altKey: true })).toBe("\x1b\t");
+    expect(key("Escape", { ctrlKey: true })).toBe("\x1b\x1b");
+  });
+
+  it("never returns the plain bytes for a modified special key", () => {
+    const specials = [
+      "Enter",
+      "Tab",
+      "Backspace",
+      "Escape",
+      "Delete",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowRight",
+      "ArrowLeft",
+    ];
+    const modifierSets = [
+      { shiftKey: true },
+      { altKey: true },
+      { ctrlKey: true },
+      { ctrlKey: true, shiftKey: true },
+      { altKey: true, shiftKey: true },
+      { ctrlKey: true, altKey: true },
+      { ctrlKey: true, altKey: true, shiftKey: true },
+    ];
+    for (const special of specials) {
+      const plain = key(special);
+      for (const modifiers of modifierSets) {
+        const encoded = key(special, modifiers);
+        expect(encoded, `${special} with ${JSON.stringify(modifiers)}`).not.toBeNull();
+        expect(encoded, `${special} with ${JSON.stringify(modifiers)}`).not.toBe(plain);
+      }
+    }
   });
 });
