@@ -44,8 +44,8 @@ func References(src string, configured func(string) bool) []string {
 		if t.text == "tools" {
 			if i+2 < len(toks) && toks[i+1].text == "." && toks[i+2].kind == tIdent {
 				found[toks[i+2].text] = true
-			} else if i+3 < len(toks) && toks[i+1].text == "[" && toks[i+2].kind == tString && toks[i+2].plain && toks[i+3].text == "]" {
-				found[toks[i+2].text] = true
+			} else if ns, ok := subscriptName(toks, i); ok {
+				found[ns] = true
 			}
 			continue
 		}
@@ -59,6 +59,50 @@ func References(src string, configured func(string) bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// subscriptName reads the bracket spelling at toks[i] ("tools"): the
+// namespace is the plain string literal right after "[", and an erased
+// TypeScript assertion may sit between the literal and the closing
+// bracket — tools["fs" as const], tools["fs"!] and
+// tools["fs" as Record<string, any>] all reach the same server as
+// tools["fs"], so all three count. Anything else (a computed key, an
+// expression) is not a literal namespace spelling.
+func subscriptName(toks []lexToken, i int) (string, bool) {
+	if i+2 >= len(toks) || toks[i+1].text != "[" || toks[i+2].kind != tString || !toks[i+2].plain {
+		return "", false
+	}
+	j := i + 3
+	if j < len(toks) && toks[j].text == "!" {
+		j++
+	} else if j < len(toks) && toks[j].kind == tIdent && toks[j].text == "as" {
+		j++
+		depth := 0
+		closed := false
+		for j < len(toks) {
+			t := toks[j]
+			if t.kind == tPunct {
+				if t.text == "]" && depth == 0 {
+					closed = true
+					break
+				}
+				switch t.text {
+				case "<", "[", "(", "{":
+					depth++
+				case ">", "]", ")", "}":
+					depth--
+				}
+			}
+			j++
+		}
+		if !closed {
+			return "", false
+		}
+	}
+	if j < len(toks) && toks[j].text == "]" {
+		return toks[i+2].text, true
+	}
+	return "", false
 }
 
 type tokKind int
@@ -170,6 +214,21 @@ func (l *lexer) valueEnd() bool {
 		// A member name is a value whatever it spells: o.return ends
 		// one even though return alone opens an expression context.
 		if len(l.toks) >= 2 && l.toks[len(l.toks)-2].text == "." {
+			return true
+		}
+		if t.text == "of" {
+			// "of" is a keyword only as a for head's separator, where
+			// it directly follows the loop target (a name, or a
+			// pattern's closing bracket). Anywhere else it is an
+			// ordinary name and ends a value: const of = 4; of / 2
+			// divides. A value-"of" follows an operator, an opener, a
+			// separator or another keyword — never a bare name.
+			if len(l.toks) >= 2 {
+				prev := l.toks[len(l.toks)-2]
+				if (prev.kind == tIdent && !exprKeywords[prev.text]) || prev.text == "]" || prev.text == "}" {
+					return false
+				}
+			}
 			return true
 		}
 		return !exprKeywords[t.text]

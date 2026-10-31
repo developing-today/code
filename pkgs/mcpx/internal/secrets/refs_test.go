@@ -158,6 +158,11 @@ func TestReferencesRegexLiteralsBindingsAndPhantoms(t *testing.T) {
 		{"for await iterable does not declare references", "for await (const x of items, demo.echo()) {}", only("demo"), []string{"demo"}},
 		{"for await binding is declared", "for await (const demo of items) { demo.echo(); }", only("demo"), nil},
 		{"member named for is not a control head", "obj.for(x) / 2; tools.fs.read();", none, []string{"fs"}},
+		{"division after a variable named of is not a regex", "const of = 4; of / 2; tools.fs.read();", none, []string{"fs"}},
+		{"a regex after a for-of keyword still opens", "for (x of /re/) {} tools.fs.read();", none, []string{"fs"}},
+		{"a namespace subscript with an as-const assertion counts", `tools["fs" as const].read();`, none, []string{"fs"}},
+		{"a namespace subscript with a non-null assertion counts", `tools["fs"!].read();`, none, []string{"fs"}},
+		{"a namespace subscript with a generic as assertion counts", `tools["fs" as Record<string, any>].read();`, none, []string{"fs"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
