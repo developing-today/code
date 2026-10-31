@@ -395,11 +395,17 @@ pub struct PeerInfo {
 /// let discovery = PeerDiscovery::new();
 ///
 /// let node_id = SecretKey::from_bytes(&[1u8; 32]).public();
+/// // Announcements must be stamped near the local wall clock: `update`
+/// // refuses stamps older than `STALE_THRESHOLD` (see its docs).
+/// let timestamp_secs = std::time::SystemTime::now()
+///     .duration_since(std::time::UNIX_EPOCH)
+///     .unwrap()
+///     .as_secs();
 /// let announcement = PeerAnnouncement {
 ///     node_id,
 ///     name: Some("peer-1".to_string()),
 ///     blob_count: 10,
-///     timestamp_secs: 1700000000,
+///     timestamp_secs,
 /// };
 ///
 /// discovery.update(announcement);
