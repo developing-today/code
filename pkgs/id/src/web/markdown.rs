@@ -305,8 +305,18 @@ impl HtmlBlockTracker {
                     None => true,
                     Some(b) => b.is_ascii_whitespace() || *b == b'>',
                 };
-            if boundary_ok && lower.starts_with(prefix) {
-                if !lower[prefix.len()..].contains(marker) {
+            // CDATA is case-sensitive (CommonMark): only the
+            // exact uppercase `<![CDATA[` opens a marker-ended
+            // block; `<![cdata[` is ordinary text (Codex P2 on
+            // #1565's sixteenth cut). Tag names stay
+            // case-insensitive.
+            let (hay, prefix) = if prefix == "<![cdata[" {
+                (stripped, "<![CDATA[")
+            } else {
+                (lower.as_str(), prefix)
+            };
+            if boundary_ok && hay.starts_with(prefix) {
+                if !hay[prefix.len()..].contains(marker) {
                     self.end = Some(HtmlBlockEnd::Marker(marker));
                 }
                 return true;
@@ -333,7 +343,9 @@ impl HtmlBlockTracker {
         if tag_name.is_empty() {
             return false;
         }
-        if HTML_BLOCK_TAGS.contains(&tag_name.as_str()) {
+        if HTML_BLOCK_TAGS.contains(&tag_name.as_str())
+            && tag_name_boundary_ok(tag_body, tag_name.len())
+        {
             self.end = Some(HtmlBlockEnd::BlankLine);
             return true;
         }
@@ -450,6 +462,19 @@ fn is_atx_heading(stripped: &str) -> bool {
         && matches!(stripped.as_bytes().get(hashes), None | Some(b' ') | Some(b'\t'))
 }
 
+
+/// Whether the character after a block-level tag name is a valid
+/// name boundary: whitespace, `/`, `>`, or end-of-line (CommonMark
+/// type 6). `<div=foo>` has no boundary after `div`, so it is
+/// literal paragraph text, not an HTML block (Codex P2 on
+/// #1565's sixteenth cut).
+fn tag_name_boundary_ok(tag_body: &str, name_len: usize) -> bool {
+    matches!(
+        tag_body.as_bytes().get(name_len),
+        None | Some(b' ') | Some(b'\t') | Some(b'>') | Some(b'/')
+    )
+}
+
 /// Whether a line opens an HTML block that can INTERRUPT a
 /// paragraph (CommonMark types 1-6): a comment, a CDATA section,
 /// a processing instruction, a declaration, a script/pre/style/
@@ -463,7 +488,7 @@ fn is_html_block_start(stripped: &str) -> bool {
         return false;
     };
     let lower = stripped.to_ascii_lowercase();
-    if lower.starts_with("<!--") || lower.starts_with("<![cdata[") || lower.starts_with("<?") {
+    if lower.starts_with("<!--") || stripped.starts_with("<![CDATA[") || lower.starts_with("<?") {
         return true;
     }
     if rest.starts_with('!')
@@ -492,7 +517,7 @@ fn is_html_block_start(stripped: &str) -> bool {
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect::<String>()
         .to_ascii_lowercase();
-    HTML_BLOCK_TAGS.contains(&tag_name.as_str())
+    HTML_BLOCK_TAGS.contains(&tag_name.as_str()) && tag_name_boundary_ok(tag_body, tag_name.len())
 }
 
 /// Whether a stripped line is an ordered list marker whose
@@ -894,7 +919,21 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        let indent = line.len() - line.trim_start_matches(' ').len();
+        // Indentation in COLUMNS: a tab advances to the next
+        // multiple of 4, so a tab-indented line is indented code
+        // (indent 4), not a paragraph line at indent 0 (Codex P2
+        // on #1565's sixteenth cut).
+        let indent = {
+            let mut col = 0usize;
+            for c in line.chars() {
+                match c {
+                    ' ' => col += 1,
+                    '\t' => col += 4 - (col % 4),
+                    _ => break,
+                }
+            }
+            col
+        };
         let stripped = line.trim_start_matches(' ');
         if stripped.trim().is_empty() {
             // A blank line ENDS a blank-line-terminated HTML block;
@@ -5335,6 +5374,59 @@ mod tests {
             .iter()
             .any(|n| n["type"] == "footnote_definition");
         assert!(found, "definition after a blockquote fence is recovered");
+    }
+
+
+    #[test]
+    fn test_lowercase_cdata_does_not_suppress_footnote() {
+        // #1565 sixteenth cut (Codex P2): a CDATA block requires
+        // the exact uppercase `<![CDATA[` opener; lowercase
+        // `<![cdata[` is ordinary text and must not open a
+        // marker-ended HTML block that suppresses the definition.
+        let original = "<![cdata[\n\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "definition after lowercase cdata text is recovered");
+    }
+
+    #[test]
+    fn test_block_tag_name_boundary_lazy_continuation() {
+        // #1565 sixteenth cut (Codex P2): `<div=foo>` is not a
+        // type-6 HTML block (a tag name requires whitespace, `/`,
+        // `>`, or end-of-line after it), so the line lazily
+        // continues the footnote definition's paragraph.
+        let original = "[^a]: First line.\n<div=foo>\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("First line.") && first.contains("div=foo"),
+            "tag-like continuation survives save: {first:?}"
+        );
+        assert_eq!(first, second, "tag-like continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_reference_definition_after_tab_indented_code_collected() {
+        // #1565 sixteenth cut (Codex P2): a tab-indented line is
+        // an indented code block (tab = columns to the next
+        // multiple of 4), so a reference definition on the next
+        // line starts a new block and is collected.
+        let original =
+            "\tcode\n[url]: https://example.com\n\n[^orphan]: [target][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("example.com"),
+            "reference resolves after tab-indented code: {orphan}"
+        );
     }
 
     #[test]
