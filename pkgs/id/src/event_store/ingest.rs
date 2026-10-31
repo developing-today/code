@@ -2353,10 +2353,12 @@ mod tests {
             assert_eq!(store.waiting_ids().unwrap().len(), 3);
         }
         let limits = WaitingLimits::default().with_total(2);
-        let store = reopen(&dir, limits, 0);
-        assert_eq!(store.waiting_ids().unwrap().len(), 2);
-        assert_eq!(ids.iter().filter(|id| store.is_waiting(id)).count(), 2);
-        store.check_invariants().unwrap();
+        {
+            let store = reopen(&dir, limits, 0);
+            assert_eq!(store.waiting_ids().unwrap().len(), 2);
+            assert_eq!(ids.iter().filter(|id| store.is_waiting(id)).count(), 2);
+            store.check_invariants().unwrap();
+        }
         let store = reopen(&dir, limits, 0);
         assert_eq!(store.waiting_ids().unwrap().len(), 2);
     }
