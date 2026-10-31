@@ -22,7 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps, free_archive_name};
+use crate::fileops::{FileOpError, FileOps, claim_archive_name};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -166,7 +166,7 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // timestamp (#2793) — the same rule #809 applied to the "auto-"
     // prefix above. An ordinary file that merely contains ".archive."
     // (notes.archive.txt) is Primary. No producer mints a non-numeric
-    // suffix: free_archive_name always formats a u64.
+    // suffix: the archive claim path always formats a u64.
     if let Some(pos) = name.rfind(".archive.") {
         let ts_str = &name[pos + ".archive.".len()..];
         if let Ok(ts) = ts_str.parse::<u64>() {
@@ -2243,14 +2243,11 @@ async fn archive_original_tag(
         .as_secs();
     // Bump past an existing archive tag so two archives within the same
     // second never overwrite each other (#1612).
-    let Ok(archive_name) = free_archive_name(store, name, timestamp).await else {
-        tracing::error!("[routes] Failed to find a free archive tag for {}", name);
-        return None;
-    };
-    let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
-
-    match store.tags().set(archive_tag, expected).await {
-        Ok(()) => {
+    // Claim (resolve + set) in one critical section: resolving a free
+    // name first and setting it afterwards was check-then-act, so
+    // concurrent same-second archives could collide (#2462).
+    match claim_archive_name(store, name, timestamp, expected).await {
+        Ok(archive_name) => {
             tracing::info!(
                 "[routes] Archived original: {} -> {}",
                 archive_name,
