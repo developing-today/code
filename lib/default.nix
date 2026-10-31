@@ -615,7 +615,7 @@ let
         # serve handshake. The script is the single source, shared
         # with the hand-run command in pkgs/mcpx/AGENTS.md.
         mcpx-packaging = pkgs.runCommand "mcpx-packaging-test" {
-          nativeBuildInputs = [ pkgs.bash pkgs.gzip ];
+          nativeBuildInputs = [ pkgs.bash pkgs.gzip pkgs.jq ];
         } ''
           bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
           touch $out

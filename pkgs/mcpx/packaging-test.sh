@@ -48,14 +48,23 @@ note "version: $version_out"
 # `mcpx --json <command>`" — Codex, PR #2994).
 doctor_json="$(env -i HOME="$HOME" PATH=/nonexistent "$bin" --json doctor 2>/dev/null || true)"
 [ -n "$doctor_json" ] || fail "mcpx --json doctor produced no output"
-runtime_check="$(printf '%s' "$doctor_json" | grep -o '"name":"runtime"[^}]*}' || true)"
-[ -n "$runtime_check" ] || fail "mcpx --json doctor has no runtime check: $doctor_json"
+# Parse the JSON with a parser, not a pattern: CmdDoctor writes
+# through the app's indented encoder, so the records are multi-line
+# and a compact-JSON grep can never match (Codex P1, PR #2994). jq
+# is a declared build input of the flake check (lib/default.nix).
+command -v jq >/dev/null || fail "jq is required to parse mcpx --json doctor output"
+check_detail() {
+  printf '%s' "$doctor_json" | jq -r --arg n "$1" \
+    '[.[] | select(.name == $n) | .detail // ""] | first // ""' || true
+}
+runtime_detail="$(check_detail runtime)"
+[ -n "$runtime_detail" ] || fail "mcpx --json doctor has no runtime check: $doctor_json"
 for rt in deno bun node; do
-  printf '%s' "$runtime_check" | grep -q "$rt (/nix/store/" ||
+  printf '%s' "$runtime_detail" | grep -q "$rt (/nix/store/" ||
     fail "doctor (scrubbed PATH) did not find $rt on the wrapper PATH"
 done
-git_check="$(printf '%s' "$doctor_json" | grep -o '"name":"git"[^}]*}' || true)"
-printf '%s' "$git_check" | grep -q 'git at /nix/store/' ||
+git_detail="$(check_detail git)"
+printf '%s' "$git_detail" | grep -q 'git at /nix/store/' ||
   fail "doctor (scrubbed PATH) did not find git on the wrapper PATH"
 note "wrapper PATH reaches deno, bun, node and git (doctor --json, scrubbed PATH)"
 
