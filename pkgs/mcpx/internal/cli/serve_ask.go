@@ -311,7 +311,11 @@ func (d daemonAsker) renderAsk(result map[string]json.RawMessage) (text string, 
 	inner := result["result"]
 	switch kind {
 	case "resources/read":
-		return "", d.app.resourceContents(inner, server), false
+		contents, err := d.app.resourceContents(inner, server)
+		if err != nil {
+			return err.Error(), nil, true
+		}
+		return "", contents, false
 	default:
 		// tools/call and prompts/get: verbatim, as the direct path sends
 		// them (#206).

@@ -938,13 +938,26 @@ func (b mcpBackend) ReadResource(ctx context.Context, uri string) ([]mcpserver.R
 		}
 		return nil, err
 	}
-	return b.app.resourceContents(raw, ns), nil
+	entries, err := b.app.resourceContents(raw, ns)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 // resourceContents reads a resources/read reply into entries, keeping each
 // blob a blob. Entry URIs are namespaced the way the listing namespaces
 // them, so a client can read any of them back.
-func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.ResourceContents {
+//
+// The reply is validated first (#2754, mirroring the prompts/get
+// validator in #2193): a malformed upstream result is an error on the
+// read, never an empty or fabricated successful read. Until now an
+// unparseable reply was returned as one application/json text entry
+// carrying the raw bytes, and null/missing contents read as empty.
+func (a *App) resourceContents(raw json.RawMessage, ns string) ([]mcpserver.ResourceContents, error) {
+	if err := mcpclient.ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
+	}
 	var doc struct {
 		Contents []struct {
 			URI      string          `json:"uri"`
@@ -955,7 +968,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		} `json:"contents"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return []mcpserver.ResourceContents{{MimeType: "application/json", Text: string(raw)}}
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
 	}
 	out := make([]mcpserver.ResourceContents, 0, len(doc.Contents))
 	for _, c := range doc.Contents {
@@ -966,7 +979,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		out = append(out, mcpserver.ResourceContents{URI: uri, MimeType: c.MimeType,
 			Text: c.Text, Blob: c.Blob, Meta: c.Meta})
 	}
-	return out
+	return out, nil
 }
 
 // textMime is what the daemon serves an artifact as text; everything else
