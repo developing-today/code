@@ -414,7 +414,8 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	resType := pyResultType(nsClass, t)
 	fn := pyMethodName(t.Name)
 	parts := []string{"self"}
-	if len(sig)+len(opt) > 0 {
+	extra := pyOpenExtra(t.InputSchema)
+	if len(sig)+len(opt) > 0 || extra {
 		// Every argument is keyword-only: a bare "*" separator, then the
 		// parameters. The separator is its own element — appending the
 		// first optional parameter directly after "*" made it a
@@ -422,6 +423,9 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 		parts = append(parts, "*")
 		parts = append(parts, sig...)
 		parts = append(parts, opt...)
+		if extra {
+			parts = append(parts, "extra: Optional[Dict[str, Any]] = None")
+		}
 	}
 	fmt.Fprintf(&b, "    def %s(%s) -> %s:\n", fn, strings.Join(parts, ", "), resType)
 	// The request dictionary's local name must not shadow a tool argument:
@@ -437,6 +441,12 @@ func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 		local = "_" + local
 	}
 	fmt.Fprintf(&b, "        %s: Dict[str, Any] = {}\n", local)
+	// Open schemas (no named properties, additional arguments allowed)
+	// arrive through one explicit mapping merged into the request, so
+	// `def put(self)` never means "this method can only send {}".
+	if extra {
+		fmt.Fprintf(&b, "        if extra is not None:\n            %s.update(extra)\n", local)
+	}
 	for _, p := range params {
 		if req[p] {
 			// Required arguments are sent exactly as supplied — including
@@ -468,8 +478,16 @@ func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 			req[r] = true
 		}
 		var reqFields, optFields []string
+		// Allocated exactly like the method emitter (sorted params,
+		// runtime helpers and earlier names taken), so the Args shape
+		// spells the same names the method accepts.
+		taken := map[string]bool{}
+		argNames := map[string]string{}
 		for _, p := range params {
-			line := "    " + pyParam(p) + ": " + pyTypeFor(propSchema(t.InputSchema, p), "    ")
+			argNames[p] = pyArgName(p, taken)
+		}
+		for _, p := range params {
+			line := "    " + argNames[p] + ": " + pyTypeFor(propSchema(t.InputSchema, p), "    ")
 			if req[p] {
 				reqFields = append(reqFields, line)
 			} else {
@@ -882,6 +900,18 @@ func pyParam(name string) string {
 	// "$" is legal in TypeScript identifiers (ToolFuncName keeps it)
 	// but a SyntaxError in Python; rename it like "-" and ".".
 	safe = strings.ReplaceAll(safe, "$", "_")
+	// A name Python would mangle inside the generated class bodies (two
+	// leading underscores, at most one trailing one) binds unreachable:
+	// `def __value(...)` in `class Demo` is really `_Demo__value`, so
+	// the advertised `__value=` call raises TypeError before reaching
+	// the daemon. Normalise to a non-private spelling; the request keeps
+	// the original JSON key, and a collision with a real `value` tool or
+	// property becomes the raising stub / suffixed parameter instead of
+	// a silent overwrite. Dunder names (`__init__`) are not mangled and
+	// keep their spelling here; pyMethodName renames those bindings.
+	if strings.HasPrefix(safe, "__") && !strings.HasSuffix(safe, "__") {
+		safe = strings.TrimLeft(safe, "_")
+	}
 	if safe == "" {
 		safe = "value"
 	}
@@ -892,6 +922,36 @@ func pyParam(name string) string {
 		return "_" + safe
 	}
 	return safe
+}
+
+// pyOpenExtra reports whether a tool input schema with no named
+// properties still accepts arguments: an object schema (explicit or
+// implied) whose additionalProperties is absent or truthy. Without a
+// fallback the emitter produces `def put(self)` sending `{}`, so every
+// valid request for the schema is impossible through the typed method.
+// Schemas with named properties keep their exact signatures: callers
+// with undeclared keys use the module-level call() escape hatch, the
+// same line the TypeScript client draws.
+func pyOpenExtra(raw json.RawMessage) bool {
+	params, _ := schemaFields(raw)
+	if len(params) > 0 || len(raw) == 0 {
+		return false
+	}
+	var s schema
+	if json.Unmarshal(raw, &s) != nil {
+		return false
+	}
+	if t, ok := s.Type.(string); ok && t != "" && t != "object" {
+		return false
+	}
+	if len(s.AdditionalProperties) == 0 {
+		return true
+	}
+	var asBool bool
+	if err := json.Unmarshal(s.AdditionalProperties, &asBool); err == nil {
+		return asBool
+	}
+	return true
 }
 
 // pyMethodName is the method spelling of a tool name.
@@ -1015,7 +1075,8 @@ func PythonDeclarations(nss []Namespace) string {
 			// argument, and both fail in the module before reaching
 			// the daemon.
 			parts := []string{"self"}
-			if len(params) > 0 {
+			extra := pyOpenExtra(t.InputSchema)
+			if len(params) > 0 || extra {
 				parts = append(parts, "*")
 			}
 			for _, p := range params {
@@ -1032,6 +1093,9 @@ func PythonDeclarations(nss []Namespace) string {
 					typ = "Optional[" + typ + "]"
 				}
 				parts = append(parts, argNames[p]+": "+typ+" = ...")
+			}
+			if extra {
+				parts = append(parts, "extra: Optional[Dict[str, Any]] = ...")
 			}
 			fmt.Fprintf(&b, "    def %s(%s) -> %s: ...\n", fn, strings.Join(parts, ", "), pyResultType(classNames[i], t))
 		}

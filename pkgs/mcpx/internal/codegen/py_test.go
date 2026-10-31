@@ -590,3 +590,131 @@ func TestPythonCodexRound5(t *testing.T) {
 		t.Fatalf("generated python module with none namespace / const fields does not import: %v\n%s\n--- module ---\n%s", err, got, out)
 	}
 }
+
+// TestPythonCodexRound6 covers the two Codex round-6 findings (14:20Z re-review
+// of head 4c988840) on the Python emitter: leading-double-underscore names
+// must not mangle inside the generated classes, and open input schemas (no
+// named properties, additional arguments allowed) need an extra-mapping
+// fallback instead of a `def put(self)` that can only ever send {}.
+func TestPythonCodexRound6(t *testing.T) {
+	l := pythonLang(t)
+	demo := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "__hidden",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"__value":{"type":"string"}},"required":["__value"]}`),
+			},
+			{
+				Name:        "put",
+				InputSchema: json.RawMessage(`{"type":"object","additionalProperties":{"type":"string"},"minProperties":1}`),
+			},
+			{
+				Name:        "sealed",
+				InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+			},
+		},
+	}
+	out := l.EmitModule([]codegen.Namespace{demo}, "http://127.0.0.1:1234", "sess-6")
+	for _, want := range []string{
+		// The dunder tool binds to a non-private method; the request
+		// keeps the tool's original name.
+		"def hidden(self, *, value: str)",
+		`_call_raw("demo-server", "__hidden", payload)`,
+		// The dunder property binds to a non-private parameter; the
+		// request keeps the original JSON key.
+		`payload["__value"] = value`,
+		// Open schemas take an explicit extra mapping merged into the
+		// request; the declaration advertises the same convention.
+		"def put(self, *, extra: Optional[Dict[str, Any]] = None)",
+		"payload.update(extra)",
+		// A sealed schema still sends exactly {}.
+		"def sealed(self)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	decl := l.EmitDeclarations([]codegen.Namespace{demo})
+	for _, want := range []string{
+		"def hidden(self, *, value: str) -> Any: ...",
+		"def put(self, *, extra: Optional[Dict[str, Any]] = ...) -> Any: ...",
+		"def sealed(self) -> Any: ...",
+	} {
+		if !strings.Contains(decl, want) {
+			t.Errorf("python declarations missing %q:\n%s", want, decl)
+		}
+	}
+	for _, bad := range []string{
+		"def __hidden(",
+		"def __value(",
+		"__value: str",
+		"def put(self)",
+	} {
+		if strings.Contains(out, bad) {
+			t.Errorf("python module contains %q:\n%s", bad, out)
+		}
+	}
+
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	type callBody struct {
+		Server string          `json:"server"`
+		Tool   string          `json:"tool"`
+		Args   json.RawMessage `json:"args"`
+	}
+	seen := make(chan callBody, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body callBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("fixture daemon: decode call: %v", err)
+		}
+		seen <- body
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"ok":true}}}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	module := l.EmitModule([]codegen.Namespace{demo}, srv.URL, "sess-6")
+	if err := os.WriteFile(filepath.Join(dir, "mcpx_client.py"), []byte(module), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := "import sys\n" +
+		"sys.path.insert(0, " + pyStrLit(dir) + ")\n" +
+		"from mcpx_client import tools\n" +
+		"tools.Demo.hidden(value=\"x\")\n" +
+		"tools.Demo.put(extra={\"a\": \"1\"})\n" +
+		"tools.Demo.put()\n" +
+		"tools.Demo.sealed()\n" +
+		"print('round6-ok')\n"
+	if err := os.WriteFile(filepath.Join(dir, "driver.py"), []byte(driver), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, filepath.Join(dir, "driver.py"))
+	cmd.Env = append(os.Environ(), "MCPX_ENDPOINT="+srv.URL, "MCPX_SESSION=sess-6", "MCPX_SOCKET=")
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated python client failed round-6 cases: %v\n%s\n--- module ---\n%s", err, got, module)
+	}
+	if !strings.Contains(string(got), "round6-ok") {
+		t.Fatalf("driver did not finish:\n%s\n--- module ---\n%s", got, module)
+	}
+	wantCalls := []struct{ server, tool, args string }{
+		{"demo-server", "__hidden", `{"__value": "x"}`},
+		{"demo-server", "put", `{"a": "1"}`},
+		{"demo-server", "put", `{}`},
+		{"demo-server", "sealed", `{}`},
+	}
+	for i, want := range wantCalls {
+		body := <-seen
+		if body.Server != want.server || body.Tool != want.tool {
+			t.Errorf("call %d = %s/%s, want %s/%s", i, body.Server, body.Tool, want.server, want.tool)
+		}
+		if args := strings.TrimSpace(string(body.Args)); args != want.args {
+			t.Errorf("call %d args = %s, want %s", i, args, want.args)
+		}
+	}
+}
