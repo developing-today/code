@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
 import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
-import { renderQuota, renderServiceDetail, fmtMetricValue } from "../src/render.ts";
+import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
 import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
@@ -268,6 +268,34 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only form: +30d and +365d are beyond the 1-day tolerance.
+    expect(freshness("2026-11-25", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Datetime form: +30d, +365d, and even +2d are beyond tolerance.
+    expect(freshness("2026-11-25T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2027-10-26T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    expect(freshness("2026-10-28T12:00:00Z", 7, now)).toEqual({ stale: true, ageDays: null });
+    // Garbage is the same honest unknown-age shape.
+    expect(freshness("not-a-date-at-all", 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: a near-future stamp within tolerance is today, not stale (#1568)", () => {
+    const now = new Date("2026-10-26T12:00:00Z");
+    // Date-only granularity: tomorrow's date is exactly at the tolerance.
+    expect(freshness("2026-10-27", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Datetime: +12h of timezone/clock noise clamps to age 0.
+    expect(freshness("2026-10-27T00:00:00Z", 7, now)).toEqual({ stale: false, ageDays: 0 });
+    // Past controls unchanged.
+    expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-18", 7, now)).toEqual({ stale: true, ageDays: 8 });
+  });
+  test("freshnessStamp: a far-future stamp renders the stale badge, never 'today' (#1568)", () => {
+    const future = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const html = freshnessStamp(future, "console", 7);
+    expect(html).toContain("stale — as of");
+    expect(html).not.toContain("· today");
   });
 });
 
