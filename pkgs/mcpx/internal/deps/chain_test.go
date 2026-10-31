@@ -277,6 +277,38 @@ func TestAPinInsideTheManifestRangeIsNotAConflict(t *testing.T) {
 	}
 }
 
+// TestADisjunctiveManifestRangeAdmitsEitherAlternative is the Codex
+// finding on PR #2589 (config.go): the range check evaluated every
+// whitespace-separated token as one conjunction, so a manifest declaring
+// "^1.0.0 || ^2.0.0" contradicted a foo@2.3.0 pin its second alternative
+// allows. A disjunction is satisfied when ANY alternative set is.
+func TestADisjunctiveManifestRangeAdmitsEitherAlternative(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"foo":"^1.0.0 || ^2.0.0","bar":">=1.0.0 <2.0.0 || >=3.0.0"}}`)
+	for _, spec := range []string{"foo@1.9.4", "foo@2.3.0", "bar@1.5.0", "bar@3.2.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies one alternative of the manifest range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	for _, spec := range []string{"foo@3.0.0", "bar@2.5.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 1 {
+			t.Errorf("%s satisfies no alternative and must conflict, got %+v", spec, set.Conflicts)
+		}
+	}
+}
+
 // TestAbbreviatedRelationalBoundsDesugarAtWrittenPrecision is the
 // Codex finding on PR #2589 (config.go, ace6c3609 round): the relational
 // branches zero-filled abbreviated bounds, so foo: ">1" admitted

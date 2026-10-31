@@ -196,17 +196,32 @@ func CompatiblePin(requirement, version string) bool {
 
 // satisfiesRange reports whether version satisfies the manifest's declared
 // requirement, for the range forms a package.json actually uses: an exact
-// pin, ^, ~, >=, >, <=, <, *, and space-separated conjunctions of them.
-// Anything it cannot parse — a dist-tag like "latest", a URL, a file: path —
-// is not a range it understands, and it answers false so the caller falls
-// back to the textual comparison (a contradiction is reported, never waved
-// through on a guess).
+// pin, ^, ~, >=, >, <=, <, *, space-separated conjunctions of them, and
+// ||-separated disjunctions of those conjunctions (a version satisfies the
+// requirement when it satisfies ANY one alternative set — evaluating a
+// disjunction as one big conjunction falsely reported conflicts for
+// requirements like "^1.0.0 || ^2.0.0", Codex review, PR #2589). Anything
+// it cannot parse — a dist-tag like "latest", a URL, a file: path — is not
+// a range it understands, and it answers false so the caller falls back to
+// the textual comparison (a contradiction is reported, never waved through
+// on a guess).
 func satisfiesRange(requirement, version string) bool {
 	want, wok := parseSemver(version)
 	if !wok {
 		return false
 	}
-	tokens := strings.Fields(strings.TrimSpace(requirement))
+	for _, set := range strings.Split(requirement, "||") {
+		if satisfiesSet(strings.TrimSpace(set), want) {
+			return true
+		}
+	}
+	return false
+}
+
+// satisfiesSet reports whether want satisfies one comparator set: a
+// space-separated conjunction of range tokens.
+func satisfiesSet(set string, want semver) bool {
+	tokens := strings.Fields(set)
 	if len(tokens) == 0 {
 		return false
 	}
