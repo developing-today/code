@@ -144,11 +144,16 @@ function merchantFromSubject(subject: string): string | undefined {
   );
 }
 
-/** Subjects that are not charges: money back, money movement, marketing. */
-function isNotChargeSubject(subject: string): boolean {
+/** Subjects that are not charges: money back, money movement, marketing,
+ * failed/declined purchase attempts, and amounts merely due (#3120: a
+ * declined alert parses like a purchase — amount + merchant via the
+ * at/was fallback — and an "amount due" subject is an outstanding
+ * invoice, not money spent). */
+export function isNotChargeSubject(subject: string): boolean {
   return (
     /cancellation|refund/i.test(subject) ||
-    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment/i.test(
+    /declined|payment failed|purchase failed|transaction failed|unsuccessful|not approved/i.test(subject) ||
+    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment|amount due|balance due/i.test(
       subject,
     ) ||
     /% off|coupon|save \d|free .* with .* purchase/i.test(subject)
@@ -162,11 +167,16 @@ function isNotChargeSubject(subject: string): boolean {
  * and the wrong amount then defeated cross-source dedupe); any $
  * amount in the body is the last resort. */
 export function amountFromBody(text: string): string | undefined {
-  return (
+  const paid =
     /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
-    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
-    AMOUNT_RE.exec(text)?.[1]
-  );
+    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
+  if (paid !== undefined) return paid;
+  // #3120: due language is not payment evidence. An invoice body whose
+  // only amount is an amount/balance DUE (no paid/charged/total label
+  // above) must not fall through to the bare-amount fallback and become
+  // a charge candidate.
+  if (/amount due|balance due|total due|payment due/i.test(text)) return undefined;
+  return AMOUNT_RE.exec(text)?.[1];
 }
 
 async function gmailCandidates(
