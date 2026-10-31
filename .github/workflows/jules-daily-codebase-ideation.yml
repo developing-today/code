@@ -44,6 +44,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify every declared dispatch input is wired (#2681)
+        run: |
+          python3 - <<'PYEOF2'
+          import re, sys
+          path = ".github/workflows/jules-daily-codebase-ideation.yml"
+          text = open(path).read()
+          block = re.search(r"workflow_dispatch:\n    inputs:\n((?:      .*\n|        .*\n|          .*\n)+)", text)
+          names = re.findall(r"^      (\w+):", block.group(1), re.M) if block else []
+          ignored = set(re.findall(r"^      (\w+):\n        description: \"[^\"]*[Ii]gnored", block.group(1), re.M)) if block else set()
+          missing = [n for n in names if n not in ignored and ("inputs." + n) not in text]
+          if missing:
+              sys.exit("declared workflow_dispatch inputs never referenced: " + ", ".join(missing))
+          print("all declared dispatch inputs are wired or explicitly ignored:", ", ".join(names) or "none")
+          PYEOF2
+
       - name: Run Codebase Innovation & Review Agent via pm-dispatch
         id: dispatch
         uses: developing-today/code/.github/actions/pm-dispatch-start@main
@@ -51,6 +66,8 @@ jobs:
           title: "Daily codebase innovation & maintenance"
           prompt: >-
             Perform a comprehensive daily codebase review, innovation scan, and issue/PR maintenance pass across developing-today/code.
+
+            ${{ github.event_name == 'workflow_dispatch' && inputs.focus_app != '' && inputs.focus_app != 'all' && format('OPERATOR FOCUS: this run was manually dispatched with focus_app={0}. Concentrate the review, ideation, and maintenance below on {0} and its immediate neighbours; do not spread across the whole repository.', inputs.focus_app) || '' }}
 
             You are acting as an unrestricted principal architect and senior systems engineer. Do not hold back: generate bold ideas, surface hidden gaps, polish proposals, and solve immediate problems opportunistically.
 
@@ -79,6 +96,8 @@ jobs:
             - **Deduplication & Consolidation**: Identify overlapping or duplicate proposals/issues and consolidate them into unified, high-quality reference issues.
             - **Comments & Spec Refinement**: Leave comments or edit existing issues/PRs to provide missing technical specifications, edge-case analysis, data schemas, or suggested test cases.
             - **Zero-Context Hand-off Standard**: Every issue you author must be self-contained, citing exact file paths, interfaces, architectural rationale, and verifiable acceptance criteria so a new agent with zero prior context can execute it.
+
+            ${{ github.event_name == 'workflow_dispatch' && !inputs.allow_direct_prs && 'OPERATOR DIRECTIVE: allow_direct_prs is false for this manually dispatched run — do NOT open any Pull Requests. Capture every fix, bug, or improvement as an issue or a comment on an existing issue instead.' || '' }}
 
             ### 4. OPPORTUNISTIC IMPLEMENTATION (QUICK-WIN PRS)
             - If you identify straightforward bugs, unhandled edge cases, missing test coverage, or clean opportunities to refactor code to prevent future merge conflicts:
