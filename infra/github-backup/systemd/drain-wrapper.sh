@@ -4,12 +4,17 @@
 # see ../config.json). Values pass through the environment only and are
 # never written to disk.
 set -euo pipefail
-# Bitwarden env: sandbox keeps bws-env.sh in ~/tools, the laptop in
-# ~/hatch/tools, and bws itself reads ~/.config/bws/access-token.
-if [ -f ~/tools/bws-env.sh ]; then source ~/tools/bws-env.sh;
-elif [ -f ~/hatch/tools/bws-env.sh ]; then source ~/hatch/tools/bws-env.sh;
-elif [ -f ~/.config/bws/access-token ]; then
+# Bitwarden access: the laptop's bws reads ~/.config/bws/access-token
+# itself (verified: bare `bws secret list` works there). Export it when
+# present; only if a bare bws call would fail, fall back to sourcing a
+# bws-env.sh (sandbox convention) — non-fatally.
+if [ -z "${BWS_ACCESS_TOKEN:-}" ] && [ -f ~/.config/bws/access-token ]; then
   export BWS_ACCESS_TOKEN="$(cat ~/.config/bws/access-token)"
+fi
+if ! bws secret list >/dev/null 2>&1; then
+  for f in ~/tools/bws-env.sh ~/hatch/tools/bws-env.sh; do
+    if [ -f "$f" ]; then source "$f" || true; fi
+  done
 fi
 eval "$(python3 - <<'PY'
 import json, subprocess
