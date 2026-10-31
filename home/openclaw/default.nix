@@ -145,14 +145,28 @@ in
       {
         # nix-openclaw runs builtins.getFlake on this string. A plain
         # source-tree path is an UNLOCKED flake reference and pure
-        # evaluation (CI host-eval, #705) refuses it, so pass the
-        # locked reference of the root flake's path input instead.
+        # evaluation (CI host-eval, #705) refuses it; a root-flake path
+        # input is no fix either — its lock node inherits the ROOT
+        # sourceInfo narHash, which does not match the plugin subtree
+        # the path fetcher hashes (Codex P1 on PR #3025). So fetch the
+        # subtree as a locked tree of its own: fetchTree with the
+        # subtree's own narHash pinned here, then hand getFlake the
+        # resulting store path with that same hash.
+        # When the plugin's files change, evaluation fails on the
+        # hash mismatch until the pin is refreshed with:
+        #   nix eval --impure --raw --expr '(builtins.fetchTree { type = "path"; path = ./home/openclaw/plugins/summarize; }).narHash'
         # unsafeDiscardStringContext: getFlake also rejects strings
-        # carrying store-path context; the narHash in the reference
-        # is what keeps the result locked and checkable.
+        # carrying store-path context.
         source =
+          let
+            pluginTree = builtins.fetchTree {
+              type = "path";
+              path = ./plugins/summarize;
+              narHash = "sha256-y4xkNIopeCdJ/C/PiIZeKlfALrmxUrBYg5CXUSqsMXU=";
+            };
+          in
           builtins.unsafeDiscardStringContext
-            "path:${inputs.openclaw-plugin-summarize.outPath}?narHash=${inputs.openclaw-plugin-summarize.narHash}";
+            "path:${pluginTree.outPath}?narHash=${pluginTree.narHash}";
       }
     ];
 
