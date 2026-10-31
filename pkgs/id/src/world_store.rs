@@ -1190,7 +1190,10 @@ mod tests {
         assert_eq!(report.program_error, None);
         assert_eq!(report.replayed_inputs, 3);
         assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
-        assert!(view(&svc, &ann).await.contains("count=3"), "state rebuilt by replay");
+        assert!(
+            view(&svc, &ann).await.contains("count=3"),
+            "state rebuilt by replay"
+        );
         assert_eq!(
             svc.active_module_hash().await.as_deref(),
             Some(hash.as_str()),
@@ -1336,7 +1339,10 @@ mod tests {
             report.replayed_inputs < 5,
             "replay starts at the checkpoint"
         );
-        assert!(view(&svc, &ann).await.contains("count=13"), "state from checkpoint + tail");
+        assert!(
+            view(&svc, &ann).await.contains("count=13"),
+            "state from checkpoint + tail"
+        );
         assert_eq!(
             svc.active_module_hash().await.as_deref(),
             Some(hash.as_str())
