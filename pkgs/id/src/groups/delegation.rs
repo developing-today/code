@@ -118,6 +118,7 @@ impl Engine {
         }
         Ok(Ok(Decision {
             auth_author: None,
+            auth_originator: None,
             group,
             action: None,
             effect: Effect::Delegation {
@@ -163,6 +164,7 @@ impl Engine {
         }
         Ok(Ok(Decision {
             auth_author: None,
+            auth_originator: None,
             group,
             action: None,
             effect: Effect::Veto(grant),
@@ -219,6 +221,9 @@ impl Engine {
         let mut decision = decision;
         if let Some(root) = self.chain_root(by_id, decision.group, event.author, &event.after)? {
             decision.auth_author = Some(root);
+            if root != author {
+                decision.auth_originator = Some(author);
+            }
         }
         Ok(Ok(decision))
     }

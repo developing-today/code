@@ -528,6 +528,10 @@ pub(super) struct Decision {
     /// pattern as a device, which the layer sees as its account). `None` means the
     /// effective author itself.
     pub(super) auth_author: Option<Key>,
+    /// The account that actually acted, when `auth_author` names a different identity
+    /// whose authority the act exercises. The membership layer keys strong-removal
+    /// filtering on this account.
+    pub(super) auth_originator: Option<Key>,
 }
 
 /// A rule's verdict: a decision, or the reason it has no effect.
@@ -589,6 +593,7 @@ impl Engine {
                 author: decision.auth_author.unwrap_or(effective_author),
                 group: Some(decision.group),
                 action: action.clone(),
+                originator: decision.auth_originator,
             },
             None => Placed::Other,
         };
@@ -809,6 +814,7 @@ impl Engine {
         ];
         Ok(Decision {
             auth_author: None,
+            auth_originator: None,
             group,
             action: Some(GroupAction::Create {
                 initial_members: initial,
@@ -834,6 +840,7 @@ impl Engine {
         }
         Ok(Decision {
             auth_author: None,
+            auth_originator: None,
             group,
             action: None,
             effect: Effect::Present(author),
@@ -873,6 +880,7 @@ impl Engine {
         }
         Ok(Decision {
             auth_author: None,
+            auth_originator: None,
             group,
             action: None,
             effect: Effect::Policy(policy.clone()),
@@ -913,6 +921,7 @@ impl Engine {
                 }
                 Ok(Decision {
                     auth_author: None,
+                    auth_originator: None,
                     group,
                     action: Some(GroupAction::Add {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -934,6 +943,7 @@ impl Engine {
                 }
                 Ok(Decision {
                     auth_author: None,
+                    auth_originator: None,
                     group,
                     action: Some(GroupAction::Remove {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -967,6 +977,7 @@ impl Engine {
                 };
                 Ok(Decision {
                     auth_author: None,
+                    auth_originator: None,
                     group,
                     action,
                     effect: Effect::Grant {
@@ -1278,6 +1289,7 @@ impl Engine {
                 }
                 Ok(Ok(Decision {
                     auth_author: None,
+                    auth_originator: None,
                     group,
                     action: None,
                     effect: Effect::DeviceAdd {
@@ -1289,6 +1301,7 @@ impl Engine {
             }
             DeviceOp::Revoke { device } => Ok(Ok(Decision {
                 auth_author: None,
+                auth_originator: None,
                 group,
                 action: None,
                 effect: Effect::DeviceRevoke {
@@ -1489,6 +1502,7 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
     };
     Ok(Decision {
         auth_author: None,
+        auth_originator: None,
         group: event.id,
         action: Some(GroupAction::Create {
             initial_members: initial,

@@ -46,6 +46,13 @@ pub enum Role {
     Auth {
         /// The key that signed the event.
         author: [u8; 32],
+        /// The account that actually acted, when `author` is a different identity whose
+        /// authority the act exercises (a delegated Manage chain is placed under its root).
+        /// `None` means the author acted on its own authority. The layer keys strong-removal
+        /// filtering on this account, mirroring how p2panda-auth keys it on the author: a
+        /// concurrent removal of the originator voids the operation, whoever it was placed
+        /// under.
+        originator: Option<[u8; 32]>,
         /// The group the event names, if any.
         group: Option<Hash>,
         /// The membership change.
@@ -113,6 +120,17 @@ pub struct Membership {
     accepted: Vec<AuthOperation>,
     /// Membership operations the layer refused. A refused operation takes no effect.
     refused: HashSet<Hash>,
+    /// The acting account of each operation placed under a different authority identity,
+    /// by operation ID.
+    originators: HashMap<Hash, AuthId>,
+    /// Delegated operations voided by a concurrent strong removal of their originator.
+    /// A voided operation stands in the graph as its placeholder, so its descendants do
+    /// not stall, but it takes no effect.
+    voided: HashSet<Hash>,
+    /// The no-op placeholder standing in the graph for each voided operation, by ID.
+    placeholders: HashMap<Hash, AuthOperation>,
+    /// The `after` hashes of every decided event, for concurrency checks.
+    afters: HashMap<Hash, Vec<Hash>>,
 }
 
 impl Membership {
@@ -168,10 +186,12 @@ impl Membership {
     /// Decides one event whose `after` hashes are all indexed.
     fn decide(&mut self, event: CausalEvent) -> Result<Outcome, MembershipError> {
         let CausalEvent { id, after, role } = event;
+        self.afters.insert(id, after.clone());
         let Role::Auth {
             author,
             group,
             action,
+            originator,
         } = role
         else {
             self.index.insert(id, after, None)?;
@@ -200,6 +220,33 @@ impl Membership {
             group_id: AuthId::Group(group),
             action,
         };
+        if let Some(originator) = originator
+            && AuthId::Key(originator) != op.author
+        {
+            self.originators.insert(id, AuthId::Key(originator));
+            // The originator was already removed by an operation concurrent with this
+            // one: strong remove voids it, exactly as if it had been placed under the
+            // originator itself. It stands in the graph as a placeholder instead.
+            if self.concurrently_removed(&op) {
+                match self.placeholder_for(&op) {
+                    Some(noop) => {
+                        self.placeholders.insert(id, noop.clone());
+                        self.voided.insert(id);
+                        return match self.process(&noop)? {
+                            Ok(()) => {
+                                self.index.insert(id, after, Some(group))?;
+                                Ok(Outcome::Applied)
+                            }
+                            Err(_) => {
+                                self.index.insert(id, after, None)?;
+                                Ok(Outcome::Applied)
+                            }
+                        };
+                    }
+                    None => {}
+                }
+            }
+        }
         match gate::admit(&self.state, &op) {
             Admission::Admit => {}
             Admission::Wait(missing) => {
@@ -214,6 +261,7 @@ impl Membership {
         match self.process(&op)? {
             Ok(()) => {
                 self.index.insert(id, after, Some(group))?;
+                self.void_concurrent_delegated(&op)?;
                 Ok(Outcome::Applied)
             }
             Err(message) => self.refuse(op, group, after, Refusal::Invalid(message)),
@@ -277,7 +325,7 @@ impl Membership {
                 Ok(Ok(()))
             }
             Err(error) => {
-                self.state = rebuild(&self.accepted)?;
+                self.state = self.rebuild_state()?;
                 Ok(Err(error.to_string()))
             }
         }
@@ -299,7 +347,7 @@ impl Membership {
     /// manage access at its dependencies. The check reads the final state, so an operation stops
     /// taking effect when a later operation makes the resolver filter it.
     pub fn is_effective(&self, id: &Hash) -> bool {
-        if self.refused.contains(id) {
+        if self.refused.contains(id) || self.voided.contains(id) {
             return false;
         }
         // The resolver filters the concurrent operations of a removed member, which includes the
@@ -427,6 +475,128 @@ impl Membership {
             .find_map(|(who, access)| (who == GroupMember::Individual(member)).then_some(access))
     }
 
+    /// The member an operation removes, or demotes out of manage access, if any:
+    /// the removals p2panda-auth's strong-remove resolver keys its filter on.
+    fn removed_member(op: &AuthOperation) -> Option<AuthId> {
+        match &op.action {
+            GroupAction::Remove { member } => Some(member.id()),
+            GroupAction::Demote { member, access } if !access.is_manage() => Some(member.id()),
+            _ => None,
+        }
+    }
+
+    /// Whether `ancestor` is in the causal past of `event`, the event itself included,
+    /// walking the recorded `after` hashes through every decided event.
+    fn in_past(&self, event: &Hash, ancestor: &Hash) -> bool {
+        let mut stack = vec![*event];
+        let mut seen = HashSet::new();
+        while let Some(next) = stack.pop() {
+            if next == *ancestor {
+                return true;
+            }
+            if seen.insert(next)
+                && let Some(after) = self.afters.get(&next)
+            {
+                stack.extend(after.iter().copied());
+            }
+        }
+        false
+    }
+
+    /// Whether two decided operations are concurrent: neither is in the other's past.
+    fn concurrent(&self, a: &Hash, b: &Hash) -> bool {
+        !self.in_past(a, b) && !self.in_past(b, a)
+    }
+
+    /// Whether a removal of `op`'s originator already stands accepted, concurrent
+    /// with `op`.
+    fn concurrently_removed(&self, op: &AuthOperation) -> bool {
+        let Some(originator) = self.originators.get(&op.id) else {
+            return false;
+        };
+        self.accepted.iter().any(|other| {
+            other.group_id == op.group_id
+                && Self::removed_member(other) == Some(*originator)
+                && self.concurrent(&other.id, &op.id)
+        })
+    }
+
+    /// The no-op placeholder for a voided operation, in the shape `refuse` uses: a
+    /// promotion of the least manager at the operation's dependencies, which changes
+    /// nothing. `None` when no manager stands there.
+    fn placeholder_for(&self, op: &AuthOperation) -> Option<AuthOperation> {
+        let group = match op.group_id {
+            AuthId::Group(group) => group,
+            AuthId::Key(_) => return None,
+        };
+        let target = self.manager_at(group, &op.dependencies)?;
+        Some(AuthOperation {
+            action: GroupAction::Promote {
+                member: GroupMember::Individual(target),
+                access: Access::read(),
+            },
+            ..op.clone()
+        })
+    }
+
+    /// After a removal is applied, void every accepted delegated operation whose
+    /// originator it removes and which is concurrent with it, rebuilding the state
+    /// with those operations standing as placeholders. A delegated operation that
+    /// removes the remover in turn is a mutual removal and stands, as it would if
+    /// it had been placed under its originator.
+    fn void_concurrent_delegated(
+        &mut self,
+        removal: &AuthOperation,
+    ) -> Result<(), MembershipError> {
+        let Some(removed) = Self::removed_member(removal) else {
+            return Ok(());
+        };
+        let mut changed = false;
+        let candidates: Vec<AuthOperation> = self
+            .accepted
+            .iter()
+            .filter(|other| {
+                other.id != removal.id
+                    && other.group_id == removal.group_id
+                    && self.originators.get(&other.id) == Some(&removed)
+                    && !self.voided.contains(&other.id)
+                    && self.concurrent(&other.id, &removal.id)
+                    && !matches!(
+                        &other.action,
+                        GroupAction::Remove { member } if member.id() == removal.author
+                    )
+            })
+            .cloned()
+            .collect();
+        for candidate in candidates {
+            if let Some(noop) = self.placeholder_for(&candidate) {
+                self.placeholders.insert(candidate.id, noop);
+                self.voided.insert(candidate.id);
+                changed = true;
+            }
+        }
+        if changed {
+            self.state = self.rebuild_state()?;
+        }
+        Ok(())
+    }
+
+    /// Rebuilds the graph state from the accepted operations, with each voided
+    /// operation standing as its placeholder.
+    fn rebuild_state(&self) -> Result<GroupState, MembershipError> {
+        let ops: Vec<AuthOperation> = self
+            .accepted
+            .iter()
+            .map(|op| {
+                self.placeholders
+                    .get(&op.id)
+                    .cloned()
+                    .unwrap_or_else(|| op.clone())
+            })
+            .collect();
+        rebuild(&ops)
+    }
+
     /// Whether the event is held, waiting for an `after` hash.
     pub fn is_held(&self, id: &Hash) -> bool {
         self.held.contains_key(id)
@@ -483,6 +653,7 @@ mod tests {
                 author: key(author),
                 group: group.map(id),
                 action,
+                originator: None,
             },
         }
     }
@@ -547,6 +718,68 @@ mod tests {
             vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
         );
         assert_eq!(layer.dependencies(&id(10)), Some(&[][..]));
+    }
+
+    /// An operation placed under a delegated authority identity, with its originator.
+    fn auth_as(
+        n: u8,
+        author: u8,
+        originator: u8,
+        group: Option<u8>,
+        after: &[u8],
+        action: GroupAction<AuthId, ()>,
+    ) -> CausalEvent {
+        CausalEvent {
+            id: id(n),
+            after: after.iter().map(|a| id(*a)).collect(),
+            role: Role::Auth {
+                author: key(author),
+                group: group.map(id),
+                action,
+                originator: Some(key(originator)),
+            },
+        }
+    }
+
+    #[test]
+    fn test_a_delegated_operation_is_void_when_its_originator_is_removed_concurrently() {
+        // Add first, removal second: the removal voids the delegated add on arrival.
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        layer
+            .receive(auth(11, 1, Some(10), &[10], add(2, Access::write())))
+            .unwrap();
+        layer
+            .receive(auth_as(12, 1, 2, Some(10), &[11], add(4, Access::read())))
+            .unwrap();
+        assert!(member_keys(&layer, 10).contains(&AuthId::Key(key(4))));
+        layer
+            .receive(auth(13, 1, Some(10), &[11], remove(2)))
+            .unwrap();
+        assert!(
+            !member_keys(&layer, 10).contains(&AuthId::Key(key(4))),
+            "strong remove voids the removed member's concurrent delegated operations"
+        );
+        assert!(!layer.is_effective(&id(12)));
+    }
+
+    #[test]
+    fn test_a_delegated_operation_after_its_originators_removal_takes_no_effect() {
+        // Removal first, delegated add second: the add stands as a placeholder only.
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        layer
+            .receive(auth(11, 1, Some(10), &[10], add(2, Access::write())))
+            .unwrap();
+        layer
+            .receive(auth(13, 1, Some(10), &[11], remove(2)))
+            .unwrap();
+        let outcomes = layer
+            .receive(auth_as(12, 1, 2, Some(10), &[11], add(4, Access::read())))
+            .unwrap();
+        assert_eq!(outcome_of(&outcomes, 12), Outcome::Applied);
+        assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(4))));
+        assert!(!layer.is_effective(&id(12)));
     }
 
     #[test]
@@ -728,6 +961,7 @@ mod tests {
                 author: key(1),
                 group: Some(friendship),
                 action: GroupAction::Create { initial_members },
+                originator: None,
             },
         };
         let outcomes = layer.receive(create).unwrap();
@@ -790,6 +1024,7 @@ mod tests {
                     author: key(1),
                     group: None,
                     action: remove(2),
+                    originator: None,
                 },
             })
             .unwrap();

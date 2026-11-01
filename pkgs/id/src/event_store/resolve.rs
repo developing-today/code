@@ -126,6 +126,7 @@ pub(super) fn resolve(
                     author: node.author,
                     group: node.group,
                     action: action.clone(),
+                    originator: None,
                 },
                 _ => Role::Other,
             };
