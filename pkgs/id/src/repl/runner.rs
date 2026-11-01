@@ -1571,10 +1571,18 @@ mod tests {
         assert!(parse_peek_args(&["q", "-n", "0"]).is_err());
         assert!(parse_peek_args(&["q", "--first", "0"]).is_err());
         // Bare flags keep the default of 1; a nonnumeric value keeps the #2009 fallback.
-        assert_eq!(parse_find_args(&["q", "--first"], "tag").unwrap().first, Some(1));
-        assert_eq!(parse_find_args(&["q", "--last"], "tag").unwrap().last, Some(1));
         assert_eq!(
-            parse_find_args(&["q", "--first", "abc"], "tag").unwrap().first,
+            parse_find_args(&["q", "--first"], "tag").unwrap().first,
+            Some(1)
+        );
+        assert_eq!(
+            parse_find_args(&["q", "--last"], "tag").unwrap().last,
+            Some(1)
+        );
+        assert_eq!(
+            parse_find_args(&["q", "--first", "abc"], "tag")
+                .unwrap()
+                .first,
             Some(1)
         );
         // Peek without --lines keeps the default of 5.
