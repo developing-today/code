@@ -13,8 +13,18 @@ const KNOWN_TRANSPORTS = ["email"];
 const MODES = ["template", "free"];
 const PLACEHOLDER = "{code}";
 
+// Strict argument validation, before any file read or external call: a typo
+// in the flag (e.g. --dry-rnu) must abort here, never fall through to the
+// real deploy sequence.
+const args = process.argv.slice(2);
+const unknownArgs = args.filter((arg) => arg !== "--dry-run");
+if (unknownArgs.length > 0) {
+  console.error(`unrecognized argument(s): ${unknownArgs.join(" ")}\nusage: deploy.mjs [--dry-run]`);
+  process.exit(2);
+}
+const dryRun = args.includes("--dry-run");
+
 const config = JSON.parse(readFileSync(join(here, "config.json"), "utf8"));
-const dryRun = process.argv.includes("--dry-run");
 
 const problems = validate(config);
 if (problems.length > 0) {
