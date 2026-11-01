@@ -134,7 +134,6 @@ export const FIXTURE_BOARD: BoardItem[] = [
     // The cross-repo case Kaneo cannot express: a code task linking an
     // openchamber PR (the UI's host) alongside its own repo's PRs.
     links: [link(`${CODE}#902`, "implements"), link(`${CODE}#901`, "relates"), link(`${OPENCHAMBER}#210`, "relates")],
-    notes: [{ title: "PM-stack design & phase plan", url: "http://127.0.0.1:7777/" }],
   },
   {
     id: "kaneo:code/fx0connectrepos00000111",

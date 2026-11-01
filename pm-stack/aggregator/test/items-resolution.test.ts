@@ -154,7 +154,7 @@ describe("fixture-resolved badges render unverified (#1141)", () => {
       { ref: "developing-today/code#752", relation: "tracks" as const },
       { ref: "dezren39/nix#508", relation: "tracks" as const },
     ];
-    const html = renderItem("Subject", "subj", links, [], items, [], PROV);
+    const html = renderItem("Subject", "subj", links, items, [], PROV);
     expect(html).toContain("badge open unverified");
     expect(html).toContain("developing-today/code#752 · unverified");
     expect(html).toContain("unverified — fixture state, not live GitHub data");
