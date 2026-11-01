@@ -4864,7 +4864,7 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
     : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
   return `<h2>Coverage — pool vs backlog (#1220)</h2>
 <table><thead><tr><th>Repo</th><th>Open issues</th><th>now gate</th><th>next gate</th><th>Pool items</th><th>Unset Status</th><th>Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
-<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed (— = census unavailable for that repo); pool counts from Project #4. The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
 export function renderProjects(

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   computeCoverage,
+  CoverageSnapshotStore,
   diffCoverage,
   isRepoCensus,
   nextCoverageSnapshot,
@@ -125,5 +129,92 @@ describe("snapshot rotation + delta", () => {
     const delta = diffCoverage(mk("2026-11-01T00:00:00Z", null), mk("2026-10-24T00:00:00Z", 90));
     expect(delta.get("developing-today/code")?.openIssues).toBeNull();
     expect(delta.get("developing-today/code")?.poolItems).toBe(0);
+  });
+});
+
+describe("computeCoverage — pool unavailable (PR #3309 Codex)", () => {
+  test("a null pool renders pool fields as null, never fake zeros, while census counts stay real", () => {
+    const report = computeCoverage(census, null, NOW);
+    const code = report.repos.find((r) => r.repo === "developing-today/code");
+    expect(code?.openIssues).toBe(1122);
+    expect(code?.poolItems).toBeNull();
+    expect(code?.poolUnsetStatus).toBeNull();
+    expect(code?.poolUnsetArea).toBeNull();
+    // No pool -> no pool-only repos appear.
+    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code", "dezren39/nix"]);
+  });
+
+  test("delta against a baseline is null for pool fields while the pool is unavailable", () => {
+    const baseline = computeCoverage(census, pool, NOW);
+    const current = computeCoverage(census, null, NOW);
+    const delta = diffCoverage(current, baseline);
+    expect(delta.get("developing-today/code")?.poolItems).toBeNull();
+    expect(delta.get("developing-today/code")?.openIssues).toBe(0);
+  });
+});
+
+describe("snapshot rotation anchor (PR #3309 Codex)", () => {
+  const mk = (at: string, codeOpen: number | null): CoverageReport => ({
+    generatedAt: at,
+    repos: [
+      { repo: "developing-today/code", openIssues: codeOpen, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+    ],
+  });
+
+  test("refreshing current within the week does not move the anchor", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-30T00:00:00Z", 90),
+      anchorAt: "2026-10-26T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.anchorAt).toBe("2026-10-26T00:00:00Z");
+    expect(snap.baseline).toBeNull();
+  });
+
+  test("rotation is measured from the anchor, not the refreshed current timestamp", () => {
+    // Current was refreshed yesterday (so its generatedAt is young), but
+    // the week anchored 2026-10-25 has fully elapsed by 2026-11-01.
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      current: mk("2026-10-31T00:00:00Z", 90),
+      anchorAt: "2026-10-25T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T12:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-31T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
+  });
+
+  test("a legacy snapshot without an anchor falls back to current.generatedAt", () => {
+    const stored: CoverageSnapshotFile = { baseline: null, current: mk("2026-10-24T00:00:00Z", 90) };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
+    expect(snap.baseline?.generatedAt).toBe("2026-10-24T00:00:00Z");
+  });
+});
+
+describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
+  test("concurrent writes serialize and leave one valid JSON snapshot — the last one queued", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "coverage-store-"));
+    try {
+      const file = join(dir, "coverage-snapshot.json");
+      const store = new CoverageSnapshotStore(file);
+      const mkSnap = (open: number): CoverageSnapshotFile => ({
+        baseline: null,
+        current: {
+          generatedAt: "2026-11-01T00:00:00Z",
+          repos: [
+            { repo: "developing-today/code", openIssues: open, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+          ],
+        },
+      });
+      const big = mkSnap(1000);
+      const small = mkSnap(999);
+      await Promise.all([store.write(big), store.write(small), store.write(big)]);
+      const parsed = JSON.parse(await readFile(file, "utf8")) as CoverageSnapshotFile;
+      expect(parsed.current.repos[0]?.openIssues).toBe(1000);
+      expect(await store.read()).toEqual(big);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

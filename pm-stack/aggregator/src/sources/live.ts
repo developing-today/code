@@ -16,6 +16,7 @@ import {
   orchestrationSectionProblem,
   loadFeed,
   coverageFromFeed,
+  poolAvailableFromFeed,
   poolFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
@@ -794,6 +795,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     async projects(): Promise<ProjectPoolItem[]> {
       const feed = await getFeed();
       return poolFromFeed(feed);
+    },
+    async projectsAvailable(): Promise<boolean> {
+      const feed = await getFeed();
+      return poolAvailableFromFeed(feed);
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();

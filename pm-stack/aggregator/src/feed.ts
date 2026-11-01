@@ -259,6 +259,16 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   return raw.filter(isProjectPoolItem);
 }
 
+/** Whether the feed actually carries a projects section. The collector
+ * omits the section entirely when its Project read fails, so presence
+ * is the availability signal: an absent (or malformed) section means
+ * the pool is unavailable, which coverage must not render as zero
+ * items (#1220, PR #3309). A present array is available even when
+ * individual malformed items drop in poolFromFeed. */
+export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
+  return Array.isArray(feed?.projects);
+}
+
 /** Fail-soft read of the coverage census from a parsed feed: absent
  * or malformed sections yield null (the panel then renders backlog
  * counts as unavailable), malformed rows drop individually. */

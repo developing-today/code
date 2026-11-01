@@ -54,6 +54,10 @@ export interface Source {
    * carries one; null = not collected. Optional so fixtures and test
    * doubles keep working — the coverage panel degrades honestly. */
   coverageCensus?(): Promise<RepoCensus[] | null>;
+  /** Whether the Project pool was actually read (#1220): false when the
+   * feed carried no projects section, so coverage renders the pool as
+   * unavailable instead of zero. Optional, like coverageCensus. */
+  projectsAvailable?(): Promise<boolean>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;
