@@ -722,6 +722,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             capability,
             after,
             command_mode,
+            json,
             world,
             addrs,
             no_relay,
@@ -743,7 +744,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     let (endpoint, client) =
                         connect(&node, &addrs, no_relay, world.as_deref()).await?;
                     let (conn, send, recv) = client.into_parts();
-                    let result = pump(recv, send, &first, command_mode, &capability).await;
+                    let result = pump(recv, send, &first, command_mode, json, &capability).await;
                     conn.close(0_u32.into(), b"done");
                     endpoint.close().await;
                     result
@@ -752,7 +753,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     if !addrs.is_empty() || no_relay {
                         bail!("--addr and --no-relay apply to --via iroh only");
                     }
-                    join_over_ssh(&node, ssh_host_key, &first, command_mode, &capability).await
+                    join_over_ssh(&node, ssh_host_key, &first, command_mode, json, &capability)
+                        .await
                 }
             }
         }
@@ -922,6 +924,7 @@ async fn join_over_ssh(
     ssh_host_key: Option<String>,
     first: &str,
     command_mode: bool,
+    json: bool,
     capability: &str,
 ) -> Result<()> {
     use crate::world_ssh::{HostKeyCheck, SshTarget, connect_frames};
@@ -936,7 +939,7 @@ async fn join_over_ssh(
     };
     let (_connection, stream) = connect_frames(&target, check).await?;
     let (recv, send) = tokio::io::split(stream);
-    pump(recv, send, first, command_mode, capability).await
+    pump(recv, send, first, command_mode, json, capability).await
 }
 
 /// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
@@ -1017,6 +1020,7 @@ async fn join_over_ssh(
     _ssh_host_key: Option<String>,
     _first: &str,
     _command_mode: bool,
+    _json: bool,
     _capability: &str,
 ) -> Result<()> {
     bail!("this build of id has no SSH support (cargo feature `ssh`)")
@@ -1752,7 +1756,7 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-/// Notes for the user go to stderr, so stdout stays a stream of frames.
+/// Local command responses go to stderr unless JSON transcript mode is enabled.
 ///
 /// The transport is any byte stream carrying the length-prefixed envelope
 /// (an iroh stream or an SSH exec channel); `first` is the join frame.
@@ -1761,6 +1765,7 @@ async fn pump<R, W>(
     mut send: W,
     first: &str,
     command_mode: bool,
+    json: bool,
     capability: &str,
 ) -> Result<()>
 where
@@ -1785,8 +1790,12 @@ where
                     let frame = if command_mode {
                         match pump_command(line, capability) {
                             PumpLine::Send(frame) => frame,
-                            PumpLine::Say(text) => {
-                                eprintln!("{text}");
+                            PumpLine::Say { level, message } => {
+                                if json {
+                                    println!("{}", local_transcript_record(level, &message));
+                                } else {
+                                    eprintln!("{message}");
+                                }
                                 continue;
                             }
                             PumpLine::Quit => break Ok(()),
@@ -1844,12 +1853,20 @@ enum PumpLine {
     /// Send this session frame.
     Send(serde_json::Value),
     /// Answer the user locally; nothing is sent.
-    Say(String),
+    Say {
+        level: &'static str,
+        message: String,
+    },
     /// End the session.
     Quit,
 }
 
-const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
+const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines; `--json` also writes local responses there as JSONL.";
+
+/// Stable JSONL record for a response that the join client handles locally.
+fn local_transcript_record(level: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({"type": "local", "level": level, "message": message})
+}
 
 /// Map one line of the shared grammar ([`crate::world_line`]) to what the
 /// pump does. Every frame it sends is in the shell contract's joined phase;
@@ -1869,18 +1886,30 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
         WorldLine::Stats => serde_json::json!({"type": "info", "capability": capability}),
         WorldLine::Caps => serde_json::json!({"type": "caps", "capability": capability}),
         WorldLine::Documents { .. } | WorldLine::Document(_) => {
-            return PumpLine::Say(
-                "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
-            );
+            return PumpLine::Say {
+                level: "error",
+                message: "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
+            };
         }
         WorldLine::Logs { .. } => {
-            return PumpLine::Say(
-                "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
-            );
+            return PumpLine::Say {
+                level: "info",
+                message: "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
+            };
         }
-        WorldLine::Help => return PumpLine::Say(PUMP_HELP.to_owned()),
+        WorldLine::Help => {
+            return PumpLine::Say {
+                level: "info",
+                message: PUMP_HELP.to_owned(),
+            };
+        }
         WorldLine::Quit => return PumpLine::Quit,
-        WorldLine::Message(message) => return PumpLine::Say(message),
+        WorldLine::Message(message) => {
+            return PumpLine::Say {
+                level: "error",
+                message,
+            };
+        }
     })
 }
 
@@ -1888,8 +1917,8 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, pump_command, scaffold_world, step_is_applied,
-        world_list_plain_row,
+        PumpLine, check_contract, local_transcript_record, pump_command, scaffold_world,
+        step_is_applied, world_list_plain_row,
     };
 
     /// #3089: a world name containing LF must not forge an extra row in
@@ -2085,11 +2114,31 @@ mod tests {
         }
         for line in ["/logs", "/help", "/documents", "/document a.md", "/nope"] {
             assert!(
-                matches!(pump_command(line, "cap"), PumpLine::Say(_)),
+                matches!(pump_command(line, "cap"), PumpLine::Say { .. }),
                 "{line}"
             );
         }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
+    }
+
+    #[test]
+    fn local_transcript_records_have_stable_shape_and_error_level() {
+        assert_eq!(
+            local_transcript_record("info", "help"),
+            serde_json::json!({"type": "local", "level": "info", "message": "help"})
+        );
+        assert_eq!(
+            local_transcript_record("error", "unknown command"),
+            serde_json::json!({"type": "local", "level": "error", "message": "unknown command"})
+        );
+        assert!(matches!(
+            pump_command("/help", "cap"),
+            PumpLine::Say { level: "info", .. }
+        ));
+        assert!(matches!(
+            pump_command("/unknown", "cap"),
+            PumpLine::Say { level: "error", .. }
+        ));
     }
 
     #[test]

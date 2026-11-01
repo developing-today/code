@@ -1595,6 +1595,9 @@ pub enum WorldCommand {
         /// `/quit`, ...) instead of sending every line as chat.
         #[arg(long)]
         command_mode: bool,
+        /// Emit local command responses as JSONL records on stdout.
+        #[arg(long, requires = "command_mode")]
+        json: bool,
         /// How to reach the host: `iroh` (NODE is a node ID) or `ssh` (NODE
         /// is `[user@]host[:port]` of the host's world SSH server, and the
         /// frames travel over an SSH exec channel, for networks and jump
@@ -4199,6 +4202,24 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--command-mode",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { json: true, .. })
+        ));
+        assert!(
+            Cli::try_parse_from(["id", "world", "join", &node, "--capability", "c", "--json",])
+                .is_err()
+        );
     }
 
     #[test]

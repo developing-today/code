@@ -1916,6 +1916,7 @@ mod serve_tests {
             "--capability",
             &capability,
             "--command-mode",
+            "--json",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1934,6 +1935,18 @@ mod serve_tests {
         assert!(event.contains("\"type\":\"event\""), "{event}");
         let view = lines.next().expect("view line").unwrap();
         assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/not-a-command\n").unwrap();
+        let error = lines.next().expect("local error record").unwrap();
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(error["type"], "local");
+        assert_eq!(error["level"], "error");
+        assert_eq!(error["message"], "unknown command; type /help");
+        stdin.write_all(b"/help\n").unwrap();
+        let help = lines.next().expect("local help record").unwrap();
+        let help: serde_json::Value = serde_json::from_str(&help).unwrap();
+        assert_eq!(help["type"], "local");
+        assert_eq!(help["level"], "info");
+        assert!(help["message"].as_str().unwrap().contains("/records"));
         stdin.write_all(b"/stats\n").unwrap();
         let info = lines.next().expect("info line").unwrap();
         assert!(info.contains("\"type\":\"module_info\""), "{info}");
