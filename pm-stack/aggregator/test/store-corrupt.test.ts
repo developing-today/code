@@ -22,8 +22,7 @@ const newAction = (): NewAction => ({
   author: drew,
 });
 
-const quarantinedIn = (dir: string, base: string) =>
-  readdirSync(dir).filter((f) => f.startsWith(`${base}.corrupt-`));
+const quarantinedIn = (dir: string, base: string) => readdirSync(dir).filter((f) => f.startsWith(`${base}.corrupt-`));
 
 describe("actions store corruption handling (#1452)", () => {
   test("missing file -> empty store, no quarantine", async () => {
@@ -71,7 +70,9 @@ describe("actions store corruption handling (#1452)", () => {
     mkdirSync(file); // readFile on a directory fails with EISDIR — a non-ENOENT read error (#2980)
     const errors: string[] = [];
     const origError = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
     let store: ActionsStore;
     try {
       store = new ActionsStore(file);
@@ -146,7 +147,9 @@ describe("comments store corruption handling (#1452)", () => {
     mkdirSync(file); // readFile on a directory fails with EISDIR — a non-ENOENT read error (#2980)
     const errors: string[] = [];
     const origError = console.error;
-    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
     let store: CommentsStore;
     try {
       store = new CommentsStore(file);
