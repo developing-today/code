@@ -107,7 +107,7 @@ async function plaidCandidates(start: string, end: string): Promise<ChargeCandid
   return out;
 }
 
-interface TriageMessage {
+export interface TriageMessage {
   id: string;
   from?: string;
   subject?: string;
@@ -118,16 +118,16 @@ interface TriageMessage {
 const AMOUNT_RE = /\$([\d,]+\.\d{2})/;
 
 /** "Oct 25, 2026" / "2026-10-25" as a merchant is a parse failure, not a merchant. */
-function isDateLike(s: string): boolean {
+export function isDateLike(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) || /^[A-Z][a-z]{2,8}\s+\d{1,2},\s*\d{4}$/.test(s);
 }
 
-function cleanMerchant(raw: string | undefined): string | undefined {
+export function cleanMerchant(raw: string | undefined): string | undefined {
   const m = raw?.trim();
   return m && !isDateLike(m) ? m : undefined;
 }
 
-function merchantFromSubject(subject: string): string | undefined {
+export function merchantFromSubject(subject: string): string | undefined {
   // "Your Google Play Order Receipt from Oct 25, 2026": the merchant
   // leads, the date trails — capture the lead before "receipt from"
   // can grab the date.
@@ -144,15 +144,157 @@ function merchantFromSubject(subject: string): string | undefined {
   );
 }
 
-/** Subjects that are not charges: money back, money movement, marketing. */
-function isNotChargeSubject(subject: string): boolean {
+/** Subjects that are not charges: money back, money movement, marketing, declined/failed alerts, payment due alerts. */
+export function isNotChargeSubject(subject: string): boolean {
   return (
     /cancellation|refund/i.test(subject) ||
-    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment/i.test(
+    /declined|failed|unsuccessful/i.test(subject) ||
+    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|autopay payment/i.test(
+      subject,
+    ) ||
+    /\b(?:payment (?:is )?due|payment reminder|payment coming due|amount due|balance due|total due|is due|due now|\$\s*[\d,.]+\s+due|\bdue\s*:\s*\$)\b/i.test(
       subject,
     ) ||
     /% off|coupon|save \d|free .* with .* purchase/i.test(subject)
   );
+}
+
+/** Check if subject or body text indicates a declined or failed purchase. */
+export function isDeclinedOrFailed(text: string): boolean {
+  return (
+    /\b(?:purchase|payment|transaction|charge|card)\b(?:(?!\.\s)[\s\S]){0,80}?\b(?:was\s+|has\s+been\s+|has\s+|is\s+)?(?:declined|failed|unsuccessful)\b/i.test(
+      text,
+    ) ||
+    /\b(?:declined|failed|unsuccessful)\b(?:(?!\.\s)[\s\S]){0,80}?\b(?:purchase|payment|transaction|charge|card)\b/i.test(
+      text,
+    ) ||
+    /\b(?:was|has been|has)\s+declined\b/i.test(text) ||
+    /\b(?:payment|transaction|charge)\s+(?:has\s+)?failed\b/i.test(text) ||
+    /\b(?:payment|transaction|charge)\s+(?:was\s+|has\s+been\s+)?unsuccessful\b/i.test(text) ||
+    /\bcard\s+(?:was\s+)?declined\b/i.test(text) ||
+    /\bunable to process (?:your )?(?:payment|transaction|charge)\b/i.test(text)
+  );
+}
+
+/**
+ * Extract the paid charge amount from email body text.
+ * Requires payment evidence for invoices or when amount-due language is present.
+ * Explicit paid/charged labels outrank a bare total; a bare total must be a
+ * standalone label, never a substring of "Subtotal". Merely-due amounts produce
+ * no candidate.
+ */
+export function extractAmountFromBody(text: string, isInvoice: boolean): string | undefined {
+  if (isDeclinedOrFailed(text)) return undefined;
+
+  // 1. Explicit paid or charged amount (highest precedence)
+  const explicitPaidMatch =
+    /(?:amount paid|amount charged|total charged|paid amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text);
+  if (explicitPaidMatch) {
+    const val = Number(explicitPaidMatch[1].replaceAll(",", ""));
+    if (val > 0) return explicitPaidMatch[1];
+  }
+
+  // Check for amount-due language in the body
+  const dueMatch =
+    /(?:amount due|balance due|total due|payment due)[:\s]*\$([\d,]+\.\d{2})/i.exec(text);
+  const dueAmount = dueMatch ? Number(dueMatch[1].replaceAll(",", "")) : 0;
+
+  // Check for payment evidence in body
+  const hasPaymentEvidence =
+    /\b(?:amount paid|amount charged|total charged|paid with|charged to|payment received|payment processed|payment successful|payment status:\s*paid|status:\s*paid|paid in full|paid on|paid[:\s]+\$)\b/i.test(
+      text,
+    );
+
+  // If there is an outstanding amount due > 0 and no payment evidence, this is not a paid charge
+  if (dueAmount > 0 && !hasPaymentEvidence) {
+    return undefined;
+  }
+
+  // Invoices require payment evidence
+  if (isInvoice && !hasPaymentEvidence) {
+    return undefined;
+  }
+
+  // 2. Standalone total (not Subtotal)
+  const totalMatch =
+    /(?<!sub)\btotal(?:\s+amount)?[:\s]*\$([\d,]+\.\d{2})/i.exec(text);
+  if (totalMatch) {
+    return totalMatch[1];
+  }
+
+  // 3. Transaction amount
+  const txnMatch = /\btransaction amount[:\s]*\$([\d,]+\.\d{2})/i.exec(text);
+  if (txnMatch) {
+    return txnMatch[1];
+  }
+
+  // 4. Fallback for non-invoices with payment evidence (e.g. card alerts or receipts with non-standard labels)
+  if (hasPaymentEvidence) {
+    const allAmounts = [...text.matchAll(/\$([\d,]+\.\d{2})/g)];
+    for (const m of allAmounts) {
+      const idx = m.index ?? 0;
+      const preceding = text.slice(Math.max(0, idx - 30), idx);
+      if (!/(?:amount due|balance due|total due|payment due)[:\s]*$/i.test(preceding)) {
+        return m[1];
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export interface ParsedGmailCandidateResult {
+  candidate?: ChargeCandidate;
+  skipped: boolean;
+  needsBody: boolean;
+}
+
+export function parseGmailCandidate(
+  m: TriageMessage,
+  bodyText?: string,
+): ParsedGmailCandidateResult {
+  const subject = m.subject ?? "";
+  if (isNotChargeSubject(subject)) {
+    return { skipped: true, needsBody: false };
+  }
+
+  const at = (m.message_sent_at?.user_local ?? "").slice(0, 10) || isoDay(new Date(m.date ?? ""));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
+    return { skipped: true, needsBody: false };
+  }
+
+  let merchant = merchantFromSubject(subject);
+  let amount = AMOUNT_RE.exec(subject)?.[1];
+  const isInvoice = /invoice\b/i.test(subject);
+  const subjectHasPayment = /(?:paid|receipt|charged|purchase|payment for)\b/i.test(subject);
+
+  // If body text is provided:
+  if (bodyText !== undefined) {
+    if (isDeclinedOrFailed(bodyText)) {
+      return { skipped: true, needsBody: false };
+    }
+    merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(bodyText)?.[1]);
+    const bodyAmount = extractAmountFromBody(bodyText, isInvoice);
+    if (bodyAmount) {
+      amount = bodyAmount;
+    } else if (isInvoice && !subjectHasPayment) {
+      amount = undefined;
+    }
+  }
+
+  // Determine if body is needed
+  if (!amount || !merchant || (isInvoice && !subjectHasPayment && bodyText === undefined)) {
+    if (bodyText === undefined) {
+      return { skipped: false, needsBody: true };
+    }
+    return { skipped: true, needsBody: false };
+  }
+
+  return {
+    candidate: { source: "gmail", at, merchant, amountUsd: Number(amount.replaceAll(",", "")) },
+    skipped: false,
+    needsBody: false,
+  };
 }
 
 async function gmailCandidates(
@@ -185,39 +327,28 @@ async function gmailCandidates(
   let skipped = 0;
   let bodyReads = 0;
   for (const m of byId.values()) {
-    const subject = m.subject ?? "";
-    if (isNotChargeSubject(subject)) {
+    let parsed = parseGmailCandidate(m);
+    if (parsed.skipped) {
       skipped++;
       continue;
     }
-    const at = (m.message_sent_at?.user_local ?? "").slice(0, 10) || isoDay(new Date(m.date ?? ""));
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
-      skipped++;
-      continue;
-    }
-    let amount = AMOUNT_RE.exec(subject)?.[1];
-    let merchant = merchantFromSubject(subject);
-    if ((!amount || !merchant) && bodyReads < MAX_GMAIL_BODY_READS) {
+    if (parsed.needsBody && bodyReads < MAX_GMAIL_BODY_READS) {
       bodyReads++;
       try {
         const { stdout: body } = await run(GMAIL_CLI, ["gmail", "+read", "--id", m.id, "--format", "json"], {
           maxBuffer: 16 * 1024 * 1024,
         });
         const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
-        amount ??=
-          /(?:amount paid|amount charged|total charged|transaction amount|total)[:\s]*\$([\d,]+\.\d{2})/i.exec(
-            text,
-          )?.[1] ?? AMOUNT_RE.exec(text)?.[1];
-        merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
+        parsed = parseGmailCandidate(m, text);
       } catch {
         /* unreadable body: counted as skipped below */
       }
     }
-    if (!amount || !merchant) {
+    if (parsed.candidate) {
+      candidates.push(parsed.candidate);
+    } else {
       skipped++;
-      continue;
     }
-    candidates.push({ source: "gmail", at, merchant, amountUsd: Number(amount.replaceAll(",", "")) });
   }
   return { candidates, skipped };
 }
@@ -257,4 +388,6 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
