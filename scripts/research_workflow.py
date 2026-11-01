@@ -33,6 +33,7 @@ COMPLETE = {
     "researched",
     "designed",
     "planned",
+    "merged",
 }
 ACTIVE = {"running", "active", "in-progress", "in progress"}
 STATE = re.compile(r"<!-- workflow:state -->\s*(.*?)\s*<!-- /workflow:state -->", re.S)
@@ -852,11 +853,24 @@ def check_package(package, root, require_resolved=False):
             if (
                 receiver != note["to"]
                 or entry.get("disposition")
-                not in {"incorporated", "acknowledged", "declined", "superseded"}
+                not in {
+                    "incorporated",
+                    "acknowledged",
+                    "declined",
+                    "deferred",
+                    "superseded",
+                }
                 or not entry.get("target")
                 or not entry.get("reason")
             ):
                 fail(f"{path}: invalid receiver disposition/target/reason")
+            if entry.get("disposition") == "deferred" and "Revisit when:" not in (
+                entry.get("reason") or ""
+            ):
+                fail(
+                    f"{path}: deferred disposition requires a "
+                    "'Revisit when: <event>' trigger in its reason"
+                )
             target = contained(package, urlsplit(entry["target"]).path)
             if not target.exists():
                 fail(f"{path}: resolution target missing")

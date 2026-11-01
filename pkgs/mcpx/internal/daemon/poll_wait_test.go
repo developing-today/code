@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 func TestLongPollWaitBounds(t *testing.T) {
@@ -27,7 +27,10 @@ func TestLongPollWaitBounds(t *testing.T) {
 	}
 	s := &Server{set: set, logger: log.New(io.Discard, "", 0), reg: &Registry{asks: newAskTable()}}
 	release := make(chan struct{})
-	task := s.taskStore().Start(0, func(context.Context) (any, *tasks.Fault) { <-release; return nil, nil })
+	task, err := s.taskStore().Start(tasks.UnboundRequestor, 0, func(context.Context) (any, *tasks.Fault) { <-release; return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer close(release)
 	s.reg.asks.begin(task.TaskID, "server", "key", "session")
 

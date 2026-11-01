@@ -19,21 +19,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/codegen"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/hooks"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // Server is the local HTTP API.
@@ -1106,8 +1106,19 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	// from /v1/tasks, rather than holding this request open for however long
 	// the tool takes.
 	if req.Task != nil {
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"task": s.startCallTask(req.Task.TTL, req.Server, req.Tool, cc, args)})
+		// The task counts against the caller's session, else its run
+		// (as taskRequestor keys /v1/tasks), else the unbound bucket.
+		requestor := tasks.Caller(cc.SessionID)
+		if cc.SessionID == "" {
+			requestor = tasks.Caller(r.Header.Get("X-Mcpx-Run"))
+		}
+		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args)
+		if terr != nil {
+			// The store's per-requestor cap (protoTasks.maxPerRequestor).
+			writeErr(w, http.StatusTooManyRequests, terr)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"task": task})
 		return
 	}
 

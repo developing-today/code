@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The lease table says which caller holds which instance. It is written next

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpauth"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpauth"
 )
 
 // The expansion contract (#1662, pinned by triage): only the braced

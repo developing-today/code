@@ -15,15 +15,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/registry"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesV1Ops registers the operations that are not part of the original
@@ -510,16 +510,61 @@ func (s *Server) taskStore() *tasks.Store {
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
+			// The task-store limits (#2498): both surfaces share this
+			// store, so wiring them here covers /v1 and, when this store
+			// is injected into the MCP server, MCP too.
+			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
+			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			// The setting's 0 disables the window; the store's 0 means
+			// "default", so translate here.
+			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
+				s.tasks.PerMinute = -1
+			} else {
+				s.tasks.PerMinute = pm
+			}
 		}
 	})
 	return s.tasks
 }
 
-func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {
+// taskRequestor names who a /v1 request belongs to for the task store's
+// per-requestor limits: the session the caller named (the query param,
+// or the X-Mcpx-Session header creation keys by via callContext), else
+// its run, else the unbound bucket (capped like any other).
+func taskRequestor(r *http.Request) tasks.Requestor {
+	if v := r.URL.Query().Get("session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
+		return tasks.Caller(v)
+	}
+	return tasks.UnboundRequestor
+}
+
+// admitTaskRoute counts one /v1/tasks call against the tasks/* admission
+// window (protoTasks.perMinute) and writes the 429 when it is full.
+func (s *Server) admitTaskRoute(w http.ResponseWriter, r *http.Request) bool {
+	if !s.taskStore().Admit(taskRequestor(r)) {
+		writeErr(w, http.StatusTooManyRequests, tasks.ErrRateWindow)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskStore().List()})
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	t, ok := s.taskStore().Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
@@ -529,6 +574,9 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -564,6 +612,9 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	reason := r.URL.Query().Get("reason")
 	if reason == "" {
 		reason = "cancelled by client"
@@ -577,8 +628,10 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // startCallTask runs a tool call in the background and hands back a handle.
-func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallContext, args any) tasks.Task {
-	return s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+// The task counts against requestor (the caller session, else its
+// run); an empty requestor lands in the store unbound bucket.
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any) (tasks.Task, error) {
+	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {

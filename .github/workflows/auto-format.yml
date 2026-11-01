@@ -56,7 +56,9 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
             git log --since="25 hours ago" --pretty=format: --name-only \
               | sort -u | while IFS= read -r f; do
-                  [[ -n "$f" && -f "$f" ]] && printf '%s\n' "$f"
+                  if [[ -n "$f" && -f "$f" ]]; then
+                    printf '%s\n' "$f"
+                  fi
                 done > "$changed_file"
           else
             base_sha="$BEFORE_SHA"

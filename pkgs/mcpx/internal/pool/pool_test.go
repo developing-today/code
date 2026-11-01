@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 func resolved(t *testing.T, bin string, ex *config.Extras) *config.Resolved {

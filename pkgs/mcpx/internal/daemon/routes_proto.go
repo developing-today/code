@@ -14,16 +14,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/spec"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesProto registers the operations that let a client of mcpx answer a
@@ -394,6 +394,14 @@ type askReq struct {
 	Relay *CallRelay `json:"relay,omitempty"`
 }
 
+// askRequestor names who an ask-seam task counts against: the caller's
+// session in the ASK role — not the caller role the MCP wrapper
+// charges, for the two-ledgers reason recorded on tasks.Requestor.
+// An anonymous caller's empty identity is the anonymous ask bucket.
+func askRequestor(cc config.CallContext) tasks.Requestor {
+	return tasks.Ask(cc.SessionID)
+}
+
 func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	var req askReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, defaults.HTTPCallBodyLimit)).Decode(&req); err != nil {
@@ -435,7 +443,7 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 	// internal/pool's budget treats as the outer bound while upstream
 	// working time pauses for questions. StartWithDeadline keeps that
 	// bound explicit now that Start's ttl is retention-only (#1653).
-	t := s.taskStore().StartWithDeadline(ttl, time.Duration(ttl)*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
+	t, terr := s.taskStore().StartWithDeadline(askRequestor(cc), ttl, time.Duration(ttl)*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
 		id := <-ready
 		start := time.Now()
 		// The task outlives this request, so the header is carried over
@@ -477,6 +485,11 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		return map[string]any{"result": raw, "kind": req.Kind, "server": req.Server,
 			"durationMs": time.Since(start).Milliseconds()}, nil
 	})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"callId": t.TaskID, "task": t})

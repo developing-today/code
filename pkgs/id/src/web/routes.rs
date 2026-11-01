@@ -2099,6 +2099,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// recurses into any other inline node's `content` rather than
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
+///
+/// Inline atoms carry no `content`, so recursion alone loses them.
+/// Pinned representations (#1491): an `image` contributes its `alt`
+/// text verbatim when non-empty, otherwise its `src` verbatim when
+/// non-empty, otherwise nothing. Known remaining gap: `footnote_reference`
+/// atoms are not yet rendered — they contribute nothing; that is
+/// explicitly out of scope for the #1491 fix.
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -2156,6 +2163,8 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
 /// Extract the inline text of one node: `text` verbatim, `hard_break`
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
+/// The `image` atom has no content — its payload is `attrs`, rendered
+/// per the pinned policy on `extract_plain_text` (#1491).
 fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -2168,6 +2177,20 @@ fn extract_inline_text(node: &serde_json::Value) -> String {
                     }
                 }
                 "hard_break" => out.push('\n'),
+                "image" => {
+                    let attrs = inline.get("attrs");
+                    let alt = attrs
+                        .and_then(|a| a.get("alt"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !alt.is_empty() {
+                        out.push_str(alt);
+                    } else if let Some(src) =
+                        attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
+                    {
+                        out.push_str(src);
+                    }
+                }
                 _ => out.push_str(&extract_inline_text(inline)),
             }
         }
@@ -3102,6 +3125,64 @@ mod tests {
             extract_plain_text(&doc),
             "intro\nitem\nquote\ncode\ncell\noutro"
         );
+    }
+
+    fn img(attrs: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "image", "attrs": attrs})
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
+        // #1491: an image atom's only text is its alt.
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "blob:abc", "alt": "a red barn", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "a red barn");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            img(serde_json::json!({"src": "blob:abc", "alt": "middle", "title": null})),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before middle after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_in_list_item() {
+        // Recursive paths funnel through extract_inline_text, so the
+        // image policy applies inside list items too.
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                img(serde_json::json!({"src": "blob:abc", "alt": "listed", "title": null}))
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_without_alt_falls_back_to_src() {
+        // Missing alt and empty alt both fall back to src verbatim.
+        let missing = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "photo.png", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&missing), "photo.png");
+        let empty = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "photo.png", "alt": "", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&empty), "photo.png");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_with_neither_alt_nor_src_is_empty() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "x"},
+            img(serde_json::json!({"alt": "", "title": null})),
+            {"type": "text", "text": "y"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "xy");
     }
 
     #[test]

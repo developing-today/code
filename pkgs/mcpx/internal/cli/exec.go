@@ -9,7 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
 	"net/url"
@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 )
 
 // execOptions is what the exec and run commands resolved from their flags,
@@ -161,6 +161,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 	return artifacts.Open(artifacts.Options{
 		Dir:      filepath.Join(paths.State, "artifacts"),
 		TTL:      set.Duration("artifacts.ttl"),
+		IdleTTL:  set.Duration("artifacts.idleTtl"),
+		MaxAge:   set.Duration("artifacts.maxAge"),
 		MaxBytes: set.Bytes("artifacts.maxBytes"),
 		Quota:    set.Bytes("artifacts.quota"),
 	})
@@ -175,6 +177,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -554,7 +558,15 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
-		Session:     session,
+		// From the resolved set, so --interpreter/--shell, the env and
+		// config files reach local and remote exec the same way.
+		Interpreter: a.Settings().String("script.interpreter"),
+		// The caller's script.cwd policy travels with the request; the
+		// daemon's own policy is only the fallback for callers that send
+		// none. Without this a caller's --script-cwd (or env/config
+		// value) was silently ignored by remote runs.
+		CwdPolicy: a.Settings().String("script.cwd"),
+		Session:   session,
 		// The caller's context, not the daemon's. A remote daemon has a
 		// different working directory and a different environment, and a
 		// script that reads either should see the one belonging to whoever

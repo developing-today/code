@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/adapter"
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/catalog"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // mcpBackend answers the MCP server's requests using the daemon.
@@ -546,6 +546,12 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 		SSEKeepAlive: a.Settings().Duration("transport.sseKeepAlive"),
 		StdioDrain:   a.Settings().Duration("transport.stdioDrain"),
 		TaskPoll:     a.Settings().Duration("protoTasks.pollInterval"),
+		// The task-store limits (#2498), read from the same settings the
+		// daemon's taskStore() wiring reads. perMinute's 0 disables the
+		// window and is translated to -1 here (see Timing).
+		TaskMaxTTL:          a.Settings().Duration("protoTasks.maxTTL"),
+		TaskMaxPerRequestor: a.Settings().Int("protoTasks.maxPerRequestor"),
+		TaskWindowPerMinute: perMinuteSetting(a.Settings().Int("protoTasks.perMinute")),
 	}
 	srv.Cache = mcpserver.Cache{
 		List: a.Settings().Duration("protoMessages.listMaxAge"),
@@ -938,13 +944,26 @@ func (b mcpBackend) ReadResource(ctx context.Context, uri string) ([]mcpserver.R
 		}
 		return nil, err
 	}
-	return b.app.resourceContents(raw, ns), nil
+	entries, err := b.app.resourceContents(raw, ns)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 // resourceContents reads a resources/read reply into entries, keeping each
 // blob a blob. Entry URIs are namespaced the way the listing namespaces
 // them, so a client can read any of them back.
-func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.ResourceContents {
+//
+// The reply is validated first (#2754, mirroring the prompts/get
+// validator in #2193): a malformed upstream result is an error on the
+// read, never an empty or fabricated successful read. Until now an
+// unparseable reply was returned as one application/json text entry
+// carrying the raw bytes, and null/missing contents read as empty.
+func (a *App) resourceContents(raw json.RawMessage, ns string) ([]mcpserver.ResourceContents, error) {
+	if err := mcpclient.ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
+	}
 	var doc struct {
 		Contents []struct {
 			URI      string          `json:"uri"`
@@ -955,7 +974,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		} `json:"contents"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return []mcpserver.ResourceContents{{MimeType: "application/json", Text: string(raw)}}
+		return nil, fmt.Errorf("resources/read: invalid result from upstream: %w", err)
 	}
 	out := make([]mcpserver.ResourceContents, 0, len(doc.Contents))
 	for _, c := range doc.Contents {
@@ -966,7 +985,7 @@ func (a *App) resourceContents(raw json.RawMessage, ns string) []mcpserver.Resou
 		out = append(out, mcpserver.ResourceContents{URI: uri, MimeType: c.MimeType,
 			Text: c.Text, Blob: c.Blob, Meta: c.Meta})
 	}
-	return out
+	return out, nil
 }
 
 // textMime is what the daemon serves an artifact as text; everything else
@@ -1637,4 +1656,14 @@ func relayedFault(err error) error {
 		return err
 	}
 	return &mcpserver.UpstreamError{Code: body.Upstream.Code, Message: body.Upstream.Message, Data: body.Upstream.Data}
+}
+
+// perMinuteSetting translates protoTasks.perMinute for mcpserver.Timing:
+// the setting's 0 disables the admission window, which Timing carries as
+// -1 so a zero Timing still means "the store's default".
+func perMinuteSetting(v int) int {
+	if v == 0 {
+		return -1
+	}
+	return v
 }

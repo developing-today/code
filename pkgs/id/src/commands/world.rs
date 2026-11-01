@@ -747,6 +747,155 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             addrs,
             no_relay,
         } => ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await,
+        WorldCommand::Fork {
+            source,
+            dir,
+            name,
+            template,
+            json,
+        } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
+        WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+    }
+}
+
+/// Read a world directory's journal entries for inspection, without
+/// opening the journal for append. A torn final fragment (a crash
+/// mid-append, never acknowledged) is skipped, mirroring
+/// `FileJournal::open`; any other unparseable line is corruption.
+fn read_world_journal(dir: &std::path::Path) -> Result<Vec<crate::world::JournalEntry>> {
+    let path = dir.join("journal.jsonl");
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if bytes.last() != Some(&b'\n') {
+        // The final chunk is an unterminated fragment (or the empty tail
+        // of an empty file): it was never durably acknowledged, so it is
+        // dropped even when it happens to parse — the same rule
+        // `FileJournal::open` and the store-level fork reader apply.
+        lines.pop();
+    }
+    let mut entries = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let entry: crate::world::JournalEntry = serde_json::from_slice(line)
+            .with_context(|| format!("{} is corrupt", path.display()))?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// A world directory's provenance, read from its journal: the `Created`
+/// header's id plus the `Forked` entry a fork appends, if any.
+struct WorldProvenance {
+    world_id: String,
+    forked: Option<(String, String, bool, u64)>,
+}
+
+fn world_provenance(dir: &std::path::Path) -> Result<WorldProvenance> {
+    let entries = read_world_journal(dir)?;
+    let Some(crate::world::JournalEntry::Created { world_id, .. }) = entries.first() else {
+        bail!(
+            "{} has no Created header",
+            dir.join("journal.jsonl").display()
+        );
+    };
+    let world_id = world_id.clone();
+    let forked = entries.iter().rev().find_map(|entry| match entry {
+        crate::world::JournalEntry::Forked {
+            from_world_id,
+            from_module_hash,
+            template,
+            at_sequence,
+        } => Some((
+            from_world_id.clone(),
+            from_module_hash.clone(),
+            *template,
+            *at_sequence,
+        )),
+        _ => None,
+    });
+    Ok(WorldProvenance { world_id, forked })
+}
+
+/// `id world provenance`: print a world directory's provenance, so a
+/// template fork is identifiable without opening the world.
+fn print_world_provenance(dir: &std::path::Path, json: bool) -> Result<()> {
+    let provenance = world_provenance(dir)?;
+    if json {
+        let (from_world_id, from_module_hash, template, at_sequence) = match &provenance.forked {
+            Some((from, hash, template, at)) => {
+                (Some(from.clone()), Some(hash.clone()), *template, Some(*at))
+            }
+            None => (None, None, false, None),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "world_id": provenance.world_id,
+                "dir": dir.display().to_string(),
+                "forked_from": from_world_id,
+                "from_module_hash": from_module_hash,
+                "template": template,
+                "at_sequence": at_sequence,
+            }))?
+        );
+    } else {
+        println!("world: {}", provenance.world_id);
+        match &provenance.forked {
+            Some((from, hash, template, at)) => {
+                println!("forked_from: {from}");
+                println!("from_module_hash: {hash}");
+                println!("template: {template}");
+                println!("at_sequence: {at}");
+            }
+            None => println!("forked_from: none"),
+        }
+    }
+    Ok(())
+}
+
+/// `id world fork`: wire the store-level `fork_world` (F12.2) into the
+/// CLI. The fork's provenance is read back from the new journal and
+/// printed, so the caller sees exactly what was recorded.
+fn fork_world_on_disk(
+    source: &std::path::Path,
+    dir: &std::path::Path,
+    name: Option<&str>,
+    template: bool,
+    json: bool,
+) -> Result<()> {
+    let to_world_id = match name {
+        Some(name) => name.to_owned(),
+        None => dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .context("the destination directory has no name; pass --name")?,
+    };
+    crate::world_hub::validate_world_name(&to_world_id)?;
+    if dir.exists() {
+        anyhow::ensure!(
+            std::fs::read_dir(dir)?.next().is_none(),
+            "{} is not empty",
+            dir.display()
+        );
+    }
+    let from_world_id = world_provenance(source)?.world_id;
+    crate::world_store::fork_world(
+        source,
+        dir,
+        &crate::world_store::ForkSpec {
+            from_world_id,
+            to_world_id,
+            template,
+        },
+    )?;
+    if json {
+        print_world_provenance(dir, true)
+    } else {
+        println!("forked {}", dir.display());
+        print_world_provenance(dir, false)
     }
 }
 
@@ -1940,7 +2089,12 @@ mod tests {
             assert!(calls[kind]["fuel_max"].as_u64().unwrap() > 0, "{kind}");
         }
         assert!(calls.get("restore").is_none(), "{report}");
-        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 1.0);
+        // The worst call is layout, rendering the pf.Screen frame. Its
+        // ceiling is the largest per-call budget FUEL_BUDGETS allows this
+        // module (500_000 of the 10_000_000 limit), so the report must stay
+        // under 5 percent; before the Screen migration the bare-text view
+        // stayed under 1.
+        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 5.0);
 
         // Without a viewport there is no layout call; bad hex is refused
         // before the module runs.

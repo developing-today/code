@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // ApplyPoolSettings folds the resolved pool knobs into the file-level pool

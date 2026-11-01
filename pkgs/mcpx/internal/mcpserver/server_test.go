@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // fakeBackend counts calls under a lock: stdio requests run concurrently, so

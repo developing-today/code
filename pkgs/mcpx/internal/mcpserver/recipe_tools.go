@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/dezren39/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
 )
 
 // RecipeRunner runs one saved recipe with the values a caller supplied.

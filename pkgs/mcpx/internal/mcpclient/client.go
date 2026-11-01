@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/mcpheaders"
-	"github.com/dezren39/mcpx/internal/spec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // ProtocolVersion is the MCP revision mcpx negotiates.
@@ -1711,6 +1711,9 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 			return nil, &ResourceNotFoundError{URI: uri, err: re}
 		}
 		return nil, err
+	}
+	if err := ValidateResourceResult(raw); err != nil {
+		return nil, fmt.Errorf("resources/read %q: invalid result from upstream: %w", uri, err)
 	}
 	return raw, nil
 }

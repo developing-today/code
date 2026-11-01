@@ -5,8 +5,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // OnListChanged runs on an upstream client's goroutine whenever a server

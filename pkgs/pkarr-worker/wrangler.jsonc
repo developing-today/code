@@ -1,0 +1,32 @@
+{
+  // pkarr Worker — P7.2 (see README.md and
+  // doc/2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md).
+  //
+  // This wrangler config drives local dev and the test suite
+  // (@cloudflare/vitest-pool-workers reads it). Deployment goes through
+  // the flake entrypoint (just deploy-pkarr / nix run .#pkarr-deploy),
+  // which uses cloudflare.config.ts + the cf versions flow; the two
+  // configs describe the same Worker and must be kept in step.
+  "name": "pkarr",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "workers_dev": true,
+
+  "vars": {
+    "ORIGIN": "pkarr.developing-today.workers.dev",
+    "RETENTION_SECONDS": "604800",
+    "DNS_TTL": "30"
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "PKARR_STORE", "class_name": "PkarrStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PkarrStore"] }],
+
+  "ratelimits": [
+    { "name": "PUT_LIMITER", "namespace_id": "7101", "simple": { "limit": 60, "period": 60 } },
+    { "name": "GET_LIMITER", "namespace_id": "7102", "simple": { "limit": 300, "period": 60 } },
+    { "name": "DOH_LIMITER", "namespace_id": "7103", "simple": { "limit": 300, "period": 60 } }
+  ]
+}

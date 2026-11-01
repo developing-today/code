@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // The task store moved to internal/tasks so the daemon's /v1 and this server
@@ -39,7 +39,11 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore = s.TaskStore
 		} else {
 			s.taskStore = tasks.New()
-			s.taskStore.PollInterval = s.Timing.resolved().TaskPoll
+			tm := s.Timing.resolved()
+			s.taskStore.PollInterval = tm.TaskPoll
+			s.taskStore.MaxTTL = tm.TaskMaxTTL
+			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
+			s.taskStore.PerMinute = tm.TaskWindowPerMinute
 		}
 	}
 	return s.taskStore
@@ -70,21 +74,44 @@ func wantsTask(params json.RawMessage) (bool, int64) {
 // The store is one per server, and over HTTP one server answers every
 // client: without an owner, any client could list -- and then read -- the
 // results of every other client's calls.
-func (s *Server) startTask(owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) Task {
-	t := s.tasks().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+//
+// The store's accounting key is NOT the owner. A modern client deliberately
+// gets an empty owner -- its tasks keep bearer-access semantics -- but its
+// resolved identity still names who is asking, and the per-requestor cap
+// must charge that identity: keying the cap by the owner alone put every
+// modern client in the one unbound bucket, so a single client could hold
+// every slot (Codex on #2869, round 3). The resolved identity wins over
+// the owner too: a legacy client that names its session in _meta is
+// resolved to that name (identityFor), while its owner is the bare
+// connection id, so charging the owner would give two connections
+// naming the same session a bucket each (Codex on #2869, round 6).
+// The owner remains only as the fallback for a request whose resolved
+// identity is empty, and a request with neither falls into the store's
+// unbound bucket.
+func (s *Server) startTask(ctx context.Context, owner string, ttl int64, fn func(ctx context.Context) (any, *rpcError)) (Task, *rpcError) {
+	identity := IdentityFrom(ctx).Key
+	if identity == "" {
+		identity = owner
+	}
+	t, err := s.tasks().Start(tasks.Caller(identity), ttl, func(ctx context.Context) (any, *tasks.Fault) {
 		result, err := fn(ctx)
 		if err != nil {
 			return nil, &tasks.Fault{Code: err.Code, Message: err.Message, Data: err.Data}
 		}
 		return result, nil
 	})
+	if err != nil {
+		// The store's limits speaking (protoTasks.maxPerRequestor):
+		// -32603 naming the limit, per the triage settlement (task 3733).
+		return Task{}, &rpcError{Code: codeInternal, Message: err.Error()}
+	}
 	s.mu.Lock()
 	if s.taskOwners == nil {
 		s.taskOwners = map[string]string{}
 	}
 	s.taskOwners[t.TaskID] = owner
 	s.mu.Unlock()
-	return t
+	return t, nil
 }
 
 // visible reports whether a connection may see a task.
@@ -266,7 +293,10 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeMethodNotFound,
 				Message: "this tool does not support task-augmented execution (execution.taskSupport is forbidden)"}}
 		}
-		t := s.startTask(c.id, ttl, s.runInner(ctx, c, req))
+		t, terr := s.startTask(ctx, c.id, ttl, s.runInner(ctx, c, req))
+		if terr != nil {
+			return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
+		}
 		return &response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"task": t}}
 	}
 	support := s.taskSupportOf(ctx, req.Params)
@@ -295,7 +325,10 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 	if eager {
 		after = tm.TaskEager
 	}
-	t := s.startTask("", tasks.DefaultTTL(), s.runInner(ctx, c, req))
+	t, terr := s.startTask(ctx, "", tasks.DefaultTTL(), s.runInner(ctx, c, req))
+	if terr != nil {
+		return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
+	}
 	wait, cancel := context.WithTimeout(ctx, after)
 	defer cancel()
 	result, fault, err := s.tasks().Result(wait, t.TaskID)
@@ -359,9 +392,23 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 		}
 	}
 
-	t := s.tasks().Start(tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
+	// The ask seam holds no connection identity (Peer is capabilities
+	// only), but the request ctx carries the resolved caller identity,
+	// and the per-requestor cap must charge it: hard-coding the unbound
+	// bucket here put every identified ask client in one shared bucket,
+	// so one client's slow calls could refuse another's first call
+	// (Codex on #2869, round 4). An anonymous request's empty key
+	// falls into the store's unbound bucket, capped like any other.
+	t, terr := s.tasks().Start(tasks.Caller(IdentityFrom(ctx).Key), tasks.DefaultTTL(), func(tctx context.Context) (any, *tasks.Fault) {
 		return s.driveAsked(tctx, req, peer, callID)
 	})
+	if terr != nil {
+		// The call is already running upstream, but no task will ever
+		// drive it now: abandon it rather than leaving work nobody can
+		// observe or cancel.
+		s.Ask.Abandon(callID)
+		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: codeInternal, Message: terr.Error()}}, true
+	}
 	s.mu.Lock()
 	if s.askedTasks == nil {
 		s.askedTasks = map[string]askedTask{}
@@ -518,6 +565,14 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 	fail := func(code int, msg string) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: msg}}
 	}
+	// The tasks/* admission window (protoTasks.perMinute), counted per
+	// resolved identity at admission for every tasks/* method,
+	// tasks/result included (triage settlement, task 3733). Keyed by
+	// identity, not connection: one identity naming several sessions
+	// shares one window. The result is enforced after the capability
+	// check below, so a non-declaring client gets its -32021 even when
+	// the window is full — but its call still counts.
+	admitted := s.tasks().Admit(tasks.Caller(IdentityFrom(ctx).Key))
 	var p struct {
 		TaskID string `json:"taskId"`
 	}
@@ -536,6 +591,9 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		// about which tasks exist. tasks/list and tasks/result are removed
 		// methods and keep their -32601.
 		return missingTasks(req.ID)
+	}
+	if !admitted {
+		return fail(codeInternal, tasks.ErrRateWindow.Error())
 	}
 	if req.Method != "tasks/list" && !s.visible(p.TaskID, c) {
 		// Said exactly as for a task that does not exist. Anything else

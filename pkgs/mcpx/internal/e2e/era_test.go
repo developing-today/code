@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/testsupport"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // eraEnv is an isolated mcpx whose one server is eramcp in the given mode.

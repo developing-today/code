@@ -257,6 +257,10 @@ pub async fn remove_serve_lock() -> Result<()> {
 pub struct ServeOptions {
     /// Use an in-memory store.
     pub ephemeral: bool,
+    /// Group log for the group-warning watcher (the global
+    /// `--groups-log` option); `None` reads the default
+    /// `groups.jsonl`, exactly as the group commands resolve it.
+    pub groups_log: Option<PathBuf>,
     /// Disable relay servers.
     pub no_relay: bool,
     /// Disable gossip peer discovery.
@@ -708,9 +712,18 @@ impl ServeWorlds {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 #[allow(unused_variables)] // web/port only used with web feature
+/// The group log the serve warning watcher reads: the global
+/// `--groups-log` option when given, else the default file name —
+/// resolved with the group commands' semantics (#2778; serve used
+/// to hardcode the default and ignore the option).
+fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
+    crate::commands::group::log_path(path)
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
+        groups_log,
         no_relay,
         no_gossip,
         web,
@@ -1292,7 +1305,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // the CLI status output at startup; the spawned task then re-evaluates
     // as membership changes and writes fired warnings to the server log.
     let mut group_watcher = GroupWarningWatcher::new();
-    let groups_log = PathBuf::from(GROUPS_FILE_NAME);
+    let groups_log = serve_groups_log_path(groups_log);
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
@@ -1585,7 +1598,7 @@ async fn run_gossip_loop(
                     let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
                     send.write_all(&req).await?;
                     send.finish()?;
-                    let resp_buf = recv.read_to_end(1024 * 1024).await?;
+                    let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
                     let _resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
                     conn.close(0u32.into(), b"probe");
                     anyhow::Ok(())
@@ -1637,11 +1650,14 @@ mod tests {
     /// (the author included), returning the group's ID. This is the file the
     /// serve warning path reads.
     fn group_log_with_members(dir: &std::path::Path, members: usize) -> Hash {
+        group_log_with_members_at(&dir.join(GROUPS_FILE_NAME), members)
+    }
+
+    fn group_log_with_members_at(path: &std::path::Path, members: usize) -> Hash {
         use crate::groups::Role;
         use crate::groups::actions::NewGroup;
 
-        let path = dir.join(GROUPS_FILE_NAME);
-        let mut log = GroupLog::open(&path).unwrap();
+        let mut log = GroupLog::open(path).unwrap();
         let author: GroupKey = [1; 32];
         let created = log
             .create(
@@ -1657,6 +1673,46 @@ mod tests {
             log.add(author, created.group, member, Role::Read).unwrap();
         }
         created.group
+    }
+
+    #[test]
+    fn serve_groups_log_path_honours_override_and_default() {
+        // #2778: the group-warning watcher's log path must come
+        // from the global --groups-log option (threaded through
+        // ServeOptions), resolved exactly like the group commands
+        // resolve it; without the option the default file name is
+        // used, unchanged.
+        let custom = PathBuf::from("shared").join("relocated.jsonl");
+        assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
+        assert_eq!(
+            serve_groups_log_path(None),
+            PathBuf::from(GROUPS_FILE_NAME)
+        );
+    }
+
+    #[test]
+    fn serve_group_warnings_evaluate_custom_groups_log() {
+        // #2778 regression: warnings are computed from the
+        // --groups-log file, not the default groups.jsonl. The
+        // custom log holds a 96-member group; the default log in
+        // the same directory does not exist, so a watcher reading
+        // the default would silently warn about nothing.
+        let dir = serve_test_dir("customlog");
+        let custom = dir.join("relocated.jsonl");
+        let group = group_log_with_members_at(&custom, 96);
+        let path = serve_groups_log_path(Some(custom));
+        let mut watcher = GroupWarningWatcher::new();
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 96,
+                members: 96
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

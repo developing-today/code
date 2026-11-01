@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
-	"github.com/dezren39/mcpx/internal/hooks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/hooks"
 )
 
 // Codex P1 on PR #2541: a hook that spawns a descendant

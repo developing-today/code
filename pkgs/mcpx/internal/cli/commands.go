@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/plugin/opencode/skills"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/plugin/opencode/skills"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -20,16 +20,16 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/artifacts"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/preflight"
-	"github.com/dezren39/mcpx/internal/runner"
-	"github.com/dezren39/mcpx/internal/source"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/artifacts"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/preflight"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/source"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // App carries state shared by every subcommand.
@@ -953,6 +953,15 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if a.Settings().Given("script.permissions") {
 		setPerms = a.Settings().String("script.permissions")
 	}
+	// script.interpreter and script.cwd come from the resolved set like
+	// every other script.* value: flag aliases (--interpreter/--shell),
+	// env and config files all fold into the same two strings.
+	interpreterPref := set.String("script.interpreter")
+	cwdPolicy := set.String("script.cwd")
+	configDir := ""
+	if cp := configPathOf(cfg); cp != "" {
+		configDir = filepath.Dir(cp)
+	}
 	opts := runner.Options{
 		// Set when something other than a terminal is collecting the output:
 		// the MCP server, which has to return it rather than print it.
@@ -961,6 +970,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		GlobalsSource:  globalsSrc,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Interpreter:    interpreterPref,
+		CwdPolicy:      cwdPolicy,
+		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
 		Prelude:        prelude,
@@ -2272,13 +2284,29 @@ type scriptShape struct {
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
 // generated wholesale, so prefix lines share its scope and can declare
 // bindings the snippet uses.
+//
+// A snippet's own shebang goes first, ahead of the prefix. Dispatch reads the
+// first line to decide the interpreter (#2167), and a shell prefix line in
+// front of it hid the shebang: `mcpx exec --prefix 'echo before' $'#!/bin/sh\necho hello'`
+// then went to the JavaScript harness instead of sh (#2611 review). The
+// shebang is still the program's own first line; the prefix runs after it,
+// which is the order the interpreter would have imposed anyway.
 func (sh scriptShape) inlineSource(args []string) string {
 	var body strings.Builder
+	var rest strings.Builder
+	rest.WriteString(strings.Join(args, " "))
+	if first := rest.String(); strings.HasPrefix(first, "#!") {
+		line, tail, _ := strings.Cut(first, "\n")
+		body.WriteString(line)
+		body.WriteString("\n")
+		rest.Reset()
+		rest.WriteString(tail)
+	}
 	for _, line := range sh.prefix {
 		body.WriteString(line)
 		body.WriteString("\n")
 	}
-	body.WriteString(strings.Join(args, " "))
+	body.WriteString(rest.String())
 	for _, line := range sh.suffix {
 		body.WriteString("\n")
 		body.WriteString(line)

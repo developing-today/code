@@ -63,16 +63,27 @@ defect, not a launch.
 ## Tests
 
 `bun test` in this directory (merge idempotence, prompt embedding,
-store-shape refusal). The worked example for slice 1 is
+store-shape refusal); `python3 -m unittest test_poll.py` here covers
+poll.py's active-only cap counting. The worked example for slice 1 is
 `install.mjs --dry-run` against the live store plus a shadow
 `poll.py` run: both are read-only and are recorded on #3026.
 
-## Known gap found by the first shadow poll (2026-10-31)
+## Known gap found by the first shadow poll (2026-10-31) — RESOLVED by the gate
 
-`poll.py` counts every root session `GET /api/session` returns — 41 at
-the first shadow run, most of them finished-but-unarchived lane
-sessions. So `cap_room` reads 0 even when few sessions are active.
-Shadow mode is unaffected (it launches nothing), but the gate packet
-must refine the count to active sessions (recent activity / busy
-status) before live mode is enabled; until then the cap fails closed,
-which is the safe direction.
+`poll.py` originally counted every root session `GET /api/session`
+returns — 41 at the first shadow run, most of them
+finished-but-unarchived lane sessions, so `cap_room` read 0 even when
+few sessions were active. The gate refinement (task 4408) counts only
+**active** roots toward the cap: a finished session carries
+`time.idle` and an `outcome` (both verified on the live server: 50
+roots, 46 finished, at the gate check), a running one carries neither,
+and a marker-less root silent for 30+ minutes is treated as a zombie,
+not a worker. A root the server itself holds in `GET
+/api/session/active` always counts — a resumed session keeps its
+stored outcome from the earlier run while it is mid-run again, so the
+server's active set overrides the stored markers (the same rule the
+aggregator's session mapper applies). `poll.py` still reports the raw root total as
+`live_root_sessions` alongside the new `active_root_sessions`;
+`cap_room` derives from the active count. An unreadable server still
+yields `cap_room: null` — the cap fails closed, which is the safe
+direction.

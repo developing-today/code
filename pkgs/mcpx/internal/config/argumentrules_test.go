@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // The four worked examples from #1986, as one server's rule set.

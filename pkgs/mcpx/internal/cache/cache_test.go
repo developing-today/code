@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/cache"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cache"
 )
 
 func writeEntry(t *testing.T, c *cache.Cache, kind, key string, size int, age time.Duration) string {

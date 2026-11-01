@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // setterSources is where each setter's code lives. A variable written from

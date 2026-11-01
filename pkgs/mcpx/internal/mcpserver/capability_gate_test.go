@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // The advertised-capability gate (#2436): a method whose gating

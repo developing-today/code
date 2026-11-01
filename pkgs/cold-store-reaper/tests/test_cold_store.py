@@ -228,14 +228,56 @@ def make_handler(fake: FakeDrive):
     return Handler
 
 
+# ------------------------------------------------------------ template home
+# A fresh ColdStore home pays the full manifest-schema executescript
+# (cold_store.db) plus private-file creation — measured ~0.5s on the
+# laptop, ~1.7s on a slow VM — and ColdStoreTestBase used to pay it in
+# every setUp (#1435). Build one template home per process and copy it
+# per test instead: the schema is created once per run, while each test
+# still gets an isolated home it can mutate freely. Tests that exercise
+# first-run creation or manifest migrations build their own genuinely
+# fresh homes and never touch this fixture.
+_TEMPLATE_HOME_TMP = None
+_TEMPLATE_HOME = None
+
+
+def template_home() -> Path:
+    global _TEMPLATE_HOME_TMP, _TEMPLATE_HOME
+    if _TEMPLATE_HOME is None:
+        _TEMPLATE_HOME_TMP = tempfile.TemporaryDirectory(
+            prefix="cold-store-template-home-"
+        )
+        home = Path(_TEMPLATE_HOME_TMP.name) / "cold-store-home"
+        ColdStore(home).init()
+        _TEMPLATE_HOME = home
+    return _TEMPLATE_HOME
+
+
+def serve_fast(server) -> threading.Thread:
+    """Start serve_forever on a thread with a short shutdown poll.
+
+    The default poll_interval (0.5s) makes every tearDown's shutdown()
+    block for up to ~0.5s — with a server per test that rivals the
+    schema cost above (#1435). 0.05s keeps shutdown snappy without
+    changing what the server serves.
+    """
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+    )
+    thread.start()
+    return thread
+
+
 class ColdStoreTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "cold-store-home"
+        # Copy of the once-per-run template home (#1435); init() below
+        # revalidates it (a cheap no-op once the manifest exists).
+        shutil.copytree(template_home(), self.home)
         self.fake = FakeDrive()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.fake))
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.store = ColdStore(
             self.home,
@@ -868,10 +910,7 @@ class S3TestBase(ColdStoreTestBase):
         super().setUp()
         self.s3 = FakeS3()
         self.s3_server = ThreadingHTTPServer(("127.0.0.1", 0), make_s3_handler(self.s3))
-        self.s3_thread = threading.Thread(
-            target=self.s3_server.serve_forever, daemon=True
-        )
-        self.s3_thread.start()
+        self.s3_thread = serve_fast(self.s3_server)
         self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
         self.store.s3_base = self.s3_base_url
         # Transport retries must not slow the suite down.
@@ -954,10 +993,7 @@ class TestSyncManifest(ColdStoreTestBase):
         super().setUp()
         self.d1 = FakeD1()
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         a = self.write_src("a.txt", b"sync me " * 10)
         packed = self.store.pack([str(a)])
@@ -1255,10 +1291,7 @@ class TestBackupD1(ColdStoreTestBase):
             """
         )
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
 
     def tearDown(self):
@@ -1970,6 +2003,78 @@ class TestOffsetLessLastModified(EvictTestBase):
         )
 
 
+
+class TestS3ListPageValidation(unittest.TestCase):
+    """#2733: _parse_s3_list_page must fail closed with ColdStoreError.
+
+    A malformed or shape-drifted body must never escape as a raw
+    ParseError/ValueError, and a wrong-root document must never be
+    read as an empty bucket (backup + eviction plan from this list).
+    """
+
+    def _page(self, contents="", root="ListBucketResult", extra=""):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<{root} xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<Name>b</Name>{extra}{contents}</{root}>"
+        ).encode()
+
+    def _entry(self, size_marker):
+        return (
+            "<Contents><Key>a.bin</Key>"
+            "<LastModified>2026-10-01T00:00:00.000Z</LastModified>"
+            f"{size_marker}</Contents>"
+        )
+
+    def test_non_xml_body_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(b'{"error": "nope"}')
+
+    def test_wrong_root_raises_cold_store_error(self):
+        body = b"<html><body>proxy error</body></html>"
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(body)
+
+    def test_non_numeric_size_raises(self):
+        for bad in ("abc", "1.5"):
+            with self.subTest(size=bad):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._parse_s3_list_page(
+                        self._page(self._entry(f"<Size>{bad}</Size>"))
+                    )
+
+    def test_negative_size_raises(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(
+                self._page(self._entry("<Size>-5</Size>"))
+            )
+
+    def test_missing_size_keeps_default_zero(self):
+        objects, truncated, token = cold_store._parse_s3_list_page(
+            self._page(self._entry(""))
+        )
+        self.assertEqual(objects[0]["size"], 0)
+        self.assertFalse(truncated)
+        self.assertIsNone(token)
+
+    def test_valid_page_pagination_and_stamp_unchanged(self):
+        body = self._page(
+            self._entry("<Size>3</Size>"),
+            extra=("<IsTruncated>true</IsTruncated>"
+                   "<NextContinuationToken>tok2</NextContinuationToken>"),
+        )
+        objects, truncated, token = cold_store._parse_s3_list_page(body)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["key"], "a.bin")
+        self.assertEqual(objects[0]["size"], 3)
+        self.assertEqual(
+            objects[0]["last_modified"],
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(token, "tok2")
+
+
 class TestOffsetLessBackupPick(S3TestBase):
     """backup_supabase picks the newest by LastModified with max():
     a mixed listing used to crash the pick outright (#2110)."""
@@ -2138,12 +2243,29 @@ class TestDrillCompare(ColdStoreTestBase):
     HASH_A = "a" * 64
     HASH_B = "b" * 64
 
+    _schema_template = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # The live DB is schema-only before seeding: build the schema
+        # once per class and backup-copy it per test (#1435) instead of
+        # paying the full executescript in every setUp.
+        cls._schema_template = sqlite3.connect(":memory:")
+        cls._schema_template.executescript(cold_store.SCHEMA_PATH.read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._schema_template.close()
+        cls._schema_template = None
+        super().tearDownClass()
+
     def setUp(self):
         super().setUp()
         self.d1 = FakeD1()
         # check_same_thread=False: the HTTP handler thread runs the queries.
         self.live = sqlite3.connect(":memory:", check_same_thread=False)
-        self.live.executescript(cold_store.SCHEMA_PATH.read_text())
+        type(self)._schema_template.backup(self.live)
         self.live.executemany(
             "INSERT INTO objects (hash, size, content_type, source_bucket,"
             " source_key, first_seen, state) VALUES (?, ?, ?, ?, ?, ?, 'cold')",
@@ -2185,10 +2307,7 @@ class TestDrillCompare(ColdStoreTestBase):
         self.live.commit()
         self.d1.db = self.live
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
 
     def tearDown(self):
         self.d1_server.shutdown()
@@ -2472,8 +2591,7 @@ class TestTursoExportScript(unittest.TestCase):
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", 0), make_turso_handler(self.fake)
         )
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"

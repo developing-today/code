@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/conformance"
+	"github.com/developing-today/code/pkgs/mcpx/internal/conformance"
 )
 
 // TestAuthSplit pins the size of the accepts-vs-refuses split (#1972). The

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // TestSamplingValidation covers sampling-both-validate-message-content on

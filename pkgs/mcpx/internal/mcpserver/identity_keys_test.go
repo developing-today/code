@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // #1932 remainder: the _meta session keys are a configured list whose

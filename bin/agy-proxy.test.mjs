@@ -70,6 +70,12 @@ while IFS= read -r line; do
       printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"partial answer"}}'
       echo "stub agy: run failed midway" >&2
       exit 3 ;;
+    *FAILTAIL*)
+      if [ -n "$conv" ]; then
+        printf '%s' '{"event":"step_update","step_update":{"text_delta":"partial tail"}}'
+        echo "stub agy: tail run failed" >&2
+        exit 3
+      fi ;;
     *SIGKILLME*)
       kill -9 $$ ;;
   esac
@@ -218,6 +224,29 @@ test('failed resume still retries once as a fresh conversation (#678)', async (t
   const sse = await streamRes.text();
   assert.match(sse, /Hello world/);
   assert.match(sse, /"finish_reason":"stop"/);
+});
+
+test('unterminated final delta counts as output: failed resume is NOT retried fresh (#683)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'please FAILTAIL now' }];
+  const headers = { 'x-conversation-id': 'conv-456' };
+
+  const plainRes = await post(port, { messages }, headers);
+  assert.equal(plainRes.status, 502, 'a resumed turn whose only output is an unterminated tail delta must fail, not silently retry as a fresh conversation');
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.match(plainBody.stderr, /stub agy: tail run failed/);
+
+  const streamRes = await post(port, { messages, stream: true }, headers);
+  assert.equal(streamRes.status, 200);
+  const events = parseSse(await streamRes.text());
+  const deltaChunk = events.find(e => e.choices && e.choices[0].delta && e.choices[0].delta.content === 'partial tail');
+  assert.ok(deltaChunk, 'the unterminated tail delta must be delivered exactly like a terminated line');
+  const errorEvent = events.find(e => e.error);
+  assert.ok(errorEvent, 'stream must carry an error event');
+  assert.match(errorEvent.error.message, /tail run failed/);
+  const stopChunk = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+  assert.equal(stopChunk, undefined, "no chunk may claim finish_reason 'stop'");
 });
 
 test('session requests reuse one resident worker (same pid across turns)', async (t) => {

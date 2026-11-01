@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Effect probes, grouped by surface (#1971, Approach C).
@@ -34,6 +34,8 @@ var implementedEffectProbes = map[string]string{
 	"pool.scope":                 "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"output.json":                "TestOutputJSONIsReachableFromTheEnvironment",
 	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
+	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
+	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
 	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.typecheck":           "TestScriptTypecheckOnRefusesATypeError",

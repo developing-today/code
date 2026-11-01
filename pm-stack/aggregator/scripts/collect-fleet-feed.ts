@@ -54,7 +54,8 @@
 //     leaves); an unreadable config omits only the coverage.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
-// Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
+// Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, OPENCODE_SERVER_URL
+// (SANDBOX_OPENCODE_URL legacy alias), OPENCODE_SESSION_SOURCE,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
 // CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
 // sections read the provider registry's billing incidents, fail-soft),
@@ -63,7 +64,8 @@
 // the feed's snapshots field for the laptop store to ingest),
 // CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
 // producer's candidates file and the collector's surfaced-once state),
-// SUPABASE_PROJECT_REF (default: the muse-dev project),
+// SUPABASE_PROJECT_REF (else the Bitwarden supabase.project-ref secret;
+// fallback default: the muse-dev2 project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
 import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -82,8 +84,10 @@ import type {
   QuotaPool,
   SessionFeedEntry,
   SessionRecord,
+  SessionSource,
 } from "../src/model.ts";
 import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
@@ -120,7 +124,12 @@ const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN
 const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
 const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
-const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
+const serverUrl = process.env.OPENCODE_SERVER_URL ?? process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
+/** Session source label for the scraped server: the collector's home host
+ * decides — the laptop collector labels its local server
+ * "opencode-laptop"; anything else keeps the historical default. */
+const sessionSource: SessionSource =
+  process.env.OPENCODE_SESSION_SOURCE === "opencode-laptop" ? "opencode-laptop" : "opencode-sandbox";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
 
@@ -348,7 +357,11 @@ select jsonb_build_object(
 async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   const token = await resolveBwsSecret("supabase.access-token-muse-cli");
   if (!token) return aaAbsent("no Supabase management token available (bws)", generatedAt);
-  const ref = process.env.SUPABASE_PROJECT_REF ?? "nltgxorqwxhgfzseiirt";
+  // Project ref: env override, else the Bitwarden supabase.project-ref
+  // secret (the same resolve-by-name discipline as the token), else the
+  // muse-dev2 project — never the retired muse-dev project.
+  const ref =
+    process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
   let raw: AaRawPayload;
   try {
     const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
@@ -434,7 +447,7 @@ async function main(): Promise<void> {
     if (candidates.length) {
       const auto = matchCharges(
         candidates,
-        (saas ?? []).map((s) => ({ name: s.name })),
+        chargeServiceCatalog(saas ?? [], pools),
       );
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
@@ -445,13 +458,9 @@ async function main(): Promise<void> {
       } catch {
         /* no state yet: everything unmatched is new */
       }
-      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      const { fresh } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
       if (fresh.length) {
         chargesAttention = fresh;
-        await writeFile(
-          chargesSurfacedStatePath,
-          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
-        );
       }
       console.log(
         `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
@@ -461,12 +470,12 @@ async function main(): Promise<void> {
     console.error("collector: charge candidates unreadable; hub charges stay hand-fed only this run");
   }
 
-  // --- sandbox attention + burn -------------------------------------------
+  // --- server attention + burn -------------------------------------------
   let attention: SessionFeedEntry[] = [];
   try {
     const password = (await readFile(passwordFile, "utf8")).trim();
     const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime(), {
-      source: "opencode-sandbox",
+      source: sessionSource,
     });
     if (mapped) {
       attention = mapped.entries;
@@ -495,10 +504,10 @@ async function main(): Promise<void> {
         if (sessions.length) pool.activeSessions = sessions;
       }
     } else {
-      console.error("collector: sandbox OpenCode server unreachable; attention empty");
+      console.error("collector: OpenCode server unreachable; attention empty");
     }
   } catch (err) {
-    console.error(`collector: sandbox server read failed (${err}); attention empty`);
+    console.error(`collector: OpenCode server read failed (${err}); attention empty`);
   }
 
   // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
@@ -646,7 +655,7 @@ async function main(): Promise<void> {
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (${sessionSource} + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
       (saas

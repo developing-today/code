@@ -102,6 +102,13 @@ export function initCollab(
   const queryStr = params.toString();
   const finalWsUrl = queryStr ? `${wsUrl}?${queryStr}` : wsUrl;
 
+  // Single mutable source of truth for the identity token (#1463). The
+  // AUTH_OK handler overwrites this when the server refreshes the token,
+  // and every (re)connect sends this value. Sending the init-time `token`
+  // parameter instead would re-send the original token on every reconnect,
+  // so the refresh would never reach the socket that needs it.
+  let currentToken: string | null = token ?? null;
+
   let reconnectAttempts = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const sendQueue: Uint8Array[] = [];
@@ -385,9 +392,15 @@ export function initCollab(
         const authName = msg[2] as string | null;
         const refreshedToken = msg[3] as string | null | undefined;
         console.log("[collab] Auth OK: client_id=%s, name=%s", authClientId, authName);
-        // Save the refreshed token so long-lived WS sessions stay fresh
-        if (refreshedToken && onTokenRefresh) {
-          onTokenRefresh(refreshedToken);
+        // Save the refreshed token so long-lived WS sessions stay fresh.
+        // Write it back to currentToken first: reconnects authenticate with
+        // currentToken, so the refreshed value must live here, not only in
+        // the caller's onTokenRefresh callback (#1463).
+        if (refreshedToken) {
+          currentToken = refreshedToken;
+          if (onTokenRefresh) {
+            onTokenRefresh(refreshedToken);
+          }
         }
         break;
       }
@@ -451,8 +464,8 @@ export function initCollab(
       // Send AUTH as the very first message (before flushing queued messages).
       // The server waits for this before sending INIT. Token is kept out of
       // the URL to avoid leaking in logs/Referer headers over HTTPS.
-      if (token) {
-        const authData = packr.pack([MSG.AUTH, token]);
+      if (currentToken) {
+        const authData = packr.pack([MSG.AUTH, currentToken]);
         socket.send(authData);
         console.log("[collab] Sent AUTH message");
       }

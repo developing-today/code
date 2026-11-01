@@ -28,7 +28,7 @@ use crate::invites::Invitation;
 use crate::{KEY_FILE, load_or_create_keypair};
 
 /// The log a command reads and appends to: `--groups-log`, or the default file in the data directory.
-fn log_path(path: Option<PathBuf>) -> PathBuf {
+pub(crate) fn log_path(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(|| PathBuf::from(FILE_NAME))
 }
 

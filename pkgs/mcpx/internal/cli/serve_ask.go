@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // daemonAsker runs a request the upstream server may interrupt.
@@ -311,7 +311,11 @@ func (d daemonAsker) renderAsk(result map[string]json.RawMessage) (text string, 
 	inner := result["result"]
 	switch kind {
 	case "resources/read":
-		return "", d.app.resourceContents(inner, server), false
+		contents, err := d.app.resourceContents(inner, server)
+		if err != nil {
+			return err.Error(), nil, true
+		}
+		return "", contents, false
 	default:
 		// tools/call and prompts/get: verbatim, as the direct path sends
 		// them (#206).

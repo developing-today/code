@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // #1933 slice 1, the tailscale shape from the issue: an alias view

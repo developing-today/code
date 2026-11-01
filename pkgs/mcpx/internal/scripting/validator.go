@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 // ClarificationQuestion represents a prompt to ask a user or agent when a script

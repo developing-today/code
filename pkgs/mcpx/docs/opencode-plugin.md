@@ -4,9 +4,12 @@ What it is, why each part exists, what is opencode-specific, and what happens
 to all of it in opencode v2.
 
 ```
+id:           the-opencode-plugin
+since:        pre-release
 created:      2026-09-29T17:00:00-05:00
 last-updated: 2026-09-29T17:00:00-05:00
-status:       findings + design sketch
+status:       proposed
+note:         findings + design sketch
 ```
 
 This document has three jobs. It records what was found comparing opencode
