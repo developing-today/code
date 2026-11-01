@@ -128,11 +128,58 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     // symmetric with no save-side mirror needed.
     let protected = escape_table_code_span_pipes(&protected);
     let root = parse_document(&arena, &protected, &options);
+    preserve_github_alert_marker_breaks(root);
     let mut doc = convert_node(root, &[]);
     if let Some(token) = newline_token {
         restore_attr_newlines(&mut doc, &token);
     }
     doc
+}
+
+/// Keep the line break after an exact GitHub alert marker in a blockquote.
+/// The editor normally turns CommonMark soft breaks into spaces, which would
+/// make an alert marker followed by its body indistinguishable from ordinary
+/// text such as `[!NOTE] extra words` when the document is saved again.
+fn preserve_github_alert_marker_breaks<'a>(node: &'a AstNode<'a>) {
+    if matches!(&node.data.borrow().value, NodeValue::BlockQuote) {
+        if let Some(first_block) = node.children().next()
+            && matches!(&first_block.data.borrow().value, NodeValue::Paragraph)
+        {
+            let mut first_line = String::new();
+            for child in first_block.children() {
+                let (text, is_break, is_other) = {
+                    let data = child.data.borrow();
+                    match &data.value {
+                        NodeValue::Text(text) => (Some(text.to_string()), false, false),
+                        NodeValue::SoftBreak | NodeValue::LineBreak => (None, true, false),
+                        _ => (None, false, true),
+                    }
+                };
+
+                if let Some(text) = text {
+                    first_line.push_str(&text);
+                } else if is_break {
+                    if is_github_alert_marker(&first_line) {
+                        child.data.borrow_mut().value = NodeValue::LineBreak;
+                    }
+                    break;
+                } else if is_other {
+                    break;
+                }
+            }
+        }
+    }
+
+    for child in node.children() {
+        preserve_github_alert_marker_breaks(child);
+    }
+}
+
+fn is_github_alert_marker(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "[!NOTE]" | "[!TIP]" | "[!IMPORTANT]" | "[!WARNING]" | "[!CAUTION]"
+    )
 }
 
 /// Replace each newline inside an angle-form link/image destination
@@ -1653,7 +1700,79 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for (placeholder, raw) in substitutions {
         output = output.replace(&placeholder, &format!("<{raw}>"));
     }
-    Ok(output)
+    Ok(restore_github_alert_markers(&output))
+}
+
+/// Undo the CommonMark renderer's escaping of a GitHub alert marker when
+/// it is the first nonblank line in a blockquote. Markers elsewhere (for
+/// example, followed by words on the same line) remain ordinary escaped
+/// text. GitHub requires the marker to be alone on that first line.
+fn restore_github_alert_markers(markdown: &str) -> String {
+    let mut output = String::with_capacity(markdown.len());
+    let mut quote_has_content = [false; 64];
+
+    for line in markdown.split_inclusive('\n') {
+        let content_start = line.trim_start_matches(' ');
+        let leading_spaces = line.len() - content_start.len();
+        let mut rest = content_start;
+        let mut depth = 0;
+        while rest.starts_with('>') {
+            depth += 1;
+            rest = &rest[1..];
+            if rest.starts_with(' ') || rest.starts_with('\t') {
+                rest = &rest[1..];
+            }
+        }
+
+        if leading_spaces > 3 || depth == 0 || depth >= quote_has_content.len() {
+            quote_has_content.fill(false);
+            output.push_str(line);
+            continue;
+        }
+
+        for seen in quote_has_content.iter_mut().skip(depth + 1) {
+            *seen = false;
+        }
+
+        let trimmed = rest.trim();
+        // Comrak emits a hard break with a trailing backslash. Ignore that
+        // renderer syntax while recognizing the marker; the suffix is kept
+        // intact when replacing the escaped marker below.
+        let hardbreak = trimmed.ends_with('\\');
+        let marker_token = trimmed.strip_suffix('\\').unwrap_or(trimmed);
+        let marker = match marker_token {
+            r"\[\!NOTE\]" => Some("[!NOTE]"),
+            r"\[\!TIP\]" => Some("[!TIP]"),
+            r"\[\!IMPORTANT\]" => Some("[!IMPORTANT]"),
+            r"\[\!WARNING\]" => Some("[!WARNING]"),
+            r"\[\!CAUTION\]" => Some("[!CAUTION]"),
+            _ => None,
+        };
+        if !quote_has_content[depth]
+            && !rest.starts_with(' ')
+            && !rest.starts_with('\t')
+            && let Some(marker) = marker
+        {
+            let marker_start = line.find(marker_token).unwrap_or(0);
+            let marker_end = marker_start + marker_token.len();
+            output.push_str(&line[..marker_start]);
+            output.push_str(marker);
+            let suffix = &line[marker_end..];
+            output.push_str(if hardbreak {
+                suffix.strip_prefix('\\').unwrap_or(suffix)
+            } else {
+                suffix
+            });
+            quote_has_content[depth] = true;
+        } else {
+            output.push_str(line);
+            if !trimmed.is_empty() {
+                quote_has_content[depth] = true;
+            }
+        }
+    }
+
+    output
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -3116,6 +3235,40 @@ mod tests {
 
         assert_eq!(content[0]["type"], "blockquote");
         assert_eq!(content[0]["content"][0]["type"], "paragraph");
+    }
+
+    #[test]
+    fn test_github_alert_markers_roundtrip_fixpoint() {
+        for marker in ["NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"] {
+            let original = format!("> [!{marker}]\n> First paragraph.\n>\n> Second paragraph.\n");
+            let (first, second) = two_saves(&original);
+
+            assert!(
+                first.starts_with(&format!("> [!{marker}]\n")),
+                "alert marker must remain unescaped: {first:?}"
+            );
+            assert!(first.contains("First paragraph."), "{first:?}");
+            assert!(first.contains("Second paragraph."), "{first:?}");
+            assert_eq!(first, second, "alert must be a save fixpoint: {marker}");
+        }
+    }
+
+    #[test]
+    fn test_non_alert_blockquote_markers_remain_plain() {
+        for (original, escaped) in [
+            (
+                "> [!NOTE] extra words\n> Body.\n",
+                r"\[\!NOTE\] extra words",
+            ),
+            ("> [see appendix]\n", r"\[see appendix\]"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains(escaped),
+                "non-alert text should keep normal escaping: {first:?}"
+            );
+            assert_eq!(first, second, "non-alert blockquote must be stable");
+        }
     }
 
     #[test]
@@ -4747,7 +4900,19 @@ Some text
         // #2180: values with no lossless numeric-pixel form are
         // refused (attr absent; the import path warns) -- never
         // silently truncated or reinterpreted.
-        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx", "２００", "２００px"] {
+        for raw in [
+            "50%",
+            "200.5",
+            "200.5px",
+            "10em",
+            "2rem",
+            "abc",
+            "",
+            "-5",
+            "200pxpx",
+            "２００",
+            "２００px",
+        ] {
             let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
                 .expect("img parses");
             assert!(
@@ -4790,7 +4955,10 @@ Some text
         assert_eq!(img["type"], "image");
         assert_eq!(img["attrs"]["width"], 200);
         let out = prosemirror_to_markdown(&doc).unwrap();
-        assert!(out.contains("width=\"200\""), "px form re-emits bare: {out}");
+        assert!(
+            out.contains("width=\"200\""),
+            "px form re-emits bare: {out}"
+        );
     }
 
     #[test]
