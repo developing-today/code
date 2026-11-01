@@ -573,6 +573,23 @@ def _judge_a_label(label, host):
             f"refusing to crawl host {host}: A-label {label} "
             "is not the canonical encoding of its decoded label"
         )
+    # A valid U-label is its own UTS-46 mapped form: the mapping
+    # validate_crawl_url applies to raw hosts (NFKC, lowercasing,
+    # ignored-codepoint deletion) must leave the decoded label
+    # unchanged. The punycode round-trip above cannot see this —
+    # punycode encodes any string — so a decoded label carrying a
+    # character UTS-46 maps away (an uppercase letter such as
+    # U+00C0, a compatibility character such as U+00B2 or the
+    # fullwidth solidus U+FF0F, a space-class character such as
+    # U+2000, or an ignored codepoint) passed every check while the
+    # Worker's WHATWG validator refuses the label outright (#588).
+    mapped = unicodedata.normalize("NFKC", decoded).lower()
+    mapped = mapped.translate({cp: None for cp in _UTS46_IGNORED})
+    if mapped != decoded:
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            f"decodes to a label that is not its UTS-46 mapped form {decoded!r}"
+        )
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
@@ -642,6 +659,32 @@ def _judge_idna_label(label, host):
     # violation the Worker refuses, while at label start the mapped
     # letter is an ordinary first character, closing the former
     # leading-mark over-refusal (#596).
+    # IDNA2008/UTS-46 marks every punctuation, symbol, separator,
+    # private-use and surrogate codepoint DISALLOWED (the CONTEXTO /
+    # CONTEXTJ exceptions below are judged by their own rules: the
+    # Catalan middle dot and Hebrew punctuation are context-judged
+    # punctuation, the Arabic separators by the AN/separator rules
+    # below, and the undertie pair is CONTEXTJ joining punctuation).
+    # None of the checks around this one sees them: they are assigned
+    # (not Cn), not format characters (not Cf), NFKC leaves most of
+    # them unchanged, and the stdlib IDNA-2003 codec's stringprep
+    # tables do not prohibit them — so a decoded label carrying
+    # U+00A8, U+00B4, U+037E or a currency/math symbol passed while
+    # the Worker refuses it (#588). Category-based, not an enumerated
+    # table, so it carries no unicodedata version skew of its own.
+    if any(
+        ord(c) > 0x7F
+        and ord(c) not in (0x00B7, 0x05F3, 0x05F4, 0x066B, 0x066C, 0x203F, 0x2040)
+        and (
+            unicodedata.category(c)[0] in "PSZ"
+            or unicodedata.category(c) in ("Co", "Cs")
+        )
+        for c in label
+    ):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "contains an IDNA-disallowed punctuation, symbol or separator character"
+        )
     label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
         # A decoded A-label is judged unmapped, so the mapped-dot
@@ -1178,6 +1221,11 @@ def _apply_userinfo_auth(req):
 
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    # Keep in sync with src/lib.ts's fetchFollowingValidatedRedirects:
+    # max_redirections=10, max_repeats=4, and only 301/302/303/307/308.
+    max_redirections = 10
+    max_repeats = 4
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Follow the validated form, not the raw Location: a redirect
         # target is validated raw (no Worker normalisation in between),
