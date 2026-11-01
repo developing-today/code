@@ -821,6 +821,13 @@ impl crate::world::WorldProgram for WorldInstance {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
                 Self::update(self, event.participant_id, bytes)
             }
+            // Entity-addressed input (#3870) delivers its opaque bytes to
+            // the program exactly like unscoped input; the entity scoping
+            // is a host-side fencing concern, not a program concern.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                std::str::from_utf8(input).context("Roc world input must be valid UTF-8")?;
+                Self::update(self, event.participant_id, input)
+            }
             // Host events (capability results, ticks, presence) are JSON
             // text delivered as participant 0; the program updates on them
             // like any other event.
