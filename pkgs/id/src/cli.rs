@@ -196,6 +196,18 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
+/// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
+/// rejected with a clear error instead of silently producing an empty result
+/// or a header-only preview (#3059). Clap names the flag in its error prefix,
+/// so the message stays flag-specific at the boundary.
+fn parse_result_limit(raw: &str) -> Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(0) => Err("zero is not a valid limit: use at least 1".to_owned()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
@@ -727,7 +739,8 @@ pub enum Command {
             long,
             conflicts_with = "last",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
@@ -735,7 +748,8 @@ pub enum Command {
             long,
             conflicts_with = "first",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
@@ -790,7 +804,7 @@ pub enum Command {
         #[arg(long)]
         name: bool,
         /// Number of lines to show from head and tail (default: 5).
-        #[arg(short = 'n', long, default_value = "5")]
+        #[arg(short = 'n', long, default_value = "5", value_parser = parse_result_limit)]
         lines: usize,
         /// Show only head lines (no tail).
         #[arg(long, conflicts_with = "tail_only")]
@@ -818,7 +832,8 @@ pub enum Command {
             long,
             conflicts_with = "last",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
@@ -826,7 +841,8 @@ pub enum Command {
             long,
             conflicts_with = "first",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
@@ -914,7 +930,8 @@ pub enum Command {
             long,
             conflicts_with = "last",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
@@ -922,7 +939,8 @@ pub enum Command {
             long,
             conflicts_with = "first",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
@@ -991,7 +1009,8 @@ pub enum Command {
             long,
             conflicts_with = "last",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
@@ -999,7 +1018,8 @@ pub enum Command {
             long,
             conflicts_with = "first",
             num_args = 0..=1,
-            default_missing_value = "1"
+            default_missing_value = "1",
+            value_parser = parse_result_limit
         )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
@@ -2923,6 +2943,35 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_cli_rejects_zero_result_limits() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                // #3059: an explicit zero limit is an error at the CLI boundary, never a
+                // silent empty result (find/search/show/peek share the flag pair).
+                for cmd in ["find", "search", "show", "peek"] {
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--first", "0", "query"]).is_err(),
+                        "{cmd} --first 0 must be rejected"
+                    );
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--last", "0", "query"]).is_err(),
+                        "{cmd} --last 0 must be rejected"
+                    );
+                }
+                assert!(Cli::try_parse_from(["id", "peek", "--lines", "0", "query"]).is_err());
+                assert!(Cli::try_parse_from(["id", "peek", "-n", "0", "query"]).is_err());
+                // Bare flags keep their defaults (1 / 1 / 5 lines).
+                assert!(Cli::try_parse_from(["id", "find", "query", "--first"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "find", "query", "--last"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "peek", "query"]).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     fn test_cli_rejects_first_and_last_together() {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)

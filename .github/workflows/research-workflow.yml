@@ -18,6 +18,7 @@ on:
       - "doc/**/decisions/**"
       - "scripts/*research*workflow*.py"
       - "scripts/tests/test_*workflow*.py"
+      - "scripts/tests/test_plan_check.py"
       - ".github/workflows/research-workflow.yml"
 
 permissions:
@@ -50,5 +51,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Exercise lossless intake and validation failures
         run: python3 -m unittest discover -s scripts/tests -p 'test_*workflow*.py' -v
+      - name: Reject duplicate feature-plan step numbers
+        run: python3 -m unittest discover -s scripts/tests -p 'test_plan_check.py' -v
       - name: Check workflow profiles, skills, links, and actual packages
         run: python3 scripts/research_workflow.py check --repo-root .

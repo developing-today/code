@@ -149,11 +149,23 @@ impl DirectoryAuth {
     /// Make a six-digit code for an address and remember its digest. Returns
     /// the code, which is sent by mail and never stored.
     ///
+    /// Issuing first sweeps every expired pending code, for any address, so
+    /// a code whose address never comes back does not sit in the map forever
+    /// (#1732). The sweep is opportunistic: it runs only when a code is
+    /// issued, so nothing is reclaimed while the world is idle and the map
+    /// has no hard size bound. `HashMap::retain` scans the whole map, so an
+    /// issuance costs O(pending codes) on top of its own work — accepted
+    /// here because issuance is already rate-limited per address and the
+    /// scan is the same shape as the session sweep in `open_session`.
+    /// Unexpired codes are all kept, including ones that have run out of
+    /// attempts, so resend throttling and the attempt limit are unchanged.
+    ///
     /// # Errors
     ///
     /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
     /// less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
+        self.codes.retain(|_, pending| pending.expires_at > now);
         if let Some(pending) = self.codes.get(address)
             && pending.sent_at + CODE_RESEND_MS > now
         {
@@ -448,6 +460,54 @@ mod tests {
             error.downcast_ref::<Refusal>(),
             Some(Refusal::RateLimited(_))
         ));
+    }
+
+    #[test]
+    fn issuing_for_another_address_evicts_expired_codes_at_the_ttl_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::SignIn {
+            account: "ab".repeat(32),
+        };
+        auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        // One millisecond before expiry the first code is still pending:
+        // issuing for a second address must keep it.
+        auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        // At exactly expires_at the code is expired (check_code refuses at
+        // expires_at <= now), so the same issuance sweep evicts it without
+        // the first address ever checking.
+        auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
+            .unwrap();
+        assert!(!auth.codes.contains_key("a@b.co"));
+        assert!(auth.codes.contains_key("c@d.co"));
+        assert!(auth.codes.contains_key("e@f.co"));
+    }
+
+    #[test]
+    fn the_sweep_keeps_unexpired_codes_even_after_their_attempts_run_out() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if code == "999999" { "000000" } else { "999999" };
+        for _ in 0..CODE_ATTEMPTS {
+            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+        }
+        // Issuing for another address inside the TTL sweeps expired codes
+        // only: the exhausted code stays, so the attempt limit still refuses
+        // even the right answer, and the new code verifies normally.
+        let other = auth
+            .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS).is_err());
+        assert_eq!(
+            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
+                .unwrap(),
+            purpose
+        );
     }
 
     #[test]

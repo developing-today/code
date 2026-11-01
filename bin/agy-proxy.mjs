@@ -24,6 +24,16 @@
 //     or times out is killed and never reused; the next request respawns
 //     (spares replenish automatically). Live session workers are evicted
 //     after an idle TTL / past a live-worker cap.
+// Cached-token accounting (#480, settled 2026-11-01): the agy CLI's
+// stream-json `result.usage` DOES carry a cached-input figure —
+// `cache_read_tokens`, cumulative over the session like its sibling
+// counters (verified against the real CLI's result shape on the
+// laptop: usage keys are input_tokens, output_tokens,
+// thinking_tokens, cache_read_tokens, total_tokens). The per-turn
+// delta is emitted as `prompt_tokens_details.cached_tokens` in both
+// response shapes when > 0, matching the sibling proxies'
+// opencode#394 contract; when the CLI reports none, the field is
+// omitted entirely rather than reporting a fabricated zero split.
 // Failure semantics are unchanged from #678: a failed turn is an error
 // (502 non-stream, SSE error event + [DONE] stream), never a 'stop'
 // carrying partial output; a failed resume retries once as a fresh
@@ -484,7 +494,7 @@ class AgyWorker {
     this.stderrTail = '';
     this.turnWaiter = null;
     this.ready = false; // set when the init event arrives
-    this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+    this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_tokens: 0 };
 
     const args = [
       '--dangerously-skip-permissions',
@@ -620,12 +630,14 @@ class AgyWorker {
       const deltaUsage = {
         input_tokens: Math.max(0, (cum.input_tokens || 0) - this.prevUsage.input_tokens),
         output_tokens: Math.max(0, (cum.output_tokens || 0) - this.prevUsage.output_tokens),
-        total_tokens: Math.max(0, (cum.total_tokens || 0) - this.prevUsage.total_tokens)
+        total_tokens: Math.max(0, (cum.total_tokens || 0) - this.prevUsage.total_tokens),
+        cache_read_tokens: Math.max(0, (cum.cache_read_tokens || 0) - this.prevUsage.cache_read_tokens)
       };
       this.prevUsage = {
         input_tokens: cum.input_tokens || 0,
         output_tokens: cum.output_tokens || 0,
-        total_tokens: cum.total_tokens || 0
+        total_tokens: cum.total_tokens || 0,
+        cache_read_tokens: cum.cache_read_tokens || 0
       };
       this.turns += 1;
       this.lastUsedAt = Date.now();
@@ -1056,7 +1068,8 @@ const server = http.createServer((req, res) => {
               usage: {
                 prompt_tokens: result.usage?.input_tokens || 0,
                 completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0
+                total_tokens: result.usage?.total_tokens || 0,
+                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
               }
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -1089,7 +1102,8 @@ const server = http.createServer((req, res) => {
               usage: {
                 prompt_tokens: result.usage?.input_tokens || 0,
                 completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0
+                total_tokens: result.usage?.total_tokens || 0,
+                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
               }
             }, null, 2));
           }
