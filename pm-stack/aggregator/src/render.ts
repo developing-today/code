@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
@@ -2948,7 +2949,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
   return layout("DNS register", body, provenance, "/dns", "", chips);
 }
 
-// --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
+// --- AA cost explorer page (ainventory import data via the fleet feed) -----
 
 /**
  * The Cost Explorer's client side: tabs, the shared filter bar, the
@@ -3109,7 +3110,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
     api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
-    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
+    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the import's measured per-task figures, TTFT shown where timed).",
   };
   function basePoints() {
     return POINTS.filter(function (p) {
@@ -3239,7 +3240,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (note) {
       var missing = all.filter(function (p) { return cfg.x(p) == null || cfg.y(p) == null; });
       var names = missing.slice(0, 4).map(shortLabel).join(", ");
-      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the workbook (nothing is estimated)" +
+      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the import (nothing is estimated)" +
         (missing.length ? ": " + names + (missing.length > 4 ? " (+" + (missing.length - 4) + " more)" : "") + "." : ".");
     }
     if (!rows.length) { svg.innerHTML = ""; return; }
@@ -4272,7 +4273,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (pnote) {
       pnote.textContent = S.persp === "cai"
         ? "Coding agents perspective — the Coding Agent Index observations (model + effort + agent harness): score is the CAI score, cost the published cost per coding task, time the average agent wall time per task. Kept separate from the Intelligence Index; the two are never converted."
-        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the workbook's per-task figures (time excludes TTFT).";
+        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
     if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
@@ -4587,7 +4588,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (workbook label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -4599,7 +4600,7 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     )
     .join("");
   return `<h2>Coding Agent Index observations</h2>
-<p class="muted">The workbook's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
+<p class="muted">The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
 <div class="tblwrap"><table><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
@@ -4619,7 +4620,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
     );
@@ -4627,7 +4628,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (section.status === "absent") {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. No successful collection exists yet to fall back to — the page fills in on the first successful collection.</div>`,
       provenance,
       "/aa",
     );
@@ -4648,23 +4649,24 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted">Measured and reachable today, but no route sends them work — the actionable list.</p>${aaNameList(cov.catalogNotPooledMeasured)}
 <h3>Measured, in no catalog (${cov.measuredNotInCatalog.length})</h3>${aaNameList(cov.measuredNotInCatalog)}
 <details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
-<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
+<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the import measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
   const modelCards = catalog
     ? `<div class="board">
 <div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
 <div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the workbook has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
     JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
   );
   const body = `<h1>Cost Explorer</h1>
+${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
 <p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
@@ -4752,16 +4754,16 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <label>Near-leader window <select id="xf-bandscale"><option value="0.5">0.5× · Very tight</option><option value="0.75">0.75× · Tight</option><option value="1" selected>1× · Standard (score ±2 · time within 10% · price within 25%)</option><option value="1.5">1.5× · Generous</option><option value="2">2× · Wide</option><option value="3">3× · Broad</option></select></label>
 <div id="xpl-bandgroups"></div>
 <h2>Timing — Test_Runs</h2>
-<p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
+<p class="muted">Per-configuration timing from the import's Test_Runs data. "Not measured" means the import carries no value for that cell — nothing is estimated.</p>
 ${aaTimingsTable(s.testRuns)}
 <h2>Measured configurations</h2>
-<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
+<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the import.</p>
 ${aaConfigsTable(s.configs)}
 ${s.cai ? aaCaiTable(s.cai) : ""}
 </section>
 <section id="xtab-models" hidden>
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
+<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
@@ -5008,6 +5010,33 @@ ${commentThreadHtml(objectRef, comments, opts)}`;
 // derived state (see src/projects.ts derivedProjectState) disagree,
 // BOTH are shown — neither side is silently preferred.
 
+/** #1220: the coverage panel — Project #4 pool vs backlog reality per
+ * repo (open issues and gate labels from the feed, pool size and unset
+ * Status/Area from the pool), with the week-over-week delta against the
+ * stored baseline in parentheses when a baseline exists. */
+function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined): string {
+  if (!coverage) return "";
+  const { current, baseline } = coverage;
+  const delta = diffCoverage(current, baseline);
+  const cell = (repo: string, v: number | null, key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea"): string => {
+    if (v === null) return "—";
+    const d = delta.get(repo)?.[key];
+    return d === undefined || d === null || d === 0 ? `${v}` : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
+  };
+  const rows = current.repos
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
+    )
+    .join("");
+  const note = baseline
+    ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
+    : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
+  return `<h2>Coverage — pool vs backlog (#1220)</h2>
+<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+}
+
 export function renderProjects(
   pool: ProjectPoolItem[],
   provenance: Provenance,
@@ -5017,6 +5046,7 @@ export function renderProjects(
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    coverage?: CoverageSnapshotFile | null;
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
@@ -5043,7 +5073,7 @@ export function renderProjects(
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks()
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
         .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
         .join(" · ")}</p>`,
       provenance,
@@ -5087,6 +5117,7 @@ export function renderProjects(
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+${coverageSectionHtml(opts.coverage)}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()

@@ -12,6 +12,9 @@
 # extension — pm-dispatch and pm-tunnel; the pre-NixOS files are kept
 # beside this history in git, and home-manager renames any same-named
 # hand file to *.backup on the first switch that lands this module).
+# The fleet-feed collector joins 2026-11-01 (code#3363): it moved from
+# the sandbox to this host on 2026-10-31 as hand-written units and is
+# folded in below like the rest.
 # The Kaneo docker stack had no hand unit at all: it only ran when
 # someone ran pm-stack/deploy.sh by hand, and stayed down otherwise.
 #
@@ -81,7 +84,7 @@ let
 in
 {
   options.services.pm-stack = {
-    enable = lib.mkEnableOption "the PM stack (aggregator, projector, dispatch, tunnel, Kaneo) as NixOS-managed user services";
+    enable = lib.mkEnableOption "the PM stack (aggregator, projector, dispatch, tunnel, Kaneo, fleet-feed collector) as NixOS-managed user services";
 
     user = lib.mkOption {
       type = lib.types.str;
@@ -202,6 +205,42 @@ in
           };
         };
 
+        fleet-feed-collector = {
+          Unit = {
+            Description = "Fleet feed collector for the PM aggregator — collect the fleet feed every ~5 minutes (NixOS; runs from ~/git/code checkout, #3363)";
+            After = [ "network-online.target" ];
+            Wants = [ "network-online.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            WorkingDirectory = "${repo}/pm-stack/aggregator";
+            Environment = [
+              "SUPABASE_PROJECT_REF=keihfchslgjetkmnmzra"
+              "BWS_BIN=/run/current-system/sw/bin/bws"
+              "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
+              "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
+              "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"
+              "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"
+              "JULES_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/jules-review-state.json"
+              "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json"
+              "DNS_REGISTER_PATH=${home}/hatch-personal/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md"
+              "CHARGE_CANDIDATES_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidates.json"
+              "CHARGES_SURFACED_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced-state.json"
+              "CLAUDE_LAUNCH_RECORDS_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launch-records.jsonl"
+              "USAGE_SNAPSHOT_OUTBOX_PATH=${aggState}/usage-snapshot-outbox.jsonl"
+              "SANDBOX_OPENCODE_URL=http://127.0.0.1:13420"
+              "OPENCODE_SERVER_URL=http://127.0.0.1:13420"
+              "OPENCODE_SESSION_SOURCE=opencode-laptop"
+              "OPENCODE_SERVER_PASSWORD_FILE=${aggState}/opencode-server-password"
+            ];
+            # Extracts the prod OpenCode server password into the bare
+            # file the collector reads; the script itself stays
+            # operator-managed in ~/.local/bin (mirrors oc-password-sync).
+            ExecStartPre = "${home}/.local/bin/fleet-feed-oc-password.sh";
+            ExecStart = "${bun} run scripts/collect-fleet-feed.ts --out ${aggState}/fleet-feed.json";
+          };
+        };
+
         pm-tunnel = {
           Unit = {
             Description = "Cloudflare Tunnel connector for the pm stack — kaneo + dispatch ingress (NixOS)";
@@ -289,6 +328,16 @@ in
             RandomizedDelaySec = 20;
             Persistent = true;
             Unit = "quota-gatherer.service";
+          };
+          Install.WantedBy = [ "timers.target" ];
+        };
+
+        fleet-feed-collector = {
+          Unit.Description = "Collect the fleet feed for the laptop aggregator every ~5 minutes";
+          Timer = {
+            OnBootSec = "2min";
+            OnUnitActiveSec = "5min";
+            Unit = "fleet-feed-collector.service";
           };
           Install.WantedBy = [ "timers.target" ];
         };

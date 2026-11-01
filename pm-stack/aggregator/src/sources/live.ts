@@ -15,10 +15,13 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
+  coverageFromFeed,
+  poolAvailableFromFeed,
   poolFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
+import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
@@ -792,6 +795,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     async projects(): Promise<ProjectPoolItem[]> {
       const feed = await getFeed();
       return poolFromFeed(feed);
+    },
+    async projectsAvailable(): Promise<boolean> {
+      const feed = await getFeed();
+      return poolAvailableFromFeed(feed);
+    },
+    async coverageCensus(): Promise<RepoCensus[] | null> {
+      const feed = await getFeed();
+      return coverageFromFeed(feed);
     },
     async comments(refs) {
       if (cfg.projector.baseUrl) {

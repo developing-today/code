@@ -1,7 +1,7 @@
 // The AA cost explorer as data. The source of record is the Supabase
-// `ainventory` schema (the AA workbook import: v_rankings,
-// v_threshold_metrics, benchmark_results, and the Test_Runs sheet in
-// sheet_rows, all read through v_latest_workbook_batch). The collector
+// `ainventory` schema (the AA import: v_rankings,
+// v_threshold_metrics, benchmark_results, and the Test_Runs data in
+// sheet_rows, all read through v_latest_import_batch). The collector
 // queries it, assembles the section with the helpers here, and embeds
 // it in the fleet feed; the aggregator renders the section as-is.
 // Everything in this module is pure and unit-tested (test/aa.test.ts),
@@ -44,9 +44,9 @@ function boolish(v: unknown): boolean {
   return v === true || v === 1 || v === "1" || v === "true";
 }
 
-// --- Test_Runs sheet mapping -------------------------------------------------
+// --- Test_Runs data mapping -------------------------------------------------
 
-/** One raw sheet_rows row for the Test_Runs sheet: cells as stored. */
+/** One raw sheet_rows row for the Test_Runs data: cells as stored. */
 export interface SheetRow {
   rowIndex: number;
   cells: unknown[];
@@ -68,7 +68,7 @@ const TEST_RUN_FIELDS: Record<string, keyof AaTestRun> = {
 /**
  * Map raw Test_Runs rows to timing records, keyed off the sheet's own
  * header row (the row carrying "test_run_key" among its cells) — a
- * workbook column reorder changes nothing here. Rows without a key
+ * import column reorder changes nothing here. Rows without a key
  * are dropped; empty cells become nulls.
  */
 export function testRunsFromSheetRows(rows: SheetRow[]): AaTestRun[] {
@@ -262,7 +262,7 @@ const MODEL_ALIASES = new Map<string, string>([
   ["deepseek v4 flash", "deepseek v4 1 flash"],
   // Meta's config ids carry the 1.0 version the AA family name drops.
   ["muse wonder 1 0", "muse wonder"],
-  // AA's workbook family for Qwen's max checkpoint carries its date.
+  // AA's import family for Qwen's max checkpoint carries its date.
   ["qwen3 8 max 0902", "qwen3 8 max"],
   // Word order differs between the AA family and the config ids.
   ["claude haiku 4 5", "claude 4 5 haiku"],
@@ -293,7 +293,7 @@ const byAlpha = (a: string, b: string): number => a.toLowerCase().localeCompare(
 
 /**
  * Compare the AA-measured model names against the catalog + pooled
- * sets. Display names in the first three lists are the AA/workbook
+ * sets. Display names in the first three lists are the AA/import
  * names; the fourth lists catalog ids verbatim (that is where a human
  * goes looking for them in the config).
  */
@@ -526,7 +526,7 @@ export function aaCaiPoints(rows: AaCaiRow[]): AaPoint[] {
       pointsPerSecond: null,
       scorePerDollar: b.score !== null && b.cost !== null && b.cost > 0 ? b.score / b.cost : null,
       scorePerSecond: b.score !== null && b.time !== null && b.time > 0 ? b.score / b.time : null,
-      // CAI rows are published results; the workbook's "eligible" flag
+      // CAI rows are published results; the import's "eligible" flag
       // is a rankings-view concept and does not exist for them.
       eligible: true,
       qualStatus: null,

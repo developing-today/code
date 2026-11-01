@@ -260,7 +260,7 @@ type execReq struct {
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req execReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
