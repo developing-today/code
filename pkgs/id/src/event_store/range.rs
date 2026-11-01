@@ -1012,10 +1012,14 @@ mod tests {
         assert_eq!(read(&[1]).unwrap(), 1);
         assert_eq!(read(&[0x7f]).unwrap(), 127);
         assert_eq!(read(&[0x80, 0x01]).unwrap(), 128);
+        assert_eq!(read(&[0xff, 0x7f]).unwrap(), 0x3fff);
+        assert_eq!(read(&[0x80, 0x80, 0x01]).unwrap(), 0x4000);
         assert_eq!(read(&[0xac, 0x02]).unwrap(), 300);
         // Overlong spellings of the same values.
         assert!(read(&[0x80, 0x00]).is_err(), "0 spelled in 2 bytes");
         assert!(read(&[0x81, 0x00]).is_err(), "1 spelled in 2 bytes");
+        assert!(read(&[0xff, 0xff, 0x00]).is_err(), "0x3fff spelled in 3 bytes");
+        assert!(read(&[0x80, 0x80, 0x81, 0x00]).is_err(), "0x4000 spelled in 4 bytes");
         assert!(read(&[0xff, 0x80, 0x00]).is_err(), "127 spelled in 3 bytes");
 
         // Position 1: the frame header entry count.
