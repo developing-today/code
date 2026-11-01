@@ -3,7 +3,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -21,6 +21,8 @@ impl WorldCommand {
             Self::ParticipantId { .. } => "ParticipantId",
             Self::Chat { .. } => "Chat",
             Self::Input { .. } => "Input",
+            Self::EntityInput { .. } => "EntityInput",
+            Self::ExportEntity { .. } => "ExportEntity",
             Self::Snapshot { .. } => "Snapshot",
             Self::EventsAfter { .. } => "EventsAfter",
             Self::ProjectEvent { .. } => "ProjectEvent",
@@ -101,6 +103,20 @@ pub(crate) enum WorldCommand {
         token: JoinCapability,
         input: Vec<u8>,
         reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    EntityInput {
+        token: JoinCapability,
+        entity_ref: String,
+        input: Vec<u8>,
+        reply: oneshot::Sender<Result<WorldEvent>>,
+    },
+    ExportEntity {
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+        reply: oneshot::Sender<Result<HandoffTransferState>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -390,6 +406,156 @@ impl WorldActor {
             self.metrics.record_journal_append(started.elapsed());
         }
         Ok(())
+    }
+
+    fn export_entity(
+        &mut self,
+        handoff_id: String,
+        entity_ref: String,
+        source_region: String,
+        target_region: String,
+        prior_owner_epoch: u64,
+    ) -> Result<HandoffTransferState> {
+        self.check_storage()?;
+        ensure!(self.program_healthy, "world program is unavailable");
+        ensure!(
+            self.journal.is_some(),
+            "entity export requires a durable world journal"
+        );
+        ensure!(
+            self.core.limits.region_sharded,
+            "entity export requires a region-sharded world"
+        );
+        ensure!(
+            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "handoff ID must be 128-bit hexadecimal"
+        );
+        core::validate_entity_ref(&entity_ref)?;
+        for (name, value) in [
+            ("source region", source_region.as_str()),
+            ("target region", target_region.as_str()),
+        ] {
+            ensure!(!value.trim().is_empty(), "{name} must not be empty");
+            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
+            ensure!(
+                !value.chars().any(char::is_control),
+                "{name} contains a control character"
+            );
+        }
+        ensure!(
+            source_region != target_region,
+            "source and target regions match"
+        );
+        let program_module_hash = self
+            .core
+            .active_module_hash
+            .clone()
+            .context("world has no installed program for entity export")?;
+        let request = EntityTransferRequest::Export {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            prior_owner_epoch,
+            program_module_hash: program_module_hash.clone(),
+        };
+        let EntityTransferPlan::Export {
+            payload_schema,
+            payload,
+            app_event,
+        } = self.program.prepare_entity_transfer(&request)?
+        else {
+            bail!("world program returned an import plan for an export request");
+        };
+        ensure!(
+            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
+            "entity transfer payload schema must be 1..=128 bytes"
+        );
+        ensure!(
+            !payload_schema.chars().any(char::is_control),
+            "entity transfer payload schema contains a control character"
+        );
+        ensure!(
+            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        let payload_digest = hex_encode(blake3::hash(&payload).as_bytes());
+        let event_text = serde_json::json!({
+            "protocol": "world.entity-transfer.v1",
+            "direction": "export",
+            "handoff_id": handoff_id,
+            "entity_ref": entity_ref,
+            "source_region": source_region,
+            "target_region": target_region,
+            "prior_owner_epoch": prior_owner_epoch,
+            "module_hash": program_module_hash,
+            "payload_schema": payload_schema,
+            "payload_digest": payload_digest,
+            "app_event": app_event,
+        })
+        .to_string();
+        ensure!(
+            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
+            "entity transfer event exceeds {} bytes",
+            crate::world_caps::MAX_EVENT_BYTES
+        );
+        let source_event = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: event_text },
+        };
+        let transfer = HandoffTransferState {
+            handoff_id: handoff_id.clone(),
+            entity_ref: entity_ref.clone(),
+            source_region: source_region.clone(),
+            target_region: target_region.clone(),
+            direction: HandoffDirection::Export,
+            prior_owner_epoch,
+            new_owner_epoch: None,
+            program_module_hash: program_module_hash.clone(),
+            payload_schema: payload_schema.clone(),
+            payload_digest: payload_digest.clone(),
+            payload: Some(payload.clone()),
+            event: source_event.clone(),
+        };
+        self.core.validate_entity_export(&transfer)?;
+
+        // The durable entry is the source-side fence. Install it before
+        // applying the prepared event so no subsequent command can mutate
+        // this entity, even when the program rejects the post-append update.
+        self.persist(JournalEntry::EntityExported {
+            handoff_id,
+            entity_ref,
+            source_region,
+            target_region,
+            prior_owner_epoch,
+            source_event: source_event.clone(),
+            payload_schema,
+            program_module_hash,
+            payload,
+            payload_digest,
+        })?;
+        self.core.record_entity_export(transfer.clone());
+        if let Err(error) = self.program.update(&source_event) {
+            self.program_healthy = false;
+            tracing::error!("world program rejected a durable entity export: {error:#}");
+            return Err(
+                error.context("world program rejected a durable entity export; replay required")
+            );
+        }
+        let records = match program_records(self.program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(error) => {
+                self.program_healthy = false;
+                tracing::error!("world program records failed after entity export: {error:#}");
+                return Err(error.context(
+                    "world program failed after a durable entity export; replay required",
+                ));
+            }
+        };
+        self.republished(records, self.core.sequence);
+        let _ = self.view_changed.send(self.core.sequence);
+        Ok(transfer)
     }
 
     /// Publish freshly recomputed records. Participant events push their own
@@ -1168,6 +1334,64 @@ impl WorldActor {
                 if let Ok(event) = &result {
                     let _ = self.event_sender.send(event.clone());
                 }
+                let _ = reply.send(result);
+            }
+            WorldCommand::EntityInput {
+                token,
+                entity_ref,
+                input,
+                reply,
+            } => {
+                let result = match self.core.prepare_entity_input(&token, &entity_ref, &input) {
+                    Ok(_) if self.storage_failed => Err(anyhow::anyhow!(
+                        "world storage failed; the world is read-only"
+                    )),
+                    Ok(candidate) if self.program_healthy => {
+                        self.acting = Some(candidate.participant_id);
+                        match self
+                            .program
+                            .update(&candidate)
+                            .and_then(|()| program_records(self.program.as_mut()))
+                        {
+                            Ok(records) => self
+                                .persist(JournalEntry::Committed {
+                                    event: candidate.clone(),
+                                })
+                                .and_then(|()| self.core.commit_prepared(candidate))
+                                .inspect(|event| {
+                                    self.republished(records.unwrap_or_default(), event.sequence);
+                                }),
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program rejected entity input"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                if let Ok(event) = &result {
+                    let _ = self.event_sender.send(event.clone());
+                }
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExportEntity {
+                handoff_id,
+                entity_ref,
+                source_region,
+                target_region,
+                prior_owner_epoch,
+                reply,
+            } => {
+                let result = self.export_entity(
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                );
                 let _ = reply.send(result);
             }
             WorldCommand::Snapshot { token, reply } => {

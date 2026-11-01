@@ -621,6 +621,56 @@ impl WorldHandle {
             .context("world actor dropped input response")?
     }
 
+    /// Submit bounded input addressed to one application-owned entity.
+    pub async fn entity_input(
+        &self,
+        token: JoinCapability,
+        entity_ref: impl Into<String>,
+        input: Vec<u8>,
+    ) -> Result<WorldEvent> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::EntityInput {
+                token,
+                entity_ref: entity_ref.into(),
+                input,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped entity input response")?
+    }
+
+    /// Export an entity from this source shard. The actor journals the
+    /// complete bounded payload and source event before applying the event and
+    /// returns the durable source receipt only after application succeeds.
+    pub async fn export_entity(
+        &self,
+        handoff_id: impl Into<String>,
+        entity_ref: impl Into<String>,
+        source_region: impl Into<String>,
+        target_region: impl Into<String>,
+        prior_owner_epoch: u64,
+    ) -> Result<HandoffTransferState> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ExportEntity {
+                handoff_id: handoff_id.into(),
+                entity_ref: entity_ref.into(),
+                source_region: source_region.into(),
+                target_region: target_region.into(),
+                prior_owner_epoch,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped entity export response")?
+    }
+
     /// Read a world snapshot.
     pub async fn snapshot(&self, token: JoinCapability) -> Result<WorldSnapshot> {
         let (reply, response) = oneshot::channel();
