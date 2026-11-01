@@ -12,6 +12,7 @@ import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
+import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -100,6 +101,7 @@ import { liveSource } from "./sources/live.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 
 /** #1220: the coverage snapshot behind the /projects panel — computed
@@ -530,6 +532,44 @@ async function handler(req: Request): Promise<Response> {
   }
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
+  if (req.method === "POST" && path === "/api/roadmap/annotations") {
+    try {
+      const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === parsed.value.objectRef)) {
+        return json({ error: "objectRef is not a current roadmap row" }, 404);
+      }
+      try {
+        const annotation = await roadmapAnnotationsStore.add(parsed.value);
+        return json({ annotation }, 201);
+      } catch (err) {
+        return json({ error: `annotation persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+    } catch (err) {
+      return json({ error: `invalid annotation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/roadmap/annotations/alias") {
+    try {
+      const body = (await readJsonBody(req)) as { aliasRef?: unknown; stableRef?: unknown };
+      if (typeof body.aliasRef !== "string" || typeof body.stableRef !== "string") {
+        return json({ error: "aliasRef and stableRef are required" }, 400);
+      }
+      const rows = await source.roadmap().catch(() => []);
+      if (!rows.some((row) => row.subject === body.aliasRef)) {
+        return json({ error: "aliasRef is not a current roadmap row" }, 404);
+      }
+      if (!(await roadmapAnnotationsStore.forObject(body.stableRef)).length) {
+        return json({ error: "stableRef has no existing annotation history" }, 404);
+      }
+      await roadmapAnnotationsStore.addAlias(body.aliasRef, body.stableRef);
+      return json({ aliases: await roadmapAnnotationsStore.aliasEntries() });
+    } catch (err) {
+      return json({ error: `invalid annotation alias: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+
   if (req.method === "POST" && path === "/api/comments") {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
@@ -696,8 +736,11 @@ async function handler(req: Request): Promise<Response> {
     const { rows, items, reconciliation, drill } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
+    const annotations = new Map(
+      await Promise.all(rows.map(async (row) => [row.subject, await roadmapAnnotationsStore.forObject(row.subject)] as const)),
+    );
     return html(
-      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill),
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill, annotations),
     );
   }
 
@@ -922,7 +965,15 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
-    return json({ rows, items: [...items.values()], drift: roadmapDriftReport(reconciliation) });
+    const annotatedRows = await Promise.all(
+      rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+    );
+    return json({
+      rows: annotatedRows,
+      items: [...items.values()],
+      drift: roadmapDriftReport(reconciliation),
+      annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
+    });
   }
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
@@ -1158,19 +1209,21 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
     }
     const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
-    const subject = board.find((b) => b.id === id) ?? rows.find((r) => r.subject === id);
+    const roadmapRow = rows.find((r) => r.subject === id);
+    const subject = board.find((b) => b.id === id) ?? roadmapRow;
     if (subject) {
       const title = subject.title;
       const links = subject.links;
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records, pool, allActions] = await Promise.all([
+      const [items, comments, allComments, records, pool, allActions, roadmapAnnotations] = await Promise.all([
         source.items(refs).catch(() => new Map()),
         source.comments(refs).catch(() => []),
         commentsStore.all(),
         source.registry().catch(() => []),
         source.projects().catch(() => []),
         actionsStore.all(),
+        roadmapRow ? roadmapAnnotationsStore.forObject(id) : Promise.resolve(undefined),
       ]);
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
@@ -1183,6 +1236,7 @@ async function handler(req: Request): Promise<Response> {
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const extras = {
         dashComments,
+        ...(roadmapRow ? { roadmapAnnotations } : {}),
         formRef: id,
         serviceLinks: itemServiceLinks(subject),
         formOpts: await commentFormOpts(refs),

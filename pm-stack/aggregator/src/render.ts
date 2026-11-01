@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
@@ -192,6 +193,12 @@ meter { width: 140px; height: 14px; }
 .cform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
 .cform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
 .cform textarea, .cform select, .cform input[type="text"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
+.raform { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; }
+.raform label { display: block; font-size: 12px; color: #8b949e; margin: 8px 0 3px; }
+.raform textarea, .raform select, .raform input[type="date"] { width: 100%; background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; }
+.raform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
+.raform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
+.roadmap-annotation { border-left: 3px solid #bc8cff; padding: 5px 8px; margin: 5px 0; background: #161b22; border-radius: 0 6px 6px 0; overflow-wrap: anywhere; }
 .cform .kinds { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
 .cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
 .cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
@@ -349,7 +356,7 @@ body.xp-plan .xpl-costcol { display: none; }
   .chart .muted { color: #8b949e; }
   .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
   .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
-  .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
+  .cform textarea, .cform select, .cform input[type="text"], .raform textarea, .raform select, .raform input[type="date"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
   .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
   .cform .kinds label { color: #1f2328; }
   .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
@@ -498,6 +505,36 @@ document.addEventListener("change", (ev) => {
   const form = t.closest(".cform");
   const wrap = form && form.querySelector(".ghtarget");
   if (wrap) wrap.style.display = t.value === "github" && t.checked ? "" : "none";
+});
+</script>`;
+
+const ROADMAP_ANNOTATION_SCRIPT = `<script>${DASH_AFTER_JS}
+document.addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  if (!(form instanceof HTMLFormElement) || !form.classList.contains("raform")) return;
+  ev.preventDefault();
+  const err = form.querySelector(".err");
+  const data = new FormData(form);
+  const raw = String(data.get("author") || "drew|drew|");
+  const [kind, id, sessionId] = raw.split("|");
+  const option = form.querySelector('option[value="' + CSS.escape(raw) + '"]');
+  const payload = {
+    objectRef: form.dataset.object,
+    kind: String(data.get("kind") || "context"),
+    date: String(data.get("date") || ""),
+    author: { kind, id, label: option ? option.textContent : id, ...(sessionId ? { sessionId } : {}) },
+    body: String(data.get("body") || "")
+  };
+  const button = form.querySelector("button[type=submit]");
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch("/api/roadmap/annotations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+    if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.error || ("HTTP " + res.status)); }
+    window.location.reload();
+  } catch (e) {
+    if (err) err.textContent = "Not saved: " + e.message;
+    if (button) button.disabled = false;
+  }
 });
 </script>`;
 
@@ -1789,6 +1826,7 @@ function roadmapCard(
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number | CommentKindCounts>,
   drill?: RoadmapDrill,
+  annotations?: Map<string, RoadmapAnnotation[]>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1799,7 +1837,15 @@ function roadmapCard(
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${expansion}</div>`;
+  const notes = annotations?.get(row.subject) ?? [];
+  const annotationHtml = notes.length
+    ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
+    : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${annotationHtml}${expansion}</div>`;
+}
+
+function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
+  return `<div class="roadmap-annotation"><span class="muted">${esc(annotation.date)}</span> <span class="badge">${esc(annotation.kind)}</span> ${authorBadge(annotation.author)}<br>${esc(annotation.body)}</div>`;
 }
 
 function timelineTable(
@@ -1807,6 +1853,7 @@ function timelineTable(
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number | CommentKindCounts>,
   drill?: Map<string, RoadmapDrill>,
+  annotations?: Map<string, RoadmapAnnotation[]>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1814,7 +1861,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("")}</td>`;
+           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1832,6 +1879,7 @@ export function renderRoadmap(
   detail?: ProvenanceDetail,
   reconciliation?: RoadmapReconciliation,
   drill?: Map<string, RoadmapDrill>,
+  annotations?: Map<string, RoadmapAnnotation[]>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1847,15 +1895,15 @@ export function renderRoadmap(
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts, drill);
+    body = timelineTable(buildTimeline(rows), items, counts, drill, annotations);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts, drill);
+    body = timelineTable(monthTimeline(rows), items, counts, drill, annotations);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
@@ -1882,6 +1930,8 @@ export function renderRoadmap(
 export interface ItemExtras {
   /** Dashboard comments (#906 §2) across this item's object refs. */
   dashComments: DashComment[];
+  /** Present only on roadmap rows; undefined on ordinary board items. */
+  roadmapAnnotations?: RoadmapAnnotation[];
   /** The object ref the inline form posts to (the item's subject). */
   formRef: string;
   formOpts: CommentFormOpts;
@@ -1895,6 +1945,15 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+}
+
+function roadmapAnnotationFormHtml(objectRef: string, identities: AuthorIdentity[]): string {
+  return `<form class="raform" data-object="${esc(objectRef)}">
+<label>Annotation kind</label><select name="kind"><option value="decision">Decision</option><option value="outcome">Outcome</option><option value="context" selected>Context</option></select>
+<label>Date</label><input type="date" name="date" required>
+<label>Author</label><select name="author" data-author-picker>${authorOptionsHtml(identities)}</select>
+<label>Annotation</label><textarea name="body" rows="3" required placeholder="Why did this change, slip, or get dropped?"></textarea>
+<button type="submit">Add annotation</button><div class="err"></div></form>`;
 }
 
 function epicRollupHtml(rollup: EpicRollup): string {
@@ -1940,6 +1999,9 @@ export function renderItem(
           : `<p class="muted">No dashboard comments yet — notes are read when this is picked up; messages are triaged by the orchestrator.</p>`
       }${commentFormHtml(extras.formRef, extras.formOpts)}`
     : "";
+  const roadmapAnnotationSection = extras?.roadmapAnnotations !== undefined
+    ? `<section class="roadmap-annotation-section"><h2>Roadmap annotations</h2>${extras.roadmapAnnotations.length ? extras.roadmapAnnotations.map(roadmapAnnotationHtml).join("") : '<p class="muted">No roadmap annotations yet.</p>'}${roadmapAnnotationFormHtml(extras.formRef, extras.formOpts.identities)}</section>`
+    : "";
   const sessionSection =
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
@@ -1958,10 +2020,12 @@ export function renderItem(
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${statusSection}${dashSection}`,
+${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
-    extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
+    extras
+      ? COMMENT_SCRIPT + (extras.roadmapAnnotations !== undefined ? ROADMAP_ANNOTATION_SCRIPT : "") + (extras.statusRequest ? ACTION_SCRIPT : "")
+      : "",
   );
 }
 
