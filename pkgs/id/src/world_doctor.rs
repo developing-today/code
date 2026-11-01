@@ -346,7 +346,7 @@ pub fn check_journal(inputs: &DoctorInputs) -> Finding {
                 summary.version
             ),
             format!(
-                "use an id binary that supports journal format version {}; do not restore or recreate the world",
+                "use an id binary that supports journal format version {} before opening this world",
                 summary.version
             ),
         ),
