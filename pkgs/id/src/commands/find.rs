@@ -723,7 +723,7 @@ fn print_peek_lines(
     }
 
     // If small enough, show all
-    if total_lines <= n * 2 {
+    if total_lines <= n.saturating_mul(2) {
         for line in &lines {
             writeln!(out, "{line}")?;
         }
@@ -752,7 +752,7 @@ fn print_peek_lines(
         writeln!(
             out,
             "... ({} lines omitted)",
-            total_lines.saturating_sub(n * 2)
+            total_lines.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "...")?;
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
@@ -786,7 +786,7 @@ fn print_peek_chars(
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_chars <= n * 2 {
+    if total_chars <= n.saturating_mul(2) {
         write!(out, "{content}")?;
     } else if opts.head_only {
         let head: String = content.chars().take(n).collect();
@@ -813,7 +813,7 @@ fn print_peek_chars(
         writeln!(
             out,
             "\n... ({} chars omitted)",
-            total_chars.saturating_sub(n * 2)
+            total_chars.saturating_sub(n.saturating_mul(2))
         )?;
         write!(out, "{tail}")?;
     }
@@ -846,7 +846,7 @@ fn print_peek_words(
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_words <= n * 2 {
+    if total_words <= n.saturating_mul(2) {
         writeln!(out, "{}", words.join(" "))?;
     } else if opts.head_only {
         let head: Vec<&str> = words.iter().take(n).copied().collect();
@@ -875,7 +875,7 @@ fn print_peek_words(
         writeln!(
             out,
             "... ({} words omitted)",
-            total_words.saturating_sub(n * 2)
+            total_words.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "{}", tail.join(" "))?;
     }
@@ -1385,6 +1385,66 @@ mod tests {
         assert!(result.contains("test.txt")); // Header should include filename
         assert!(result.contains("abcdef123456")); // Header should include hash prefix
         assert!(result.contains("lines:")); // Header should show line count
+    }
+
+
+    // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
+    // printers' doubling — saturating arithmetic prints short content once,
+    // with no omitted-count line and no panic.
+    #[test]
+    fn test_print_peek_lines_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("line1").count(), 1);
+        assert_eq!(result.matches("line3").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("Hello world").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_words_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "alpha beta gamma";
+        print_peek_words(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("alpha").count(), 1);
+        assert_eq!(result.matches("gamma").count(), 1);
+        assert!(!result.contains("omitted"));
     }
 
     // Test print_peek_chars helper
