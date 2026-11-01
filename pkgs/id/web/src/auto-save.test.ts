@@ -183,3 +183,69 @@ describe("AutoSaveManager serialization (#1440)", () => {
     expect(save.calls).toBe(1);
   });
 });
+
+describe("AutoSaveManager cancellation (#2437)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not retry when an in-flight rate-limited save settles after cancel", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+    const updateIndicator = vi.spyOn(mgr, "updateIndicator");
+
+    mgr.saveNow();
+    expect(save.calls).toBe(1);
+    mgr.cancel();
+    updateIndicator.mockClear();
+
+    save.resolveNext({ ok: false, retryAfterMs: 5000 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("idle");
+    expect(updateIndicator).not.toHaveBeenCalled();
+  });
+
+  it("does not run a success follow-up when an edit and cancel happen during a save", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+    const updateIndicator = vi.spyOn(mgr, "updateIndicator");
+
+    mgr.saveNow();
+    mgr.onContentChange();
+    mgr.cancel();
+    updateIndicator.mockClear();
+
+    save.resolveNext({ ok: true });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("idle");
+    expect(updateIndicator).not.toHaveBeenCalled();
+  });
+
+  it("does not run a generic-error follow-up when an edit and cancel happen during a save", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+    const updateIndicator = vi.spyOn(mgr, "updateIndicator");
+
+    mgr.saveNow();
+    mgr.onContentChange();
+    mgr.cancel();
+    updateIndicator.mockClear();
+
+    save.resolveNext({ ok: false });
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("idle");
+    expect(updateIndicator).not.toHaveBeenCalled();
+  });
+});
