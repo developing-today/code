@@ -516,6 +516,16 @@ describe("hub renders", () => {
     const fly = usage.services.find((s) => s.id === "fly-io")!;
     const flyDetail = renderServiceDetail(fly, [], src.provenance());
     expect(flyDetail).toContain("candidate / not held");
+    // An active service with no Summary (b) row is not thereby a candidate:
+    // ownership is never inferred from a missing tracker row (Codex, PR #3677).
+    const rowless = {
+      ...turso,
+      sources: turso.sources ? { ...turso.sources, trackerRow: null } : turso.sources,
+    };
+    expect(rowless.status).toBe("active");
+    const rowlessDetail = renderServiceDetail(rowless, [], src.provenance());
+    expect(rowlessDetail).toContain("none — no Summary (b) row");
+    expect(rowlessDetail).not.toContain("candidate / not held");
   });
   test("service detail: full metrics, chart, reads, conflicts", async () => {
     const src = fixtureSource();
