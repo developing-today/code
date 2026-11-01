@@ -367,3 +367,45 @@ func TestDiffChangedLinesDeletedHeadingNotAttributed(t *testing.T) {
 		t.Fatalf("changed lines = %v, want only the added heading line 3", got)
 	}
 }
+
+func TestDiffChangedLinesDeletedProseStartingWithDashes(t *testing.T) {
+	// A deleted prose line whose content starts with "-- " appears in
+	// the diff as "--- ...": it is a deletion inside the hunk, not a
+	// file header, and the rest of the hunk must still be processed.
+	diff := "diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1,3 +1,3 @@\n ctx\n--- loses it because a neighbour appeared.\n+brand new sentence.\n ctx2\n"
+	changed := diffChangedLines(diff)
+	got := changed["docs/a.md"]
+	if !got[0] || !got[1] {
+		t.Fatalf("changed lines = %v, want the deletion attributed to line 0 and the addition at line 1", got)
+	}
+}
+
+func TestCompactChangedBeforeKeyBlockIsParsed(t *testing.T) {
+	src := "## S\n\n<!-- changed: 0.2.0 (2026-11-02): earlier change -->\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: s\nsince: pre-release\nstatus: core\ndescription: d\n```\n\nProse.\n"
+	doc := ParseDocument("x.md", src)
+	sec := doc.ByID["s"]
+	if sec == nil {
+		t.Fatal("section s not found")
+	}
+	if len(sec.Changed) != 1 || sec.Changed[0].Summary != "earlier change" {
+		t.Fatalf("compact changed comment before the key block was not parsed: %+v", sec.Changed)
+	}
+}
+
+func TestStampCompactMarkerWithExtraWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	src := "## New Section\n\n<!-- id: ws since:  unreleased -->\n\nProse.\n"
+	docPath := writeFile(t, dir, "docs/a.md", src)
+	writeFile(t, dir, "docs/changes/ws.md", "sections: ws\nkind: Added\nsummary: new section\n")
+	if err := Stamp([]string{docPath}, "0.2.0", "2026-11-02", ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(docPath)
+	got := string(data)
+	if strings.Contains(got, "unreleased") {
+		t.Fatalf("stamp left the compact marker unreleased:\n%s", got)
+	}
+	if !strings.Contains(got, "since: 0.2.0") {
+		t.Fatalf("stamp did not write the version into the compact marker:\n%s", got)
+	}
+}

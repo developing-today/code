@@ -94,6 +94,7 @@ var (
 	compactRe     = regexp.MustCompile(`^<!--\s*(.*?)\s*-->$`)
 	semverRe      = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 	dateRe        = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	sinceUnrelRe  = regexp.MustCompile(`since:\s+unreleased\b`)
 )
 
 // Slugify freezes a heading's GitHub-style slug as its section ID.
@@ -188,6 +189,37 @@ func ParseDocument(path string, content string) *Document {
 			if end, ok := fenceByStart[j]; ok && end > j+1 && isKeyBlockFence(lines, j, end) {
 				sec.KeyBlock = parseKeyBlock(lines, j, end)
 				sec.HeaderEnd = end
+			}
+		}
+		// Compact markers between the heading and an accompanying
+		// key block come first: the scan below starts after the
+		// block, so changed: comments here would otherwise never
+		// be parsed and their history silently dropped (Codex,
+		// PR 3266).
+		if sec.KeyBlock != nil {
+			for i := hl + 1; i < sec.KeyBlock.Start; i++ {
+				cm := compactRe.FindStringSubmatch(strings.TrimSpace(lines[i]))
+				if cm == nil {
+					continue
+				}
+				body := cm[1]
+				if strings.HasPrefix(body, "changed:") {
+					if ch, ok := parseChange(strings.TrimSpace(strings.TrimPrefix(body, "changed:"))); ok {
+						sec.Changed = append(sec.Changed, ch)
+					}
+					continue
+				}
+				for _, kv := range parseCompactPairs(body) {
+					switch kv[0] {
+					case "id":
+						sec.ID = kv[1]
+						sec.Explicit = true
+					case "since":
+						sec.Since = kv[1]
+					case "status":
+						sec.Status = kv[1]
+					}
+				}
 			}
 		}
 		// Compact markers and changed comments in the header zone:
@@ -734,9 +766,12 @@ func Stamp(files []string, version, date, changesDir string) error {
 					}
 				}
 				for i := sec.Line + 1; i <= sec.HeaderEnd && i < len(doc.Lines); i++ {
-					if strings.Contains(doc.Lines[i], "since: unreleased") {
+					if sec.KeyBlock != nil && i >= sec.KeyBlock.Start && i <= sec.KeyBlock.End {
+						continue // the key-block edit above owns these lines
+					}
+					if sinceUnrelRe.MatchString(doc.Lines[i]) {
 						edits = append(edits, edit{line: i, replace: true,
-							text: []string{strings.Replace(doc.Lines[i], "since: unreleased", "since: "+version, 1)}})
+							text: []string{sinceUnrelRe.ReplaceAllString(doc.Lines[i], "since: "+version)}})
 					}
 				}
 			}
@@ -967,13 +1002,13 @@ func diffChangedLines(diff string) map[string]map[int]bool {
 			// without this, header lines (including "--- a/...",
 			// which looks like a deletion) bleed into it.
 			inHunk = false
-		case strings.HasPrefix(ln, "+++ b/"):
+		case !inHunk && strings.HasPrefix(ln, "+++ b/"):
 			file = strings.TrimPrefix(ln, "+++ b/")
 			inHunk = false
-		case strings.HasPrefix(ln, "+++ "):
+		case !inHunk && strings.HasPrefix(ln, "+++ "):
 			file = strings.TrimSpace(strings.TrimPrefix(ln, "+++ "))
 			inHunk = false
-		case strings.HasPrefix(ln, "--- "):
+		case !inHunk && strings.HasPrefix(ln, "--- "):
 			inHunk = false
 		case hunkRe.MatchString(ln):
 			m := hunkRe.FindStringSubmatch(ln)
