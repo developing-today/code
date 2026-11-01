@@ -18,7 +18,11 @@
 # Guard: scripts/push-fleet-feed.guard.sh fails if either pattern
 # regresses.
 #
-# Cadence: ~5 min via fleet-feed-collector.timer (systemd, sandbox).
+# RETIRED as a scheduled producer (code#3362/#3363): the collector moved
+# to the laptop on 2026-10-31 and runs there as a user timer declared in
+# the pm-stack NixOS module; the sandbox fleet-feed-collector timer that
+# ran this script every ~5 min is deleted. Kept for manual/emergency use
+# only -- running it overwrites the laptop feed with this host's collection.
 set -euo pipefail
 
 # Systemd system services get a minimal PATH (and no HOME); bun lives
