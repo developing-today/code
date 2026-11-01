@@ -574,6 +574,19 @@ impl EventStore {
                 if let Some(backlink) = event.header.backlink {
                     parents.push(backlink);
                 }
+                // A note revision's causal references live in its note operation, not in
+                // `after`: the note it revises and the parent revisions it builds on are
+                // dependencies too, so a surviving revision keeps its note and its whole
+                // parent history alive through a prune (#3814).
+                if let Some(crate::notes::NoteOp::Revise {
+                    note,
+                    parents: note_parents,
+                    ..
+                }) = &event.header.extensions.note
+                {
+                    parents.push(*note);
+                    parents.extend(note_parents.iter().copied());
+                }
                 let has_action = actions_table.get(event.id.as_bytes().as_slice())?.is_some();
                 events_by_id.insert(
                     event.id,
