@@ -39,6 +39,7 @@ import {
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
+import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -838,7 +839,7 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail()));
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail(), pool));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -1099,7 +1100,11 @@ async function handler(req: Request): Promise<Response> {
       detail: s.detail,
       ...(s.probedAt ? { probedAt: s.probedAt } : {}),
     }));
-    body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
+    body.feed = {
+      generatedAt: view.feed.generatedAt,
+      fileMtime: view.feed.fileMtime,
+      sections: view.feed.sections,
+    };
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
@@ -1137,6 +1142,7 @@ async function handler(req: Request): Promise<Response> {
       // #1154: when one of the item's refs is in the Project pool, the
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
+      const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const extras = {
         dashComments,
         formRef: id,
@@ -1153,6 +1159,7 @@ async function handler(req: Request): Promise<Response> {
               },
             }
           : {}),
+        ...(epicRollup ? { epicRollup } : {}),
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }

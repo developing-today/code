@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  feedSectionStatus,
   isChargeRow,
   isFleetFeed,
   isProjectPoolSection,
@@ -7,7 +8,9 @@ import {
   loadFeed,
   poolFromFeed,
   projectPoolSectionProblem,
+  sanitizeCollectionError,
   sanitizeQuotaView,
+  sanitizeFeedMetadata,
   sanitizeSubscriptions,
 } from "../src/feed.ts";
 import { renderQuota } from "../src/render.ts";
@@ -476,5 +479,54 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
     const loaded = await loadFrom(feedWithCa([UNMATCHED]));
     expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
     expect(loaded?.chargesAttentionDropped).toBeUndefined();
+  });
+});
+
+describe("collector section metadata (#1178)", () => {
+  const baseFeed = () => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+  });
+
+  test("status entries use explicit timestamps and sanitize errors", () => {
+    const status = feedSectionStatus("error", "2026-10-01T00:00:00Z", "Bearer abc.def?token=private");
+    expect(status.status).toBe("error");
+    expect(status.at).toBe("2026-10-01T00:00:00Z");
+    expect(status.error).toContain("[redacted]");
+    expect(status.error).not.toContain("abc.def");
+    expect(status.error).not.toContain("private");
+    expect(sanitizeCollectionError("Authorization: Basic dXNlcjpwYXNz")).not.toContain("dXNlcjpwYXNz");
+    expect(feedSectionStatus("ok", "2026-10-01T00:00:00Z").status).toBe("ok");
+    expect(feedSectionStatus("skipped", "2026-10-01T00:00:00Z").error).toBeUndefined();
+  });
+
+  test("metadata is optional and malformed entries are dropped, not the legacy feed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-meta-"));
+    const file = join(dir, "feed.json");
+    const feed = {
+      ...baseFeed(),
+      meta: {
+        sections: {
+          dns: { status: "error", at: "2026-10-01T00:00:00Z", error: "request failed token=secret-value" },
+          orchestration: { status: "unknown", at: "bad timestamp" },
+        },
+      },
+    };
+    writeFileSync(file, JSON.stringify(feed));
+    expect(isFleetFeed(baseFeed())).toBe(true);
+    expect(isFleetFeed(feed)).toBe(true);
+    expect(sanitizeFeedMetadata({ sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } } })).toEqual({
+      sections: { legacy: { status: "ok", at: "2026-10-01T00:00:00Z" } },
+    });
+    const loaded = await loadFeed(file);
+    expect(loaded?.meta?.sections.dns?.status).toBe("error");
+    expect(loaded?.meta?.sections.dns?.error).not.toContain("secret-value");
+    expect(loaded?.meta?.sections.orchestration).toBeUndefined();
+
+    const legacyFile = join(dir, "legacy.json");
+    writeFileSync(legacyFile, JSON.stringify(baseFeed()));
+    expect((await loadFeed(legacyFile))?.meta).toBeUndefined();
   });
 });

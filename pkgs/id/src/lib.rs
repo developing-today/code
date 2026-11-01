@@ -153,12 +153,14 @@
 //! ```
 
 pub use id_core::access;
+pub mod abuse;
 pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
 pub mod blob_gate;
 pub mod chain;
+pub mod chat;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
@@ -187,6 +189,7 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod idset;
 pub mod invite;
 pub mod invites;
 pub mod local;
