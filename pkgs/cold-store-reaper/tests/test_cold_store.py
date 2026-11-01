@@ -43,6 +43,7 @@ class FakeDrive:
         self.trashed_calls = []  # [{id, body}] from files.update PATCHes
         self.counter = 0
         self.clock = 0
+        self.page_cap = None  # optional maximum files per Drive list response
 
     def next_id(self, prefix):
         self.counter += 1
@@ -119,7 +120,8 @@ def make_handler(fake: FakeDrive):
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/drive/v3/files":
-                q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+                qs = urllib.parse.parse_qs(parsed.query)
+                q = qs.get("q", [""])[0]
                 name_m = re.search(r"name = '([^']+)'", q)
                 parent_m = re.search(r"'([^']+)' in parents", q)
                 out = []
@@ -148,7 +150,19 @@ def make_handler(fake: FakeDrive):
                                 "createdTime": meta.get("createdTime", ""),
                             }
                         )
-                self._send(200, {"files": out})
+                response = {"files": out}
+                if parent_m and "pageSize" in qs:
+                    page_size = int(qs["pageSize"][0])
+                    if fake.page_cap is not None:
+                        page_size = min(page_size, fake.page_cap)
+                    page_token = qs.get("pageToken", ["offset:0"])[0]
+                    offset = int(page_token.removeprefix("offset:"))
+                    response["files"] = out[offset : offset + page_size]
+                    next_offset = offset + page_size
+                    fields = qs.get("fields", [""])[0]
+                    if next_offset < len(out) and "nextPageToken" in fields:
+                        response["nextPageToken"] = f"offset:{next_offset}"
+                self._send(200, response)
                 return
             m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
             if m:
@@ -987,6 +1001,25 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual(len(only), 1)
         self.assertEqual(only[0]["db"], "supabase")
 
+    def test_list_backups_follows_drive_pages(self):
+        folder = self.store.ensure_folders()["db-backups/supabase"]
+        self.fake.page_cap = 2
+        names = [
+            "supabase-20260301T020000Z-export.sql",
+            "supabase-20260302T020000Z-export.sql",
+            "supabase-20260303T020000Z-export.sql",
+        ]
+        for day, name in enumerate(names, start=1):
+            self.seed_drive_file(
+                name,
+                folder,
+                created=f"2026-03-0{day}T02:00:00.000Z",
+            )
+
+        rows = self.store.list_backups("supabase")
+
+        self.assertEqual([row["name"] for row in rows], list(reversed(names)))
+
 
 class TestSyncManifest(ColdStoreTestBase):
     def setUp(self):
@@ -1167,6 +1200,7 @@ class TestPruneBackups(ColdStoreTestBase):
 
     def test_prune_dry_run_plan(self):
         ids = self._seed_series()
+        self.fake.page_cap = 2
         self.seed_drive_file("d1-random.sql", self.d1_folder, data=b"?")
         self.seed_drive_file("notes.txt", self.d1_folder, data=b"?")
         trashed_id = self.seed_drive_file(
