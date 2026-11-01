@@ -21,13 +21,13 @@ decisions that come next are made against something real instead of a design.
 
 Three stages:
 
-| stage | image | why |
-| --- | --- | --- |
-| `build` | `golang:1.27-bookworm` | `go.mod` asks for 1.26.7; the image ships 1.27.1 |
-| `bun` | `oven/bun:1-debian` | a pinned bun, so the build does not depend on a release URL |
-| runtime | `debian:bookworm-slim` | ordinary, and has the glibc the builder linked against |
+| stage   | image                  | why                                                         |
+| ------- | ---------------------- | ----------------------------------------------------------- |
+| `build` | `golang:1.27-bookworm` | `go.mod` asks for 1.26.7; the image ships 1.27.1            |
+| `bun`   | `oven/bun:1-debian`    | a pinned bun, so the build does not depend on a release URL |
+| runtime | `debian:bookworm-slim` | ordinary, and has the glibc the builder linked against      |
 
-All three are pinned by tag *and* digest. The tag says what it is; the digest
+All three are pinned by tag _and_ digest. The tag says what it is; the digest
 says which one. A tag moves, and a build that depends on when it ran is not a
 build.
 
@@ -57,10 +57,10 @@ could already do.
 Bun because it is the smallest of the three. Measured on this machine
 (linux/arm64, the binary inside each project's own Debian image):
 
-| runtime | binary |
-| --- | --- |
-| bun 1.4.2 | 79.4 MB |
-| deno (`denoland/deno:debian`) | 85.0 MB |
+| runtime                           | binary   |
+| --------------------------------- | -------- |
+| bun 1.4.2                         | 79.4 MB  |
+| deno (`denoland/deno:debian`)     | 85.0 MB  |
 | node 22 (`node:22-bookworm-slim`) | 122.2 MB |
 
 Smaller margins than the x86-64 figures usually quoted, but the same order.
@@ -151,7 +151,7 @@ warning that says to install git. Adding it back is one package in the
 
 ## 4. Static linking: the policy
 
-`CGO_ENABLED` is unset in an ordinary Go build, which means *enabled* on a
+`CGO_ENABLED` is unset in an ordinary Go build, which means _enabled_ on a
 native build, and two packages change behaviour when it is:
 
 - `internal/logging/trace.go:9` imports `os/user`, which under cgo calls
@@ -167,12 +167,12 @@ for a daemon/CLI whose state lives in its own directories, while a binary
 that only runs beside one exact glibc (or one Nix store path) fails
 everywhere else silently.
 
-| artifact | static? | note |
-| --- | --- | --- |
-| Nix package | yes | `package.nix` sets `env.CGO_ENABLED = "0"`; the installed `bin/mcpx` is a `makeBinaryWrapper` launcher by design — the binary it launches is the static one |
-| this image's `mcpx` | yes | the Containerfile defaults `ARG CGO_ENABLED=0` and the build *fails* if the binary does not record the setting it was built with (`go version -m`) |
-| this image as a whole | no | bun is a dynamically linked distribution binary; the runtime stage is `debian:bookworm-slim` for bun's glibc, no longer for mcpx's |
-| release tarball | not decided here | the release pipeline is #1881's; this policy is the input it should consume |
+| artifact              | static?          | note                                                                                                                                                        |
+| --------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Nix package           | yes              | `package.nix` sets `env.CGO_ENABLED = "0"`; the installed `bin/mcpx` is a `makeBinaryWrapper` launcher by design — the binary it launches is the static one |
+| this image's `mcpx`   | yes              | the Containerfile defaults `ARG CGO_ENABLED=0` and the build _fails_ if the binary does not record the setting it was built with (`go version -m`)          |
+| this image as a whole | no               | bun is a dynamically linked distribution binary; the runtime stage is `debian:bookworm-slim` for bun's glibc, no longer for mcpx's                          |
+| release tarball       | not decided here | the release pipeline is #1881's; this policy is the input it should consume                                                                                 |
 
 Measured, not assumed (the CGO_ENABLED=0 build, before it became the
 default):
@@ -199,13 +199,13 @@ Tier 2 (#1987) means: runs nightly and on pushes to main that touch
 workflow; each leg asserts the surface its image can actually support,
 including mcpx's own clean refusal where a surface is absent:
 
-| leg | image | asserts |
-| --- | --- | --- |
-| `alpine-nonexec` | `alpine:3.21` | `--version`; `exec` refuses with "no usable JavaScript runtime" |
-| `alpine-bunmusl-exec` | alpine + bun's musl build | `exec` runs a script |
-| `scratch-nonexec` | `FROM scratch` + CA certs | `--version`; the same clean `exec` refusal |
-| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12` | `--version`; the same clean `exec` refusal |
-| `distroless-cc-deno-exec` | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script |
+| leg                         | image                                  | asserts                                                         |
+| --------------------------- | -------------------------------------- | --------------------------------------------------------------- |
+| `alpine-nonexec`            | `alpine:3.21`                          | `--version`; `exec` refuses with "no usable JavaScript runtime" |
+| `alpine-bunmusl-exec`       | alpine + bun's musl build              | `exec` runs a script                                            |
+| `scratch-nonexec`           | `FROM scratch` + CA certs              | `--version`; the same clean `exec` refusal                      |
+| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12`    | `--version`; the same clean `exec` refusal                      |
+| `distroless-cc-deno-exec`   | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script                                            |
 
 Deferred, with the reason recorded on #1987: an **alpine + nodejs exec**
 leg. Verified 2026-10-30, mcpx's node path dies with
@@ -220,15 +220,15 @@ issues when a user appears.
 Measured on linux/arm64 with the digests pinned in `Containerfile`, before
 and after §3, both built on the same machine:
 
-| layer | with git | without |
-| --- | --- | --- |
-| `debian:bookworm-slim` | 108 MB | 108 MB |
-| `apt-get install` | 105 MB (`ca-certificates git`) | 10.4 MB (`ca-certificates`) |
-| bun | 79.4 MB | 79.4 MB |
-| mcpx | 14.8 MB | 14.9 MB |
-| **layers, uncompressed** | **307 MB** | **213 MB** |
-| compressed content | 106 MB | 75.6 MB |
-| `docker images` disk usage | 413 MB | 288 MB |
+| layer                      | with git                       | without                     |
+| -------------------------- | ------------------------------ | --------------------------- |
+| `debian:bookworm-slim`     | 108 MB                         | 108 MB                      |
+| `apt-get install`          | 105 MB (`ca-certificates git`) | 10.4 MB (`ca-certificates`) |
+| bun                        | 79.4 MB                        | 79.4 MB                     |
+| mcpx                       | 14.8 MB                        | 14.9 MB                     |
+| **layers, uncompressed**   | **307 MB**                     | **213 MB**                  |
+| compressed content         | 106 MB                         | 75.6 MB                     |
+| `docker images` disk usage | 413 MB                         | 288 MB                      |
 
 The 413 MB this document used to quote is the last row, which is the
 uncompressed layers plus the compressed blobs they were unpacked from. The

@@ -91,7 +91,11 @@ describe("computeCoverage", () => {
   });
 
   test("repos are sorted and stamped", () => {
-    expect(report.repos.map((r) => r.repo)).toEqual(["developing-today/code", "developing-today/opencode", "dezren39/nix"]);
+    expect(report.repos.map((r) => r.repo)).toEqual([
+      "developing-today/code",
+      "developing-today/opencode",
+      "dezren39/nix",
+    ]);
     expect(report.generatedAt).toBe("2026-11-01T12:00:00.000Z");
   });
 });
@@ -100,7 +104,15 @@ describe("snapshot rotation + delta", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
     repos: [
-      { repo: "developing-today/code", openIssues: codeOpen, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
     ],
   });
 
@@ -157,7 +169,15 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
   const mk = (at: string, codeOpen: number | null): CoverageReport => ({
     generatedAt: at,
     repos: [
-      { repo: "developing-today/code", openIssues: codeOpen, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+      {
+        repo: "developing-today/code",
+        openIssues: codeOpen,
+        gateNow: 1,
+        gateNext: 2,
+        poolItems: 10,
+        poolUnsetStatus: 3,
+        poolUnsetArea: 4,
+      },
     ],
   });
 
@@ -234,7 +254,15 @@ describe("CoverageSnapshotStore writes (PR #3309 Codex)", () => {
         current: {
           generatedAt: "2026-11-01T00:00:00Z",
           repos: [
-            { repo: "developing-today/code", openIssues: open, gateNow: 1, gateNext: 2, poolItems: 10, poolUnsetStatus: 3, poolUnsetArea: 4 },
+            {
+              repo: "developing-today/code",
+              openIssues: open,
+              gateNow: 1,
+              gateNext: 2,
+              poolItems: 10,
+              poolUnsetStatus: 3,
+              poolUnsetArea: 4,
+            },
           ],
         },
       });

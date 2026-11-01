@@ -104,12 +104,10 @@ export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggr
     const product = typeof item.product === "string" ? item.product.toLowerCase() : "";
     const unit = typeof item.unitType === "string" ? item.unitType.toLowerCase() : "";
     if (product === "actions" && unit === "minutes") day.actionsMinutes += qty;
-    else if (product === "actions" && unit === "gigabytehours")
-      day.actionsStorageGbHours += qty;
+    else if (product === "actions" && unit === "gigabytehours") day.actionsStorageGbHours += qty;
     else if (product === "codespaces" && unit === "hours")
       day.codespacesHours += qty * codespacesCoreMultiplier(item.sku);
-    else if (product === "codespaces" && unit === "gigabytehours")
-      day.codespacesStorageGbHours += qty;
+    else if (product === "codespaces" && unit === "gigabytehours") day.codespacesStorageGbHours += qty;
     // Gross/net span every product the endpoint reports, known or not.
     day.grossUsd += usageNumber(item.grossAmount);
     day.netUsd += usageNumber(item.netAmount);
@@ -161,10 +159,7 @@ export function summarizeBillingDays(days: BillingDayAggregate[]): Omit<BillingD
  * hub's existing `github` service and card metric ids where they
  * exist (`codespaces-hours`). Zero aggregates emit no record — a day
  * with no Codespaces use is an absence, not a 0 observation. */
-export function recordsFromBillingUsage(
-  items: BillingUsageItem[],
-  observedBy: string,
-): SnapshotRecord[] {
+export function recordsFromBillingUsage(items: BillingUsageItem[], observedBy: string): SnapshotRecord[] {
   const out: SnapshotRecord[] = [];
   for (const day of aggregateBillingUsage(items)) {
     const ts = dayTs(day.date);

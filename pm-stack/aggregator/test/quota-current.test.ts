@@ -344,7 +344,16 @@ describe("overlayTursoUsage (#1049)", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
       [tursoSvc()],
-      file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", state: "error", measuredAt: at, error: "turso /usage HTTP 401" })]),
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          state: "error",
+          measuredAt: at,
+          error: "turso /usage HTTP 401",
+        }),
+      ]),
       NOW,
     );
     expect(out[0].measuredAt).toBe("2026-10-20T00:00:00.000Z");
@@ -359,7 +368,19 @@ describe("overlayTursoUsage (#1049)", () => {
     const arr = [other];
     const at = iso(5 * 60_000);
     expect(
-      overlayTursoUsage(arr, file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", measuredAt: at, windows: [tursoWin("databases", 3, 3, at)] })]), NOW),
+      overlayTursoUsage(
+        arr,
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [tursoWin("databases", 3, 3, at)],
+          }),
+        ]),
+        NOW,
+      ),
     ).toBe(arr);
   });
 });
@@ -448,8 +469,17 @@ describe("per-credential quota rows (#1113)", () => {
     const { renderQuota } = await import("../src/render.ts");
     const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
     const prov = {
-      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "",
-      attention: "", orchestration: "", dns: "", registry: "", aa: "",
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "",
+      registry: "",
+      aa: "",
     };
     const html = renderQuota(out, prov);
     expect(html).toContain("credential OpenAI:");

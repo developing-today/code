@@ -48,19 +48,19 @@ pages; a generated navigation therefore has to accept a directory, which is the
 concrete requirement the three in-flight directories from the 2026-09-30
 inventory turned into.
 
-| #  | Chapter | Source | Holds |
-| -- | ------- | ------ | ----- |
-| 1  | Features | `docs/story.md`, below `<!-- table-of-contents-marker -->` | the feature list: one page per key-block entry or `area:` tag, split at build time at section IDs (#151). The walk above the marker is the level-1 overview (#157), not a chapter |
-| 2  | Designs | `docs/elicitation.md`, `exec.md`, `consumer.md`, `opencode-plugin.md`, `plugin-discovery.md`, `environment.md`, `runtimes.md`, `schema-validation.md` | the "why" documents: a design kept as the record of a decision, at full depth |
-| 3  | Decision records | `docs/decisions/` (directory) + `declared-but-unread.md`, `landing.md`, `git-discovery.md` | one record per collision, following the template in `decisions/README.md`. The two files at `docs/` root record a decision each and say so in their own front matter; the chapter index links them |
-| 4  | Protocol | `docs/protocol.md` + `docs/spec/` (directory) | `protocol.md` is the design and the entry point; `spec/README.md` is the chapter index for the records under it: what each revision asks of each side, what mcpx sends, and how it is measured |
-| 5  | Build and packaging | `docs/container.md`, `dependencies.md` | what the binary and the image are made of, and what they deliberately are not |
-| 6  | Proposed | `docs/proposals.md` | open designs, badged `proposed`. A reader deciding whether mcpx will do something next starts here |
-| 7  | Catalogue | `docs/catalogue/` (directory) | things outside mcpx: MCP servers, resources, indexes and registries, URLs, projects. Structure below; the entries are seeded by the follow-up task |
-| 8  | Comparisons and history | `docs/compare/` (directory) + `ASSESSMENT.md`, `OPENCODE-V2.md` | the living comparison and the historical documents, kept as history with their text intact (#153) |
-| 9  | Research and findings | `docs/audit/` (directory) + `in-name-only.md`, `work-strategies.md`, `research-and-findings.md` | audits and lessons: what was found, not what was designed. The research chapter (#1871) has joined; its Nix section is still a later slice |
-| 10 | Maintaining these docs | `docs/release-runbook.md`, `compendium.md` | how `story.md` stays true, the key-block rules, and this structure |
-| 11 | Document history | `docs/archive.md` | retired entries and refactored-out text, append-only and unordered (#150) |
+| #   | Chapter                 | Source                                                                                                                                                | Holds                                                                                                                                                                                              |
+| --- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Features                | `docs/story.md`, below `<!-- table-of-contents-marker -->`                                                                                            | the feature list: one page per key-block entry or `area:` tag, split at build time at section IDs (#151). The walk above the marker is the level-1 overview (#157), not a chapter                  |
+| 2   | Designs                 | `docs/elicitation.md`, `exec.md`, `consumer.md`, `opencode-plugin.md`, `plugin-discovery.md`, `environment.md`, `runtimes.md`, `schema-validation.md` | the "why" documents: a design kept as the record of a decision, at full depth                                                                                                                      |
+| 3   | Decision records        | `docs/decisions/` (directory) + `declared-but-unread.md`, `landing.md`, `git-discovery.md`                                                            | one record per collision, following the template in `decisions/README.md`. The two files at `docs/` root record a decision each and say so in their own front matter; the chapter index links them |
+| 4   | Protocol                | `docs/protocol.md` + `docs/spec/` (directory)                                                                                                         | `protocol.md` is the design and the entry point; `spec/README.md` is the chapter index for the records under it: what each revision asks of each side, what mcpx sends, and how it is measured     |
+| 5   | Build and packaging     | `docs/container.md`, `dependencies.md`                                                                                                                | what the binary and the image are made of, and what they deliberately are not                                                                                                                      |
+| 6   | Proposed                | `docs/proposals.md`                                                                                                                                   | open designs, badged `proposed`. A reader deciding whether mcpx will do something next starts here                                                                                                 |
+| 7   | Catalogue               | `docs/catalogue/` (directory)                                                                                                                         | things outside mcpx: MCP servers, resources, indexes and registries, URLs, projects. Structure below; the entries are seeded by the follow-up task                                                 |
+| 8   | Comparisons and history | `docs/compare/` (directory) + `ASSESSMENT.md`, `OPENCODE-V2.md`                                                                                       | the living comparison and the historical documents, kept as history with their text intact (#153)                                                                                                  |
+| 9   | Research and findings   | `docs/audit/` (directory) + `in-name-only.md`, `work-strategies.md`, `research-and-findings.md`                                                       | audits and lessons: what was found, not what was designed. The research chapter (#1871) has joined; its Nix section is still a later slice                                                         |
+| 10  | Maintaining these docs  | `docs/release-runbook.md`, `compendium.md`                                                                                                            | how `story.md` stays true, the key-block rules, and this structure                                                                                                                                 |
+| 11  | Document history        | `docs/archive.md`                                                                                                                                     | retired entries and refactored-out text, append-only and unordered (#150)                                                                                                                          |
 
 ## The migration mapping
 
@@ -68,33 +68,33 @@ Every one of the 96 markdown files under `pkgs/mcpx` at `origin/main` is in the
 manifest, with a chapter or an explicit reason not to have one. The 2026-09-30
 inventory on #1867 covered 20-odd of them; the seven it never saw now land as:
 
-| file | lands in |
-| --- | --- |
-| `docs/archive.md` | 11 Document history |
-| `docs/environment.md` | 2 Designs (what mcpx tells a program it starts, #172) |
-| `docs/git-discovery.md` | 3 Decision records (it calls itself a decision record, and says why it is not in `decisions/`) |
-| `docs/in-name-only.md` | 9 Research and findings (the curated list of what only exists on paper) |
-| `docs/runtimes.md` | 2 Designs |
-| `docs/schema-validation.md` | 2 Designs |
-| `docs/work-strategies.md` | 9 Research and findings (lessons learned) |
-| `docs/research-and-findings.md` | 9 Research and findings (the #1871 chapter: findings by topic, provenance-tagged) |
-| `docs/audit/` (3 files) | 9 Research and findings |
-| `docs/compare/` (18 files) | 8 Comparisons and history |
-| `docs/decisions/` (5 files) | 3 Decision records |
-| `docs/spec/` (14 files) | 4 Protocol |
+| file                            | lands in                                                                                       |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `docs/archive.md`               | 11 Document history                                                                            |
+| `docs/environment.md`           | 2 Designs (what mcpx tells a program it starts, #172)                                          |
+| `docs/git-discovery.md`         | 3 Decision records (it calls itself a decision record, and says why it is not in `decisions/`) |
+| `docs/in-name-only.md`          | 9 Research and findings (the curated list of what only exists on paper)                        |
+| `docs/runtimes.md`              | 2 Designs                                                                                      |
+| `docs/schema-validation.md`     | 2 Designs                                                                                      |
+| `docs/work-strategies.md`       | 9 Research and findings (lessons learned)                                                      |
+| `docs/research-and-findings.md` | 9 Research and findings (the #1871 chapter: findings by topic, provenance-tagged)              |
+| `docs/audit/` (3 files)         | 9 Research and findings                                                                        |
+| `docs/compare/` (18 files)      | 8 Comparisons and history                                                                      |
+| `docs/decisions/` (5 files)     | 3 Decision records                                                                             |
+| `docs/spec/` (14 files)         | 4 Protocol                                                                                     |
 
 ### Explicitly not compendium, and why
 
 These are in the manifest with `role: not-compendium`, so the mapping is
 complete rather than merely plausible:
 
-| file(s) | why not |
-| --- | --- |
-| `docs/ideas.md` | raw unvetted intake ("some of it is probably wrong"). The proposed chapter publishes the index-of-issues version instead; see open question 3 |
+| file(s)                                | why not                                                                                                                                       |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/ideas.md`                        | raw unvetted intake ("some of it is probably wrong"). The proposed chapter publishes the index-of-issues version instead; see open question 3 |
 | `plugin/opencode/skills/**` (12 files) | skill text shipped inside the plugin and rendered as level-2 pages (#148). Restating it in the compendium would make two sources for one text |
-| `daemon/README.md` | an operational how-to for the systemd user unit: level 2 |
-| `internal/mcpspec/schema/README.md` | a provenance note for vendored schemas; it documents a tree, not a design |
-| `TODO.md` | a scratch list |
+| `daemon/README.md`                     | an operational how-to for the systemd user unit: level 2                                                                                      |
+| `internal/mcpspec/schema/README.md`    | a provenance note for vendored schemas; it documents a tree, not a design                                                                     |
+| `TODO.md`                              | a scratch list                                                                                                                                |
 
 Four more are `role: included`: `AGENTS.md` (the agent instruction file, linked
 and included but chapterless, per #1867), `docs/configuration.md` and
@@ -114,8 +114,8 @@ be reviewed as a structure rather than as a directory listing.
 - **Source** `docs/catalogue/`, with a chapter `README.md` and one page per
   section: `servers.md`, `registries.md`, `resources.md`, `urls.md`,
   `projects.md`.
-- **Generated or written: C.** A hand-written list says *which* servers,
-  registries, resources, URLs and projects are in the catalogue and *why*; the
+- **Generated or written: C.** A hand-written list says _which_ servers,
+  registries, resources, URLs and projects are in the catalogue and _why_; the
   facts per server (`mcpx --json ls` tool counts, `mcpx types` tool lists,
   `mcpx --json registry search` publisher and version) are captured into a
   committed snapshot by a refresh script. Nothing at docs build time starts a

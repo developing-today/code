@@ -135,12 +135,7 @@ describe("dashboard actions store", () => {
 
     const store = new ActionsStore(file);
     const loaded = await store.all();
-    expect(loaded.map((a) => a.id)).toEqual([
-      "answers-null-entry",
-      "answers-object",
-      "answers-string",
-      "valid",
-    ]);
+    expect(loaded.map((a) => a.id)).toEqual(["answers-null-entry", "answers-object", "answers-string", "valid"]);
     expect(() => cardState(loaded, NOW)).not.toThrow();
     const state = cardState(loaded, NOW);
     expect([...state.answered]).toEqual([["q1", "good"]]);

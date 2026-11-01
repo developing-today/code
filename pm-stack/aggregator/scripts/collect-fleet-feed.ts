@@ -73,7 +73,13 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
-import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, isAaSection, type AaRawPayload } from "../src/aa.ts";
+import {
+  disabledProvidersFromConfig,
+  aaAbsent,
+  aaSectionFromSupabase,
+  isAaSection,
+  type AaRawPayload,
+} from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import type {
@@ -487,7 +493,9 @@ async function main(): Promise<void> {
       console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
     }
     pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
+      console.error(
+        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
+      ),
     );
   } catch (err) {
     console.error(`collector: quota view unreadable (${err}); emitting no pools`);
@@ -521,10 +529,7 @@ async function main(): Promise<void> {
   try {
     const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
     if (candidates.length) {
-      const auto = matchCharges(
-        candidates,
-        chargeServiceCatalog(saas ?? [], pools),
-      );
+      const auto = matchCharges(candidates, chargeServiceCatalog(saas ?? [], pools));
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
       try {
@@ -678,7 +683,11 @@ async function main(): Promise<void> {
     } else {
       const count = async (q: string): Promise<number> => {
         const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "pm-aggregator-collector" },
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "user-agent": "pm-aggregator-collector",
+          },
         });
         if (!res.ok) throw new Error(`search ${res.status}`);
         const body = (await res.json()) as { total_count?: number };
@@ -696,13 +705,17 @@ async function main(): Promise<void> {
             gateNext: await count(`${base} label:next`),
           });
         } catch (err) {
-          console.error(`collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`);
+          console.error(
+            `collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`,
+          );
         }
       }
       if (rows.length) coverage = rows;
     }
   } catch (err) {
-    console.error(`collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`);
+    console.error(
+      `collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`,
+    );
     coverage = undefined;
   }
 

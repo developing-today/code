@@ -244,9 +244,7 @@ describe("disabled_providers enforcement (#1114)", () => {
   test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
     expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
     const filtered: Array<[string, string]> = [];
-    const disabled = disabledProvidersFromConfig(
-      JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }),
-    );
+    const disabled = disabledProvidersFromConfig(JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }));
     const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
     expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
     expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);

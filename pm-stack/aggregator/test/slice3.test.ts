@@ -106,11 +106,7 @@ describe("dns register parser", () => {
       generatedAt: "2026-03-08T01:30:00Z",
       source: "test",
       totalAnnualListUsd: 30,
-      entries: [
-        entry("today.dev", "2026-03-07"),
-        entry("cutoff.dev", "2026-04-21"),
-        entry("beyond.dev", "2026-04-22"),
-      ],
+      entries: [entry("today.dev", "2026-03-07"), entry("cutoff.dev", "2026-04-21"), entry("beyond.dev", "2026-04-22")],
     };
     const summary = summarizeDns(section, new Date("2026-03-08T01:30:00Z"), 45);
     expect(summary.nextRenewal?.domain).toBe("today.dev");
@@ -267,9 +263,9 @@ describe("dashboard comments", () => {
     expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
 
     // A report carrying both url and error: refused, unchanged.
-    await expect(
-      store.markGithubResult(pending.id, { url: "https://github.com/x#1", error: "boom" }),
-    ).rejects.toThrow("both");
+    await expect(store.markGithubResult(pending.id, { url: "https://github.com/x#1", error: "boom" })).rejects.toThrow(
+      "both",
+    );
     expect((await store.all()).find((c) => c.id === pending.id)?.githubState).toBe("pending");
 
     // Posted, then: an empty report and a later failure are both
@@ -278,16 +274,14 @@ describe("dashboard comments", () => {
     const posted = await addGh();
     await store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-9" });
     await expect(store.markGithubResult(posted.id, {})).rejects.toThrow("url or an error");
-    await expect(store.markGithubResult(posted.id, { error: "late failure" })).rejects.toThrow(
-      "already posted",
-    );
+    await expect(store.markGithubResult(posted.id, { error: "late failure" })).rejects.toThrow("already posted");
     const repeat = await store.markGithubResult(posted.id, {
       url: "https://github.com/x#issuecomment-9",
     });
     expect(repeat?.githubState).toBe("posted");
-    await expect(
-      store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-10" }),
-    ).rejects.toThrow("different url");
+    await expect(store.markGithubResult(posted.id, { url: "https://github.com/x#issuecomment-10" })).rejects.toThrow(
+      "different url",
+    );
     const after = (await store.all()).find((c) => c.id === posted.id);
     expect(after?.githubState).toBe("posted");
     expect(after?.githubUrl).toBe("https://github.com/x#issuecomment-9");
@@ -333,8 +327,7 @@ describe("dashboard comments", () => {
       rmSync(dir2);
       renameSync(`${dir2}-moved`, dir2);
     };
-    const onDisk = async (id: string) =>
-      (await new CommentsStore(file2).all()).find((c) => c.id === id);
+    const onDisk = async (id: string) => (await new CommentsStore(file2).all()).find((c) => c.id === id);
 
     // posted path
     const ghP = await addGh2();

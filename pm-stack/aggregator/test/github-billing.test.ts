@@ -13,14 +13,68 @@ import {
 
 const ITEMS: BillingUsageItem[] = [
   // 2026-10-01: Linux + macOS Actions minutes, Actions storage, money.
-  { date: "2026-10-01", product: "actions", sku: "Actions Linux", unitType: "Minutes", quantity: 100, grossAmount: 0.8, discountAmount: 0.8, netAmount: 0 },
-  { date: "2026-10-01", product: "actions", sku: "Actions macOS 3-core", unitType: "Minutes", quantity: 9, grossAmount: 0.54, discountAmount: 0.54, netAmount: 0 },
-  { date: "2026-10-01", product: "actions", sku: "Actions storage", unitType: "GigabyteHours", quantity: 19.4, grossAmount: 0.13, discountAmount: 0.13, netAmount: 0 },
+  {
+    date: "2026-10-01",
+    product: "actions",
+    sku: "Actions Linux",
+    unitType: "Minutes",
+    quantity: 100,
+    grossAmount: 0.8,
+    discountAmount: 0.8,
+    netAmount: 0,
+  },
+  {
+    date: "2026-10-01",
+    product: "actions",
+    sku: "Actions macOS 3-core",
+    unitType: "Minutes",
+    quantity: 9,
+    grossAmount: 0.54,
+    discountAmount: 0.54,
+    netAmount: 0,
+  },
+  {
+    date: "2026-10-01",
+    product: "actions",
+    sku: "Actions storage",
+    unitType: "GigabyteHours",
+    quantity: 19.4,
+    grossAmount: 0.13,
+    discountAmount: 0.13,
+    netAmount: 0,
+  },
   // 2026-10-02: Codespaces compute + storage; an unknown product row
   // counts toward gross/net only.
-  { date: "2026-10-02", product: "codespaces", sku: "Codespaces 2-core", unitType: "Hours", quantity: 2.7, grossAmount: 0.49, discountAmount: 0.49, netAmount: 0 },
-  { date: "2026-10-02", product: "codespaces", sku: "Codespaces storage", unitType: "GigabyteHours", quantity: 1.4, grossAmount: 0.01, discountAmount: 0.01, netAmount: 0 },
-  { date: "2026-10-02", product: "packages", sku: "Packages storage", unitType: "GigabyteHours", quantity: 3, grossAmount: 0.02, discountAmount: 0, netAmount: 0.02 },
+  {
+    date: "2026-10-02",
+    product: "codespaces",
+    sku: "Codespaces 2-core",
+    unitType: "Hours",
+    quantity: 2.7,
+    grossAmount: 0.49,
+    discountAmount: 0.49,
+    netAmount: 0,
+  },
+  {
+    date: "2026-10-02",
+    product: "codespaces",
+    sku: "Codespaces storage",
+    unitType: "GigabyteHours",
+    quantity: 1.4,
+    grossAmount: 0.01,
+    discountAmount: 0.01,
+    netAmount: 0,
+  },
+  {
+    date: "2026-10-02",
+    product: "packages",
+    sku: "Packages storage",
+    unitType: "GigabyteHours",
+    quantity: 3,
+    grossAmount: 0.02,
+    discountAmount: 0,
+    netAmount: 0.02,
+  },
   // A row with no usable date is skipped, not crashed on.
   { product: "actions", unitType: "Minutes", quantity: 5 },
 ];
@@ -69,7 +123,14 @@ describe("aggregateBillingUsage validation (#2493)", () => {
   test("negative or non-finite numbers contribute 0, never usage", () => {
     const days = aggregateBillingUsage([
       { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: -50, grossAmount: -2, netAmount: -2 },
-      { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: Number.NaN, grossAmount: Number.POSITIVE_INFINITY, netAmount: 0.5 },
+      {
+        date: "2026-10-04",
+        product: "actions",
+        unitType: "Minutes",
+        quantity: Number.NaN,
+        grossAmount: Number.POSITIVE_INFINITY,
+        netAmount: 0.5,
+      },
       { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: 30, grossAmount: 0.25, netAmount: 0 },
     ]);
     expect(days.length).toBe(1);
@@ -83,7 +144,15 @@ describe("aggregateBillingUsage validation (#2493)", () => {
       [
         { date: "2026-13-40", product: "actions", unitType: "Minutes", quantity: 10, grossAmount: 1, netAmount: 1 },
         { date: "2026-10-05", product: "actions", unitType: "Minutes", quantity: -10, grossAmount: -1, netAmount: -1 },
-        { date: "2026-10-05", product: "codespaces", sku: "Codespaces 4-core", unitType: "Hours", quantity: 1.5, grossAmount: 0.4, netAmount: 0.4 },
+        {
+          date: "2026-10-05",
+          product: "codespaces",
+          sku: "Codespaces 4-core",
+          unitType: "Hours",
+          quantity: 1.5,
+          grossAmount: 0.4,
+          netAmount: 0.4,
+        },
       ],
       "test",
     );
@@ -106,7 +175,14 @@ describe("recordsFromBillingUsage", () => {
     // billing-net is 0 on day 1 (fully discounted) — no record.
     expect(day1.some((r) => r.metricId === "billing-net")).toBe(false);
     const cs = records.find((r) => r.metricId === "codespaces-hours");
-    expect(cs).toMatchObject({ ts: "2026-10-02T12:00:00Z", serviceId: "github", unit: "hours", value: 5.4, source: "api", observedBy: "test" });
+    expect(cs).toMatchObject({
+      ts: "2026-10-02T12:00:00Z",
+      serviceId: "github",
+      unit: "hours",
+      value: 5.4,
+      source: "api",
+      observedBy: "test",
+    });
   });
 
   test("every derived record passes the store's validation", () => {
@@ -117,7 +193,14 @@ describe("recordsFromBillingUsage", () => {
 
 describe("snapshot unit extension", () => {
   test("minutes, hours and gb-hours records validate; unknown units do not", () => {
-    const base = { ts: "2026-10-01T12:00:00Z", serviceId: "github", metricId: "m", value: 1, source: "api", observedBy: "test" };
+    const base = {
+      ts: "2026-10-01T12:00:00Z",
+      serviceId: "github",
+      metricId: "m",
+      value: 1,
+      source: "api",
+      observedBy: "test",
+    };
     expect(isSnapshotRecord({ ...base, unit: "minutes" })).toBe(true);
     expect(isSnapshotRecord({ ...base, unit: "hours" })).toBe(true);
     expect(isSnapshotRecord({ ...base, unit: "gb-hours" })).toBe(true);
@@ -129,11 +212,29 @@ describe("codex regression cases (PR #2236 review)", () => {
   test("documented casing (Actions/minutes) classifies, not just the live casing", () => {
     // The exact spelling in GitHub's billing usage API example.
     const days = aggregateBillingUsage([
-      { date: "2026-10-03", product: "Actions", sku: "Actions Linux", unitType: "minutes", quantity: 100, grossAmount: 0.8, netAmount: 0 },
+      {
+        date: "2026-10-03",
+        product: "Actions",
+        sku: "Actions Linux",
+        unitType: "minutes",
+        quantity: 100,
+        grossAmount: 0.8,
+        netAmount: 0,
+      },
     ]);
     expect(days[0].actionsMinutes).toBe(100);
     const records = recordsFromBillingUsage(
-      [{ date: "2026-10-03", product: "Actions", sku: "Actions Linux", unitType: "minutes", quantity: 100, grossAmount: 0.8, netAmount: 0 }],
+      [
+        {
+          date: "2026-10-03",
+          product: "Actions",
+          sku: "Actions Linux",
+          unitType: "minutes",
+          quantity: 100,
+          grossAmount: 0.8,
+          netAmount: 0,
+        },
+      ],
       "test",
     );
     expect(records.some((r) => r.metricId === "actions-minutes" && r.value === 100)).toBe(true);
@@ -141,8 +242,24 @@ describe("codex regression cases (PR #2236 review)", () => {
 
   test("codespaces machine-hours convert to core-hours by the SKU core count", () => {
     const days = aggregateBillingUsage([
-      { date: "2026-10-03", product: "codespaces", sku: "Codespaces 4-core", unitType: "Hours", quantity: 1.5, grossAmount: 0, netAmount: 0 },
-      { date: "2026-10-03", product: "codespaces", sku: "Codespaces prebuild", unitType: "Hours", quantity: 2, grossAmount: 0, netAmount: 0 },
+      {
+        date: "2026-10-03",
+        product: "codespaces",
+        sku: "Codespaces 4-core",
+        unitType: "Hours",
+        quantity: 1.5,
+        grossAmount: 0,
+        netAmount: 0,
+      },
+      {
+        date: "2026-10-03",
+        product: "codespaces",
+        sku: "Codespaces prebuild",
+        unitType: "Hours",
+        quantity: 2,
+        grossAmount: 0,
+        netAmount: 0,
+      },
     ]);
     // 1.5 machine-hours x 4 cores = 6 core-hours; unparseable SKU counts at face value.
     expect(days[0].codespacesHours).toBe(8);

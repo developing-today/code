@@ -608,7 +608,12 @@ let
     in
     {
       packages = {
-        inherit mcpx idMailDeploy pkarrDeploy developingTodayBackupDeploy;
+        inherit
+          mcpx
+          idMailDeploy
+          pkarrDeploy
+          developingTodayBackupDeploy
+          ;
         mcpx-docs = mcpxDocs;
       };
       checks = {

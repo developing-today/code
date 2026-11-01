@@ -18,7 +18,10 @@ import { REPO_QUEUES } from "./config.ts";
 
 export class QueueError extends Error {
   status = 502;
-  constructor(message: string, readonly httpStatus?: number) {
+  constructor(
+    message: string,
+    readonly httpStatus?: number,
+  ) {
     super(message);
   }
 }

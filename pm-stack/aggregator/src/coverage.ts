@@ -97,7 +97,11 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
  * must render as unavailable, never as zero coverage (Codex finding
  * on PR #3309).
  */
-export function computeCoverage(census: RepoCensus[] | null, pool: ProjectPoolItem[] | null, now = new Date()): CoverageReport {
+export function computeCoverage(
+  census: RepoCensus[] | null,
+  pool: ProjectPoolItem[] | null,
+  now = new Date(),
+): CoverageReport {
   const byRepo = new Map<string, RepoCoverage>();
   const row = (repo: string): RepoCoverage => {
     let r = byRepo.get(repo);

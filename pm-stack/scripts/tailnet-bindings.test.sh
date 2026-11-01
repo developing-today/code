@@ -21,7 +21,10 @@ fi
 
 fail=0
 note() { echo "$1"; }
-bad() { echo "FAIL: $1"; fail=1; }
+bad() {
+  echo "FAIL: $1"
+  fail=1
+}
 
 # --- static: no host address is hard-coded anymore -------------------
 if grep -n '100\.99\.113\.103' pad/compose.yml grist/compose.yml README.md; then
@@ -52,18 +55,18 @@ for svc in pad grist; do
   # Unset: loopback only, exactly one binding.
   out="$(render "$svc.yml")"
   ips="$(printf '%s\n' "$out" | host_ips)"
-  [[ "$ips" == "127.0.0.1" ]] || bad "$svc unset PM_STACK_TAILNET_IP: host_ips=[$ips], want [127.0.0.1]"
+  [[ $ips == "127.0.0.1" ]] || bad "$svc unset PM_STACK_TAILNET_IP: host_ips=[$ips], want [127.0.0.1]"
   [[ "$(printf '%s\n' "$out" | grep -c 'host_ip:')" == "1" ]] || bad "$svc unset: want exactly 1 port binding"
   # Another host's address: loopback + that address, nothing else.
   out="$(render "$svc.yml" PM_STACK_TAILNET_IP=100.64.1.9)"
   ips="$(printf '%s\n' "$out" | host_ips)"
-  [[ "$ips" == "100.64.1.9
+  [[ $ips == "100.64.1.9
 127.0.0.1" ]] || bad "$svc PM_STACK_TAILNET_IP=100.64.1.9: host_ips=[$ips]"
   # The current host's address: renders identically to the old
   # hard-coded behaviour (equivalence with the pre-#781 deployment).
   out="$(render "$svc.yml" PM_STACK_TAILNET_IP=100.99.113.103)"
   ips="$(printf '%s\n' "$out" | host_ips)"
-  [[ "$ips" == "100.99.113.103
+  [[ $ips == "100.99.113.103
 127.0.0.1" ]] || bad "$svc PM_STACK_TAILNET_IP=100.99.113.103: host_ips=[$ips]"
   # Never a public binding, in any case above.
   if render "$svc.yml" | grep -q 'host_ip: 0.0.0.0'; then

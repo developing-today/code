@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { isChargeRow, isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import {
+  isChargeRow,
+  isFleetFeed,
+  isProjectPoolSection,
+  isUnmatchedCharge,
+  loadFeed,
+  poolFromFeed,
+  projectPoolSectionProblem,
+  sanitizeQuotaView,
+  sanitizeSubscriptions,
+} from "../src/feed.ts";
 import { renderQuota } from "../src/render.ts";
 import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -147,7 +157,14 @@ describe("isFleetFeed generatedAt stamps (#2578 Phase 2, #2242)", () => {
 });
 
 describe("feed quota section gate + sanitization (#2429)", () => {
-  const WINDOW: QuotaWindow = { name: "5h", unit: "tokens", limit: 1000, used: 250, resetsAt: "2026-10-29T05:00:00Z", percent: 25 };
+  const WINDOW: QuotaWindow = {
+    name: "5h",
+    unit: "tokens",
+    limit: 1000,
+    used: 250,
+    resetsAt: "2026-10-29T05:00:00Z",
+    percent: 25,
+  };
   const POOL: QuotaPool = { id: "opencode-go", provider: "opencode", plan: "go", state: "healthy", windows: [WINDOW] };
   const CHOICES = { hasHeadroom: ["opencode-go"], burnBeforeReset: [], doNotStart: [] };
   const feedWith = (quota: unknown) => ({
@@ -192,7 +209,13 @@ describe("feed quota section gate + sanitization (#2429)", () => {
   });
 
   test("malformed burn segments drop individually", () => {
-    const seg = { provider: "opencode", pool: "go", from: "2026-10-01T00:00:00Z", to: "2026-10-01T01:00:00Z", tokens: 42 };
+    const seg = {
+      provider: "opencode",
+      pool: "go",
+      from: "2026-10-01T00:00:00Z",
+      to: "2026-10-01T01:00:00Z",
+      tokens: 42,
+    };
     const out = sanitizeQuotaView(quotaWith([POOL], { burn: [seg, null, { provider: "x" }] }) as never);
     expect(out.droppedBurn).toBe(2);
     expect(out.view.burn).toEqual([seg]);
@@ -310,7 +333,13 @@ describe("feed subscriptions sanitization (#2446)", () => {
 });
 describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
   const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
-  const ROW = { at: "2026-10-30", label: "Mystery AI Inc", amountUsd: 42.5, method: "Visa \u20227535", source: "plaid" };
+  const ROW = {
+    at: "2026-10-30",
+    label: "Mystery AI Inc",
+    amountUsd: 42.5,
+    method: "Visa \u20227535",
+    source: "plaid",
+  };
   const feedWithCharges = (charges: unknown) => ({
     version: 1,
     generatedAt: "2026-10-01T00:00:00Z",
@@ -379,7 +408,13 @@ describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
 });
 
 describe("feed chargesAttention gate + sanitization (#2439)", () => {
-  const UNMATCHED = { merchant: "Mystery AI Inc", normalized: "mystery ai", amountUsd: 42.5, at: "2026-10-30", source: "plaid" };
+  const UNMATCHED = {
+    merchant: "Mystery AI Inc",
+    normalized: "mystery ai",
+    amountUsd: 42.5,
+    at: "2026-10-30",
+    source: "plaid",
+  };
   const feedWithCa = (chargesAttention: unknown) => ({
     version: 1,
     generatedAt: "2026-10-01T00:00:00Z",
@@ -420,7 +455,14 @@ describe("feed chargesAttention gate + sanitization (#2439)", () => {
   });
 
   test("loadFeed drops malformed entries individually and surfaces the count", async () => {
-    const loaded = await loadFrom(feedWithCa([null, UNMATCHED, { ...UNMATCHED, amountUsd: "42.50" }, { merchant: "No Amount Co", at: "2026-10-30" }]));
+    const loaded = await loadFrom(
+      feedWithCa([
+        null,
+        UNMATCHED,
+        { ...UNMATCHED, amountUsd: "42.50" },
+        { merchant: "No Amount Co", at: "2026-10-30" },
+      ]),
+    );
     expect(loaded).not.toBeNull();
     expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
     expect(loaded?.chargesAttentionDropped).toBe(3);

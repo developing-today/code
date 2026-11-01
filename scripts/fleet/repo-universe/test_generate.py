@@ -63,13 +63,23 @@ class GenerateTest(unittest.TestCase):
 
     def run_gen(self) -> str:
         subprocess.run(
-            [sys.executable, str(GENERATE),
-             "--org-json", str(self.dir / "org.json"),
-             "--user-json", str(self.dir / "user.json"),
-             "--census", str(self.dir / "census.md"),
-             "--census-label", "fixture census",
-             "--output", str(self.out)],
-            check=True, capture_output=True, text=True,
+            [
+                sys.executable,
+                str(GENERATE),
+                "--org-json",
+                str(self.dir / "org.json"),
+                "--user-json",
+                str(self.dir / "user.json"),
+                "--census",
+                str(self.dir / "census.md"),
+                "--census-label",
+                "fixture census",
+                "--output",
+                str(self.out),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
         return self.out.read_text()
 
@@ -77,7 +87,9 @@ class GenerateTest(unittest.TestCase):
         # Captures taken with the documented `gh api --paginate`
         # commands hold one JSON array per page concatenated; the
         # generator must decode every page, not just the first.
-        (self.dir / "org.json").write_text(json.dumps(ORG[:2]) + "\n" + json.dumps(ORG[2:]))
+        (self.dir / "org.json").write_text(
+            json.dumps(ORG[:2]) + "\n" + json.dumps(ORG[2:])
+        )
         (self.dir / "user.json").write_text(json.dumps(USER[:1]) + json.dumps(USER[1:]))
         out = self.run_gen()
         for name in FLEET_AND_SIDE:
@@ -96,14 +108,21 @@ class GenerateTest(unittest.TestCase):
             if "--paginate" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
             return subprocess.CompletedProcess(
-                cmd, 0, stdout=json.dumps({"login": "some-collaborator"}), stderr="")
+                cmd, 0, stdout=json.dumps({"login": "some-collaborator"}), stderr=""
+            )
 
         live_out = self.dir / "live-out.yaml"
         with mock.patch.object(gen.subprocess, "run", side_effect=fake_run):
             with self.assertRaises(SystemExit):
-                gen.main(["--live",
-                          "--census", str(self.dir / "census.md"),
-                          "--output", str(live_out)])
+                gen.main(
+                    [
+                        "--live",
+                        "--census",
+                        str(self.dir / "census.md"),
+                        "--output",
+                        str(live_out),
+                    ]
+                )
         self.assertFalse(live_out.exists())
 
     def test_offline_mode_requires_both_captures(self) -> None:
@@ -111,11 +130,18 @@ class GenerateTest(unittest.TestCase):
         # regenerate with that source emptied (deleting every
         # GitHub-only repo from the omitted source).
         proc = subprocess.run(
-            [sys.executable, str(GENERATE),
-             "--org-json", str(self.dir / "org.json"),
-             "--census", str(self.dir / "census.md"),
-             "--output", str(self.out)],
-            capture_output=True, text=True,
+            [
+                sys.executable,
+                str(GENERATE),
+                "--org-json",
+                str(self.dir / "org.json"),
+                "--census",
+                str(self.dir / "census.md"),
+                "--output",
+                str(self.out),
+            ],
+            capture_output=True,
+            text=True,
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertFalse(self.out.exists())
@@ -135,19 +161,28 @@ class GenerateTest(unittest.TestCase):
         self.out.write_text(edited)
         regenerated = self.run_gen()
         # The override block survives verbatim...
-        self.assertIn("  roc-lang/roc:\n    class: upstream-dependency\n    watch: issues", regenerated)
+        self.assertIn(
+            "  roc-lang/roc:\n    class: upstream-dependency\n    watch: issues",
+            regenerated,
+        )
         # ...and is applied to the entry.
-        self.assertIn("- name: roc-lang/roc\n    url: https://github.com/roc-lang/roc\n"
-                      "    class: upstream-dependency\n    watch: issues", regenerated)
+        self.assertIn(
+            "- name: roc-lang/roc\n    url: https://github.com/roc-lang/roc\n"
+            "    class: upstream-dependency\n    watch: issues",
+            regenerated,
+        )
         # And regeneration with the override is itself idempotent.
         self.assertEqual(regenerated, self.run_gen())
 
     def test_coverage_fleet_and_side_repos_are_owned(self) -> None:
         artifact = self.run_gen()
         for name in FLEET_AND_SIDE:
-            self.assertIn(f"- name: {name}\n    url: https://github.com/{name}\n"
-                          f"    class: owned\n    watch: issues", artifact,
-                          f"{name} must be present and owned")
+            self.assertIn(
+                f"- name: {name}\n    url: https://github.com/{name}\n"
+                f"    class: owned\n    watch: issues",
+                artifact,
+                f"{name} must be present and owned",
+            )
 
     def test_override_class_change_moves_the_watch_default(self) -> None:
         self.run_gen()
@@ -157,24 +192,45 @@ class GenerateTest(unittest.TestCase):
         )
         self.out.write_text(edited)
         regenerated = self.run_gen()
-        self.assertIn("- name: developing-today/some-fork\n    url: https://github.com/developing-today/some-fork\n"
-                      "    class: owned\n    watch: issues", regenerated)
+        self.assertIn(
+            "- name: developing-today/some-fork\n    url: https://github.com/developing-today/some-fork\n"
+            "    class: owned\n    watch: issues",
+            regenerated,
+        )
 
     def test_classification(self) -> None:
         artifact = self.run_gen()
-        self.assertIn("- name: developing-today/some-fork\n    url: https://github.com/developing-today/some-fork\n"
-                      "    class: fork\n    watch: inventory-only", artifact)
-        self.assertIn("- name: m5stack/M5GFX\n    url: https://github.com/m5stack/M5GFX\n"
-                      "    class: archive-nested\n    watch: inventory-only", artifact)
-        self.assertIn("- name: crosspoint-reader/crosspoint-reader\n"
-                      "    url: https://github.com/crosspoint-reader/crosspoint-reader\n"
-                      "    class: archive-nested", artifact)
-        self.assertIn("- name: dezren39/private-side\n    url: https://github.com/dezren39/private-side\n"
-                      "    class: owned\n    watch: issues", artifact)
-        self.assertIn("- name: dezren39/private-side\n    url: https://github.com/dezren39/private-side\n"
-                      "    class: owned\n    watch: issues", artifact)
-        self.assertIn("- name: roc-lang/roc\n    url: https://github.com/roc-lang/roc\n"
-                      "    class: upstream-dependency\n    watch: inventory-only", artifact)
+        self.assertIn(
+            "- name: developing-today/some-fork\n    url: https://github.com/developing-today/some-fork\n"
+            "    class: fork\n    watch: inventory-only",
+            artifact,
+        )
+        self.assertIn(
+            "- name: m5stack/M5GFX\n    url: https://github.com/m5stack/M5GFX\n"
+            "    class: archive-nested\n    watch: inventory-only",
+            artifact,
+        )
+        self.assertIn(
+            "- name: crosspoint-reader/crosspoint-reader\n"
+            "    url: https://github.com/crosspoint-reader/crosspoint-reader\n"
+            "    class: archive-nested",
+            artifact,
+        )
+        self.assertIn(
+            "- name: dezren39/private-side\n    url: https://github.com/dezren39/private-side\n"
+            "    class: owned\n    watch: issues",
+            artifact,
+        )
+        self.assertIn(
+            "- name: dezren39/private-side\n    url: https://github.com/dezren39/private-side\n"
+            "    class: owned\n    watch: issues",
+            artifact,
+        )
+        self.assertIn(
+            "- name: roc-lang/roc\n    url: https://github.com/roc-lang/roc\n"
+            "    class: upstream-dependency\n    watch: inventory-only",
+            artifact,
+        )
 
 
 if __name__ == "__main__":
