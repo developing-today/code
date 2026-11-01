@@ -514,10 +514,7 @@ impl<'a> Reader<'a> {
                 // zero payload group, so a multi-byte spelling that ends
                 // in one (0x81 0x00 for 1) is a second wire spelling of
                 // the same value and is refused (#2596).
-                ensure!(
-                    i == 0 || b != 0,
-                    "varint is not minimally encoded"
-                );
+                ensure!(i == 0 || b != 0, "varint is not minimally encoded");
                 return Ok(x);
             }
         }
@@ -1038,8 +1035,14 @@ mod tests {
         // Overlong spellings of the same values.
         assert!(read(&[0x80, 0x00]).is_err(), "0 spelled in 2 bytes");
         assert!(read(&[0x81, 0x00]).is_err(), "1 spelled in 2 bytes");
-        assert!(read(&[0xff, 0xff, 0x00]).is_err(), "0x3fff spelled in 3 bytes");
-        assert!(read(&[0x80, 0x80, 0x81, 0x00]).is_err(), "0x4000 spelled in 4 bytes");
+        assert!(
+            read(&[0xff, 0xff, 0x00]).is_err(),
+            "0x3fff spelled in 3 bytes"
+        );
+        assert!(
+            read(&[0x80, 0x80, 0x81, 0x00]).is_err(),
+            "0x4000 spelled in 4 bytes"
+        );
         assert!(read(&[0xff, 0x80, 0x00]).is_err(), "127 spelled in 3 bytes");
 
         // Position 1: the frame header entry count.

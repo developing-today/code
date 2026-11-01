@@ -4238,6 +4238,187 @@ mod schedule_tests {
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod audit_tests {
+    use super::*;
+    use std::fmt::Debug;
+    use std::sync::Mutex;
+
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::{Layer, prelude::*};
+
+    #[derive(Clone)]
+    struct AuditCapture(Arc<Mutex<Vec<serde_json::Value>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for AuditCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _context: Context<'_, S>) {
+            if event.metadata().target() != "id::audit" {
+                return;
+            }
+            let mut visitor = AuditFieldVisitor::default();
+            event.record(&mut visitor);
+            let Some(json) = visitor.record else {
+                return;
+            };
+            if let Ok(record) = serde_json::from_str(&json) {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AuditFieldVisitor {
+        record: Option<String>,
+    }
+
+    impl Visit for AuditFieldVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "audit_record" {
+                self.record = Some(value.to_owned());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+            if field.name() == "audit_record" {
+                let formatted = format!("{value:?}");
+                self.record = Some(serde_json::from_str::<String>(&formatted).unwrap_or(formatted));
+            }
+        }
+    }
+
+    struct FirstUseProgram;
+
+    impl WorldProgram for FirstUseProgram {
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{"id": "first-use", "cap": "time.now"}]
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new(
+            "audit-test",
+            WorldLimits {
+                grant_on_use: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec!["time.now".to_owned()],
+                    revoke: vec![],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::SetCapsCeiling {
+                    ceiling: vec!["time.now".to_owned(), "random.u64".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec![],
+                    revoke: vec!["time.now".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::SetCapsCeiling {
+                    ceiling: vec!["not-a-capability".to_owned()],
+                    reply,
+                })
+                .await;
+            assert!(response.await.unwrap().is_err());
+
+            actor.after_change().await;
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let refusal_count = captured
+            .iter()
+            .filter(|record| record["action"] == "SetCapsCeiling" && record["outcome"] == "refused")
+            .count();
+        assert_eq!(refusal_count, 1, "one refused command must emit one record");
+        assert_eq!(captured.len(), 5);
+
+        let mut replayed_grants = BTreeSet::new();
+        let mut replayed_ceiling = BTreeSet::new();
+        for record in &captured {
+            if record["outcome"] != "accepted" {
+                if record["action"] == "provider_use" && record["outcome"] == "first_use_grant" {
+                    replayed_grants.insert(
+                        record["parameters"]["capability"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                    );
+                }
+                continue;
+            }
+            match record["action"].as_str().unwrap() {
+                "UpdateCaps" => {
+                    for name in record["parameters"]["revoke"].as_array().unwrap() {
+                        replayed_grants.remove(name.as_str().unwrap());
+                    }
+                    for name in record["parameters"]["grant"].as_array().unwrap() {
+                        replayed_grants.insert(name.as_str().unwrap().to_owned());
+                    }
+                }
+                "SetCapsCeiling" => {
+                    replayed_ceiling = record["parameters"]["ceiling"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|name| name.as_str().unwrap().to_owned())
+                        .collect();
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(replayed_grants, *actor.core.ledger.granted());
+        assert_eq!(replayed_ceiling, actor.core.caps_ceiling);
+        assert!(captured.iter().any(|record| {
+            record["action"] == "provider_use"
+                && record["outcome"] == "first_use_grant"
+                && record["parameters"]["capability"] == "time.now"
+                && record["actor"] == "program"
+        }));
+        assert!(captured.iter().all(|record| {
+            record["schema_version"] == 1
+                && record["world_id"] == "audit-test"
+                && record.get("admin_token").is_none()
+        }));
+    }
+}
+
 /// Structural guard for the one client projection (F11.11, #543).
 ///
 /// Every path that hands a [`WorldEvent`] to a participant must go through
