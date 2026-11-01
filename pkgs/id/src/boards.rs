@@ -491,7 +491,14 @@ impl BoardGraph {
                 self.require_board(&value.board)?;
                 self.require_scoped(&value.thread, &value.board, "thread")?;
                 if let Some(parent) = &value.parent_post {
-                    self.require_scoped(parent, &value.board, "post")?;
+                    let parent_object = self.require_scoped(parent, &value.board, "post")?;
+                    let BoardObject::Post(parent_post) = &parent_object.object else {
+                        unreachable!("require_scoped checked post kind")
+                    };
+                    ensure!(
+                        parent_post.thread == value.thread,
+                        "a reply's parent post must belong to the same thread"
+                    );
                 }
                 for attachment in &value.attachments {
                     self.require_scoped(attachment, &value.board, "attachment")?;
@@ -575,6 +582,22 @@ impl BoardGraph {
                     previous.object.kind_name() != "board",
                     "a board identity root cannot be superseded"
                 );
+                // Reject an edge that would close a cycle: following the
+                // existing replacement chain from the replacement must never
+                // arrive back at the previous object.
+                let mut current = value.replacement.clone();
+                let mut visited = BTreeSet::new();
+                while let Some(next) = self.supersede_replacement(&current) {
+                    ensure!(
+                        next != value.previous,
+                        "supersede relationship would create a cycle"
+                    );
+                    ensure!(
+                        visited.insert(current.clone()),
+                        "existing supersede chain already contains a cycle"
+                    );
+                    current = next;
+                }
             }
             BoardObject::Tombstone(value) => {
                 let target = self.require_scoped(&value.target, &value.board, "")?;
@@ -589,6 +612,19 @@ impl BoardGraph {
             }
         }
         Ok(())
+    }
+
+    /// The replacement named by an existing supersede record for
+    /// `previous`, if the graph already holds one.
+    fn supersede_replacement(&self, previous: &ArtifactHash) -> Option<ArtifactHash> {
+        self.objects
+            .values()
+            .find_map(|signed| match &signed.object {
+                BoardObject::Supersede(value) if &value.previous == previous => {
+                    Some(value.replacement.clone())
+                }
+                _ => None,
+            })
     }
 
     fn require_board(&self, reference: &ArtifactHash) -> Result<&SignedBoardObject> {
@@ -632,26 +668,28 @@ impl BoardGraph {
         bail!("author has no moderator authority for this board")
     }
 
+    /// Whether a grant of `role` to `member` exists in this graph.
+    ///
+    /// Acceptance is based on grant *existence*, not on the current role
+    /// frontier. A signed object carries no causal pointer to the grant or
+    /// revocation that orders it, so a frontier check makes acceptance
+    /// depend on arrival order: the same signed set (grant, a moderator's
+    /// forum, revocation) would reconstruct on one peer and fail on
+    /// another that received the revocation first. With existence, every
+    /// peer that holds the grant reaches the same verdict in any order.
+    /// Revocations stay in the graph as signed history; the view/serving
+    /// layers (which decide what is served *now*) enforce them — this
+    /// substrate only records and validates objects.
     fn has_role(&self, board: &ArtifactHash, member: &str, role: BoardRole) -> bool {
-        let attestations: Vec<_> = self
-            .objects
-            .iter()
-            .filter_map(|(hash, signed)| match &signed.object {
-                BoardObject::RoleAttestation(value)
-                    if &value.board == board && value.member == member && value.role == role =>
-                {
-                    Some((hash, value))
-                }
-                _ => None,
-            })
-            .collect();
-        let superseded: BTreeSet<_> = attestations
-            .iter()
-            .filter_map(|(_, value)| value.supersedes.as_ref())
-            .collect();
-        attestations
-            .iter()
-            .any(|(hash, value)| !superseded.contains(hash) && value.granted)
+        self.objects.values().any(|signed| match &signed.object {
+            BoardObject::RoleAttestation(value) => {
+                &value.board == board
+                    && value.member == member
+                    && value.role == role
+                    && value.granted
+            }
+            _ => false,
+        })
     }
 }
 
@@ -896,5 +934,187 @@ mod tests {
         .unwrap();
         graph.insert(tombstone).unwrap();
         assert_eq!(graph.len(), 6);
+    }
+
+    #[test]
+    fn reply_parent_must_belong_to_the_same_thread() {
+        let author = key(7);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&author)).unwrap();
+        let thread = |title: &str, seq: u64| {
+            SignedBoardObject::sign(
+                &author,
+                seq,
+                "",
+                BoardObject::Thread(Thread {
+                    board: root_hash.clone(),
+                    forum_ref: None,
+                    rules_ref: None,
+                    title: title.to_owned(),
+                }),
+            )
+            .unwrap()
+        };
+        let first_thread = graph.insert(thread("First", 2)).unwrap();
+        let second_thread = graph.insert(thread("Second", 3)).unwrap();
+        let parent = graph
+            .insert(post(
+                &author,
+                root_hash.clone(),
+                first_thread.clone(),
+                "parent",
+            ))
+            .unwrap();
+        let cross_thread_reply = SignedBoardObject::sign(
+            &author,
+            4,
+            "",
+            BoardObject::Post(Post {
+                board: root_hash.clone(),
+                thread: second_thread,
+                parent_post: Some(parent.clone()),
+                body: "cross-thread reply".to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+            }),
+        )
+        .unwrap();
+        assert!(graph.insert(cross_thread_reply).is_err());
+
+        let same_thread_reply = SignedBoardObject::sign(
+            &author,
+            5,
+            "",
+            BoardObject::Post(Post {
+                board: root_hash,
+                thread: first_thread,
+                parent_post: Some(parent),
+                body: "same-thread reply".to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+            }),
+        )
+        .unwrap();
+        graph.insert(same_thread_reply).unwrap();
+    }
+
+    #[test]
+    fn supersede_cycles_are_rejected() {
+        let author = key(8);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&author)).unwrap();
+        let thread = SignedBoardObject::sign(
+            &author,
+            2,
+            "",
+            BoardObject::Thread(Thread {
+                board: root_hash.clone(),
+                forum_ref: None,
+                rules_ref: None,
+                title: "Versions".to_owned(),
+            }),
+        )
+        .unwrap();
+        let thread_hash = graph.insert(thread).unwrap();
+        let first_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash.clone(), "v1"))
+            .unwrap();
+        let second_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "v2"))
+            .unwrap();
+        let supersede = |seq: u64, previous: ArtifactHash, replacement: ArtifactHash| {
+            SignedBoardObject::sign(
+                &author,
+                seq,
+                "",
+                BoardObject::Supersede(Supersede {
+                    board: root_hash.clone(),
+                    previous,
+                    replacement,
+                }),
+            )
+            .unwrap()
+        };
+        graph
+            .insert(supersede(3, first_hash.clone(), second_hash.clone()))
+            .unwrap();
+        assert!(
+            graph.insert(supersede(4, second_hash, first_hash)).is_err(),
+            "a supersede edge closing a cycle must be rejected"
+        );
+    }
+
+    #[test]
+    fn moderator_acceptance_does_not_depend_on_revocation_arrival_order() {
+        let owner = key(9);
+        let moderator = key(10);
+        let moderator_key = hex_encode(&moderator.verifying_key().to_bytes());
+        let build = |revoke_before_forum: bool| {
+            let mut graph = BoardGraph::default();
+            let root_hash = graph.insert(board(&owner)).unwrap();
+            let grant = SignedBoardObject::sign(
+                &owner,
+                2,
+                "",
+                BoardObject::RoleAttestation(RoleAttestation {
+                    board: root_hash.clone(),
+                    member: moderator_key.clone(),
+                    role: BoardRole::Moderator,
+                    granted: true,
+                    supersedes: None,
+                }),
+            )
+            .unwrap();
+            let grant_hash = graph.insert(grant).unwrap();
+            let revocation = SignedBoardObject::sign(
+                &owner,
+                3,
+                "",
+                BoardObject::RoleAttestation(RoleAttestation {
+                    board: root_hash.clone(),
+                    member: moderator_key.clone(),
+                    role: BoardRole::Moderator,
+                    granted: false,
+                    supersedes: Some(grant_hash),
+                }),
+            )
+            .unwrap();
+            let forum = SignedBoardObject::sign(
+                &moderator,
+                1,
+                "",
+                BoardObject::Forum(Forum {
+                    board: root_hash,
+                    name: "General".to_owned(),
+                }),
+            )
+            .unwrap();
+            if revoke_before_forum {
+                graph.insert(revocation).unwrap();
+                graph.insert(forum).unwrap();
+            } else {
+                graph.insert(forum).unwrap();
+                graph.insert(revocation).unwrap();
+            }
+            graph.len()
+        };
+        // The Codex P1 scenario: both arrival orders reconstruct the graph.
+        assert_eq!(build(true), 4);
+        assert_eq!(build(false), 4);
+
+        // Without any grant in the graph, moderator objects still reject.
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let ungranted_forum = SignedBoardObject::sign(
+            &moderator,
+            1,
+            "",
+            BoardObject::Forum(Forum {
+                board: root_hash,
+                name: "General".to_owned(),
+            }),
+        )
+        .unwrap();
+        assert!(graph.insert(ungranted_forum).is_err());
     }
 }
