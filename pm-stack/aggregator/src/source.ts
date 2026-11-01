@@ -42,7 +42,7 @@ export interface Source {
   orchestration(): Promise<OrchestrationSection | null>;
   /** The DNS/domain register (#902) for the register page; null = not collected yet. */
   dns(): Promise<DnsSection | null>;
-  /** The AA cost explorer section (ainventory workbook data via the
+  /** The AA cost explorer section (ainventory import data via the
    * fleet feed); null = not collected yet. The absent form
    * ({status:"absent"}) is a real section: it renders its reason. */
   aa(): Promise<AaFeedSection | null>;

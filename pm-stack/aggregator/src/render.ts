@@ -2842,7 +2842,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
   return layout("DNS register", body, provenance, "/dns", "", chips);
 }
 
-// --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
+// --- AA cost explorer page (ainventory import data via the fleet feed) -----
 
 /**
  * The Cost Explorer's client side: tabs, the shared filter bar, the
@@ -2860,6 +2860,30 @@ const AA_EXPLORER_SCRIPT = `<script>
   var CAI_POINTS = DATA.caiPoints || [];
   var CATALOG = DATA.catalog || null;
   var POINTS = AA_POINTS;
+  // Default benchmark vintage (2026-11-01, Drew): the payload carries
+  // every vintage the AA import holds (v5 beside v4.3.2 today); ranking
+  // across vintages compares scores from different methodologies, so
+  // the first-load view pins the newest vintage present. "All
+  // benchmarks" (bench "") stays one click away in the filter, and
+  // saved setups / perspective switches keep their existing semantics.
+  function benchVersionKey(b) {
+    var m = /v(\d+(?:\.\d+)*)/.exec(b || "");
+    return m ? m[1].split(".").map(function (n) { return parseInt(n, 10) || 0; }) : null;
+  }
+  function cmpVer(a, b) {
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++) { var d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+    return 0;
+  }
+  function latestBench(points) {
+    var best = "", bestKey = null;
+    (points || []).forEach(function (p) {
+      var k = benchVersionKey(p.benchmark);
+      if (!k) return;
+      if (!bestKey || cmpVer(k, bestKey) > 0) { bestKey = k; best = p.benchmark; }
+    });
+    return best;
+  }
   var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
   var famColor = {};
   var famList = [];
@@ -2956,7 +2980,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     q: "",
     creator: "",
     fam: "",
-    bench: "",
+    bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
     off: {},
@@ -2979,7 +3003,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
     api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
-    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
+    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the import's measured per-task figures, TTFT shown where timed).",
   };
   function basePoints() {
     return POINTS.filter(function (p) {
@@ -3109,7 +3133,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (note) {
       var missing = all.filter(function (p) { return cfg.x(p) == null || cfg.y(p) == null; });
       var names = missing.slice(0, 4).map(shortLabel).join(", ");
-      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the workbook (nothing is estimated)" +
+      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the import (nothing is estimated)" +
         (missing.length ? ": " + names + (missing.length > 4 ? " (+" + (missing.length - 4) + " more)" : "") + "." : ".");
     }
     if (!rows.length) { svg.innerHTML = ""; return; }
@@ -3195,6 +3219,10 @@ const AA_EXPLORER_SCRIPT = `<script>
       var f = sizeHi > sizeLo ? Math.min(1, Math.max(0, (t - sizeLo) / (sizeHi - sizeLo))) : 0.5;
       return 1.6 + Math.pow(f, 1.5) * 8.4;
     }
+    // 2026-11-01 (Drew, code#3335): every dot carries its family color;
+    // frontier membership is emphasis (white ring, full opacity), not
+    // the only color — on real data a chart's frontier can be a single
+    // dominant point, which used to grey out the whole chart.
     rows.forEach(function (p) {
       var cx = X(cfg.x(p)), cy = Y(cfg.y(p));
       var onF = !!p[cfg.flag];
@@ -3202,7 +3230,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       var r = radius(p, onF);
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
       var tip = p.family + " " + (p.effort || "") + " — " + scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + (onF ? col : "#9aa0a6") + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.9 : 0.5) + '" stroke="' + (S.sel === p.key ? "#fff" : onF ? col : "#6b7075") + '" stroke-width="' + (S.sel === p.key ? 2 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.95 : 0.45) + '" stroke="' + (S.sel === p.key || onF ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : onF ? 1.8 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (onF || S.sel === p.key) {
         var anchorEnd = cx > ML + PW * 0.78;
         g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - r - 3 : cx + r + 3) + '" y="' + (cy + 3) + '" font-size="8.6" fill="' + (onF ? "#c9d1d9" : "#8b949e") + '" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
@@ -3749,7 +3777,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     g += '<text x="10" y="' + (mt + ph / 2) + '" font-size="9" fill="#8b949e" text-anchor="middle" transform="rotate(-90 10 ' + (mt + ph / 2) + ')">time — faster is down</text>';
     pts.forEach(function (p) {
       var on = !!pickKeys[p.key], col = famColor[p.family];
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + (on ? col : "#9aa0a6") + '" fill-opacity="' + (on ? 0.95 : 0.35) + '" stroke="' + (on ? "#fff" : "#6b7075") + '" stroke-width="' + (on ? 1.4 : 0.7) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + col + '" fill-opacity="' + (on ? 0.95 : 0.4) + '" stroke="' + (on ? "#fff" : col) + '" stroke-width="' + (on ? 1.6 : 0.8) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
     });
     return g + "</svg>";
   }
@@ -3981,7 +4009,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
-      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · solid dots in the charts sit on that chart's frontier, gray are beaten on its axes";
+      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
       return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
     }).join("");
@@ -4138,7 +4166,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (pnote) {
       pnote.textContent = S.persp === "cai"
         ? "Coding agents perspective — the Coding Agent Index observations (model + effort + agent harness): score is the CAI score, cost the published cost per coding task, time the average agent wall time per task. Kept separate from the Intelligence Index; the two are never converted."
-        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the workbook's per-task figures (time excludes TTFT).";
+        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
     if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
@@ -4453,7 +4481,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (AA label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -4465,7 +4493,7 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     )
     .join("");
   return `<h2>Coding Agent Index observations</h2>
-<p class="muted">The workbook's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
+<p class="muted">The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
 <div class="tblwrap"><table><tr><th>Model</th><th>Effort</th><th>Harness</th><th>Version</th><th>CAI score</th><th>DeepSWE v1.1</th><th>Terminal-Bench 4.0</th><th>SWE-Atlas-QnA</th><th>$/task</th><th>Agent wall time / task</th><th>Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
@@ -4485,7 +4513,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
     );
@@ -4493,7 +4521,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (section.status === "absent") {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. No successful collection exists yet to fall back to — the page fills in on the first successful collection.</div>`,
       provenance,
       "/aa",
     );
@@ -4514,23 +4542,24 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted">Measured and reachable today, but no route sends them work — the actionable list.</p>${aaNameList(cov.catalogNotPooledMeasured)}
 <h3>Measured, in no catalog (${cov.measuredNotInCatalog.length})</h3>${aaNameList(cov.measuredNotInCatalog)}
 <details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
-<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
+<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the import measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
   const modelCards = catalog
     ? `<div class="board">
 <div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
 <div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the workbook has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
     JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
   );
   const body = `<h1>Cost Explorer</h1>
+${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
 <p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
@@ -4575,7 +4604,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
-<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; solid dots sit on it, gray are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only workbook measurements are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
+<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
 <div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Score</th><th class="num">Score ×</th><th class="num xpl-costcol">Cost/task</th><th class="num xpl-costcol">Cost ×</th><th class="num">Time/task</th><th class="num">Time ×</th><th>Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
@@ -4618,16 +4647,16 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <label>Near-leader window <select id="xf-bandscale"><option value="0.5">0.5× · Very tight</option><option value="0.75">0.75× · Tight</option><option value="1" selected>1× · Standard (score ±2 · time within 10% · price within 25%)</option><option value="1.5">1.5× · Generous</option><option value="2">2× · Wide</option><option value="3">3× · Broad</option></select></label>
 <div id="xpl-bandgroups"></div>
 <h2>Timing — Test_Runs</h2>
-<p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
+<p class="muted">Per-configuration timing from the import's Test_Runs data. "Not measured" means the import carries no value for that cell — nothing is estimated.</p>
 ${aaTimingsTable(s.testRuns)}
 <h2>Measured configurations</h2>
-<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
+<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the import.</p>
 ${aaConfigsTable(s.configs)}
 ${s.cai ? aaCaiTable(s.cai) : ""}
 </section>
 <section id="xtab-models" hidden>
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
+<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>

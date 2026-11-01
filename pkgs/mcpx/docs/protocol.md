@@ -580,6 +580,15 @@ the tool call for a script that expects to ask.
   (#229). It used to kill a call while a person was answering it, which made
   the three settings above promises the pool did not keep. The precedence of
   all five timeouts is written down in `internal/pool/budget.go`.
+  A caller may request a shorter value for a single call
+  (`--pool-call-timeout`, carried as a call setting): the daemon clamps the
+  request to its own configured value, so a call may lower the bound but
+  never raise it (#1864). Against `exec.timeout`: that bounds a whole
+  script run, this bounds one upstream call inside it -- the run's total
+  work is capped by `exec.timeout`, each call within it by the (possibly
+  per-call) `pool.callTimeout`, and whichever is tighter for a given call
+  is the one that fires. The pool's execution watch keeps the configured
+  value; the per-call request bounds the call it was made on only.
 - The question's own deadline is `elicit.ttl` in `defaults.json` (120s; a
   built-in, not a user setting). Expiry answers `cancel`, never `decline`:
   dismissed without choosing is not the same as refused.

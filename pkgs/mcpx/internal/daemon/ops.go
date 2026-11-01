@@ -23,6 +23,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
@@ -630,8 +631,16 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 // startCallTask runs a tool call in the background and hands back a handle.
 // The task counts against requestor (the caller session, else its
 // run); an empty requestor lands in the store unbound bucket.
-func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any) (tasks.Task, error) {
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any, cs *settings.Set) (tasks.Task, error) {
 	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+		// The task outlives the request that created it, so the
+		// caller's call settings arrive by value (captured in
+		// handleCall) and are attached here, inside the callback --
+		// the same treatment the ask and reporting paths give them.
+		// Registry.Call threads the requested pool.callTimeout off
+		// this context; without it an explicit-task call silently
+		// kept the daemon's configured timeout (#1864 item 4).
+		ctx = withCallSettings(ctx, cs)
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {

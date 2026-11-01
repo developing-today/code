@@ -82,7 +82,7 @@ export interface FleetFeed {
    * beside the projects section. Absent when the collector had no
    * GitHub token or the census failed. */
   coverage?: RepoCensus[];
-  /** AA cost explorer section: the ainventory (AA workbook) data read
+  /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
    * ({status:"absent", reason}) when Supabase was unreachable — the
