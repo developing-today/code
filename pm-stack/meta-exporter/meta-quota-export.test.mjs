@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  ExportError,
   failureDocument,
   parseBillingBanner,
   parsePaygBalance,
@@ -214,5 +215,49 @@ test("parseSubscriptionQuota: empty as_of stays null; non-decimal as_of fails cl
     const payload = structuredClone(QUOTA);
     payload.subscription_quota.as_of = bad;
     assert.throws(() => parseSubscriptionQuota(payload), /unparseable|finite/);
+  }
+});
+
+test("parseSubscriptionQuota: epoch fields reject values outside the pinned seconds window", () => {
+  const firstAllowed = 1_577_836_800; // 2020-01-01T00:00:00Z
+  const lastAllowed = 4_102_444_800; // 2100-01-01T00:00:00Z
+  const cases = [
+    ["window_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["weekly_resets_at", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_090_405_000, 1e300]],
+    ["as_of", [firstAllowed - 1, lastAllowed + 1, 0, 1_793_000_000_000, 1e300]],
+  ];
+  for (const [field, values] of cases) {
+    for (const value of values) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = value;
+      assert.throws(
+        () => parseSubscriptionQuota(payload),
+        (error) => {
+          assert.ok(error instanceof ExportError);
+          assert.equal(error.status, "unparseable");
+          assert.equal(error.exitCode, 6);
+          return true;
+        },
+        `${field}=${value} should fail as unparseable`,
+      );
+    }
+  }
+});
+
+test("parseSubscriptionQuota: epoch window endpoints are inclusive", () => {
+  const endpoints = [
+    [1_577_836_800, "2020-01-01T00:00:00.000Z"],
+    [4_102_444_800, "2100-01-01T00:00:00.000Z"],
+  ];
+  for (const [epoch, expected] of endpoints) {
+    for (const field of ["window_resets_at", "weekly_resets_at"]) {
+      const payload = structuredClone(QUOTA);
+      payload.subscription_quota[field] = epoch;
+      const parsed = parseSubscriptionQuota(payload);
+      assert.equal(parsed.windows[field === "window_resets_at" ? 0 : 1].resetAt, expected);
+    }
+    const payload = structuredClone(QUOTA);
+    payload.subscription_quota.as_of = epoch;
+    assert.equal(parseSubscriptionQuota(payload).consoleAsOf, expected);
   }
 });
