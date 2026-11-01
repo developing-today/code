@@ -879,15 +879,47 @@ impl BoardGraph {
 
         // Supersede relations first: a superseded record (a moderation
         // action, a tombstone, any content object) has no effect in the
-        // projection, whatever it once said.
-        let mut superseded: BTreeSet<ArtifactHash> = BTreeSet::new();
-        for signed in self.objects.values() {
-            if let BoardObject::Supersede(value) = &signed.object {
-                if &value.board == board {
-                    superseded.insert(value.previous.clone());
+        // projection, whatever it once said. A supersede record can
+        // itself be superseded, so the active records are a frontier,
+        // resolved to a fixed point: a record stays active while no
+        // active record names it as its previous version. (Supersede
+        // cycles cannot exist — insertion rejects an edge that would
+        // close one — so this terminates with the true frontier.) Only
+        // active records contribute their edges to the superseded set.
+        let supersede_records: Vec<(ArtifactHash, ArtifactHash)> = self
+            .objects
+            .iter()
+            .filter_map(|(hash, signed)| match &signed.object {
+                BoardObject::Supersede(value) if &value.board == board => {
+                    Some((hash.clone(), value.previous.clone()))
                 }
+                _ => None,
+            })
+            .collect();
+        let mut active_records: BTreeSet<ArtifactHash> = supersede_records
+            .iter()
+            .map(|(hash, _)| hash.clone())
+            .collect();
+        loop {
+            let named: BTreeSet<ArtifactHash> = supersede_records
+                .iter()
+                .filter(|(hash, _)| active_records.contains(hash))
+                .map(|(_, previous)| previous.clone())
+                .collect();
+            let next: BTreeSet<ArtifactHash> = active_records
+                .difference(&named)
+                .cloned()
+                .collect();
+            if next == active_records {
+                break;
             }
+            active_records = next;
         }
+        let superseded: BTreeSet<ArtifactHash> = supersede_records
+            .iter()
+            .filter(|(hash, _)| active_records.contains(hash))
+            .map(|(_, previous)| previous.clone())
+            .collect();
 
         // Current moderator frontier: a role attestation that another
         // attestation supersedes is history, not authority. Following
@@ -906,7 +938,9 @@ impl BoardGraph {
         let current_moderators: BTreeSet<String> = self
             .objects
             .iter()
-            .filter(|(hash, _)| !attestation_superseded.contains(hash))
+            .filter(|(hash, _)| {
+                !attestation_superseded.contains(hash) && !superseded.contains(hash)
+            })
             .filter_map(|(_, signed)| match &signed.object {
                 BoardObject::RoleAttestation(value)
                     if &value.board == board
@@ -1957,6 +1991,108 @@ mod tests {
         assert!(view.theme.is_none());
         assert_eq!(view.hidden.len(), 1);
         assert_eq!(view.hidden[0].layer, ViewLayer::Host);
+    }
+
+    #[test]
+    fn generic_supersede_of_a_grant_also_revokes_authority() {
+        let owner = key(36);
+        let moderator = key(37);
+        let author = key(38);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let post_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "hello"))
+            .unwrap();
+        let attestation = |granted: bool| {
+            SignedBoardObject::sign(
+                &owner,
+                2,
+                "",
+                BoardObject::RoleAttestation(RoleAttestation {
+                    board: root_hash.clone(),
+                    member: hex_encode(&moderator.verifying_key().to_bytes()),
+                    role: BoardRole::Moderator,
+                    granted,
+                    supersedes: None,
+                }),
+            )
+            .unwrap()
+        };
+        let grant_hash = graph.insert(attestation(true)).unwrap();
+        graph
+            .insert(moderation(
+                &moderator,
+                1,
+                root_hash.clone(),
+                post_hash.clone(),
+                ModerationActionKind::Hide,
+                Some("spam"),
+            ))
+            .unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert_eq!(view.hidden.len(), 1);
+
+        // Revocation by generic Supersede record (not the attestation's
+        // own supersedes field) must end the authority just the same.
+        let revoke_hash = graph.insert(attestation(false)).unwrap();
+        let supersede = SignedBoardObject::sign(
+            &owner,
+            3,
+            "",
+            BoardObject::Supersede(Supersede {
+                board: root_hash.clone(),
+                previous: grant_hash,
+                replacement: revoke_hash,
+            }),
+        )
+        .unwrap();
+        graph.insert(supersede).unwrap();
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        assert!(view.objects.contains(&post_hash));
+        assert!(view.hidden.is_empty());
+        assert_eq!(view.moderation_log.len(), 1);
+    }
+
+    #[test]
+    fn superseded_supersede_record_has_no_effect() {
+        let owner = key(39);
+        let author = key(40);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&owner)).unwrap();
+        let thread_hash = graph.insert(thread(&owner, root_hash.clone(), "General")).unwrap();
+        let mut posts = Vec::new();
+        for body in ["a", "b", "c", "d"] {
+            posts.push(
+                graph
+                    .insert(post(&author, root_hash.clone(), thread_hash.clone(), body))
+                    .unwrap(),
+            );
+        }
+        let supersede = |seq: u64, previous: ArtifactHash, replacement: ArtifactHash| {
+            SignedBoardObject::sign(
+                &author,
+                seq,
+                "",
+                BoardObject::Supersede(Supersede {
+                    board: root_hash.clone(),
+                    previous,
+                    replacement,
+                }),
+            )
+            .unwrap()
+        };
+        let first = graph.insert(supersede(2, posts[0].clone(), posts[1].clone())).unwrap();
+        let second = graph.insert(supersede(3, posts[2].clone(), posts[3].clone())).unwrap();
+        graph.insert(supersede(4, first, second)).unwrap();
+
+        let view = graph.compose_view(&root_hash, &ViewLayers::default()).unwrap();
+        // The first supersede was itself superseded: post A is current
+        // again. The second supersede is active: post C is replaced.
+        assert!(view.objects.contains(&posts[0]));
+        assert!(view.objects.contains(&posts[1]));
+        assert!(!view.objects.contains(&posts[2]));
+        assert!(view.objects.contains(&posts[3]));
     }
 
 }
