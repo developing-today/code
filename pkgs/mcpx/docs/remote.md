@@ -124,9 +124,9 @@ answering — again with no port and no credential beyond ssh.
   unauthenticated**; who may reach it is who may reach the host and the
   socket. `ssh://` inherits exactly the ssh access you already grant.
 - It is not a shared filesystem. Scripts and artifacts sent to a remote
-  daemon travel as bytes; a `{path}` artifact is only hardlinked when the
-  caller proved it shares the daemon's disk, which an ssh tunnel never
-  proves. See [`exec.md`](./exec.md#the-store).
+  daemon travel as bytes; a caller's `{path}` is uploaded, not made visible to
+  the daemon, because an ssh tunnel never proves shared-disk access. See
+  [`exec.md`](./exec.md#the-store).
 - It is never started from here. Local autostart does not apply, by design:
   answering from a local daemon when the remote one is unreachable would be
   worse than failing.
