@@ -323,23 +323,24 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 	// With no project directory the set arrived as data only, and
 	// there is nothing local to copy from; the requirement is left
 	// as written.
+	transportNames := []string{}
+	defBase := projectDir
+	if d.ManifestDir != "" {
+		defBase = d.ManifestDir
+	}
 	if projectDir != "" {
 		// The resolution base is the selected manifest's own
 		// directory when the set carries it, not the script's:
 		// discovery may have found the manifest above the script,
 		// or the caller may have named one outside it (Codex
 		// review, PR #2589).
-		defBase := projectDir
-		if d.ManifestDir != "" {
-			defBase = d.ManifestDir
-		}
 		// Iteration is in name order and every verbatim destination
 		// is claimed as it is taken, so when two packages from
 		// different origins spell the same relative path the winner
 		// is deterministic: the first name keeps the verbatim
 		// destination and the rest are rebased below (Codex review,
 		// PR #2589).
-		transportNames := make([]string, 0, len(deps))
+		transportNames = make([]string, 0, len(deps))
 		for name := range deps {
 			transportNames = append(transportNames, name)
 		}
@@ -429,6 +430,41 @@ func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string)
 				[2]string{filepath.ToSlash(rel), newRel})
 			if norm := strings.TrimPrefix(filepath.ToSlash(rel), "./"); norm != filepath.ToSlash(rel) {
 				lockPathRebases = append(lockPathRebases, [2]string{norm, newRel})
+			}
+		}
+	}
+
+	// Workspace members are the frozen lockfile's other local
+	// sources: a root manifest declaring workspaces: ["packages/*"]
+	// and a dependency helper: "*" makes npm link node_modules/helper
+	// to packages/helper, and the transported lockfile keeps that
+	// link -- but the member directory itself is not a file:/link:
+	// requirement, so the transport above skipped it and imports of
+	// the member failed MODULE_NOT_FOUND in the workdir (Codex
+	// review, PR #2589). Transport each member a requirement names,
+	// at the same path relative to the manifest root, so the link
+	// resolves exactly as it did in place.
+	if projectDir != "" && manifest != nil {
+		members := workspaceMembers(manifest, defBase)
+		for _, name := range transportNames {
+			spec := deps[name]
+			if _, isLocal := localFileRef(spec); isLocal {
+				continue
+			}
+			member, ok := members[name]
+			if !ok || !workspaceSpec(spec, member.version) {
+				continue
+			}
+			rel, err := filepath.Rel(defBase, member.dir)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			dst := filepath.Join(dir, rel)
+			if !withinDir(dir, dst) {
+				continue
+			}
+			if err := copyLocalArtifact(member.dir, dst); err != nil {
+				return nil, fmt.Errorf("deps: transport workspace package %q: %w", name, err)
 			}
 		}
 	}
@@ -739,9 +775,19 @@ func depsFlags(kind string, d *Deps) []string {
 			return []string{"--no-install"}
 		}
 	case KindDeno:
+		var flags []string
 		if name, _, ok := d.selectedLockfile(kind); ok && name == "deno.lock" {
-			return []string{"--frozen"}
+			flags = append(flags, "--frozen")
 		}
+		// deps.autoInstall=off must hold for deno too: without a
+		// flag deno downloads an uncached npm: import on first
+		// run, which is exactly the fetch off forbids (CodeRabbit
+		// review, PR #2589). --cached-only makes a missing package
+		// fail instead, the same contract bun's --no-install gives.
+		if d.AutoInstall == "off" {
+			flags = append(flags, "--cached-only")
+		}
+		return flags
 	}
 	return nil
 }
@@ -1070,6 +1116,14 @@ func mergeNodeModules(src, dst string) error {
 	}
 	for _, rel := range conflicts {
 		for _, host := range placed {
+			// A placed host that is a symlink to a local package
+			// directory points OUTSIDE the merged tree, back at the
+			// caller's source: nesting through it would create
+			// node_modules inside the caller's project (CodeRabbit
+			// review, PR #2589). Such a host gets no nested copy.
+			if fi, err := os.Lstat(filepath.Join(dst, host)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
 			nested := filepath.Join(dst, host, "node_modules", rel)
 			if _, err := os.Lstat(nested); err == nil {
 				continue
@@ -1527,6 +1581,22 @@ func localDepsIdentity(d *Deps, base string) string {
 			refs = append(refs, localRef{b, rel})
 		}
 	}
+	// Workspace members required by the set are transported by
+	// content too (see materialiseDeps), so their content joins the
+	// identity on the same terms: identical payloads whose member
+	// directories differ must not share a cached workdir (Codex
+	// review, PR #2589).
+	if manifest != nil {
+		for name, member := range workspaceMembers(manifest, base) {
+			spec, ok := deps[name]
+			if !ok || !workspaceSpec(spec, member.version) {
+				continue
+			}
+			if rel, err := filepath.Rel(base, member.dir); err == nil {
+				refs = append(refs, localRef{base, rel})
+			}
+		}
+	}
 	if len(refs) == 0 {
 		return ""
 	}
@@ -1594,6 +1664,71 @@ func depsProjectDir(opts Options) string {
 	return opts.Dir
 }
 
+type workspaceMember struct {
+	dir     string
+	version string
+}
+
+// workspaceMembers resolves a manifest's workspaces declaration
+// (a list of globs, or the object form's "packages" list) against
+// base and returns the member packages by name. A member is a
+// directory matching a glob whose package.json names it; unreadable
+// or unnamed directories are not members.
+func workspaceMembers(manifest map[string]any, base string) map[string]workspaceMember {
+	var patterns []string
+	switch ws := manifest["workspaces"].(type) {
+	case []any:
+		for _, p := range ws {
+			if str, ok := p.(string); ok {
+				patterns = append(patterns, str)
+			}
+		}
+	case map[string]any:
+		if pkgs, ok := ws["packages"].([]any); ok {
+			for _, p := range pkgs {
+				if str, ok := p.(string); ok {
+					patterns = append(patterns, str)
+				}
+			}
+		}
+	}
+	out := map[string]workspaceMember{}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(base, pattern))
+		if err != nil {
+			continue
+		}
+		for _, dir := range matches {
+			content, err := os.ReadFile(filepath.Join(dir, "package.json"))
+			if err != nil {
+				continue
+			}
+			var pkg map[string]any
+			if err := json.Unmarshal(deps.StripJSONC(content), &pkg); err != nil {
+				continue
+			}
+			name, _ := pkg["name"].(string)
+			if name == "" {
+				continue
+			}
+			version, _ := pkg["version"].(string)
+			out[name] = workspaceMember{dir: dir, version: version}
+		}
+	}
+	return out
+}
+
+// workspaceSpec reports whether a requirement spelling binds a
+// workspace member of that name: the catch-all "*", the workspace:
+// protocol, or the member's exact version (npm links a workspace
+// whose version the requirement names exactly).
+func workspaceSpec(spec, version string) bool {
+	if spec == "*" || strings.HasPrefix(spec, "workspace:") {
+		return true
+	}
+	return version != "" && spec == version
+}
+
 // localFileRef extracts the relative path from a file:/link:
 // requirement ("file:./local-dep.tgz" -> "./local-dep.tgz"). Absolute
 // paths, file:// URLs and non-local requirements are not local refs:
@@ -1625,6 +1760,14 @@ func withinDir(dir, path string) bool {
 // file, or a directory for a link:/directory file: requirement —
 // from the project into the exec workdir at the same relative path.
 func copyLocalArtifact(src, dst string) error {
+	// A directory symlink as the source root defeats filepath.Walk,
+	// which does not follow the root link: the walk callback then
+	// reads the directory itself as a file and the merge fails
+	// (CodeRabbit review, PR #2589). Resolve the root first; when
+	// resolution fails the path is used as written, as before.
+	if resolved, err := filepath.EvalSymlinks(src); err == nil {
+		src = resolved
+	}
 	info, err := os.Stat(src)
 	if err != nil {
 		return err

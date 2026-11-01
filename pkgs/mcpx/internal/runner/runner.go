@@ -438,6 +438,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		clientPath = sideCar
 	}
 
+	// The run timeout bounds the whole run, dependency installs
+	// included: a stalled npm ci, bun install or directory-lock wait
+	// on the caller's context alone would outlive opts.Timeout,
+	// which was applied only to the script itself (CodeRabbit
+	// review, PR #2589). The context is created here, before the
+	// dependency block, and the script run reuses it.
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if opts.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	// The dependency set is materialised before the launcher and the
 	// type check, because both resolve the script's imports (#1913).
 	var depsFlags []string
@@ -458,16 +471,16 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			}
 		}
 		if opts.Deps.frozenNPM(rt.Kind) {
-			if cerr := installFrozenNPM(ctx, workDir, opts.Deps, opts.Env); cerr != nil {
+			if cerr := installFrozenNPM(runCtx, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		}
 		if opts.Deps.frozenBun(rt.Kind) {
-			if cerr := installFrozenBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
+			if cerr := installFrozenBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		} else if rt.Kind == KindBun && (opts.Deps.AutoInstall == "fallback" || opts.Deps.AutoInstall == "always") && (len(opts.Deps.Packages) > 0 || opts.Deps.Manifest != "") {
-			if cerr := installBun(ctx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
+			if cerr := installBun(runCtx, rt.Bin, workDir, opts.Deps, opts.Env); cerr != nil {
 				return nil, cerr
 			}
 		}
@@ -498,7 +511,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			if md := opts.Deps.ManifestDir; md != "" {
 				lockDirs = append(lockDirs, md)
 			}
-			unlock, lerr2 := lockScriptDirs(ctx, lockDirs...)
+			unlock, lerr2 := lockScriptDirs(runCtx, lockDirs...)
 			if lerr2 != nil {
 				return nil, lerr2
 			}
@@ -633,13 +646,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		for _, w := range rep.Warnings() {
 			fmt.Fprintln(warnSink(opts), "mcpx:", w.String())
 		}
-	}
-
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if opts.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
 	}
 
 	// Every supported runtime passes anything after the script path straight
@@ -839,11 +845,59 @@ func linkDepsForFileRun(scriptDir, manifestDir, workDir string) error {
 //     dep set changes -- the new fingerprint picked a new workdir,
 //     and keeping the old link would keep importing the old set
 //     (Codex review, PR #2589) -- so it is refreshed;
-//   - a dangling link (its content-addressed target was pruned) is
-//     replaced; any other symlink is left as the project put it.
+//   - a dangling link the runner left (its content-addressed target
+//     was pruned) is replaced; a dangling user-managed link, and any
+//     other symlink, is left as the project put it.
+//
+// runnerOwnedLinkTarget reports whether a node_modules symlink
+// target is one this runner left: the generated client sits beside
+// it in its workdir, or its parent is a sibling workdir -- a direct
+// child of the same work root, named by the 16-hex-digit workdir
+// key every workdir carries.
+func runnerOwnedLinkTarget(target, workDir string) bool {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(target), clientFileName)); err == nil {
+		return true
+	}
+	parent := filepath.Dir(target)
+	if parent == workDir || filepath.Dir(parent) != filepath.Dir(workDir) {
+		return false
+	}
+	name := filepath.Base(parent)
+	if len(name) != 16 {
+		return false
+	}
+	for _, c := range name {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func linkNodeModules(scriptDir, workDir string) error {
 	modules := filepath.Join(workDir, "node_modules")
 	if st, err := os.Stat(modules); err != nil || !st.IsDir() {
+		// This set installed nothing beside the script. A link an
+		// earlier run left there still resolves, so a later run
+		// with no dependency set would import the earlier set's
+		// packages instead of failing (CodeRabbit review,
+		// PR #2589): remove a runner-owned link, leave anything
+		// else exactly as the project put it.
+		link := filepath.Join(scriptDir, "node_modules")
+		fi, err := os.Lstat(link)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, rerr := os.Readlink(link)
+		if rerr != nil {
+			return nil
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(scriptDir, target)
+		}
+		if runnerOwnedLinkTarget(filepath.Clean(target), workDir) {
+			_ = os.Remove(link)
+		}
 		return nil
 	}
 	link := filepath.Join(scriptDir, "node_modules")
@@ -865,7 +919,13 @@ func linkNodeModules(scriptDir, workDir string) error {
 		return nil // already points at this set
 	}
 	if _, serr := os.Stat(target); serr != nil {
-		_ = os.Remove(link) // dangling
+		// Dangling: replace it only when the runner left it --
+		// a user-managed link that happens to dangle is the
+		// project's own and stays (CodeRabbit review, PR #2589).
+		if !runnerOwnedLinkTarget(target, workDir) {
+			return nil
+		}
+		_ = os.Remove(link)
 		return os.Symlink(modules, link)
 	}
 	// A live link elsewhere: refresh it only when it is one this

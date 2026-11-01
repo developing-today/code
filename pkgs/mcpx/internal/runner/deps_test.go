@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1711,5 +1712,257 @@ func TestMaterialiseDepsDenoPreservesExternalImportMap(t *testing.T) {
 	}
 	if imports["lib"] != "jsr:@scope/lib@1" {
 		t.Fatalf("inline mapping not preserved: %v", imports)
+	}
+}
+
+// TestMaterialiseDepsTransportsWorkspaceMembers is the Codex finding
+// on PR #2589 (runner/deps.go): a workspace member required as
+// helper: "*" was skipped by transport while the copied frozen
+// lockfile still linked node_modules/helper to packages/helper, so
+// imports failed MODULE_NOT_FOUND in the transported layout.
+func TestMaterialiseDepsTransportsWorkspaceMembers(t *testing.T) {
+	project := t.TempDir()
+	member := filepath.Join(project, "packages", "helper")
+	if err := os.MkdirAll(member, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "package.json"), []byte(`{"name":"helper","version":"1.2.3"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "index.js"), []byte("export const x = 1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"p","workspaces":["packages/*"],"dependencies":{"helper":"*"}}`
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindNode, &Deps{Manifest: manifest}, true, project); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "packages", "helper", "index.js"))
+	if err != nil || string(got) != "export const x = 1" {
+		t.Fatalf("workspace member not transported: %q, %v", got, err)
+	}
+	// The workspace: protocol spelling and the exact-version
+	// spelling bind the member too.
+	for _, spec := range []string{"workspace:*", "1.2.3"} {
+		dir2 := t.TempDir()
+		m2 := `{"name":"p","workspaces":["packages/*"],"dependencies":{"helper":"` + spec + `"}}`
+		if _, err := materialiseDeps(dir2, KindNode, &Deps{Manifest: m2}, true, project); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir2, "packages", "helper", "index.js")); err != nil {
+			t.Fatalf("spec %q: workspace member not transported: %v", spec, err)
+		}
+	}
+	// A registry range that is not the member's version does not
+	// transport it: the requirement names the registry package.
+	dir3 := t.TempDir()
+	m3 := `{"name":"p","workspaces":["packages/*"],"dependencies":{"helper":"^2.0.0"}}`
+	if _, err := materialiseDeps(dir3, KindNode, &Deps{Manifest: m3}, true, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir3, "packages", "helper")); !os.IsNotExist(err) {
+		t.Fatal("workspace member transported for a non-binding registry range")
+	}
+	// Member content joins the workdir identity: same payload,
+	// different member code, different identity.
+	d := &Deps{Manifest: manifest, ManifestDir: project}
+	before := localDepsIdentity(d, project)
+	if err := os.WriteFile(filepath.Join(member, "index.js"), []byte("export const x = 2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if after := localDepsIdentity(d, project); after == "" || after == before {
+		t.Fatal("workspace member content must change the local deps identity")
+	}
+}
+
+// TestDepsFlagsDenoCachedOnly is the CodeRabbit finding on PR #2589:
+// deps.autoInstall=off did not stop deno downloading uncached npm:
+// imports, unlike bun's --no-install.
+func TestDepsFlagsDenoCachedOnly(t *testing.T) {
+	got := depsFlags(KindDeno, &Deps{AutoInstall: "off"})
+	if len(got) != 1 || got[0] != "--cached-only" {
+		t.Fatalf("deno off flags = %v, want [--cached-only]", got)
+	}
+	got = depsFlags(KindDeno, &Deps{AutoInstall: "off", Lockfile: []byte("x"), LockfileName: "deno.lock"})
+	if len(got) != 2 || got[0] != "--frozen" || got[1] != "--cached-only" {
+		t.Fatalf("deno frozen+off flags = %v, want [--frozen --cached-only]", got)
+	}
+	for _, mode := range []string{"fallback", "always"} {
+		if got := depsFlags(KindDeno, &Deps{AutoInstall: mode}); len(got) != 0 {
+			t.Fatalf("deno %s flags = %v, want none", mode, got)
+		}
+	}
+}
+
+// TestLinkNodeModulesCleansStaleRunnerLink is the CodeRabbit finding
+// on PR #2589: a run whose set installs nothing kept the link an
+// earlier dependency-backed run left beside the script, so imports
+// resolved to the earlier set.
+func TestLinkNodeModulesCleansStaleRunnerLink(t *testing.T) {
+	oldWork := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(oldWork, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldWork, clientFileName), []byte("// client"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proj := t.TempDir()
+	if err := os.Symlink(filepath.Join(oldWork, "node_modules"), filepath.Join(proj, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	emptyWork := t.TempDir()
+	if err := linkNodeModules(proj, emptyWork); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(proj, "node_modules")); !os.IsNotExist(err) {
+		t.Fatal("stale runner-owned link kept for a run with no dependency set")
+	}
+	// A real directory is the project's own and stays.
+	if err := os.MkdirAll(filepath.Join(proj, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkNodeModules(proj, emptyWork); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(proj, "node_modules")); err != nil || !st.IsDir() {
+		t.Fatal("project-owned node_modules directory was removed")
+	}
+}
+
+// TestLinkNodeModulesLeavesForeignDanglingLink is the CodeRabbit
+// finding on PR #2589: any dangling node_modules symlink was
+// replaced, including user-managed ones the runner never created.
+func TestLinkNodeModulesLeavesForeignDanglingLink(t *testing.T) {
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := t.TempDir()
+	foreign := filepath.Join(t.TempDir(), "gone", "node_modules")
+	if err := os.Symlink(foreign, filepath.Join(proj, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkNodeModules(proj, work); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(filepath.Join(proj, "node_modules")); got != foreign {
+		t.Fatalf("foreign dangling link = %q; want untouched", got)
+	}
+	// A dangling runner-owned link (client marker beside the pruned
+	// target) is still replaced with the current set.
+	oldWork := t.TempDir()
+	if err := os.WriteFile(filepath.Join(oldWork, clientFileName), []byte("// client"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proj2 := t.TempDir()
+	if err := os.Symlink(filepath.Join(oldWork, "node_modules"), filepath.Join(proj2, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	if err := linkNodeModules(proj2, work); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(filepath.Join(proj2, "node_modules")); got != filepath.Join(work, "node_modules") {
+		t.Fatalf("runner dangling link = %q; want refreshed to the current set", got)
+	}
+}
+
+// TestCopyLocalArtifactFollowsSymlinkedRoot is the CodeRabbit
+// finding on PR #2589: filepath.Walk does not follow a symlinked
+// root, so copying a directory symlink read the directory as a file.
+func TestCopyLocalArtifactFollowsSymlinkedRoot(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "index.js"), []byte("export {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "out")
+	if err := copyLocalArtifact(link, dst); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "index.js"))
+	if err != nil || string(got) != "export {}" {
+		t.Fatalf("copied content = %q, %v", got, err)
+	}
+}
+
+// TestMergeNodeModulesDoesNotNestThroughSymlinkedHost is the
+// CodeRabbit finding on PR #2589: the conflicts nesting pass wrote
+// node_modules through a placed symlink into the caller's source
+// directory, outside the merged tree.
+func TestMergeNodeModulesDoesNotNestThroughSymlinkedHost(t *testing.T) {
+	root := t.TempDir()
+	// The caller's local package, outside both trees.
+	caller := filepath.Join(root, "caller", "localpkg")
+	if err := os.MkdirAll(caller, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(caller, "package.json"), []byte(`{"name":"host","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Destination already carries dep@2 (frozen tree wins the name);
+	// the scratch tree places host as a symlink to the caller's
+	// package and carries dep@1, which conflicts.
+	dst := filepath.Join(root, "dst")
+	if err := os.MkdirAll(filepath.Join(dst, "dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(filepath.Join(src, "dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "dep", "index.js"), []byte("dep1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(caller, filepath.Join(src, "host")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeNodeModules(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(caller, "node_modules")); !os.IsNotExist(err) {
+		t.Fatal("nesting wrote node_modules into the caller's source directory through the symlinked host")
+	}
+}
+
+// TestRunTimeoutBoundsFrozenInstall is the CodeRabbit finding on
+// PR #2589: dependency installs ran on the caller's context, so a
+// stalled npm ci outlived opts.Timeout, which was applied only to
+// the script itself.
+func TestRunTimeoutBoundsFrozenInstall(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	binDir := t.TempDir()
+	stub := "#!/bin/sh\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	start := time.Now()
+	_, err := Run(context.Background(), Options{
+		Source:       "export default () => 1",
+		Runtime:      "node",
+		ClientSource: "export {}",
+		Timeout:      time.Second,
+		Deps: &Deps{
+			Lockfile:     []byte("locked"),
+			LockfileName: "package-lock.json",
+		},
+		Stdout: &stdout, Stderr: &stderr,
+	})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a stalled frozen install was not bounded by the run timeout")
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("Run took %v with a stalled installer and a 1s timeout; the install is not on the timeout context", elapsed)
 	}
 }
