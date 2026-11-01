@@ -80,7 +80,7 @@ async function coverageSnapshot(
   const stored = await coverageStore.read();
   const next = nextCoverageSnapshot(stored, computeCoverage(census, poolAvailable ? pool : null));
   const strip = (s: CoverageSnapshotFile | null): string =>
-    s ? JSON.stringify({ baseline: s.baseline, current: { ...s.current, generatedAt: "" } }) : "";
+    s ? JSON.stringify({ baseline: s.baseline, weekly: s.weekly ?? null, anchorAt: s.anchorAt ?? "", current: { ...s.current, generatedAt: "" } }) : "";
   if (strip(next) !== strip(stored)) {
     await coverageStore.write(next).catch(() => {});
   }

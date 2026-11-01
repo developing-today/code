@@ -11,7 +11,7 @@
 //
 // A weekly snapshot is stored beside the other aggregator stores so the
 // panel can show week-over-week delta: the file holds { baseline,
-// current, anchorAt }; rotation age is measured from `anchorAt`, a fixed
+// current, weekly, anchorAt }; rotation age is measured from anchorAt, a fixed
 // anchor that does NOT move when `current` refreshes — measuring from
 // the refreshed `current.generatedAt` would restart the week on every
 // changed read and the baseline could stay null indefinitely during
@@ -59,6 +59,13 @@ export interface CoverageReport {
 export interface CoverageSnapshotFile {
   baseline: CoverageReport | null;
   current: CoverageReport;
+  /** The frozen first report of the current week. Rotation promotes
+   * THIS report to baseline - never current, which refreshes on every
+   * changed read and would make the week-over-week delta compare
+   * against a minutes-old observation (Codex finding on PR #3309).
+   * Optional for snapshot files written before the field existed -
+   * those fall back to current. */
+  weekly?: CoverageReport | null;
   /** Fixed rotation anchor: when the current week began. Optional for
    * snapshot files written before the anchor existed — those fall back
    * to `current.generatedAt`. */
@@ -154,25 +161,29 @@ export function diffCoverage(current: CoverageReport, baseline: CoverageReport |
 
 /**
  * The next snapshot file after observing `current`. Within the week the
- * stored baseline is untouched and `current` simply refreshes; once the
- * week anchored at `anchorAt` has elapsed, the stored current becomes
- * the baseline (the delta the panel shows), the fresh report takes its
- * place, and a new week anchors at `now`. The anchor is what makes the
- * week a week: `current` refreshes (new generatedAt) on every changed
- * read, so its timestamp can never be the rotation clock.
+ * stored baseline is untouched, `current` simply refreshes, and the
+ * week's first report stays frozen in `weekly`; once the week anchored
+ * at `anchorAt` has elapsed, the frozen weekly report becomes the
+ * baseline (the delta the panel shows), the fresh report takes its
+ * place as both `current` and the new week's frozen report, and a new
+ * week anchors at `now`. The anchor is what makes the week a week:
+ * `current` refreshes (new generatedAt) on every changed read, so its
+ * timestamp can never be the rotation clock - and its values can never
+ * be the baseline either, or the delta would measure only the time
+ * since the last refresh instead of the week.
  */
 export function nextCoverageSnapshot(
   stored: CoverageSnapshotFile | null,
   current: CoverageReport,
   now = new Date(),
 ): CoverageSnapshotFile {
-  if (!stored) return { baseline: null, current, anchorAt: current.generatedAt };
+  if (!stored) return { baseline: null, current, weekly: current, anchorAt: current.generatedAt };
   const anchor = stored.anchorAt ?? stored.current.generatedAt;
   const age = now.getTime() - new Date(anchor).getTime();
   if (Number.isFinite(age) && age >= COVERAGE_WEEK_MS) {
-    return { baseline: stored.current, current, anchorAt: now.toISOString() };
+    return { baseline: stored.weekly ?? stored.current, current, weekly: current, anchorAt: now.toISOString() };
   }
-  return { baseline: stored.baseline, current, anchorAt: anchor };
+  return { baseline: stored.baseline, current, weekly: stored.weekly ?? stored.current, anchorAt: anchor };
 }
 
 /** Thin JSON store for the coverage snapshot; corrupt reads as absent. */

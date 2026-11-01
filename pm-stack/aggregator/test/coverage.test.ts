@@ -185,6 +185,37 @@ describe("snapshot rotation anchor (PR #3309 Codex)", () => {
     expect(snap.anchorAt).toBe("2026-11-01T12:00:00.000Z");
   });
 
+  test("rotation promotes the frozen weekly report, not the refreshed current (PR #3309 Codex)", () => {
+    // Codex's reproduction: 100 issues on Nov 1, 160 on Nov 7 at 23:59,
+    // 170 at the Nov 8 rotation. The week-over-week delta must be +70
+    // (against the frozen Nov 1 report), not +10 (against the Nov 7
+    // refresh that `current` happened to hold at rotation time).
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      weekly: mk("2026-11-01T00:00:00Z", 100),
+      current: mk("2026-11-07T23:59:00Z", 160),
+      anchorAt: "2026-11-01T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-08T00:00:00Z", 170), new Date("2026-11-08T00:00:00Z"));
+    expect(snap.baseline?.generatedAt).toBe("2026-11-01T00:00:00Z");
+    expect(diffCoverage(snap.current, snap.baseline).get("developing-today/code")?.openIssues).toBe(70);
+    // The fresh report becomes the new week's frozen report.
+    expect(snap.weekly?.generatedAt).toBe("2026-11-08T00:00:00Z");
+    expect(snap.anchorAt).toBe("2026-11-08T00:00:00.000Z");
+  });
+
+  test("within the week the frozen weekly report does not move when current refreshes", () => {
+    const stored: CoverageSnapshotFile = {
+      baseline: null,
+      weekly: mk("2026-11-01T00:00:00Z", 100),
+      current: mk("2026-11-03T00:00:00Z", 130),
+      anchorAt: "2026-11-01T00:00:00Z",
+    };
+    const snap = nextCoverageSnapshot(stored, mk("2026-11-05T00:00:00Z", 150), new Date("2026-11-05T00:00:00Z"));
+    expect(snap.weekly?.generatedAt).toBe("2026-11-01T00:00:00Z");
+    expect(snap.current.repos[0]?.openIssues).toBe(150);
+  });
+
   test("a legacy snapshot without an anchor falls back to current.generatedAt", () => {
     const stored: CoverageSnapshotFile = { baseline: null, current: mk("2026-10-24T00:00:00Z", 90) };
     const snap = nextCoverageSnapshot(stored, mk("2026-11-01T00:00:00Z", 100), NOW);
