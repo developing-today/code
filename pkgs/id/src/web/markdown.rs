@@ -830,6 +830,26 @@ fn is_fence_opener(stripped: &str) -> bool {
     run >= 3 && !(ch == '`' && stripped[run..].contains('`'))
 }
 
+/// The fence a line opens, as (fence char, run length), when the
+/// line is a fence opener.
+fn fence_opener_run(stripped: &str) -> Option<(char, usize)> {
+    if !is_fence_opener(stripped) {
+        return None;
+    }
+    let ch = stripped.chars().next()?;
+    Some((ch, stripped.chars().take_while(|&c| c == ch).count()))
+}
+
+/// Whether a line closes a fence opened with the given char and run
+/// length: a run of the same char at least as long, followed by
+/// nothing but spaces and tabs (a closing fence carries no info
+/// string, CommonMark). The fence chars are ASCII, so the run
+/// length is also the byte count.
+fn is_fence_closer(stripped: &str, ch: char, run: usize) -> bool {
+    let count = stripped.chars().take_while(|&c| c == ch).count();
+    count >= run && stripped[count..].trim().is_empty()
+}
+
 /// The indentation of a line in columns: a space is one column
 /// and a tab advances to the next multiple of four, so the two
 /// spellings ` \t` and `    ` are the same four columns
@@ -1151,6 +1171,18 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         let opening_body = stripped[label.len() + 4..].trim_start_matches(' ');
         let mut prev_is_content =
             !opening_body.trim().is_empty() && !starts_new_block(opening_body);
+        // A fence opened by the definition's own content -- on the
+        // opening line (`[^a]: ``` `) or on a later indented line --
+        // makes the lines it covers literal fence content, never
+        // paragraph content: they cannot enable an unindented lazy
+        // continuation. Classifying each continuation line
+        // independently treated `code` inside the fence as a
+        // paragraph line, swallowed the following `<em>` into the
+        // definition, and promoted the definition-shaped line
+        // inside the HTML block to a real footnote (Codex P2 on
+        // #1565's twenty-seventh cut). Tracked across continuation
+        // lines until the closing fence.
+        let mut def_fence = fence_opener_run(opening_body);
         let mut j = i + 1;
         while j < lines.len() {
             let next = lines[j];
@@ -1192,10 +1224,30 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                 // A setext-shaped line with NO preceding paragraph
                 // is itself paragraph text and stays eligible,
                 // mirroring the outer scan's !at_block_start gate.
-                prev_is_content = indentation_columns(content) < 4
-                    && !content.trim().is_empty()
-                    && !starts_new_block(content.trim_start_matches(' '))
-                    && !(prev_is_content && is_setext_underline(content));
+                if let Some((fence_ch, fence_run)) = def_fence {
+                    // Inside a fence opened by this definition:
+                    // the line is literal fence content until the
+                    // closing fence, and is never paragraph content
+                    // (twenty-seventh cut).
+                    if is_fence_closer(content.trim_start_matches(' '), fence_ch, fence_run) {
+                        def_fence = None;
+                    }
+                    prev_is_content = false;
+                } else if indentation_columns(content) < 4 {
+                    if let Some(opened) = fence_opener_run(content.trim_start_matches(' ')) {
+                        // An indented fence opener inside the
+                        // definition opens a fence for the lines
+                        // that follow (twenty-seventh cut).
+                        def_fence = Some(opened);
+                        prev_is_content = false;
+                    } else {
+                        prev_is_content = !content.trim().is_empty()
+                            && !starts_new_block(content.trim_start_matches(' '))
+                            && !(prev_is_content && is_setext_underline(content));
+                    }
+                } else {
+                    prev_is_content = false;
+                }
                 j += 1;
                 continue;
             }
@@ -6096,6 +6148,49 @@ mod tests {
         let (first, second) = two_saves(original);
         assert!(first.contains("Title"), "footnote body survives: {first:?}");
         assert_eq!(first, second, "setext-in-footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_fenced_block_in_footnote_ends_lazy_continuation() {
+        // #1565 twenty-seventh cut (Codex P2): a footnote whose
+        // first block is a fenced code block -- the indented `code`
+        // line is fence content, not a paragraph line, so the
+        // following unindented `<em>` is not a lazy continuation:
+        // it starts a top-level HTML block and the definition-shaped
+        // line inside it is literal. The continuation loop
+        // classified lines independently, treated `code` as
+        // paragraph content, swallowed `<em>` into the footnote,
+        // and promoted the fake definition on save.
+        let original = "[^a]: ```\n    code\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<_> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["a"],
+            "fenced block in footnote must not synthesize fake: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(first.contains("code"), "fence content survives: {first:?}");
+        assert_eq!(first, second, "fenced-block round-trip is a fixpoint");
+        let saved_doc = markdown_to_prosemirror(&first);
+        let saved_labels: Vec<_> = saved_doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            saved_labels,
+            ["a"],
+            "saved form must not promote fake either: {saved_doc}"
+        );
     }
 
     #[test]
