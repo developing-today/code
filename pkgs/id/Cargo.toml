@@ -147,7 +147,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
 tokio-tungstenite = "0.29"
 vt100 = "=0.16.2"
-rqrr = { version = "0.11.0", default-features = false }
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"

@@ -33,6 +33,10 @@ tracing = "0.1"
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
 
+[dev-dependencies]
+# Decodes the QR images rendered by the extracted module's round-trip tests.
+rqrr = { version = "0.11.0", default-features = false }
+
 [lints.rust]
 # Rust compiler lints
 unsafe_code = "warn"
