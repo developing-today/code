@@ -225,7 +225,12 @@ function resolveComponent(path: string, depth: number): string {
           : `${parent}/${target}`;
       return canonicalizeDirectory(absolute, depth + 1);
     }
-  } catch {
+  } catch (e) {
+    // Our own depth-limit error must terminate traversal, not be
+    // swallowed as a filesystem miss: with a cyclic symlink
+    // (loop -> loop/../loop) swallowing it lets the caller re-expand
+    // the cycle segment by segment (Codex review of PR #4032).
+    if (e instanceof ValidationError) throw e;
     // Not present at all: a plain lexical component.
   }
   return path;

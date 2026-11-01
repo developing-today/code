@@ -372,6 +372,16 @@ describe("session directory symlink confinement (issue #3999)", () => {
     ).toThrow(ValidationError);
   });
 
+  test("a cyclic symlink is rejected by the depth limit, not expanded", () => {
+    symlinkSync("loop/../loop", join(clone, "loop"), "dir");
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "loop"), repoDirs)).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      resolveSessionDirectory("oidc", code, `${clone}/loop/../loop`, repoDirs),
+    ).toThrow(ValidationError);
+  });
+
   test("the clone root reached through a symlink is the same root", () => {
     const alias = join(base, "clone-alias");
     symlinkSync(clone, alias, "dir");
