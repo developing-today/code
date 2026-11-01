@@ -34,6 +34,41 @@
 
 use crate::protocol::{FindMatch, MatchKind, TaggedMatch};
 
+/// Render a text field without allowing whitespace or control characters to
+/// forge extra output rows or columns.
+///
+/// Ordinary strings without whitespace or controls are returned byte-for-byte.
+/// Otherwise a JSON-quoted string escapes embedded whitespace and controls,
+/// including Unicode line separators, so consumers can recover the original
+/// field after splitting the TSV row.
+pub fn display_text_field(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    if !value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return value.to_owned();
+    }
+
+    let mut encoded = String::with_capacity(value.len().saturating_add(2));
+    encoded.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\t' => encoded.push_str("\\t"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\u{08}' => encoded.push_str("\\b"),
+            '\u{0c}' => encoded.push_str("\\f"),
+            c if c.is_whitespace() || c.is_control() => {
+                let _ = write!(encoded, "\\u{:04x}", c as u32);
+            }
+            c => encoded.push(c),
+        }
+    }
+    encoded.push('"');
+    encoded
+}
+
 /// Parses a put specification into path and optional name.
 ///
 /// The put spec format is `path[:name]` where:
@@ -153,17 +188,18 @@ pub fn parse_get_spec(spec: &str) -> (&str, Option<&str>) {
 /// abc123...  config.json
 /// ```
 pub fn print_match_cli(m: &TaggedMatch, format: &str) {
+    let name = display_text_field(&m.name);
     match format {
         "group" => {
             println!("[{}]", m.query);
-            println!("  {}\t{}", m.hash, m.name);
+            println!("  {}\t{name}", m.hash);
         }
         "union" => {
-            println!("{}\t{}", m.hash, m.name);
+            println!("{}\t{name}", m.hash);
         }
         _ => {
             // "tag" format (default)
-            println!("{}\t{}\t({})", m.hash, m.name, m.query);
+            println!("{}\t{name}\t({})", m.hash, m.query);
         }
     }
 }
@@ -202,7 +238,7 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
                     println!("[{}]", m.query);
                     current_query = Some(&m.query);
                 }
-                println!("  {}\t{}", m.hash, m.name);
+                println!("  {}\t{}", m.hash, display_text_field(&m.name));
             }
         }
         "union" => {
@@ -210,14 +246,14 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
             let mut seen = std::collections::HashSet::new();
             for m in matches {
                 if seen.insert(m.hash) {
-                    println!("{}\t{}", m.hash, m.name);
+                    println!("{}\t{}", m.hash, display_text_field(&m.name));
                 }
             }
         }
         _ => {
             // "tag" format (default)
             for m in matches {
-                println!("{}\t{}\t({})", m.hash, m.name, m.query);
+                println!("{}\t{}\t({})", m.hash, display_text_field(&m.name), m.query);
             }
         }
     }
@@ -244,6 +280,7 @@ pub fn print_matches_cli(matches: &[TaggedMatch], format: &str) {
 ///   abc123...  config.json
 /// ```
 pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
+    let name = display_text_field(&m.name);
     let kind_str = match m.kind {
         MatchKind::Exact => "exact",
         MatchKind::Prefix => "prefix",
@@ -251,10 +288,10 @@ pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
     };
     match format {
         "group" | "union" => {
-            println!("  {}\t{}", m.hash, m.name);
+            println!("  {}\t{name}", m.hash);
         }
         _ => {
-            println!("  {}\t{}\t[{}, {}]", m.hash, m.name, kind_str, query);
+            println!("  {}\t{name}\t[{}, {}]", m.hash, kind_str, query);
         }
     }
 }
@@ -300,6 +337,37 @@ pub fn parse_duration_secs(text: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
     use iroh_blobs::Hash;
+
+    #[test]
+    fn display_text_field_preserves_plain_values_and_quotes_whitespace() {
+        assert_eq!(display_text_field("plain-name_123"), "plain-name_123");
+        assert_eq!(display_text_field("two words"), "\"two words\"");
+        assert_eq!(
+            display_text_field("tab\tline\nreturn\r"),
+            "\"tab\\tline\\nreturn\\r\""
+        );
+        assert_eq!(
+            serde_json::from_str::<String>(&display_text_field("tab\tline\nreturn\r")).unwrap(),
+            "tab\tline\nreturn\r"
+        );
+        let quoted = "tab\tquote \" and backslash \\";
+        assert_eq!(
+            serde_json::from_str::<String>(&display_text_field(quoted)).unwrap(),
+            quoted
+        );
+    }
+
+    #[test]
+    fn display_text_field_escapes_unicode_line_separators() {
+        let rendered = display_text_field("before\u{2028}middle\u{2029}after");
+        assert!(!rendered.contains('\u{2028}'));
+        assert!(!rendered.contains('\u{2029}'));
+        assert_eq!(rendered.lines().count(), 1);
+        assert_eq!(
+            serde_json::from_str::<String>(&rendered).unwrap(),
+            "before\u{2028}middle\u{2029}after"
+        );
+    }
 
     #[test]
     fn test_parse_duration_secs_units() {
