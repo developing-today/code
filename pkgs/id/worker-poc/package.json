@@ -1,0 +1,1 @@
+{"description":"PoC (#2271): plaza_* example worlds running unmodified in a Worker isolate, journal equality vs the native wasmtime host.","devDependencies":{"typescript":"^5.6.0","wrangler":"^3.90.0"},"name":"id-worker-poc","private":true,"scripts":{"dev":"wrangler dev","smoke":"node smoke/counter-smoke.mjs","typecheck":"tsc --noEmit"},"type":"module"}
