@@ -159,6 +159,21 @@ describe("server boots from fixtures", () => {
     expect(week.includes("Next 3 days")).toBe(true);
   });
 
+  test("queue page, fragment, and API expose the same four lists (#1160)", async () => {
+    const shell = await (await fetch(`http://127.0.0.1:${port}/queue`)).text();
+    expect(shell).toContain("Queue visibility");
+    expect(shell).toContain("/frag/queue");
+    const full = await (await fetch(`http://127.0.0.1:${port}/queue?full=1`)).text();
+    for (const heading of ["In progress", "Blocked", "Done recently", "Next up"]) expect(full).toContain(heading);
+    const fragment = await (await fetch(`http://127.0.0.1:${port}/frag/queue`)).text();
+    expect(fragment).toContain("datastar-patch-elements");
+    expect(fragment).toContain('id="queue-main"');
+    const api = (await (await fetch(`http://127.0.0.1:${port}/api/queue.json`)).json()) as {
+      inProgress: unknown[]; blocked: unknown[]; doneRecently: unknown[]; nextUp: unknown[];
+    };
+    for (const key of ["inProgress", "blocked", "doneRecently", "nextUp"] as const) expect(Array.isArray(api[key])).toBe(true);
+  });
+
   test("machine-first JSON endpoints", async () => {
     const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as { board: unknown[] };
     expect(board.board.length).toBeGreaterThan(0);

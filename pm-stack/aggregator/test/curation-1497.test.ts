@@ -32,6 +32,7 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   "aa-explorer": "dropdown",
   sessions: "dropdown",
   program: "primary",
+  queue: "primary",
   health: "primary",
   pages: "dropdown",
   // Post-#1497 addition (#3676, 2026-11-01): Alerts entered at
