@@ -79,7 +79,7 @@ describe("service links render (#1136)", () => {
 
   test("item pages carry a Live services line", () => {
     const url = kaneoTaskUrl("w", "p", "t1");
-    const html = renderItem("Card title", "kaneo:code/t1", [], [], new Map(), [], PROV, {
+    const html = renderItem("Card title", "kaneo:code/t1", [], new Map(), [], PROV, {
       dashComments: [],
       formRef: "kaneo:code/t1",
       formOpts: { identities: [] },

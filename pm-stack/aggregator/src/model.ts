@@ -163,8 +163,6 @@ export interface BoardItem {
   kaneoUrl?: string;
   /** Every linked issue/PR, from any of the four repos. */
   links: Link[];
-  /** Pad notes linked to the item (planning layer), by title + URL. */
-  notes?: { title: string; url: string }[];
 }
 
 /** One row of the Grist "Roadmap" table (doc "Program roadmap"). */
