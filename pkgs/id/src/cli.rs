@@ -25,6 +25,13 @@
 //!   id         Print node ID
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
+//!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   group        Groups: create, policy, add, remove, set roles, list, join
+//!   delegate     Grant a delegate a scope in a group
+//!   revoke       Revoke a delegation by its grant's event ID
+//!   doc          Documents: publish a file; list events, frontier, history
+//!   claim        Tag claims on any subject (set, clear, list, search)
+//!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
 //! ```
 //!
 //! # Search Filtering Flags
@@ -2265,6 +2272,53 @@ pub enum TagCommand {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn test_command_lists_cover_all_clap_subcommands() {
+        let cmd = Cli::command();
+        let names: Vec<&str> = cmd
+            .get_subcommands()
+            .map(|s| s.get_name())
+            .filter(|n| *n != "help")
+            .collect();
+        assert!(names.len() >= 20, "expected the full command set, got {names:?}");
+
+        // The module-doc command list at the top of this file.
+        let source = include_str!("cli.rs");
+        let doc_list = source
+            .split("Commands:")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("module-doc command list present");
+        for name in &names {
+            assert!(
+                doc_list.lines().any(|line| line
+                    .trim_start_matches('/')
+                    .trim_start_matches('!')
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    == Some(name)),
+                "module-doc command list in cli.rs omits `{name}`"
+            );
+        }
+
+        // The user-facing CLI Commands table in the README.
+        let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+            .expect("README readable");
+        let table = readme
+            .split("## CLI Commands")
+            .nth(1)
+            .and_then(|rest| rest.split("### ").next())
+            .expect("README CLI Commands table present");
+        for name in &names {
+            let cell = format!("| `{name}`");
+            assert!(
+                table.lines().any(|line| line.starts_with(&cell)),
+                "README CLI Commands table omits `{name}`"
+            );
+        }
+    }
 
     #[test]
     fn test_cli_parse_no_args() {
