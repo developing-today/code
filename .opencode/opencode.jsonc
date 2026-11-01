@@ -7252,7 +7252,8 @@
         "targets": [
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
-          "opencode-route/spark-plan#max",
+        // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
+          "opencode-route/spark-plan#xhigh",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
