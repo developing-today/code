@@ -765,22 +765,22 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
 fn read_world_journal(dir: &std::path::Path) -> Result<Vec<crate::world::JournalEntry>> {
     let path = dir.join("journal.jsonl");
     let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if bytes.last() != Some(&b'\n') {
+        // The final chunk is an unterminated fragment (or the empty tail
+        // of an empty file): it was never durably acknowledged, so it is
+        // dropped even when it happens to parse — the same rule
+        // `FileJournal::open` and the store-level fork reader apply.
+        lines.pop();
+    }
     let mut entries = Vec::new();
-    let lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
-    for (index, line) in lines.iter().enumerate() {
+    for line in lines {
         if line.is_empty() {
             continue;
         }
-        match serde_json::from_slice::<crate::world::JournalEntry>(line) {
-            Ok(entry) => entries.push(entry),
-            Err(error) => {
-                let is_torn_tail = index == lines.len() - 1 && bytes.last() != Some(&b'\n');
-                if is_torn_tail {
-                    break;
-                }
-                bail!("{} is corrupt: {error}", path.display());
-            }
-        }
+        let entry: crate::world::JournalEntry = serde_json::from_slice(line)
+            .with_context(|| format!("{} is corrupt", path.display()))?;
+        entries.push(entry);
     }
     Ok(entries)
 }
@@ -801,7 +801,7 @@ fn world_provenance(dir: &std::path::Path) -> Result<WorldProvenance> {
         );
     };
     let world_id = world_id.clone();
-    let forked = entries.iter().find_map(|entry| match entry {
+    let forked = entries.iter().rev().find_map(|entry| match entry {
         crate::world::JournalEntry::Forked {
             from_world_id,
             from_module_hash,

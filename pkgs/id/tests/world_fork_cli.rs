@@ -158,6 +158,61 @@ fn cli_fork_template_flag_is_recorded_and_identifiable() {
 }
 
 #[test]
+fn cli_provenance_reports_the_most_recent_fork_in_a_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, _hash) = make_source(tmp.path());
+    let middle = tmp.path().join("middle-world");
+    let leaf = tmp.path().join("leaf-world");
+
+    run_ok(&[
+        "world",
+        "fork",
+        src.to_str().unwrap(),
+        middle.to_str().unwrap(),
+    ]);
+    // Forking the fork appends a second Forked entry; the leaf's
+    // provenance is its own record (origin = middle, template = true),
+    // not the inherited one.
+    run_ok(&[
+        "world",
+        "fork",
+        middle.to_str().unwrap(),
+        leaf.to_str().unwrap(),
+        "--template",
+    ]);
+
+    let stdout = run_ok(&["world", "provenance", leaf.to_str().unwrap(), "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["world_id"], "leaf-world");
+    assert_eq!(value["forked_from"], "middle-world");
+    assert_eq!(value["template"], true);
+}
+
+#[test]
+fn cli_provenance_discards_an_unterminated_final_entry() {
+    use std::io::Write as _;
+    let tmp = tempfile::tempdir().unwrap();
+    let (src, _hash) = make_source(tmp.path());
+
+    // A crash left a complete-JSON Forked entry with no terminating
+    // newline: never acknowledged, so provenance must not report it.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(src.join("journal.jsonl"))
+        .unwrap();
+    file.write_all(
+        br#"{"entry":"forked","from_world_id":"ghost","from_module_hash":"x","template":true,"at_sequence":99}"#,
+    )
+    .unwrap();
+    drop(file);
+
+    let stdout = run_ok(&["world", "provenance", src.to_str().unwrap(), "--json"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(value["forked_from"].is_null(), "{value}");
+    assert_eq!(value["template"], false);
+}
+
+#[test]
 fn cli_fork_refuses_a_non_empty_destination_and_a_bad_name() {
     let tmp = tempfile::tempdir().unwrap();
     let (src, _hash) = make_source(tmp.path());
