@@ -129,6 +129,12 @@ pub struct Membership {
     voided: HashSet<Hash>,
     /// The no-op placeholder standing in the graph for each voided operation, by ID.
     placeholders: HashMap<Hash, AuthOperation>,
+    /// The removal that voided each voided operation, by operation ID. When that
+    /// removal is itself voided, the operation it voided is re-evaluated.
+    voided_by: HashMap<Hash, Hash>,
+    /// The original operation of each operation that stands in the graph as a
+    /// placeholder, by ID, so a revived operation can be replayed as itself.
+    originals: HashMap<Hash, AuthOperation>,
     /// The `after` hashes of every decided event, for concurrency checks.
     afters: HashMap<Hash, Vec<Hash>>,
 }
@@ -227,11 +233,13 @@ impl Membership {
             // The originator was already removed by an operation concurrent with this
             // one: strong remove voids it, exactly as if it had been placed under the
             // originator itself. It stands in the graph as a placeholder instead.
-            if self.concurrently_removed(&op) {
+            if let Some(cause) = self.voiding_removal(&op) {
                 match self.placeholder_for(&op) {
                     Some(noop) => {
                         self.placeholders.insert(id, noop.clone());
                         self.voided.insert(id);
+                        self.voided_by.insert(id, cause);
+                        self.originals.insert(id, op.clone());
                         return match self.process(&noop)? {
                             Ok(()) => {
                                 self.index.insert(id, after, Some(group))?;
@@ -508,23 +516,40 @@ impl Membership {
         !self.in_past(a, b) && !self.in_past(b, a)
     }
 
+    /// The account that acted in `op`: its originator when it was placed under a
+    /// delegated authority, otherwise its author.
+    fn actor_of(&self, op: &AuthOperation) -> AuthId {
+        self.originators.get(&op.id).copied().unwrap_or(op.author)
+    }
+
+    /// The accepted removal of `op`'s originator that is concurrent with `op` and
+    /// still in effect, if any. A voided removal does not count: it took no effect,
+    /// so it voids nothing.
+    fn voiding_removal(&self, op: &AuthOperation) -> Option<Hash> {
+        let originator = self.originators.get(&op.id)?;
+        self.accepted
+            .iter()
+            .find(|other| {
+                other.group_id == op.group_id
+                    && !self.voided.contains(&other.id)
+                    && Self::removed_member(other) == Some(*originator)
+                    && self.concurrent(&other.id, &op.id)
+                    // A delegated operation that removes the remover in turn is a
+                    // mutual removal and stands, as in `void_concurrent_delegated`.
+                    // The remover is matched by the account that acted, not by the
+                    // authority identity the operation was placed under.
+                    && !matches!(
+                        &op.action,
+                        GroupAction::Remove { member } if member.id() == self.actor_of(other)
+                    )
+            })
+            .map(|other| other.id)
+    }
+
     /// Whether a removal of `op`'s originator already stands accepted, concurrent
     /// with `op`.
     fn concurrently_removed(&self, op: &AuthOperation) -> bool {
-        let Some(originator) = self.originators.get(&op.id) else {
-            return false;
-        };
-        self.accepted.iter().any(|other| {
-            other.group_id == op.group_id
-                && Self::removed_member(other) == Some(*originator)
-                && self.concurrent(&other.id, &op.id)
-                // A delegated operation that removes the remover in turn is a mutual
-                // removal and stands, as in `void_concurrent_delegated`.
-                && !matches!(
-                    &op.action,
-                    GroupAction::Remove { member } if member.id() == other.author
-                )
-        })
+        self.voiding_removal(op).is_some()
     }
 
     /// The no-op placeholder for a voided operation, in the shape `refuse` uses: a
@@ -547,6 +572,7 @@ impl Membership {
             return Ok(());
         };
         let mut changed = false;
+        let remover = self.actor_of(removal);
         let candidates: Vec<AuthOperation> = self
             .accepted
             .iter()
@@ -558,16 +584,48 @@ impl Membership {
                     && self.concurrent(&other.id, &removal.id)
                     && !matches!(
                         &other.action,
-                        GroupAction::Remove { member } if member.id() == removal.author
+                        GroupAction::Remove { member } if member.id() == remover
                     )
             })
             .cloned()
             .collect();
+        let mut newly_voided_removals: Vec<Hash> = Vec::new();
         for candidate in candidates {
             if let Some(noop) = self.placeholder_for(&candidate) {
                 self.placeholders.insert(candidate.id, noop);
                 self.voided.insert(candidate.id);
+                self.voided_by.insert(candidate.id, removal.id);
+                if Self::removed_member(&candidate).is_some() {
+                    newly_voided_removals.push(candidate.id);
+                }
                 changed = true;
+            }
+        }
+        // A removal voided in this pass took no effect, so the operations it had
+        // voided are re-evaluated: one with no remaining voiding removal in
+        // effect revives and is replayed as itself.
+        for voided_removal in newly_voided_removals {
+            let revivable: Vec<Hash> = self
+                .voided_by
+                .iter()
+                .filter(|(_, cause)| **cause == voided_removal)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in revivable {
+                let Some(original) = self
+                    .originals
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| self.accepted.iter().find(|op| op.id == id).cloned())
+                else {
+                    continue;
+                };
+                if self.voiding_removal(&original).is_none() {
+                    self.voided.remove(&id);
+                    self.voided_by.remove(&id);
+                    self.placeholders.remove(&id);
+                    changed = true;
+                }
             }
         }
         if changed {
@@ -583,10 +641,19 @@ impl Membership {
             .accepted
             .iter()
             .map(|op| {
-                self.placeholders
-                    .get(&op.id)
-                    .cloned()
-                    .unwrap_or_else(|| op.clone())
+                if self.voided.contains(&op.id) {
+                    self.placeholders
+                        .get(&op.id)
+                        .cloned()
+                        .unwrap_or_else(|| op.clone())
+                } else {
+                    // An operation that arrived voided stands in `accepted` as its
+                    // placeholder; replay it as itself once it has revived.
+                    self.originals
+                        .get(&op.id)
+                        .cloned()
+                        .unwrap_or_else(|| op.clone())
+                }
             })
             .collect();
         if self.voided.is_empty() {
@@ -857,6 +924,69 @@ mod tests {
                 "mutual removal stands (remove_first={remove_first})"
             );
             assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(3))));
+        }
+    }
+
+    #[test]
+    fn test_delegated_mutual_removals_by_two_delegatees_stand_in_either_order() {
+        // Members 2 and 3 both act on member 1's delegated Manage and remove
+        // each other concurrently. The mutual-removal exemption matches the
+        // account that acted, not the authority identity, so both stand.
+        for second_first in [true, false] {
+            let mut layer = Membership::new();
+            layer.receive(create(10, 1, &[1])).unwrap();
+            layer
+                .receive(auth(11, 1, Some(10), &[10], add(2, Access::write())))
+                .unwrap();
+            layer
+                .receive(auth(15, 1, Some(10), &[11], add(3, Access::write())))
+                .unwrap();
+            let by2 = auth_as(12, 1, 2, Some(10), &[15], remove(3));
+            let by3 = auth_as(13, 1, 3, Some(10), &[15], remove(2));
+            if second_first {
+                layer.receive(by3).unwrap();
+                layer.receive(by2).unwrap();
+            } else {
+                layer.receive(by2).unwrap();
+                layer.receive(by3).unwrap();
+            }
+            assert!(layer.is_effective(&id(12)), "second_first={second_first}");
+            assert!(layer.is_effective(&id(13)), "second_first={second_first}");
+            assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(2))));
+            assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(3))));
+        }
+    }
+
+    #[test]
+    fn test_an_add_by_a_member_whose_delegated_removal_was_voided_survives() {
+        // Member 2's delegated removal of member 3 is itself voided by member
+        // 1's concurrent removal of member 2, so member 3's delegated add
+        // stands — whether the add arrives after the voiding or before it
+        // (in which case it revives when its voiding removal is voided).
+        for add_last in [true, false] {
+            let mut layer = Membership::new();
+            layer.receive(create(10, 1, &[1])).unwrap();
+            layer
+                .receive(auth(11, 1, Some(10), &[10], add(2, Access::write())))
+                .unwrap();
+            layer
+                .receive(auth(15, 1, Some(10), &[11], add(3, Access::write())))
+                .unwrap();
+            let delegated_removal = auth_as(12, 1, 2, Some(10), &[15], remove(3));
+            let removal = auth(13, 1, Some(10), &[15], remove(2));
+            let add = auth_as(14, 1, 3, Some(10), &[15], add(4, Access::read()));
+            layer.receive(delegated_removal).unwrap();
+            if add_last {
+                layer.receive(removal).unwrap();
+                layer.receive(add).unwrap();
+            } else {
+                layer.receive(add).unwrap();
+                layer.receive(removal).unwrap();
+            }
+            assert!(!layer.is_effective(&id(12)), "add_last={add_last}");
+            assert!(layer.is_effective(&id(14)), "add_last={add_last}");
+            assert!(member_keys(&layer, 10).contains(&AuthId::Key(key(3))));
+            assert!(member_keys(&layer, 10).contains(&AuthId::Key(key(4))));
         }
     }
 
