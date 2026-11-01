@@ -21,6 +21,7 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   sanitizeTierItemExtensions,
   withUserFallbacks,
 } from "../src/tier-items.ts";
@@ -313,6 +314,18 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     expect(checkActionAgainstItem(actionInput({ payload: { optionId: "csv" } }), item, NOW)).toBeNull();
   });
 
+  test("option shortcuts resolve to a shared question id", () => {
+    const mapped = sanitizeTierItemExtensions({
+      ...BASE,
+      options: [{ id: "yes", label: "Yes", questionId: "confirm" }],
+      questions: [{ id: "confirm", prompt: "Is it ready?", type: "yesno", required: true, covers: "readiness" }],
+    });
+    expect(questionIdForOption(mapped, "yes")).toBe("confirm");
+    expect(
+      checkActionAgainstItem(actionInput({ payload: { optionId: "yes" } }), mapped, NOW),
+    ).toBeNull(); // the shortcut can answer one question without closing the rest of a survey
+  });
+
   test("survey answers: unknown ids and bad values are legible 400s; partial submits are accepted (#1451)", () => {
     expect(
       checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId: "nope", value: "x" }] } }), item, NOW),
@@ -600,6 +613,58 @@ describe("needs-user card rendering (#1291/#1293)", () => {
     expect(html).toContain('data-verb="dismiss"');
     // no free-text answer box when the item offers options/survey
     expect(html).not.toContain("Your answer / decision");
+  });
+
+  test("option and survey controls share answered state without blocking other partial-survey questions", async () => {
+    const item = sanitizeTierItemExtensions({
+      ...BASE,
+      options: [
+        { id: "yes", label: "Yes", questionId: "confirm" },
+        { id: "no", label: "No", questionId: "confirm" },
+        { id: "later-yes", label: "Later: Yes", questionId: "follow-up" },
+        { id: "later-no", label: "Later: No", questionId: "follow-up" },
+      ],
+      questions: [
+        { id: "confirm", prompt: "Is it ready?", type: "yesno", required: true, covers: "readiness" },
+        { id: "follow-up", prompt: "Continue?", type: "yesno", required: true, covers: "next step" },
+        { id: "details", prompt: "Anything else?", type: "text", required: false, covers: "details" },
+      ],
+    });
+    const objectRef = "gh:developing-today/code#2001";
+    const baseAction: DashAction = {
+      id: "da-answer-confirm",
+      clientToken: "ct-answer-confirm-0001",
+      kind: "triage",
+      verb: "answer",
+      objectRef,
+      payload: { answers: [{ questionId: "confirm", value: "no" }] },
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: "2026-10-27T12:00:00.000Z",
+      state: "new",
+    };
+    const surveyHtml = await page([item], new Map([[objectRef, [baseAction]]]));
+    expect(surveyHtml).toContain('name="optionId" value="yes"><button type="submit" class="primary" disabled>');
+    expect(surveyHtml).toContain('name="optionId" value="no"><button type="submit" class="primary" disabled>');
+    expect(surveyHtml).toContain('name="optionId" value="later-yes"><button type="submit" class="primary">');
+    expect(surveyHtml).toContain('name="answers:confirm" value="yes" disabled');
+    expect(surveyHtml).toContain('name="answers:follow-up" value="yes"');
+    expect(surveyHtml).not.toContain('name="answers:follow-up" value="yes" disabled');
+    expect(surveyHtml).toContain('name="answers:details"');
+    expect(surveyHtml).toContain("action da-answer-confirm");
+    expect(surveyHtml).toContain("if (el.disabled) continue;");
+
+    const optionAction: DashAction = {
+      ...baseAction,
+      id: "da-option-confirm",
+      clientToken: "ct-option-confirm-0001",
+      // Existing records have no canonical question pointer; the renderer
+      // resolves this answer against the current published option mapping.
+      payload: { optionId: "yes" },
+    };
+    const optionHtml = await page([item], new Map([[objectRef, [optionAction]]]));
+    expect(optionHtml).toContain('name="answers:confirm" value="yes" checked disabled');
+    expect(optionHtml).toContain("action da-option-confirm");
+    expect(optionHtml).toContain('name="answers:details"');
   });
 
   test("an access item's Auto control is disabled with the reason", async () => {

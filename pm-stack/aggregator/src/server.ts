@@ -10,7 +10,13 @@ import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
+import {
+  checkActionAgainstItem,
+  effectiveNeedsOrder,
+  effectiveStandingAuto,
+  findTierItem,
+  questionIdForOption,
+} from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import {
   computeCoverage,
@@ -585,13 +591,14 @@ async function handler(req: Request): Promise<Response> {
       // consumer rejects what it cannot apply.
       if (parsed.value.kind === "triage") {
         const section = await source.orchestration().catch(() => null);
+        let item: ReturnType<typeof findTierItem>;
         if (section) {
-          const problem = checkActionAgainstItem(
-            parsed.value,
-            findTierItem(section, parsed.value.objectRef),
-            Date.now(),
-          );
+          item = findTierItem(section, parsed.value.objectRef);
+          const problem = checkActionAgainstItem(parsed.value, item, Date.now());
           if (problem) return json({ error: problem }, 400);
+        }
+        if (parsed.value.verb === "answer" && parsed.value.payload.optionId) {
+          parsed.value.payload.questionId = questionIdForOption(item, parsed.value.payload.optionId) ?? "$options";
         }
       }
       // #1509: persistence failure -> 5xx (see /api/comments above).
@@ -602,6 +609,16 @@ async function handler(req: Request): Promise<Response> {
         return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
       const { action, created } = added;
+      if (added.duplicateOf) {
+        return json(
+          {
+            error: `duplicate answer recorded as ${action.id}; it points to existing answer action ${added.duplicateOf}`,
+            action,
+            duplicateOf: added.duplicateOf,
+          },
+          409,
+        );
+      }
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);

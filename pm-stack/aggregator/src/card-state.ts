@@ -45,8 +45,15 @@ export interface CardState {
   pending: DashAction[];
   /** Merged survey answers by question id, latest answer wins. */
   answered: Map<string, string | string[]>;
+  /** Action that supplied the current value for each answered question. */
+  answerActionsByQuestion: Map<string, DashAction>;
   /** The option picked by the latest effective option answer, if any. */
   answeredOptionId?: string;
+  /** Action that supplied the latest standalone option pick. */
+  answeredOptionAction?: DashAction;
+  /** All effective option actions, including legacy records without a
+   *  canonical question pointer, for render-time mapping to current items. */
+  answeredOptionActionsById: Map<string, DashAction>;
 }
 
 /** Ids cancelled by a restore: any non-superseded, non-rejected
@@ -85,7 +92,10 @@ export function cardState(actions: DashAction[] | undefined, now = Date.now()): 
 
   const ack = latestInFamily(eff, "ack");
   const answered = new Map<string, string | string[]>();
+  const answerActionsByQuestion = new Map<string, DashAction>();
   let answeredOptionId: string | undefined;
+  let answeredOptionAction: DashAction | undefined;
+  const answeredOptionActionsById = new Map<string, DashAction>();
   for (const a of eff) {
     if (a.verb !== "answer" || a.state === "rejected" || !isRecord(a.payload)) continue;
     if (Array.isArray(a.payload.answers)) {
@@ -94,17 +104,29 @@ export function cardState(actions: DashAction[] | undefined, now = Date.now()): 
         const value = entry.value;
         if (typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"))) {
           answered.set(entry.questionId, value);
+          answerActionsByQuestion.set(entry.questionId, a);
         }
       }
     }
-    if (typeof a.payload.optionId === "string") answeredOptionId = a.payload.optionId;
+    if (typeof a.payload.optionId === "string") {
+      answeredOptionId = a.payload.optionId;
+      answeredOptionAction = a;
+      answeredOptionActionsById.set(a.payload.optionId, a);
+      if (typeof a.payload.questionId === "string") {
+        answered.set(a.payload.questionId, a.payload.optionId);
+        answerActionsByQuestion.set(a.payload.questionId, a);
+      }
+    }
   }
   return {
     suppressed: suppressors.at(-1) ?? null,
     acked: ack !== undefined && ack.state !== "rejected",
     pending: eff.filter((a) => a.state === "new"),
     answered,
+    answerActionsByQuestion,
     ...(answeredOptionId ? { answeredOptionId } : {}),
+    ...(answeredOptionAction ? { answeredOptionAction } : {}),
+    answeredOptionActionsById,
   };
 }
 
