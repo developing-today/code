@@ -55,6 +55,33 @@ REF shape 3 names two candidate triggers; the analysis:
   cannot send `~` reliably — not a second trigger in v1 (two doors,
   double the collision surface).
 
+### The client-side escape layer (do not skip this)
+
+There are **two** escape layers, and the design only works if both are
+accounted for. Users who connect with a stock OpenSSH client in a PTY
+session already have a client-side escape processor: OpenSSH's `ssh`
+consumes `~` at line start itself — `~.` disconnects, `~~` "sends the
+escape character once" (one literal `~` reaches the server), and any
+other character after `~` releases both bytes to the server untouched.
+Consequences for the contract:
+
+- **Toggling works on a stock client.** Enter is not an OpenSSH escape
+  command, so a deliberately typed `~` + Enter passes the client layer
+  unchanged and reaches the server-side state machine. (`~.` and the
+  other client escapes never reach the server at all — they are not, and
+  must never be documented as, server triggers.)
+- **A literal tilde line costs one more tilde on a stock client.** The
+  user types `~~~` + Enter: the client collapses `~~` → `~`, the server
+  receives `~~` + Enter, and its own doubling rule delivers one literal
+  `~` line to the guest. On an escape-free client — the built-in
+  russh-based `id world join`, or `ssh -e none` — `~~` + Enter is the
+  literal form directly. The prompt's help text must state both forms;
+  an implementation that documents only `~~` will toggle on stock-
+  OpenSSH users who were trying to send a tilde.
+- Users who toggle often can set `EscapeChar none` (or `-e none`) and
+  get the server-side rules verbatim; that is the documented power-user
+  option, not a requirement.
+
 ## The mode indicator
 
 While toggled, the user must be able to *see* they are talking to the
@@ -92,8 +119,9 @@ after every toggle round-trip.
 ## Risks and open questions
 
 - Guests that read tilde-led lines (text adventures, REPLs) lose exactly
-  the `~`+Enter sequence unless they double the tilde; documented in the
-  prompt help text, same as OpenSSH.
+  the `~`+Enter sequence unless the tilde is doubled at the server layer
+  — tripled for users behind a stock OpenSSH client, per the two-layer
+  contract above; documented in the prompt help text.
 - Paste bursts containing `\n~` followed by Enter will trip the escape;
   OpenSSH has the same behaviour and the doubled-tilde escape covers
   deliberate input.
