@@ -707,6 +707,15 @@ async function handler(req: Request): Promise<Response> {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/aa-explorer-computations.js") {
+    // Shared with Bun tests so the browser and regression suite exercise the
+    // same Cost Explorer calculations.
+    const file = Bun.file(new URL("./assets/aa-explorer-computations.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
 
   if (path === "/dns") {
     return html(renderDns(await source.dns(), prov(), provDetail()));

@@ -37,6 +37,17 @@ import {
 import { githubCommentUrl } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
+import {
+  applyInequalityFilters,
+  bandIndex,
+  computeRecommendations,
+  logEdges,
+  normName,
+  paretoSet,
+  pctRank,
+  projectTask,
+  scoreEdges,
+} from "./assets/aa-explorer-computations.js";
 import { summarizeDns } from "./dns.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
@@ -2966,7 +2977,8 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
  * src/aa.ts). Dependency-free inline script, like COMMENT_SCRIPT.
  * Written without template literals on purpose — it lives inside one.
  */
-const AA_EXPLORER_SCRIPT = `<script>
+const AA_EXPLORER_SCRIPT = `<script type="module">
+import { applyInequalityFilters, bandIndex, computeRecommendations, logEdges, normName, paretoSet, pctRank, projectTask, scoreEdges } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -3011,11 +3023,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function eord(e) { var v = EORD[String(e || "").toLowerCase()]; return v == null ? 50 : v; }
   var ESHORT = { "medium": "med", "reasoning": "reas", "max (peak)": "max·pk", "max (off-peak, derived)": "max·offpk", "non-reasoning": "base" };
   function shortLabel(p) { var e = String(p.effort || ""); return p.family + " " + (ESHORT[e.toLowerCase()] || e); }
-  function normName(s) {
-    var t = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-    for (var i = 0; i < 3; i++) t = t.replace(/(\d) (\d)/g, "$1.$2");
-    return t.replace(/\s+/g, " ");
-  }
   var goCapByName = {};
   (CATALOG || []).forEach(function (e) { if (e.goCapUsd != null) goCapByName[normName(e.name)] = e.goCapUsd; });
   function goCapFor(p) { var v = goCapByName[normName(p.family)]; return v == null ? null : v; }
@@ -3058,36 +3065,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   function scoreWord() { return S.persp === "cai" ? "CAI score" : "Intelligence"; }
   function scoreAxis() { return S.persp === "cai" ? "Coding Agent Index" : "Intelligence Index"; }
   function timeWord() { return S.persp === "cai" ? "agent wall time" : "time"; }
-  /** Percentile rank of v within vals (100 = best). higherBetter picks
-   * the direction; ties split. Null when the population is too small. */
-  function pctRank(vals, v, higherBetter) {
-    var xs = vals.filter(function (x) { return x != null; });
-    if (xs.length < 2 || v == null) return null;
-    var worse = 0, ties = 0;
-    xs.forEach(function (x) {
-      if (x === v) ties++;
-      else if (higherBetter ? x < v : x > v) worse++;
-    });
-    return Math.round((100 * (worse + 0.5 * (ties - 1))) / (xs.length - 1));
-  }
-  /** Non-dominated subset: dims are {get, better:"high"|"low"}; a point
-   * is kept unless another is at least as good on every dim and strictly
-   * better on one. Points missing any dim are excluded. */
-  function paretoSet(rows, dims) {
-    var pool = rows.filter(function (p) { return dims.every(function (d) { return d.get(p) != null; }); });
-    return pool.filter(function (p) {
-      return !pool.some(function (q) {
-        if (q === p) return false;
-        var allGe = true, anyGt = false;
-        dims.forEach(function (d) {
-          var a = d.get(q), b = d.get(p);
-          if (d.better === "high") { if (a < b) allGe = false; if (a > b) anyGt = true; }
-          else { if (a > b) allGe = false; if (a < b) anyGt = true; }
-        });
-        return allGe && anyGt;
-      });
-    });
-  }
   var S = {
     tab: location.hash === "#models" ? "models" : "aa",
     persp: "aa",
@@ -3138,55 +3115,9 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (all other filters applied): score gap = best score at or below this
   // cost minus this score; price premium = this cost over the cheapest
   // cost at or above this score; speed gap = score gap against time.
-  function gapMetrics(rows) {
-    var map = {};
-    rows.forEach(function (p) {
-      var g = { score: p.score, cost: p.cost, time: p.time, tps: p.tps, gapScore: null, gapCost: null, gapSpeed: null };
-      if (p.cost != null && p.score != null) {
-        var best = null, minCost = null;
-        rows.forEach(function (q) {
-          if (q.cost == null || q.score == null) return;
-          if (q.cost <= p.cost && (best == null || q.score > best)) best = q.score;
-          if (q.score >= p.score && (minCost == null || q.cost < minCost)) minCost = q.cost;
-        });
-        if (best != null) g.gapScore = best - p.score;
-        if (minCost != null && minCost > 0) g.gapCost = p.cost / minCost;
-      }
-      if (p.time != null && p.score != null) {
-        var bestT = null;
-        rows.forEach(function (q) {
-          if (q.time == null || q.score == null) return;
-          if (q.time <= p.time && (bestT == null || q.score > bestT)) bestT = q.score;
-        });
-        if (bestT != null) g.gapSpeed = bestT - p.score;
-      }
-      map[p.key] = g;
-    });
-    return map;
-  }
-  var INEQ_OPS = {
-    "<": function (a, b) { return a < b; },
-    "<=": function (a, b) { return a <= b; },
-    "=": function (a, b) { return a === b; },
-    ">=": function (a, b) { return a >= b; },
-    ">": function (a, b) { return a > b; },
-  };
   function visPoints() {
     var base = basePoints();
-    if (S.ineq.mode === "off") return base;
-    var active = S.ineq.conds.filter(function (c) { return c.value !== "" && !isNaN(Number(c.value)); });
-    if (!active.length) return base;
-    var gaps = gapMetrics(base);
-    return base.filter(function (p) {
-      var g = gaps[p.key];
-      var results = active.map(function (c) {
-        var v = g ? g[c.metric] : null;
-        if (v == null || !INEQ_OPS[c.op]) return false;
-        return INEQ_OPS[c.op](v, Number(c.value));
-      });
-      var match = S.ineq.combine === "or" ? results.some(function (x) { return x; }) : results.every(function (x) { return x; });
-      return S.ineq.mode === "reject" ? !match : match;
-    });
+    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
   }
   function visCatalog() {
     if (!CATALOG) return [];
@@ -3787,92 +3718,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   // survivors rank by (relative time)^speed-weight x (relative
   // price)^(1-speed-weight); scores inside the window break ties.
   function computeRecs() {
-    var R = S.rec;
-    var rows = visPoints();
-    var scored = rows.filter(function (p) { return p.score != null; });
-    if (!scored.length) return { bands: [], empty: "No scored configurations are visible under the current filters." };
-    var lo = Math.min.apply(null, scored.map(function (p) { return p.score; }));
-    var hi = Math.max.apply(null, scored.map(function (p) { return p.score; }));
-    var n = Math.max(2, Math.min(8, Number(S.bandCount) || 3));
-    var w = (hi - lo) / n || 1;
-    var bands = [];
-    for (var i = 0; i < n; i++) {
-      var bLo = lo + i * w, bHi = i === n - 1 ? hi : lo + (i + 1) * w;
-      var members = scored.filter(function (p) { return p.score >= bLo && (i === n - 1 ? p.score <= bHi : p.score < bHi); });
-      if (!members.length) continue;
-      var best = Math.max.apply(null, members.map(function (p) { return p.score; }));
-      var decision = {};
-      var candidates = [];
-      members.forEach(function (p) {
-        if (p.cost == null || p.time == null) decision[p.key] = "Missing selected cost or speed";
-        else candidates.push(p);
-      });
-      var ref = candidates.slice().sort(function (a, b) { return cmpDesc(a.score, b.score) || cmpAsc(a.cost, b.cost); })[0] || null;
-      var maxCost = R.maxCost === "" || R.maxCost == null ? null : Number(R.maxCost);
-      var maxTime = R.maxSec === "" || R.maxSec == null ? null : Number(R.maxSec);
-      var nearTop = [];
-      candidates.forEach(function (p) {
-        if (p.score < best - Number(R.allow)) decision[p.key] = "Below near-top score floor";
-        else if (maxCost != null && p.cost > maxCost) decision[p.key] = "Above the absolute price limit";
-        else if (maxTime != null && p.time > maxTime) decision[p.key] = "Above the absolute time limit";
-        else nearTop.push(p);
-      });
-      var picks = [];
-      var cheapest = null, fastest = null, priceCeil = null, timeCeil = null;
-      if (nearTop.length) {
-        cheapest = Math.min.apply(null, nearTop.map(function (p) { return p.cost; }));
-        fastest = Math.min.apply(null, nearTop.map(function (p) { return p.time; }));
-        priceCeil = cheapest * (1 + Number(R.priceAllow) / 100);
-        timeCeil = fastest * Number(R.slowAllow);
-        var survivors = [];
-        nearTop.forEach(function (p) {
-          if (p.cost > priceCeil) decision[p.key] = "Above relative price allowance";
-          else if (p.time > timeCeil) decision[p.key] = "Slower than relative speed limit";
-          else survivors.push(p);
-        });
-        var kept = survivors.filter(function (p) {
-          if (R.dominance === "none") return true;
-          var dominated = survivors.some(function (q) {
-            if (q === p) return false;
-            if (R.dominance === "lab" && q.creator !== p.creator) return false;
-            return q.score >= p.score && q.cost <= p.cost && q.time <= p.time && (q.score > p.score || q.cost < p.cost || q.time < p.time);
-          });
-          if (dominated) decision[p.key] = R.dominance === "lab" ? "Dominated within its lab" : "Dominated on score, price and speed";
-          return !dominated;
-        });
-        var sw = Number(R.speedPriority) / 100;
-        var ranked = kept.map(function (p) {
-          return { p: p, factor: Math.pow(p.time / fastest, sw) * Math.pow(p.cost / cheapest, 1 - sw) };
-        }).sort(function (a, b) { return a.factor - b.factor || cmpDesc(a.p.score, b.p.score); });
-        var bestFactor = ranked.length ? ranked[0].factor : null;
-        var pickedLabs = {};
-        var passes = R.diversity === "labsfirst" ? 2 : 1;
-        for (var pass = 0; pass < passes && picks.length < Number(R.perBand); pass++) {
-          ranked.forEach(function (r) {
-            if (picks.length >= Number(R.perBand)) return;
-            if (picks.some(function (x) { return x.p.key === r.p.key; })) return;
-            if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) return;
-            if (R.diversity === "lab" && pickedLabs[r.p.creator]) return;
-            if (R.diversity === "labsfirst" && pass === 0 && pickedLabs[r.p.creator]) return;
-            picks.push(r);
-            pickedLabs[r.p.creator] = true;
-          });
-        }
-        ranked.forEach(function (r) {
-          if (picks.some(function (x) { return x.p.key === r.p.key; })) { decision[r.p.key] = "Recommended"; return; }
-          if (decision[r.p.key]) return;
-          if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) decision[r.p.key] = "Outside the alternative window";
-          else if (R.diversity === "lab" && pickedLabs[r.p.creator]) decision[r.p.key] = "Not selected — one choice per lab";
-          else decision[r.p.key] = "Not selected — band cap reached";
-        });
-      }
-      bands.push({
-        label: "Score band " + (bands.length + 1) + " · " + scoreWord() + " " + fmtN(bLo, 2) + (i === n - 1 ? " to ≤ " : " to < ") + fmtN(bHi, 2),
-        members: members, best: best, ref: ref, picks: picks, decision: decision,
-        priceCeil: priceCeil, timeCeil: timeCeil, floor: best - Number(R.allow),
-      });
-    }
-    return { bands: bands, empty: null };
+    return computeRecommendations(visPoints(), S.rec, S.bandCount, scoreWord());
   }
   function bandScatter(band) {
     var pts = band.members.filter(function (p) { return p.cost != null && p.time != null; });
@@ -3964,29 +3810,6 @@ const AA_EXPLORER_SCRIPT = `<script>
   // Near-leader windows at 1x: score within 2 points, time within 10%,
   // price within 25% of the band leader; the scale select multiplies all
   // three. Tables only — Site 1's lane charts are noted as a follow-up.
-  function logEdges(vals, n) {
-    var xs = vals.filter(function (v) { return v != null && v > 0; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    if (mn === mx) return [mn, mx];
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
-    return edges;
-  }
-  function scoreEdges(rows, n) {
-    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
-    if (!xs.length) return [];
-    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
-    var edges = [];
-    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
-    return edges;
-  }
-  function bandIndex(v, edges) {
-    for (var i = 0; i < edges.length - 1; i++) {
-      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
-    }
-    return -1;
-  }
   function chipFor(p, leader) {
     var notes = [];
     if (leader && leader.key !== p.key) {
@@ -4141,49 +3964,8 @@ const AA_EXPLORER_SCRIPT = `<script>
   // (answer + thinking) output]; time = turns x (measured TTFT +
   // answer / measured throughput + tool overhead), borrowing the
   // family timing from either benchmark point set.
-  function pjBand(e) {
-    if (!e.rate || !e.rate.bands.length) return null;
-    var bands = e.rate.bands;
-    var win = bands.filter(function (b) { return b.window === S.pj.window; });
-    var pool = win.length ? win : bands.filter(function (b) { return b.window == null || b.window === "flat"; });
-    if (!pool.length) pool = bands;
-    var input = Number(S.pj.inputTokens) || 0;
-    for (var i = 0; i < pool.length; i++) {
-      var b = pool[i];
-      if ((b.minTokens == null || input >= b.minTokens) && (b.maxTokens == null || input < b.maxTokens)) return b;
-    }
-    return pool[pool.length - 1];
-  }
-  function pjTiming(e) {
-    var norm = normName(e.name);
-    var sets = [AA_POINTS, CAI_POINTS];
-    for (var si = 0; si < sets.length; si++) {
-      var cands = sets[si].filter(function (p) { return normName(p.family) === norm; });
-      for (var i = 0; i < cands.length; i++) if (cands[i].tps != null) return { tps: cands[i].tps, ttft: cands[i].ttft };
-    }
-    return null;
-  }
   function project(e) {
-    var band = pjBand(e);
-    if (!band) return { cost: null, time: null, band: null };
-    var P = S.pj;
-    var input = Number(P.inputTokens) || 0, answer = Number(P.answerTokens) || 0, thinking = Number(P.thinkingTokens) || 0;
-    var turns = Number(P.turns) || 0;
-    var cacheShare = (Number(P.cacheReadPct) || 0) / 100;
-    var writesShare = (Number(P.writesPct) || 0) / 100;
-    var uncached = input * (1 - cacheShare);
-    var reads = input * cacheShare;
-    var writes = uncached * writesShare;
-    var missing = band.input == null || band.output == null || (reads > 0 && band.cacheRead == null) || (writes > 0 && band.cacheWrite == null);
-    var cost = null;
-    if (!missing) {
-      var perTurn = (uncached * band.input + reads * (band.cacheRead || 0) + writes * (band.cacheWrite || 0) + (answer + thinking) * band.output) / 1000000;
-      cost = turns * perTurn;
-    }
-    var timing = pjTiming(e);
-    var time = null;
-    if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(P.overheadSec) || 0));
-    return { cost: cost, time: time, band: band };
+    return projectTask(e, S.pj, AA_POINTS, CAI_POINTS);
   }
   function renderModels() {
     var tb = document.getElementById("xpl-mrows");
