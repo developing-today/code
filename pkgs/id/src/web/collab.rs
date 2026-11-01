@@ -64,7 +64,7 @@ use std::{
 use tokio::sync::{RwLock, broadcast};
 
 use super::content_mode::{ContentMode, detect_mode_with_content};
-use super::identity::short_id;
+use super::identity::{sanitize_name, short_id};
 use super::markdown::{
     markdown_to_prosemirror, plain_text_to_prosemirror, raw_text_to_prosemirror,
 };
@@ -376,6 +376,9 @@ impl CollabState {
     /// Finds all cursors with the matching `identity_client_id`, updates the
     /// stored name, and broadcasts the updated cursor to all connected clients.
     pub async fn update_client_name(&self, identity_client_id: &str, new_name: &str) {
+        let Some(new_name) = sanitize_name(Some(new_name.to_owned())) else {
+            return;
+        };
         let docs = self.documents.read().await;
         for (doc_id, doc) in docs.iter() {
             let mut cursors = doc.cursors.write().await;
@@ -633,7 +636,8 @@ pub async fn ws_collab_handler(
     Query(params): Query<WsParams>,
     State(state): State<super::AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
+    ws.max_message_size(crate::world_session::MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| {
         handle_collab_socket(
             socket,
             doc_id,
@@ -642,7 +646,45 @@ pub async fn ws_collab_handler(
             state.store,
             state.identity,
         )
-    })
+        })
+}
+
+async fn store_and_broadcast_cursor(
+    doc: &Document,
+    client_id: u64,
+    head: u32,
+    anchor: u32,
+    cached_display_name: Option<String>,
+    incoming_name: Option<String>,
+    identity_client_id: Option<String>,
+) -> Option<String> {
+    let effective_name = sanitize_name(cached_display_name.or(incoming_name));
+    let client_id_str = client_id.to_string();
+
+    {
+        let mut cursors = doc.cursors.write().await;
+        cursors.insert(
+            client_id_str,
+            CursorPosition {
+                head,
+                anchor,
+                name: effective_name.clone(),
+                identity_client_id,
+                last_update: Instant::now(),
+                disconnected_at: None,
+            },
+        );
+    }
+
+    let cursor_msg = CollabMessage::Cursor {
+        client_id,
+        head,
+        anchor,
+        name: effective_name.clone(),
+        idle_secs: None,
+    };
+    let _ = doc.broadcast.send(cursor_msg);
+    effective_name
 }
 
 /// Handle a WebSocket connection for collaborative editing.
@@ -1076,7 +1118,20 @@ async fn handle_collab_socket(
                                     })
                                 );
                             }
-                        let effective_name = cached_display_name.clone().or(name);
+                        // Remember this client's ID for disconnect cleanup before
+                        // storing and broadcasting its cursor.
+                        *client_id_for_cleanup.write().await = Some(client_id_str);
+
+                        let effective_name = store_and_broadcast_cursor(
+                            &doc,
+                            client_id,
+                            head,
+                            anchor,
+                            cached_display_name.clone(),
+                            name,
+                            identity_client_id.clone(),
+                        )
+                        .await;
 
                         tracing::debug!(
                             "[collab] Received Cursor: client={}, head={}, anchor={}, name={:?}",
@@ -1086,33 +1141,6 @@ async fn handle_collab_socket(
                             effective_name
                         );
 
-                        // Remember this client's ID for disconnect cleanup
-                        *client_id_for_cleanup.write().await = Some(client_id_str.clone());
-
-                        {
-                            let mut cursors = doc.cursors.write().await;
-                            cursors.insert(
-                                client_id_str,
-                                CursorPosition {
-                                    head,
-                                    anchor,
-                                    name: effective_name.clone(),
-                                    identity_client_id: identity_client_id.clone(),
-                                    last_update: Instant::now(),
-                                    disconnected_at: None,
-                                },
-                            );
-                        }
-
-                        // Broadcast cursor position to all clients (no idle_secs for live updates)
-                        let cursor_msg = CollabMessage::Cursor {
-                            client_id,
-                            head,
-                            anchor,
-                            name: effective_name,
-                            idle_secs: None,
-                        };
-                        let _ = doc.broadcast.send(cursor_msg);
                     }
                     _ => {
                         tracing::debug!("[collab] Received unexpected message type, ignoring");
@@ -1350,6 +1378,33 @@ mod tests {
                 assert!(idle_secs.is_none());
             }
             _ => panic!("Expected Cursor message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[tokio::test]
+    async fn cursor_ingest_sanitizes_before_storage_and_broadcast() {
+        let doc = Document::new();
+        let mut updates = doc.broadcast.subscribe();
+
+        let name = store_and_broadcast_cursor(
+            &doc,
+            54321,
+            100,
+            50,
+            None,
+            Some("A\n\u{202e}lice".to_owned()),
+            None,
+        )
+        .await;
+        assert_eq!(name.as_deref(), Some("Alice"));
+
+        let stored = doc.cursors.read().await.get("54321").unwrap().name.clone();
+        assert_eq!(stored.as_deref(), Some("Alice"));
+
+        match updates.recv().await.unwrap() {
+            CollabMessage::Cursor { name, .. } => assert_eq!(name.as_deref(), Some("Alice")),
+            _ => panic!("Expected sanitized cursor broadcast"),
         }
     }
 
