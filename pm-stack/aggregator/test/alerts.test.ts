@@ -14,12 +14,15 @@ import {
   inQuietHours,
   mergeClasses,
   mergeQuiet,
+  runAlertTick,
   validateNewIncident,
   validateNewSubscription,
+  type AlertsStore,
   type Incident,
 } from "../src/alerts.ts";
-import { isForeignSwScript } from "../src/push.ts";
+import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
 import { sqlInt, sqlJson, sqlStr } from "../src/supabase.ts";
+import type { Config } from "../src/config.ts";
 
 describe("sql literals", () => {
   test("single quotes double", () => {
@@ -145,5 +148,103 @@ describe("sw-probe foreign test (design §6)", () => {
     expect(isForeignSwScript("https://amd-6.example.ts.net/sw.js")).toBe(false);
     expect(isForeignSwScript("https://amd-6.example.ts.net/service-worker.js")).toBe(true);
     expect(isForeignSwScript("not a url")).toBe(true);
+  });
+});
+
+const tickConfig = {
+  publicOrigin: "https://alerts.example.ts.net",
+  alerts: { ackWindowMin: 30, tickMs: 60_000 },
+} as Config;
+
+function alertTickStore(options: { deliveries?: Incident[]; escalations?: Incident[]; noSubscriptions?: boolean } = {}) {
+  const calls = {
+    delivered: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+    escalated: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+    sends: [] as Array<{ outcome: string; incidentId?: string }>,
+  };
+  const store = {
+    listSubscriptions: async () => options.noSubscriptions ? [] : [
+      {
+        id: "sub-1",
+        endpoint: "https://push.example/sub-1",
+        p256dh: "p256dh",
+        auth: "auth",
+        classes: { incident: true },
+        quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+        user_agent: null,
+        created_at: "2026-11-01T00:00:00Z",
+        last_seen_at: "2026-11-01T00:00:00Z",
+        gone_count: 0,
+      },
+    ],
+    pendingDeliveries: async () => (calls.delivered.length ? [] : (options.deliveries ?? [incident])),
+    pendingEscalations: async () => (calls.escalated.length ? [] : (options.escalations ?? [])),
+    markDelivered: async (id: string, detail: Record<string, unknown>) => {
+      calls.delivered.push({ id, detail });
+      return true;
+    },
+    markEscalated: async (id: string, detail: Record<string, unknown>) => {
+      calls.escalated.push({ id, detail });
+      return true;
+    },
+    logSend: async (entry: { outcome: string; incidentId?: string }) => {
+      calls.sends.push(entry);
+    },
+    noteSubscriptionAlive: async () => {},
+    noteSubscriptionGone: async () => "marked" as const,
+  };
+  return { store: store as unknown as AlertsStore, calls };
+}
+
+const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
+  ok: false,
+  gone: false,
+  error: "push service unavailable",
+});
+const successfulSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
+  ok: true,
+  status: 201,
+});
+
+describe("alert tick delivery state", () => {
+  test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {
+    const { store, calls } = alertTickStore();
+
+    await runAlertTick(tickConfig, store, failedSend);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error"]);
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toHaveLength(1);
+    expect(calls.delivered[0]).toMatchObject({
+      id: incident.id,
+      detail: { subscriptions: 1, sent: 1, gone: 0, errors: 0 },
+    });
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error", "sent"]);
+  });
+
+  test("escalation also stays pending on all-error sends and marks only after success", async () => {
+    const escalation = { ...incident, delivered_at: "2026-11-01T11:00:00Z" };
+    const { store, calls } = alertTickStore({ deliveries: [], escalations: [escalation] });
+
+    await runAlertTick(tickConfig, store, failedSend);
+    expect(calls.escalated).toEqual([]);
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.escalated).toHaveLength(1);
+    expect(calls.escalated[0]).toMatchObject({
+      id: incident.id,
+      detail: { subscriptions: 1, sent: 1, gone: 0, errors: 0, ackWindowMin: 30 },
+    });
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error", "sent"]);
+  });
+
+  test("zero subscriptions leave delivery and escalation untouched", async () => {
+    const { store, calls } = alertTickStore({ noSubscriptions: true });
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.escalated).toEqual([]);
+    expect(calls.sends).toEqual([]);
   });
 });
