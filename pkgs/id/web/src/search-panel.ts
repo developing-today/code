@@ -133,7 +133,7 @@ function createPanel(container: HTMLElement): HTMLElement {
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
       <button class="search-btn" id="replace-one" title="Replace" aria-label="Replace match">Replace</button>
-      <button class="search-btn" id="replace-all" title="Replace all" aria-label="Replace all matches">All</button>
+      <button class="search-btn" id="replace-all" title="Replace all" aria-label="Replace all">All</button>
     </div>
   `;
 
