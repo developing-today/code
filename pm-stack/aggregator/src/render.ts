@@ -40,6 +40,7 @@ import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import type { QueueView, QueueRow } from "./queue-view.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
@@ -2792,6 +2793,50 @@ export function renderTodayShell(provenance: Provenance, detail?: ProvenanceDeta
     "/today",
     "",
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
+  );
+}
+
+// --- Queue visibility (#1160) -----------------------------------------------
+
+function queueRows(rows: QueueRow[], empty: string): string {
+  if (!rows.length) return `<p class="muted">${esc(empty)}</p>`;
+  return `<div class="board">${rows.map((item) => {
+    const area = item.area ? `${item.area} · ${item.repo}` : item.repo;
+    const blocked = item.status.toLowerCase().includes("block");
+    const age = item.ageDays === undefined
+      ? blocked ? "block age unknown" : "age unknown"
+      : blocked ? `block state last updated ${item.ageDays}d ago` : item.ageDays === 0 ? "updated today" : `${item.ageDays}d since update`;
+    const blockers = item.blockedBy?.length ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}` : "";
+    const worker = item.worker ? `<br><strong>Worker:</strong> ${esc(item.worker)}` : "";
+    const epic = item.epic ? `<br><span class="muted">Epic: <a href="${esc(item.epic.url)}">${esc(item.epic.title)}</a></span>` : "";
+    const why = item.why ? `<br><span class="muted">${esc(item.why)}</span>` : "";
+    const horizon = item.horizon ? ` · ${esc(item.horizon)}` : "";
+    const title = item.url ? `<a href="${esc(item.url)}">${esc(item.title)}</a>` : esc(item.title);
+    return `<article class="card"><span class="badge">${esc(area)}</span> <span class="badge">${esc(item.status)}${horizon}</span><br><strong>${title}</strong>${item.ref ? `<br><span class="muted">${esc(item.ref)}</span>` : ""}<br><span class="muted">${esc(age)} · ${esc(item.source)}</span>${epic}${why}${blockers}${worker}</article>`;
+  }).join("")}</div>`;
+}
+
+/** The queue page body is also the Datastar fragment and JSON's source view. */
+export function renderQueueBody(view: QueueView): string {
+  return `<p class="muted">Cross-project work, reconciled from the existing board, Project pool, and orchestration inputs. Counts are the rows shown; machine-first: <a href="/api/queue.json">/api/queue.json</a>. Updated ${esc(fmtDate(view.generatedAt))}.</p>
+<h2>In progress <span class="badge">${view.inProgress.length}</span></h2>${queueRows(view.inProgress, "Nothing is in progress.")}
+<h2>Blocked <span class="badge">${view.blocked.length}</span></h2>${queueRows(view.blocked, "Nothing is blocked.")}
+<h2>Done recently <span class="badge">${view.doneRecently.length}</span></h2><p class="muted">Completed or merged in the last 7 days; retired bookkeeping cards are excluded.</p>${queueRows(view.doneRecently, "Nothing completed in the last 7 days.")}
+<h2>Next up <span class="badge">${view.nextUp.length}</span></h2><p class="muted">Queued work ordered by the published horizon ladder.</p>${queueRows(view.nextUp, "Nothing is queued for the next pick.")}`;
+}
+
+export function renderQueue(view: QueueView, provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout("Queue", `<h1>Queue visibility</h1>${renderQueueBody(view)}`, provenance, "/queue", "", detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "");
+}
+
+export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Queue",
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    provenance,
+    "/queue",
+    "",
+    detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
   );
 }
 

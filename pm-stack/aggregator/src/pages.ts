@@ -148,6 +148,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "queue",
+    title: "Queue",
+    route: "/queue",
+    api: "/api/queue.json",
+    blurb: "In progress, blocked, recently completed, and next-up work across projects.",
+    group: "work",
+    nav: "primary",
+  },
+  {
     id: "health",
     title: "Health",
     route: "/health",

@@ -69,6 +69,9 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  renderQueue,
+  renderQueueBody,
+  renderQueueShell,
   renderRoadmap,
   renderServiceDetail,
   renderSessions,
@@ -93,6 +96,7 @@ import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
+import { buildQueueView } from "./queue-view.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
@@ -474,6 +478,15 @@ async function todayContext() {
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
 }
 
+async function queueContext() {
+  const [{ board, items }, pool, orchestration] = await Promise.all([
+    boardContext(),
+    source.projects().catch(() => [] as ProjectPoolItem[]),
+    source.orchestration().catch(() => null),
+  ]);
+  return buildQueueView({ board, pool, items, orchestration });
+}
+
 /** The render inputs the overview (front door, #1134) assembles:
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
@@ -666,6 +679,16 @@ async function handler(req: Request): Promise<Response> {
     const { today, view, coverage, quota } = await todayContext();
     const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
+  }
+
+  if (path === "/queue") {
+    if (url.searchParams.get("full") !== "1") return html(renderQueueShell(prov(), provDetail()));
+    return html(renderQueue(await queueContext(), prov(), provDetail()));
+  }
+  if (path === "/frag/queue") {
+    const view = await queueContext();
+    const wrapped = `<div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on-dashrefresh__window="@get('/frag/queue')">${renderQueueBody(view)}</div>`;
+    return sseResponse(ssePatch("#queue-main", wrapped));
   }
 
   if (path === "/roadmap") {
@@ -930,6 +953,9 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/today.json") {
     const { today } = await todayContext();
     return json(today);
+  }
+  if (path === "/api/queue.json") {
+    return json(await queueContext());
   }
   if (path === "/api/orchestration.json") {
     // #899: the orchestration job's tiers + goal measurements. Absent
