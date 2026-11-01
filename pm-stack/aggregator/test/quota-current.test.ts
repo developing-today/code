@@ -171,6 +171,30 @@ describe("quota-current overlay", () => {
     expect(cline.windows[0].percent).toBe(69); // dated read, not the aged gatherer value
   });
 
+  test("a retained entry is stale immediately, even inside the freshness bound (#1268)", () => {
+    // One tick is 15 min and the freshness bound is 20, so a retained
+    // entry's measuredAt alone would read fresh for ~5 min after the
+    // failed tick; the retention stamp is what surfaces the failure.
+    const at = iso(5 * 60_000);
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          serviceId: "cline-pass:cline-pass",
+          measuredAt: at,
+          windows: [win("monthly", 71, at)],
+          retainedFromFailedTick: iso(1 * 60_000),
+        }),
+      ]),
+      NOW,
+    );
+    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    expect(cline.state).toBe("stale");
+    expect(cline.freshness).toEqual({ measuredAt: at, source: "openchamber-quota", state: "stale" });
+    expect(cline.windows[0].percent).toBe(69); // dated read, not the retained gatherer value
+    expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass:cline-pass")?.state).toBe("stale");
+  });
+
   test("an ok entry dated past the future-skew tolerance is stale, windows untouched (#1541)", () => {
     for (const futureMs of [60 * 60_000, 30 * 24 * 60 * 60_000]) {
       const futureAt = iso(-futureMs);

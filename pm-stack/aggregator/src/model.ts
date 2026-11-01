@@ -207,7 +207,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -1304,6 +1304,13 @@ export interface QuotaCurrentEntry {
   planLabel?: string;
   state: "ok" | "error" | "unconfigured";
   measuredAt: string;
+  /** #1268: ISO time of the tick that retained this entry from the
+   *  previous tick after the provider's run errored. The data is
+   *  last-known, never a fresh read: readers classify it stale
+   *  regardless of measuredAt freshness (a retained entry is usually
+   *  only one tick old, well inside the freshness bound). Absent on
+   *  fresh reads. */
+  retainedFromFailedTick?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];

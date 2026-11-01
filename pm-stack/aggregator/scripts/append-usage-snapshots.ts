@@ -49,16 +49,34 @@ const providerUsagePath =
   process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 
+// Resolve the --by value BEFORE any file is read or written (#3295).
+// A missing, empty, or flag-like value used to flow into every derived
+// record as an empty observedBy, fail isSnapshotRecord for all of them,
+// and exit 0 with nothing appended — a silent loss of the whole run.
+// Now it is a usage error (exit 2) and the outbox stays untouched.
+function resolveObservedBy(defaultName: string): string {
+  const byArg = process.argv.indexOf("--by");
+  if (byArg < 0) return defaultName;
+  const value: string | undefined = process.argv[byArg + 1];
+  if (value === undefined || value.trim() === "" || value.startsWith("-")) {
+    console.error(
+      "append-usage-snapshots: --by requires a non-empty name as its value " +
+        `(got ${value === undefined ? "no value" : JSON.stringify(value)}); refusing to run, outbox untouched`,
+    );
+    process.exit(2);
+  }
+  return value;
+}
+
 async function main(): Promise<void> {
   const fromProviderUsage = process.argv.includes("--from-provider-usage");
-  const byArg = process.argv.indexOf("--by");
   let records: SnapshotRecord[] = [];
   if (fromProviderUsage) {
-    const observedBy = byArg >= 0 ? process.argv[byArg + 1] : "check-usage";
+    const observedBy = resolveObservedBy("check-usage");
     const parsed: unknown = JSON.parse(await readFile(providerUsagePath, "utf8"));
     records = recordsFromProviderUsage(parsed, observedBy);
   } else {
-    const observedBy = byArg >= 0 ? process.argv[byArg + 1] : "stewardship-cycle";
+    const observedBy = resolveObservedBy("stewardship-cycle");
     const doc = await readFile(quotaViewPath, "utf8");
     const registryText = await readFile(registryPath, "utf8").catch(() => "");
     const now = new Date();

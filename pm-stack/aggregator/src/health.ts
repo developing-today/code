@@ -19,7 +19,13 @@
 import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
 import { unreportedCheckoutDrift, type CheckoutDrift } from "./checkout-drift.ts";
-import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
+import {
+  ageMsText,
+  GENERATED_AT_FUTURE_SKEW_MS,
+  type FeedSectionStatus,
+  type FleetFeed,
+  type SectionDiagnosis,
+} from "./feed.ts";
 import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
@@ -105,7 +111,9 @@ export interface ServiceHealth {
 export interface FeedSectionHealth {
   key: string;
   present: boolean;
-  /** The timestamp the age is measured from (the section's own when it has one). */
+  /** `unknown` means an older collector did not publish outcome metadata. */
+  status: FeedSectionStatus | "unknown";
+  /** The timestamp the age is measured from (latest collection attempt when available). */
   generatedAt?: string;
   ageMs?: number;
   note?: string;
@@ -253,20 +261,36 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
     aa && "status" in aa && aa.status === "absent"
       ? `absent form: ${"reason" in aa ? String(aa.reason) : "no reason given"}`
       : undefined;
+  const section = (key: string, generatedAt: string | undefined, present: boolean, note?: string) => {
+    const outcome = feed.meta?.sections[key];
+    const outcomeNote = outcome?.status === "error"
+      ? outcome.error
+      : outcome?.status === "skipped"
+        ? "intentionally skipped by collector"
+        : undefined;
+    return {
+      key,
+      status: outcome?.status ?? "unknown",
+      ...from(outcome?.at ?? generatedAt, present, outcomeNote ?? note),
+    } as FeedSectionHealth;
+  };
   return [
-    { key: "quota", ...from(undefined, true) },
-    { key: "attention", ...from(undefined, true) },
-    { key: "orchestration", ...from(feed.orchestration?.generatedAt, feed.orchestration !== undefined) },
-    { key: "dns", ...from(feed.dns?.generatedAt, feed.dns !== undefined) },
-    { key: "registry", ...from(undefined, feed.registry !== undefined) },
-    { key: "projects", ...from(undefined, feed.projects !== undefined) },
-    { key: "saas", ...from(undefined, feed.saas !== undefined) },
-    { key: "payg", ...from(undefined, feed.payg !== undefined) },
-    { key: "charges", ...from(undefined, feed.charges !== undefined) },
-    { key: "subscriptions", ...from(undefined, feed.subscriptions !== undefined) },
-    { key: "snapshots", ...from(undefined, feed.snapshots !== undefined) },
-    { key: "aa", ...from(aa?.generatedAt, aa !== undefined, aaNote) },
-  ] as FeedSectionHealth[];
+    section("quota", undefined, true),
+    section("attention", undefined, true),
+    section("orchestration", feed.orchestration?.generatedAt, feed.orchestration !== undefined),
+    section("dns", feed.dns?.generatedAt, feed.dns !== undefined),
+    section("julesSummary", undefined, feed.julesSummary !== undefined),
+    section("registry", undefined, feed.registry !== undefined),
+    section("projects", undefined, feed.projects !== undefined),
+    section("coverage", undefined, feed.coverage !== undefined),
+    section("saas", undefined, feed.saas !== undefined),
+    section("payg", undefined, feed.payg !== undefined),
+    section("charges", undefined, feed.charges !== undefined),
+    section("chargesAttention", undefined, feed.chargesAttention !== undefined),
+    section("subscriptions", undefined, feed.subscriptions !== undefined),
+    section("snapshots", undefined, feed.snapshots !== undefined),
+    section("aa", aa?.generatedAt, aa !== undefined, aaNote),
+  ];
 }
 
 // --- Assembly ---------------------------------------------------------------
@@ -385,11 +409,13 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   }
 
   const checkout = feed?.checkout ?? unreportedCheckoutDrift();
+  const sectionHealth = feedSections(feed, now);
   const degraded =
     inputs.mode === "live" &&
     (services.some((s) => s.ok === false) ||
       (feedAgeMs !== null && feedAgeMs > FEED_STALE_MS) ||
-      checkout.state === "behind");
+      checkout.state === "behind" ||
+      sectionHealth.some((section) => section.status === "error"));
 
   return {
     status: "ok",
@@ -404,7 +430,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       fileMtime: inputs.feedFileMtimeMs !== null ? new Date(inputs.feedFileMtimeMs).toISOString() : null,
       ageMs: feedAgeMs,
       checkout,
-      sections: feedSections(feed, now),
+      sections: sectionHealth,
     },
     jobs: {
       orchestration: {
