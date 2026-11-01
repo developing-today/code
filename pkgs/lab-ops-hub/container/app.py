@@ -472,17 +472,53 @@ def validate_crawl_url(raw):
             # codepoint returns the judged host with the codepoint
             # deleted, as the Worker returns it (#652). A host whose
             # spelling was folded at extraction time (the Kelvin
-            # sign, #667) gets the same rebuild. (IP literals
-            # take the canonical-address return below instead, and
-            # WHATWG serializes those without a root dot, as here.)
+            # sign, #667) gets the same rebuild. A non-ASCII (IDN)
+            # host gets the same rebuild with the host in its A-label
+            # (punycode) form — the form the Worker's u.hostname
+            # carries — instead of returning the raw U-label spelling
+            # the fetcher would then resolve under a different name
+            # than the Worker certified (#659). The A-labels are the
+            # encoded_labels already computed for the RFC 1035 length
+            # check above, with one deviation re-applied: UTS-46 maps
+            # U+0345 to U+03B9, a mapping NFKC does not perform, so
+            # the host string still carries U+0345 (or, where NFKC
+            # composed it into a precomposed ypogegrammeni letter
+            # such as U+1FB3, carries that) and only _judge_idna_label
+            # applies the map, for judging (#596). A label whose
+            # canonical decomposition carries U+0345 is therefore
+            # re-encoded here from its decomposed, U+0345-mapped,
+            # recomposed form, so the returned A-label is the one
+            # the Worker returns. (IP literals take the
+            # canonical-address return below instead, and WHATWG
+            # serializes those without a root dot, as here.)
+            def _return_label(label, encoded):
+                decomposed = unicodedata.normalize("NFD", label)
+                if "\u0345" not in decomposed:
+                    return encoded
+                mapped = unicodedata.normalize(
+                    "NFC", decomposed.translate({0x0345: "\u03b9"})
+                )
+                return "xn--" + mapped.encode("punycode").decode("ascii")
+
+            return_host = (
+                ".".join(
+                    _return_label(label, encoded)
+                    for label, encoded in zip(host.split("."), encoded_labels)
+                )
+                if not host.isascii()
+                else host
+            )
             return _url_with_encoded_components(
                 _normalize_validated_url(
-                    _url_with_host(u, host + "." if has_root_dot else host, raw)
+                    _url_with_host(
+                        u, return_host + "." if has_root_dot else return_host, raw
+                    )
                     if percent_decoded
                     or has_literal_separator
                     or host_was_mapped
                     or has_ignored_codepoint
                     or has_extraction_fold
+                    or not host.isascii()
                     else raw
                 )
             )

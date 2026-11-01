@@ -261,8 +261,15 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://" + overlong_idn_name + "/")
         # Control at the encoded limit stays allowed: a 40-char CJK
         # label encodes to 61 chars, and an ordinary IDN host is fine.
-        self.assertAccepted("http://" + cjk_label(40) + ".com/")
-        self.assertAccepted("http://examéple.com/")
+        # Accepted hosts return in the A-label form (#659).
+        self.assertEqual(
+            validate_crawl_url("http://" + cjk_label(40) + ".com/"),
+            "http://xn--4gqcdefghijklmnopqrstuvwxyz0a1a2a3a4a5a6a7a8a9azb0b1b1b2b.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://examéple.com/"),
+            "http://xn--example-eya.com/",
+        )
 
     def test_refuses_dotted_quad_non_public(self):
         for url in (
@@ -607,7 +614,12 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # Controls: characters above NBSP and ordinary DNS punctuation
         # are not forbidden — valid IDN hosts stay crawlable.
         self.assertAccepted("http://exam_ple.com/")
-        self.assertAccepted("http://examéple.com/")
+        # An ordinary IDN host is accepted, returning its A-label
+        # form (#659).
+        self.assertEqual(
+            validate_crawl_url("http://examéple.com/"),
+            "http://xn--example-eya.com/",
+        )
 
     def test_refuses_mapped_spellings_of_blocked_targets(self):
         # #527: the resolver NFKC-maps these spellings onto blocked
@@ -632,10 +644,11 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertEqual(
             validate_crawl_url("http://ｅｘａｍｐｌｅ.com/"), "http://example.com/"
         )
-        # The U-label spelling is kept, but its literal separator
-        # now returns as "." (#660), not the fullwidth character.
+        # The literal separator returns as "." (#660), and the IDN
+        # host itself returns in A-label form (#659).
         self.assertEqual(
-            validate_crawl_url("http://münchen。de/"), "http://münchen.de/"
+            validate_crawl_url("http://münchen。de/"),
+            "http://xn--mnchen-3ya.de/",
         )
 
     def test_refuses_idna_disallowed_unicode_hosts(self):
@@ -704,11 +717,27 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # Controls: the other decimal-digit families are ordinary IDN
         # characters to WHATWG (accepted as punycode DNS names), and
         # the container accepts them too.
-        self.assertAccepted("http://१२७.०.०.१/")  # Devanagari digits
-        self.assertAccepted("http://۱۲۷.۰.۰.۱/")  # Extended Arabic-Indic (U+06F0s)
-        self.assertAccepted("http://১২৭.০.০.১/")  # Bengali digits
-        self.assertAccepted("http://๑๒๗.๐.๐.๑/")  # Thai digits
-        self.assertAccepted("http://1۲۳.com/")  # ASCII + Extended Arabic-Indic
+        # (Returned in A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://१२७.०.०.१/"),  # Devanagari digits
+            "http://xn--e4bcp.xn--d4b.xn--d4b.xn--e4b/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://۱۲۷.۰.۰.۱/"),  # Extended Arabic-Indic (U+06F0s)
+            "http://xn--embcp.xn--dmb.xn--dmb.xn--emb/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://১২৭.০.০.১/"),  # Bengali digits
+            "http://xn--17bcp.xn--07b.xn--07b.xn--17b/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://๑๒๗.๐.๐.๑/"),  # Thai digits
+            "http://xn--c5ccp.xn--b5c.xn--b5c.xn--c5c/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://1۲۳.com/"),  # ASCII + Extended Arabic-Indic
+            "http://xn--1-lycd.com/",
+        )
 
     def test_refuses_a_label_spellings_of_arabic_indic_digit_hosts(self):
         # PR #575 refused Arabic-Indic digit hosts in raw form (#574),
@@ -757,11 +786,27 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # (#595) in the one context where the digit is valid (#605).
         # The Extended Arabic-Indic control (U+06F1) was already
         # accepted in the same shape.
-        self.assertAccepted("http://\u0627\u0661.com/")  # Arabic + ١
-        self.assertAccepted("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/")
-        self.assertAccepted("http://\u05d0\u0661.com/")  # Hebrew + ١
-        self.assertAccepted("http://\u0627\u0661\u0627.com/")  # AN mid-label
-        self.assertAccepted("http://\u0627\u0660.com/")
+        # (Returned in A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u0627\u0661.com/"),  # Arabic + ١
+            "http://xn--mgb0j.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/"),
+            "http://xn--mgbbop3hzh.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u05d0\u0661.com/"),  # Hebrew + ١
+            "http://xn--4db40a.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u0627\u0661\u0627.com/"),  # AN mid-label
+            "http://xn--mgba7o.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u0627\u0660.com/"),
+            "http://xn--mgb8i.com/",
+        )
         # Their A-label spellings are accepted too.
         self.assertAccepted("http://xn--mgb0j.com/")  # ا١.com
         self.assertAccepted("http://xn--mgbbop3hzh.com/")  # مرحبا١.com
@@ -785,12 +830,24 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://xn--jua51kba.com/")
         # Controls: in LTR/Greek contexts the mapped letter is an
         # ordinary character and the hosts stay accepted.
-        self.assertAccepted("http://ex\u0345ample.com/")
-        self.assertAccepted("http://\u03b1\u0345.com/")
+        # (Returned in the A-label form of the UTS-46-mapped host,
+        # #659: U+0345 maps to U+03B9 before encoding.)
+        self.assertEqual(
+            validate_crawl_url("http://ex\u0345ample.com/"),
+            "http://xn--example-wnf.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u03b1\u0345.com/"),
+            "http://xn--mxaq.com/",
+        )
         # Pin: at label start the mapping closes the former
         # leading-mark over-refusal — U+0345 maps to a letter, so
         # the label starts with one, matching the Worker (#596).
-        self.assertAccepted("http://\u0345abc.com/")
+        # (Accepted; returns the A-label of the mapped host, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u0345abc.com/"),
+            "http://xn--abc-kyc.com/",
+        )
 
     def test_refuses_idna_invalid_hosts(self):
         # A label can punycode-encode without being a valid IDNA
@@ -873,18 +930,50 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # European digit), the Arabic separator inside a pure Arabic
         # label, ordinary IDN, and a mid-label combining mark all stay
         # accepted, matching the Worker.
-        self.assertAccepted("http://\u05d0\u05d0.com/")
-        self.assertAccepted("http://\u05d01.com/")
-        self.assertAccepted("http://\u0627\u066b\u0627.com/")
+        # A pure RTL label is accepted (returned as its A-label, #659).
+        self.assertEqual(
+            validate_crawl_url("http://\u05d0\u05d0.com/"),
+            "http://xn--4dba.com/",
+        )
+        # (Accepted; returns its A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u05d01.com/"),
+            "http://xn--1-zhc.com/",
+        )
+        # (Accepted in an RTL label; returns its A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u0627\u066b\u0627.com/"),
+            "http://xn--mgba7r.com/",
+        )
         # An AN digit inside a genuine RTL label (Hebrew, Arabic, or
         # its own Hanifi Rohingya script) stays accepted (#595):
-        self.assertAccepted("http://\u05d0\U00010d30\u05d0.com/")
-        self.assertAccepted("http://\u0627\U00010d30\u0627.com/")
-        self.assertAccepted("http://\U00010d00\U00010d30.com/")
-        self.assertAccepted("http://\u05d0\U00010d30.com/")
+        # (Accepted in an RTL label; returns its A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u05d0\U00010d30\u05d0.com/"),
+            "http://xn--4dba5833r.com/",
+        )
+        # (Accepted; each returns its A-label form, #659.)
+        self.assertEqual(
+            validate_crawl_url("http://\u0627\U00010d30\u0627.com/"),
+            "http://xn--mgba4213r.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\U00010d00\U00010d30.com/"),
+            "http://xn--5d0dgd.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://\u05d0\U00010d30.com/"),
+            "http://xn--4db2695k.com/",
+        )
         self.assertAccepted("http://xn--4dba5833r.com/")
-        self.assertAccepted("http://m\u00fcnchen.de/")
-        self.assertAccepted("http://ex\u0301ample.com/")
+        self.assertEqual(
+            validate_crawl_url("http://m\u00fcnchen.de/"),
+            "http://xn--mnchen-3ya.de/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http://ex\u0301ample.com/"),
+            "http://xn--example-uge.com/",
+        )
 
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
@@ -1236,13 +1325,57 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://example\u3002com/": "http://example.com/",
             "http://example\uff0ecom/path": "http://example.com/path",
             "http://sub\u3002example\u3002com/": "http://sub.example.com/",
-            # An IDN host keeps its U-label spelling; only the
-            # separator changes (#659 covers the A-label form).
-            "http://m\u00fcnchen\u3002de/": "http://m\u00fcnchen.de/",
+            # An IDN host returns in its A-label form (#659); the
+            # separator still maps to "." (#660).
+            "http://m\u00fcnchen\u3002de/": "http://xn--mnchen-3ya.de/",
             # IP literals serialize without a root dot in WHATWG,
             # as before — separator spellings agree there already.
             "http://8.8.8.8\u3002/": "http://8.8.8.8/",
             "http://8\u30028\u30028\u30028/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_idn_hosts_in_alabel_form(self):
+        # The public-DNS return path handed back the raw U-label
+        # spelling for a plain IDN host: none of the rebuild triggers
+        # (percent-decoded, literal separator, ASCII mapping fold,
+        # ignored codepoint, extraction fold) fires for one, so the
+        # URL recorded — and fetched — carried a host spelling the
+        # Worker never certifies: its u.hostname is the punycode
+        # A-label form (#659). The return now rebuilds from the
+        # A-label form of the judged host whenever the host is
+        # non-ASCII, composing with the existing triggers and the
+        # root-dot re-attachment (#647). Expected values below are
+        # the Worker's WHATWG returns, pinned from a Python<->TS
+        # differential over these spellings (no returned-host
+        # differences remain).
+        cases = {
+            # Latin-1 IDN, single label.
+            "http://café.com/": "http://xn--caf-dma.com/",
+            # Multi-label IDN.
+            "http://bücher.example/": "http://xn--bcher-kva.example/",
+            "http://bücher.de/": "http://xn--bcher-kva.de/",
+            # Astral-plane label.
+            "http://😀.com/": "http://xn--e28h.com/",
+            # Path, port, userinfo and root dot compose unchanged.
+            "http://münchen.de/path": "http://xn--mnchen-3ya.de/path",
+            "http://café.com./": "http://xn--caf-dma.com./",
+            "http://münchen.de./": "http://xn--mnchen-3ya.de./",
+            "http://üser@münchen.de:8443/p": (
+                "http://%C3%BCser@xn--mnchen-3ya.de:8443/p"
+            ),
+            # The percent-encoded spelling of the same host returns
+            # the same A-label form.
+            "http://caf%C3%A9.com/": "http://xn--caf-dma.com/",
+            # An A-label spelling returns byte-identical.
+            "http://xn--mnchen-3ya.de/": "http://xn--mnchen-3ya.de/",
+            # Controls: ASCII hosts, IP literals, ports, userinfo
+            # and path/query/fragment handling are unchanged.
+            "http://example.com/": "http://example.com/",
+            "http://user@example.com:8080/p?q=1#f": (
+                "http://user@example.com:8080/p?q=1#f"
+            ),
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
@@ -1290,8 +1423,8 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # host — and U+180E cannot be IDNA-encoded at fetch time at
         # all (#652). The return now rebuilds from the judged host
         # whenever the deletion changed it (the issue's option (a):
-        # exactly the ignored codepoints are dropped; every other
-        # spelling, IDN included, keeps its established form).
+        # exactly the ignored codepoints are dropped; an IDN host in
+        # the rebuilt form carries its A-label spelling, #659).
         # Every codepoint in the ignored set, interior to a label:
         for cp in app._UTS46_IGNORED:
             ch = chr(cp)
@@ -1322,9 +1455,9 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # decodes to the same judged host and returns it too.
             "http://exa%e2%80%8bmple.com/": "http://example.com/",
             "http://exa%C2%ADmple.com/": "http://example.com/",
-            # An IDN host keeps its U-label spelling (#659 covers
-            # the A-label form); only the codepoint is deleted.
-            "http://m\u00fc\u200bnchen.de/": "http://m\u00fcnchen.de/",
+            # An IDN host returns in its A-label form (#659); the
+            # codepoint is deleted first (#652).
+            "http://m\u00fc\u200bnchen.de/": "http://xn--mnchen-3ya.de/",
             # An IP literal carrying one returns the canonical
             # address, as IP literals always do.
             "http://8\u200b.8.8.8/": "http://8.8.8.8/",
@@ -1332,8 +1465,8 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # untouched, including the #596 U+0345 spelling (judged
             # by its mapping, not deleted) and ordinary IDN.
             "http://example.com/": "http://example.com/",
-            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
-            "http://ex\u0345ample.com/": "http://ex\u0345ample.com/",
+            "http://m\u00fcnchen.de/": "http://xn--mnchen-3ya.de/",
+            "http://ex\u0345ample.com/": "http://xn--example-wnf.com/",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
@@ -1390,13 +1523,13 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # Controls: the percent-encoded and mixed spellings keep
             # the returns they already had, and spellings the
             # pipeline does not change are untouched — ordinary
-            # hosts, ASCII case folds (already normalized) and IDN
-            # U-label spellings (#659 covers the A-label form).
+            # hosts and ASCII case folds (already normalized). An
+            # IDN host returns in its A-label form (#659).
             "http://%e2%84%aa.example.com/": "http://k.example.com/",
             "http://\u212a\uff45.com/": "http://ke.com/",
             "http://example.com/": "http://example.com/",
             "http://EXAMPLE.COM/": "http://example.com/",
-            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
+            "http://m\u00fcnchen.de/": "http://xn--mnchen-3ya.de/",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
@@ -1450,9 +1583,9 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # verbatim, and http.client then raises UnicodeEncodeError on
         # the returned URL before any request is sent — a target both
         # validators accepted 502s in the container (#615). The returned
-        # URL carries the encoded form; the host keeps its spelling
-        # (judged in mapped form, fetched via IDNA) and existing %XX
-        # sequences are not double-encoded.
+        # URL carries the encoded form; the host returns in its
+        # A-label form (#659) and existing %XX sequences are not
+        # double-encoded.
         cases = {
             "http://example.com/café": "http://example.com/caf%C3%A9",
             "http://example.com/日本語": (
@@ -1463,7 +1596,7 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://example.com/x#café": "http://example.com/x#caf%C3%A9",
             "http://user:café@example.com/": ("http://user:caf%C3%A9@example.com/"),
             "http://café@example.com/": "http://caf%C3%A9@example.com/",
-            "http://münchen.de/café": "http://münchen.de/caf%C3%A9",
+            "http://münchen.de/café": "http://xn--mnchen-3ya.de/caf%C3%A9",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
