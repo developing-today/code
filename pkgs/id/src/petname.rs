@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_capital_i_confusable_name_is_refused() {
+    fn test_a_capital_i_confusable_name_is_refused() {
         // #2069: PayPaI must be refused exactly like PayPa1.
         let mut store = Petnames::new();
         let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn an_eight_confusable_name_is_refused() {
+    fn test_an_eight_confusable_name_is_refused() {
         // #2069: 8ob must be refused exactly like B0b.
         let mut store = Petnames::new();
         let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
@@ -648,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_skeleton_maps_capital_i_and_eight_together() {
+    fn test_the_skeleton_maps_capital_i_and_eight_together() {
         // #2069: fold() lowercases I to i before the map, so the i class
         // must land on l or PayPaI slips past the guard that refuses
         // PayPa1; 8 maps to b like the other mapped digits.
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn skeleton_colliding_petnames_both_get_a_fingerprint() {
+    fn test_skeleton_colliding_petnames_both_get_a_fingerprint() {
         // #2069: labels() keys collisions on skeleton(), so stored
         // petnames that differ only by a look-alike (PayPal vs PayPaI)
         // render with fingerprints instead of identically.
