@@ -597,6 +597,35 @@ fn test_a_cut_manage_chain_refuses_the_add_as_no_chain() {
 }
 
 #[test]
+fn test_a_read_scoped_device_of_a_manager_may_not_add_a_member() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Manage)], Policy::default()),
+        device_add("dv0", 2, g, 50, Role::Read, &["g"]),
+        add("a0", 50, g, 3, Role::Read, &["dv0"]),
+    ]);
+    assert_eq!(outcome(&p, "dv0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, "a0"),
+        Outcome::Refused(Refusal::NotManager),
+        "the device's Read scope caps it, however its account stands"
+    );
+    assert_eq!(role_of(&p, g, 3), None);
+}
+
+#[test]
+fn test_a_manage_scoped_device_of_a_manager_may_add_a_member() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[(2, Role::Manage)], Policy::default()),
+        device_add("dv0", 2, g, 50, Role::Manage, &["g"]),
+        add("a0", 50, g, 3, Role::Read, &["dv0"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Applied);
+    assert_eq!(role_of(&p, g, 3), Some(Role::Read));
+}
+
+#[test]
 fn test_only_an_invitee_may_accept_a_friendship_request() {
     let g = pair_group(1, 2, 0);
     let p = project(&[
