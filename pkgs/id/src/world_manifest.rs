@@ -220,6 +220,29 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
         });
     }
 
+    // Seed-only (#1519): the seed is part of install identity — the live
+    // seed is "the seed the active program was installed with" — and
+    // InstallModule is the only seed-setting step, so a seed difference with
+    // an unchanged module still emits an install step carrying the live
+    // module identity and the new seed. Reporting the drift without a step
+    // would report it forever: apply could never reconcile it. With nothing
+    // installed and nothing desired there is no program whose seed could
+    // change, so a seed difference alone emits nothing there.
+    if !module_changed {
+        if let Some(seed) = desired.seed {
+            let has_module = desired.module_hash.is_some()
+                || desired.module_source.is_some()
+                || current.module_hash.is_some();
+            if seed != current.seed && has_module {
+                steps.push(ApplyStep::InstallModule {
+                    hash: desired.module_hash.clone().or(current.module_hash.clone()),
+                    source: desired.module_source.clone(),
+                    seed,
+                });
+            }
+        }
+    }
+
     // Grants: an omitted field leaves the live set alone; a present one
     // replaces it when the set differs (an empty list revokes everything).
     if let Some(desired_grants) = &desired.grants {
@@ -236,9 +259,23 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
 
     // Ceiling: an omitted field leaves the live ceiling alone, so a manifest
     // that never mentions the ceiling can never widen it; a present list
-    // replaces it when it differs.
+    // replaces it when the set of names differs.
     if let Some(ceiling) = &desired.ceiling {
-        if current.ceiling.as_deref() != Some(ceiling.as_slice()) {
+        // Set-based, like grants (#1519): a reorder of the same names is not
+        // drift. A live `None` means the whole catalog, which no present
+        // list equals, so it always differs. The step itself carries the
+        // desired list in declared order.
+        let desired_set: std::collections::BTreeSet<&String> = ceiling.iter().collect();
+        let differs = match &current.ceiling {
+            Some(current_ceiling) => {
+                current_ceiling
+                    .iter()
+                    .collect::<std::collections::BTreeSet<&String>>()
+                    != desired_set
+            }
+            None => true,
+        };
+        if differs {
             steps.push(ApplyStep::SetCeiling {
                 ceiling: Some(ceiling.clone()),
             });
@@ -626,5 +663,94 @@ wasm_fuel = 5_000_000
             diff(&WorldManifest::default(), &WorldState::default()),
             "no drift"
         );
+    }
+
+    #[test]
+    fn a_seed_only_change_installs_with_the_new_seed() {
+        // #1519: the seed is part of install identity, so a seed-only
+        // difference is one InstallModule step carrying the new seed —
+        // not "no drift" that no apply could ever reconcile.
+        let manifest = parse("module_hash = \"abc\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(
+            steps,
+            vec![ApplyStep::InstallModule {
+                hash: Some("abc".to_owned()),
+                source: None,
+                seed: 99,
+            }],
+            "{steps:?}"
+        );
+        let d = diff(&manifest, &state);
+        assert!(d.contains("seed 99"), "{d}");
+        // Applying the step reconciles: a second plan is empty.
+        let mut reconciled = state.clone();
+        apply(&steps, &mut reconciled).unwrap();
+        assert!(plan(&manifest, &reconciled).is_empty());
+    }
+
+    #[test]
+    fn a_seed_and_module_change_is_a_single_install_step() {
+        // #1519: when the module changes anyway, the desired seed rides
+        // that one step — never a second seed-only step.
+        let manifest = parse("module_hash = \"def\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(matches!(
+            steps[0],
+            ApplyStep::InstallModule { seed: 99, .. }
+        ));
+    }
+
+    #[test]
+    fn a_seed_difference_with_no_module_anywhere_emits_nothing() {
+        // #1519: with nothing installed and nothing desired there is no
+        // program whose seed could change.
+        let manifest = parse("seed = 99").unwrap();
+        let state = WorldState {
+            seed: 7,
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_reorder_is_not_drift() {
+        // #1519: the ceiling compares as a set, like grants — reordering
+        // the same names yields an empty plan.
+        let manifest = parse("ceiling = [\"time.now\", \"chat.say\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["chat.say".to_owned(), "time.now".to_owned()]),
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_set_change_still_drifts_in_declared_order() {
+        // #1519: a genuinely different set still yields SetCeiling, and
+        // the step carries the desired list in declared order.
+        let manifest =
+            parse("ceiling = [\"time.now\", \"records.read\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["chat.say".to_owned(), "time.now".to_owned()]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(matches!(
+            &steps[0],
+            ApplyStep::SetCeiling { ceiling } if ceiling == &manifest.ceiling
+        ));
     }
 }
