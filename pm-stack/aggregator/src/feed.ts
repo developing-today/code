@@ -76,7 +76,7 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** AA cost explorer section: the ainventory (AA workbook) data read
+  /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
    * ({status:"absent", reason}) when Supabase was unreachable — the
