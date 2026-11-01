@@ -24,6 +24,12 @@ import (
 const (
 	host = "localhost"
 	port = 23234
+
+	// maxHistory is the maximum number of chat messages retained per session.
+	// The viewport is 5 lines tall; capping history at 100 provides generous
+	// scrollback (20 full viewports) while bounding slice growth and preventing
+	// quadratic strings.Join re-render costs in long-lived sessions (Fixes #3268).
+	maxHistory = 100
 )
 
 // app contains a wish server and the list of running programs.
@@ -175,7 +181,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case chatMsg:
-		m.messages = append(m.messages, m.senderStyle.Render(msg.id)+": "+msg.text)
+		formatted := m.senderStyle.Render(msg.id) + ": " + msg.text
+		// Maintain a fixed-size history sliding window once maxHistory is reached.
+		// Avoids unbounded slice allocations and keeps strings.Join work bounded at O(maxHistory).
+		if len(m.messages) >= maxHistory {
+			copy(m.messages, m.messages[1:])
+			m.messages[len(m.messages)-1] = formatted
+		} else {
+			m.messages = append(m.messages, formatted)
+		}
 		m.viewport.SetContent(strings.Join(m.messages, "\n"))
 		m.viewport.GotoBottom()
 
