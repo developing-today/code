@@ -733,6 +733,12 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
         return;
       }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
+        return;
+      }
       const messages = Array.isArray(body.messages) ? body.messages : [];
       if (messages.length === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
