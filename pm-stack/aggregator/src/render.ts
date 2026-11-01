@@ -4113,7 +4113,8 @@ const AA_EXPLORER_SCRIPT = `<script>
   // --- Band comparisons (Site 1's six banded shortlists) -------------------
   // Near-leader windows at 1x: score within 2 points, time within 10%,
   // price within 25% of the band leader; the scale select multiplies all
-  // three. Tables only — Site 1's lane charts are noted as a follow-up.
+  // three. Lane charts visualize the same near-leader choices as the
+  // comparison tables; they do not recalculate band membership.
   function logEdges(vals, n) {
     var xs = vals.filter(function (v) { return v != null && v > 0; });
     if (!xs.length) return [];
@@ -4164,13 +4165,69 @@ const AA_EXPLORER_SCRIPT = `<script>
     }
     return parts.join(" · ");
   }
-  function bandGroup(title, blurb, bands) {
+  function bandLaneChart(title, metric, axisLabel, bands) {
+    var lanes = bands.filter(function (b) { return b.choices && b.choices.length; });
+    var values = [];
+    lanes.forEach(function (b) {
+      b.members.forEach(function (p) {
+        var v = p[metric];
+        if (v != null && isFinite(v) && (metric === "score" || v > 0)) values.push(v);
+      });
+    });
+    if (!values.length) return "";
+    var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+    if (lo === hi) {
+      if (metric === "score") { lo -= 1; hi += 1; }
+      else { lo /= 1.4; hi *= 1.4; }
+    }
+    var logarithmic = metric !== "score";
+    var logLo = logarithmic ? Math.log(lo) : lo;
+    var logHi = logarithmic ? Math.log(hi) : hi;
+    var width = 760, left = 232, right = 16, top = 28, row = 30, bottom = 30;
+    var plotWidth = width - left - right;
+    var height = top + lanes.length * row + bottom;
+    function x(v) {
+      var n = logarithmic ? Math.log(v) : v;
+      return left + ((n - logLo) / (logHi - logLo)) * plotWidth;
+    }
+    function valueLabel(v) {
+      return metric === "cost" ? fmt$(v) : metric === "time" ? fmtT(v) : fmtN(v, 1);
+    }
+    var svg = '<svg class="xpl-band-lanes" viewBox="0 0 ' + width + " " + height + '" role="img" aria-label="' + esc(title + " lane chart; " + axisLabel) + '" style="max-width:760px;width:100%;height:auto">';
+    svg += '<text x="' + left + '" y="13" font-size="10" fill="#8b949e">' + esc(axisLabel) + (logarithmic ? " (log scale)" : " (linear scale)") + "</text>";
+    for (var ti = 0; ti <= 4; ti++) {
+      var fraction = ti / 4;
+      var tv = logarithmic ? Math.exp(logLo + (logHi - logLo) * fraction) : lo + (hi - lo) * fraction;
+      var tx = left + plotWidth * fraction;
+      svg += '<line x1="' + tx.toFixed(1) + '" y1="' + (top - 4) + '" x2="' + tx.toFixed(1) + '" y2="' + (height - bottom + 2) + '" stroke="#30363d" stroke-dasharray="2 3"/>';
+      svg += '<text x="' + tx.toFixed(1) + '" y="' + (height - 8) + '" font-size="9" fill="#8b949e" text-anchor="middle">' + esc(valueLabel(tv)) + "</text>";
+    }
+    lanes.forEach(function (band, bi) {
+      var cy = top + bi * row + row / 2;
+      var label = band.label.length > 38 ? band.label.slice(0, 35) + "…" : band.label;
+      svg += '<text x="8" y="' + (cy + 3) + '" font-size="9" fill="#c9d1d9">' + esc(label) + "</text>";
+      svg += '<line x1="' + left + '" y1="' + cy + '" x2="' + (width - right) + '" y2="' + cy + '" stroke="#30363d"/>';
+      band.choices.forEach(function (p, pi) {
+        var v = p[metric];
+        if (v == null || !isFinite(v) || (logarithmic && v <= 0)) return;
+        var leader = band.leader || band.choices[0];
+        var isLeader = leader && leader.key === p.key;
+        var py = cy + ((pi % 5) - 2) * 2.5;
+        var color = famColor[p.family] || "#8b949e";
+        var desc = shortLabel(p) + " — " + axisLabel + " " + valueLabel(v);
+        svg += '<circle class="xpt" data-pick="' + esc(p.key) + '" cx="' + x(v).toFixed(1) + '" cy="' + py.toFixed(1) + '" r="' + (isLeader ? 5 : 3.8) + '" fill="' + color + '" fill-opacity="' + (isLeader ? 0.95 : 0.65) + '" stroke="' + (isLeader ? "#fff" : color) + '" stroke-width="' + (isLeader ? 1.5 : 0.8) + '" tabindex="0" role="button" aria-label="' + esc("Select " + desc) + '"><title>' + esc(desc + (isLeader ? " — band leader" : " — near-leader")) + "</title></circle>";
+      });
+    });
+    return '<div class="xpl-band-lane-wrap">' + svg + "</svg></div>";
+  }
+  function bandGroup(title, blurb, bands, laneMetric, axisLabel) {
     var rowsHtml = bands.map(function (b) {
       var leader = b.choices.length ? b.choices[0] : null;
       return "<tr><th scope=\\\"row\\\"><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></th><td>" +
         (b.choices.length ? b.choices.map(function (p) { return chipFor(p, leader); }).join(" ") : '<span class="muted">No model meets the window of this band.</span>') + "</td></tr>";
     }).join("");
-    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><caption>' + esc(title) + '</caption><tbody>' + rowsHtml + "</tbody></table></div>";
+    var chart = laneMetric ? bandLaneChart(title, laneMetric, axisLabel, bands) : "";
+    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p>' + chart + '<div class="tblwrap"><table class="xpl-table"><caption>' + esc(title) + '</caption><tbody>' + rowsHtml + "</tbody></table></div>";
   }
   function renderBandComparisons() {
     var wrap = document.getElementById("xpl-bandgroups");
@@ -4213,7 +4270,7 @@ const AA_EXPLORER_SCRIPT = `<script>
         var choices = timed.filter(function (p) { return lead != null && p.time <= lead * (1 + timeWin); }).sort(function (a, b) { return cmpAsc(a.time, b.time); });
         return { label: "Cost band " + (i + 1) + " · " + costLabel(i), members: members, choices: choices };
       });
-      var h5 = bandGroup("Fastest within each task-cost band", "Disjoint task-cost tiers; near-leaders are within " + Math.round(timeWin * 100) + "% of the band's fastest time.", g5);
+      var h5 = bandGroup("Fastest within each task-cost band", "Disjoint task-cost tiers; near-leaders are within " + Math.round(timeWin * 100) + "% of the band's fastest time.", g5, "time", "Time / task (lower is faster)");
     }
     if (sEdges.length > 1) {
       // 2. Lowest cost within each score band
@@ -4231,7 +4288,7 @@ const AA_EXPLORER_SCRIPT = `<script>
         var choices = timed.filter(function (p) { return lead != null && p.time <= lead * (1 + timeWin); }).sort(function (a, b) { return cmpAsc(a.time, b.time); });
         return { label: scoreWord() + " band " + (i + 1) + " · " + scoreLabel(i), members: members, choices: choices };
       });
-      var h3 = bandGroup("Fastest within each score band", "Within " + Math.round(timeWin * 100) + "% of the band's speed leader.", g3);
+      var h3 = bandGroup("Fastest within each score band", "Within " + Math.round(timeWin * 100) + "% of the band's speed leader.", g3, "time", "Time / task (lower is faster)");
     }
     if (timeEdges.length > 1) {
       // 4. Smartest within each speed band (slowest first, as Site 1)
@@ -4242,29 +4299,44 @@ const AA_EXPLORER_SCRIPT = `<script>
         var choices = scored.filter(function (p) { return lead != null && p.score >= lead - scoreWin; }).sort(function (a, b) { return cmpDesc(a.score, b.score); });
         return { label: (i === g4raw.length - 1 ? "Slowest speed band" : i === 0 ? "Fastest speed band" : "Speed band " + (i + 1)) + " · " + timeLabel(i), members: members, choices: choices };
       }).reverse();
-      var h4 = bandGroup("Smartest within each speed band", "Selected speed values split into ordered, non-overlapping bands from slowest to fastest; near-leaders within the score window.", g4);
+      var h4 = bandGroup("Smartest within each speed band", "Selected speed values split into ordered, non-overlapping bands from slowest to fastest; near-leaders within the score window.", g4, "score", scoreWord() + " (higher is better)");
       // 6. Lowest price within each speed target
       var timedAll = rows.filter(function (p) { return p.time != null; }).map(function (p) { return p.time; }).sort(function (a, b) { return a - b; });
       var tiers = [];
       for (var ti = 0; ti < costEdges.length - 1; ti++) tiers.push(ti);
-      var targetRows = [50, 75, 90, 100].map(function (q) {
+      var g6 = [50, 75, 90, 100].map(function (q) {
         var thr = timedAll.length ? timedAll[Math.min(timedAll.length - 1, Math.ceil((q / 100) * timedAll.length) - 1)] : null;
         var cells = tiers.map(function (ci) {
           var qual = rows.filter(function (p) { return p.cost != null && p.time != null && thr != null && p.time <= thr && bandIndex(p.cost, costEdges) === ci; });
-          if (!qual.length) return '<span class="muted">No model meets this target in this band.</span>';
+          if (!qual.length) return { label: "Tier " + (ci + 1) + " · " + costLabel(ci), members: [], choices: [], leader: null, empty: '<span class="muted">No model meets this target in this band.</span>' };
           var cheapest = qual.slice().sort(function (a, b) { return cmpAsc(a.cost, b.cost); })[0];
           var near = qual.filter(function (p) { return p.cost <= cheapest.cost * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
-          return near.map(function (p) { return chipFor(p, cheapest); }).join(" ");
+          return { label: "Tier " + (ci + 1) + " · " + costLabel(ci), members: qual, choices: near, leader: cheapest };
         });
-        return "<tr><th scope=\\\"row\\\"><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></th>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+        return { label: q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile", threshold: thr, cells: cells };
+      });
+      var targetRows = g6.map(function (target) {
+        return "<tr><th scope=\\\"row\\\"><strong>" + target.label + '</strong><br><span class="muted">time ≤ ' + fmtT(target.threshold) + "</span></th>" + target.cells.map(function (cell) {
+          return "<td>" + (cell.choices.length ? cell.choices.map(function (p) { return chipFor(p, cell.leader); }).join(" ") : cell.empty) + "</td>";
+        }).join("") + "</tr>";
       }).join("");
+      var g6Lanes = [];
+      g6.forEach(function (target) {
+        target.cells.forEach(function (cell) {
+          g6Lanes.push({ label: target.label + " · " + cell.label, members: cell.members, choices: cell.choices, leader: cell.leader });
+        });
+      });
       var h6 = '<h3>Lowest price within each speed target</h3><p class="muted">Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within ' + Math.round(priceWin * 100) + "% of the tier's cheapest.</p>" +
         '<div class="tblwrap"><table class="xpl-table"><caption>Lowest price within each speed target</caption><thead><tr><th scope="col">Speed target</th>' + tiers.map(function (ci) { return "<th scope=\\\"col\\\">Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
+      h6 += bandLaneChart("Lowest price within each speed target", "cost", "USD / task (lower is cheaper)", g6Lanes);
     }
     html = (typeof h1 !== "undefined" ? h1 : "") + (typeof h2 !== "undefined" ? h2 : "") + (typeof h3 !== "undefined" ? h3 : "") + (typeof h4 !== "undefined" ? h4 : "") + (typeof h5 !== "undefined" ? h5 : "") + (typeof h6 !== "undefined" ? h6 : "");
     wrap.innerHTML = html || '<p class="muted">No banded comparisons can be built — the visible configurations lack the measures they need.</p>';
     wrap.querySelectorAll("[data-pick]").forEach(function (b) {
       b.addEventListener("click", function () { selectPoint(b.getAttribute("data-pick")); });
+      b.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); selectPoint(b.getAttribute("data-pick")); }
+      });
     });
   }
   function renderAaTable() {

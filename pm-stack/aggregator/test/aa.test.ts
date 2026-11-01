@@ -615,6 +615,16 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
+    expect(html).toContain("function bandLaneChart"); // lane chart renderer is part of the emitted explorer
+    expect(html).toContain('class="xpl-band-lanes"');
+    expect(html).toContain('bandGroup("Fastest within each score band"');
+    expect(html).toContain('g3, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandGroup("Smartest within each speed band"');
+    expect(html).toContain('g4, "score", scoreWord()');
+    expect(html).toContain('bandGroup("Fastest within each task-cost band"');
+    expect(html).toContain('g5, "time", "Time / task (lower is faster)"');
+    expect(html).toContain('bandLaneChart("Lowest price within each speed target", "cost"');
+    expect(html).toContain("g6Lanes.push"); // group 6 charts reuse the table's same qualifying choices
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
     expect(html).toContain("Proj. $/task");
