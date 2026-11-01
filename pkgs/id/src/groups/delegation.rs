@@ -252,8 +252,7 @@ impl Engine {
             return Ok(Some(actor));
         }
         let links = self.links(by_id, group, after)?;
-        let mut origin: BTreeMap<Key, Key> =
-            roots.iter().map(|root| (*root, *root)).collect();
+        let mut origin: BTreeMap<Key, Key> = roots.iter().map(|root| (*root, *root)).collect();
         let mut stack: Vec<Key> = roots.iter().copied().collect();
         while let Some(holder) = stack.pop() {
             let root = origin[&holder];
