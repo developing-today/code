@@ -1049,6 +1049,31 @@ async fn output_all_matches_filtered(
     Ok(())
 }
 
+/// Parse a find selection prompt answer (#1999), strictly and
+/// all-or-nothing: every non-empty token must be a valid in-range
+/// 1-based match number, otherwise the whole selection is invalid
+/// (`None`) and the caller acts on nothing. Silently dropping a bad
+/// token would change which blobs the user confirmed. Duplicate
+/// numbers are deduplicated, first-occurrence order preserved, so a
+/// blob is never fetched or written twice for one answer.
+fn parse_selection(sel: &str, match_count: usize) -> Option<Vec<usize>> {
+    let mut selections: Vec<usize> = Vec::new();
+    for token in sel.split([',', ' ']).filter(|s| !s.is_empty()) {
+        let n: usize = token.trim().parse().ok()?;
+        if n < 1 || n > match_count {
+            return None;
+        }
+        if !selections.contains(&n) {
+            selections.push(n);
+        }
+    }
+    if selections.is_empty() {
+        None
+    } else {
+        Some(selections)
+    }
+}
+
 /// Interactive selection and output of filtered matches.
 #[allow(clippy::if_same_then_else)] // Both branches return Ok(()), but have different side effects
 async fn select_and_output_matches_filtered(
@@ -1107,18 +1132,16 @@ async fn select_and_output_matches_filtered(
             return Ok(());
         }
 
-        // Parse selection
-        let selections: Vec<usize> = sel
-            .split([',', ' '])
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .filter(|&n| n >= 1 && n <= filtered_matches.len())
-            .collect();
-
-        if selections.is_empty() {
-            println!("invalid selection");
-            return Ok(());
-        }
+        // Parse selection — strict and all-or-nothing (#1999): any
+        // bad token invalidates the whole answer instead of silently
+        // dropping it and acting on the surviving numbers.
+        let selections = match parse_selection(sel, filtered_matches.len()) {
+            Some(selections) => selections,
+            None => {
+                println!("invalid selection");
+                return Ok(());
+            }
+        };
 
         // Output based on mode
         if let Some(dir_path) = dir {
@@ -1718,5 +1741,39 @@ mod tests {
         assert_eq!(opts.first, Some(5));
         assert_eq!(opts.exclude, vec![".bak".to_owned()]);
         assert!(!opts.count);
+    }
+
+    #[test]
+    fn test_parse_selection_control() {
+        assert_eq!(parse_selection("1 3 5", 5), Some(vec![1, 3, 5]));
+        assert_eq!(parse_selection("1,2,3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("1, 2 3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("  2 , 1 ", 5), Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn test_parse_selection_bad_token_invalidates_all() {
+        assert_eq!(parse_selection("1 x 3", 5), None);
+        assert_eq!(parse_selection("1 6", 5), None);
+        assert_eq!(parse_selection("0", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_fractional_and_overflow() {
+        assert_eq!(parse_selection("2.9 4", 5), None);
+        assert_eq!(parse_selection("99999999999999999999999 2", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_duplicates_deduped() {
+        assert_eq!(parse_selection("1 1", 5), Some(vec![1]));
+        assert_eq!(parse_selection("2 1 2 3 1", 5), Some(vec![2, 1, 3]));
+    }
+
+    #[test]
+    fn test_parse_selection_all_invalid() {
+        assert_eq!(parse_selection("x y", 5), None);
+        assert_eq!(parse_selection("", 5), None);
+        assert_eq!(parse_selection(" , ", 5), None);
     }
 }
