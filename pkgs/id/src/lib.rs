@@ -200,6 +200,7 @@ pub mod local_events;
 pub mod log_sync;
 pub use id_core::membership;
 pub mod meta_client;
+pub mod notes;
 #[cfg(feature = "world")]
 pub use id_core::petname;
 pub mod protocol;
