@@ -1707,7 +1707,79 @@ const GRAINS: [RoadmapGrain, string][] = [
   ["today", "Today"],
 ];
 
-function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<string, number>): string {
+/** One roadmap row's drill-down (#1168): its matched Project epic
+ *  (absent when the row is unmatched) and the epic's pool children —
+ *  the pool items whose epicRef names the epic (#2399). */
+export interface RoadmapDrill {
+  epic?: ProjectPoolItem;
+  children: ProjectPoolItem[];
+}
+
+/** Build the per-row drill-down index from a reconciliation and the
+ *  Project pool, keyed by the row's registry subject. Every row gets
+ *  an entry, so an unmatched row is distinguishable from drill data
+ *  never having been supplied. Callers pass no index at all when the
+ *  reconciliation is unavailable — a failed source read must not
+ *  masquerade as "no epic yet" (#1144's availability rule). */
+export function buildRoadmapDrill(
+  rows: RoadmapRow[],
+  reconciliation: RoadmapReconciliation,
+  pool: ProjectPoolItem[],
+): Map<string, RoadmapDrill> {
+  const epicByRow = new Map(reconciliation.matched.map((m) => [m.row.subject, m.epic] as const));
+  const childrenByEpic = new Map<string, ProjectPoolItem[]>();
+  for (const item of pool) {
+    if (!item.epicRef) continue;
+    const list = childrenByEpic.get(item.epicRef) ?? [];
+    list.push(item);
+    childrenByEpic.set(item.epicRef, list);
+  }
+  return new Map(
+    rows.map((row) => {
+      const epic = epicByRow.get(row.subject);
+      return [row.subject, { epic, children: epic ? (childrenByEpic.get(epic.ref) ?? []) : [] }] as const;
+    }),
+  );
+}
+
+function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
+  const parts: string[] = [];
+  if (!drill.epic) {
+    parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
+  } else {
+    const epic = drill.epic;
+    parts.push(
+      `<p>Epic: <a href="${esc(epic.issueUrl)}">${esc(epic.title)}</a> <span class="muted">${esc(epic.ref)} · ${esc(epic.state)}</span></p>`,
+    );
+    if (drill.children.length === 0) {
+      parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
+    } else {
+      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const total = drill.children.length;
+      const pct = Math.round((done / total) * 100);
+      parts.push(
+        `<p class="muted">Progress: ${done}/${total} child issues done</p><div class="progress"><progress value="${done}" max="${total}">${pct}%</progress></div>`,
+      );
+      parts.push(
+        `<ul>${drill.children
+          .map(
+            (c) =>
+              `<li><a href="${esc(c.issueUrl)}">${esc(c.title)}</a> <span class="badge ${esc(c.state)}">${esc(c.state)}</span> <span class="muted">${esc(c.ref)}</span></li>`,
+          )
+          .join("")}</ul>`,
+      );
+    }
+  }
+  if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
+  return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
+}
+
+function roadmapCard(
+  row: RoadmapRow,
+  items: Map<RefKey, GhItem>,
+  counts?: Map<string, number>,
+  drill?: RoadmapDrill,
+): string {
   const refs = allRefs([row]);
   const refBadges = refs
     .map((r) => items.get(r))
@@ -1716,13 +1788,15 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}</div>`;
+  const expansion = drill ? roadmapDrilldown(drill, row) : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${expansion}</div>`;
 }
 
 function timelineTable(
   tl: ReturnType<typeof buildTimeline>,
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number>,
+  drill?: Map<string, RoadmapDrill>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1730,7 +1804,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1747,6 +1821,7 @@ export function renderRoadmap(
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
   reconciliation?: RoadmapReconciliation,
+  drill?: Map<string, RoadmapDrill>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1762,15 +1837,15 @@ export function renderRoadmap(
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts);
+    body = timelineTable(buildTimeline(rows), items, counts, drill);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts);
+    body = timelineTable(monthTimeline(rows), items, counts, drill);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
