@@ -21,7 +21,7 @@
 //! Text is sanitized and bounded with the world-chat rules (see [`crate::world`]): control
 //! characters are stripped and the text is at most [`MAX_TEXT_BYTES`] bytes. The send-rate
 //! limit (50 per 10 seconds) is an admission rule of the sending path, not a property of a
-//! stored message, so it is enforced where events are admitted, not here.
+//! stored message, so it is enforced where events are admitted ([`SendRate`]), not on a stored message.
 //!
 //! A message may carry object references as links. Only `blob` and `event` are v1 link
 //! kinds. A link names content by hash and names its author; it never embeds a capability.
@@ -34,11 +34,12 @@
 //! events are admitted. This module defines the message shape and the projection those
 //! checks operate on. World chat behavior is untouched.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::groups::policy::History;
 use crate::waiting::AuthorKey;
 use crate::world::sanitize_chat;
 
@@ -306,6 +307,137 @@ pub fn project(records: impl IntoIterator<Item = ChatRecord>) -> Vec<ChatRecord>
     timeline
 }
 
+/// The most messages one author may send in one send-rate window: the world-chat
+/// starting configuration (world chat's burst of 50).
+pub const SEND_RATE_MAX: usize = 50;
+
+/// The send-rate window, in milliseconds: 10 seconds, the world-chat window.
+pub const SEND_RATE_WINDOW_MS: u64 = 10_000;
+
+/// The send-rate admission configuration for one author. The defaults are the world-chat
+/// limits; a different configuration is a seam a caller may choose when a channel's needs
+/// or a test motivate one (#3950).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatRateConfig {
+    /// The most sends admitted in one window.
+    pub max: usize,
+    /// The window's length, in milliseconds.
+    pub window_ms: u64,
+}
+
+impl Default for ChatRateConfig {
+    fn default() -> Self {
+        Self {
+            max: SEND_RATE_MAX,
+            window_ms: SEND_RATE_WINDOW_MS,
+        }
+    }
+}
+
+/// Sliding-window send-rate admission for one author (#3950): at most
+/// [`ChatRateConfig::max`] sends in any trailing window of [`ChatRateConfig::window_ms`]
+/// milliseconds, the world-chat rule. Admission is a property of the sending path, so the
+/// limiter lives with the sender, never with a stored message.
+#[derive(Clone, Debug)]
+pub struct SendRate {
+    config: ChatRateConfig,
+    sent: VecDeque<u64>,
+}
+
+impl SendRate {
+    /// A limiter under `config`, with nothing sent yet.
+    #[must_use]
+    pub fn new(config: ChatRateConfig) -> Self {
+        Self {
+            config,
+            sent: VecDeque::new(),
+        }
+    }
+
+    /// Whether a send at `now_ms` is admitted. An admitted send is recorded; a refused
+    /// one is not. A send stops counting once it is a full window old.
+    pub fn admit(&mut self, now_ms: u64) -> bool {
+        while let Some(front) = self.sent.front() {
+            if now_ms.saturating_sub(*front) >= self.config.window_ms {
+                self.sent.pop_front();
+            } else {
+                break;
+            }
+        }
+        if self.sent.len() >= self.config.max {
+            return false;
+        }
+        self.sent.push_back(now_ms);
+        true
+    }
+}
+
+impl Default for SendRate {
+    fn default() -> Self {
+        Self::new(ChatRateConfig::default())
+    }
+}
+
+/// Whether `record` causally follows `ancestor`: `ancestor` is among the record's causal
+/// parents, transitively, over `parents`, which maps every event's ID to the IDs of its
+/// `after` and backlink parents. A record does not follow itself.
+#[must_use]
+pub fn causally_follows(
+    record: &ChatRecord,
+    ancestor: &Hash,
+    parents: &HashMap<Hash, Vec<Hash>>,
+) -> bool {
+    let mut stack: Vec<Hash> = record.after.clone();
+    if let Some(backlink) = record.backlink {
+        stack.push(backlink);
+    }
+    let mut seen: HashSet<Hash> = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if id == *ancestor {
+            return true;
+        }
+        if seen.insert(id) {
+            if let Some(grandparents) = parents.get(&id) {
+                stack.extend(grandparents.iter().copied());
+            }
+        }
+    }
+    false
+}
+
+/// The part of a projected `timeline` a reader may see under a channel group's history
+/// policy (#3950), given the event that made the reader a member (`join`) and the causal
+/// `parents` of every event.
+///
+/// - [`History::Full`]: the whole timeline.
+/// - [`History::FromJoin`]: the records that causally follow the join event — the reader
+///   sees what was written with their membership in its causal past, and nothing from
+///   before it.
+/// - [`History::Recent`] and [`History::Causal`]: narrowed conservatively to the
+///   from-join set for now. A recent window counts key epochs (P4.5), not messages, and
+///   causal history is deferred in the design; until a message-level meaning exists, a
+///   reader under either rule sees a subset of what the policy allows, never more.
+#[must_use]
+pub fn visible_history(
+    timeline: Vec<ChatRecord>,
+    policy: &History,
+    join: Option<&Hash>,
+    parents: &HashMap<Hash, Vec<Hash>>,
+) -> Vec<ChatRecord> {
+    match policy {
+        History::Full => timeline,
+        History::FromJoin | History::Recent(_) | History::Causal => {
+            let Some(join) = join else {
+                return Vec::new();
+            };
+            timeline
+                .into_iter()
+                .filter(|record| causally_follows(record, join, parents))
+                .collect()
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -323,6 +455,52 @@ mod tests {
             backlink: None,
             message: ChatMessage::new(text, Vec::new()).unwrap(),
         }
+    }
+
+    #[test]
+    fn test_send_rate_admits_the_burst_and_refuses_past_it() {
+        // The default configuration is the world-chat starting configuration.
+        let config = ChatRateConfig::default();
+        assert_eq!(config.max, 50);
+        assert_eq!(config.window_ms, 10_000);
+
+        let mut rate = SendRate::new(ChatRateConfig {
+            max: 3,
+            window_ms: 1_000,
+        });
+        assert!(rate.admit(0));
+        assert!(rate.admit(100));
+        assert!(rate.admit(200));
+        // The window is full: a fourth send inside it is refused, and the refusal is
+        // not recorded.
+        assert!(!rate.admit(300));
+        // Once the oldest send is a full window old, a send is admitted again.
+        assert!(rate.admit(1_000));
+    }
+
+    #[test]
+    fn test_visible_history_from_join_shows_only_what_follows_the_join() {
+        let join = Hash::digest(b"join");
+        let before = record(11, Vec::new(), "before the join");
+        let mut after = record(12, Vec::new(), "after the join");
+        after.after = vec![join];
+        // A third message follows `after` through its backlink alone.
+        let mut chained = record(13, Vec::new(), "chained");
+        chained.backlink = Some(after.id);
+        let mut parents: HashMap<Hash, Vec<Hash>> = HashMap::new();
+        parents.insert(after.id, vec![join]);
+        parents.insert(chained.id, vec![after.id]);
+        let timeline = vec![before.clone(), after.clone(), chained.clone()];
+
+        let full = visible_history(timeline.clone(), &History::Full, Some(&join), &parents);
+        assert_eq!(full.len(), 3);
+
+        let from_join = visible_history(timeline.clone(), &History::FromJoin, Some(&join), &parents);
+        let texts: Vec<&str> = from_join.iter().map(|r| r.message.text.as_str()).collect();
+        assert_eq!(texts, vec!["after the join", "chained"]);
+
+        // With no join event known, a from-join reader sees nothing.
+        assert!(visible_history(timeline, &History::FromJoin, None, &parents).is_empty());
     }
 
     #[test]

@@ -22,6 +22,7 @@ use anyhow::{Context, Result, bail};
 use p2panda_core::{Hash, SigningKey};
 
 use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
+use crate::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
 use crate::search::{Hit, ValueMatch, search_store};
@@ -143,6 +144,8 @@ type Log = (HashMap<Hash, Entry>, HashMap<Hash, Vec<Hash>>);
 pub struct LocalEvents {
     store: EventStore,
     key: SigningKey,
+    /// Send-rate admission for this node's own chat sends (#3950).
+    chat_rate: SendRate,
 }
 
 impl LocalEvents {
@@ -154,7 +157,11 @@ impl LocalEvents {
     pub fn open(dir: &Path, key: SigningKey) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;
-        Ok(Self { store, key })
+        Ok(Self {
+            store,
+            key,
+            chat_rate: SendRate::default(),
+        })
     }
 
     /// Runs one range-sync session over `conn` against this node's store: the session
@@ -208,7 +215,7 @@ impl LocalEvents {
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
         }
-        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, &[])?;
+        let id = self.record(DOCUMENT_KIND, None, None, Some(document.clone()), None, None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
         for (name, value) in tags {
             claims.push(self.set_tag(id, name, value.as_deref())?);
@@ -218,6 +225,55 @@ impl LocalEvents {
             document,
             claims,
         })
+    }
+
+    /// Sends `message` as a `chat.message.v1` event in the channel `group`, and returns
+    /// the event's ID.
+    ///
+    /// Admission is refused before anything is signed when the node's key is not a member
+    /// of the group under its policy ([`EventStore::roster`]), and when the node's sends
+    /// inside the trailing rate window already number the configured maximum
+    /// ([`SendRate`], the world-chat starting configuration of 50 per 10 seconds, #3950).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the message is refused by [`ChatMessage::check`], the node is not a
+    /// member, the send rate is exhausted, or the store cannot record the event.
+    pub fn send_chat(&mut self, group: Hash, message: ChatMessage) -> Result<Hash> {
+        message.check()?;
+        let author = self.author();
+        if !self.store.roster(&group)?.contains(&author) {
+            bail!(
+                "the node's key is not a member of the channel group, so its chat write is refused at admission"
+            );
+        }
+        if !self.chat_rate.admit(now_ms()) {
+            bail!(
+                "the chat send rate is exhausted: at most {} messages in {} ms",
+                crate::chat::SEND_RATE_MAX,
+                crate::chat::SEND_RATE_WINDOW_MS
+            );
+        }
+        self.record(
+            CHAT_MESSAGE_KIND,
+            Some(group),
+            None,
+            None,
+            None,
+            Some(message),
+            &[],
+        )
+    }
+
+    /// The chat timeline of `group` as this node may see it: the store's read, gated on
+    /// this node's membership and cut by the group's history policy (see
+    /// [`EventStore::chat_timeline`]).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the node is not a member of the group, or the store cannot be read.
+    pub fn chat_timeline(&self, group: Hash) -> Result<Vec<ChatRecord>> {
+        Ok(self.store.chat_timeline(&group, &self.author())?)
     }
 
     /// Sets the tag `name` on `subject`, with `value` if given. The new claim's ID is the event's.
@@ -231,7 +287,7 @@ impl LocalEvents {
             name: name.to_owned(),
             value: value.map(str::to_owned),
         };
-        self.record(SET_KIND, Some(op), None, None, &[])
+        self.record(SET_KIND, None, Some(op), None, None, None, &[])
     }
 
     /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
@@ -317,7 +373,9 @@ impl LocalEvents {
             let ids: Vec<Hash> = group.iter().map(|claim| claim.id).collect();
             last = Some(self.record(
                 CLEAR_KIND,
+                None,
                 Some(TagOp::Clear { claims: ids }),
+                None,
                 None,
                 None,
                 &required,
@@ -499,9 +557,11 @@ impl LocalEvents {
     fn record(
         &mut self,
         kind: &str,
+        group: Option<Hash>,
         tag: Option<TagOp>,
         document: Option<DocumentRef>,
         removes: Option<Hash>,
+        chat: Option<ChatMessage>,
         required: &[Hash],
     ) -> Result<Hash> {
         let author = self.author();
@@ -509,11 +569,12 @@ impl LocalEvents {
         let chain = self.store.chain(&author)?.unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
-            group: None,
+            group,
             after,
             tag,
             document,
             removes,
+            chat,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
         match self.store.ingest(&event.bytes, now_ms())? {
@@ -808,5 +869,138 @@ mod tests {
         assert_eq!(clear_chunks(&events, subject), vec![(event, 3)]);
         // Nothing left to clear is still an error.
         assert!(events.clear_tag(subject, "topic").is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod chat_tests {
+    use super::*;
+    use crate::membership::AuthId;
+    use crate::membership::body::encode_body;
+    use p2panda_auth::group::{GroupAction, GroupMember};
+
+    fn key(n: u8) -> SigningKey {
+        SigningKey::from_bytes(&[n; 32])
+    }
+
+    fn individual(key: &SigningKey) -> GroupMember<AuthId> {
+        GroupMember::Individual(AuthId::Key(*key.verifying_key().as_bytes()))
+    }
+
+    /// The channel create event (Alice creates, Bob is a member) and its encoded body.
+    fn create_event(alice: &SigningKey, bob: &SigningKey) -> (Event, Vec<u8>) {
+        let action = GroupAction::Create {
+            initial_members: vec![
+                (individual(alice), p2panda_auth::Access::manage()),
+                (individual(bob), p2panda_auth::Access::write()),
+            ],
+        };
+        let body = encode_body(&action).unwrap();
+        let ext = ChainExt {
+            kind: "group.op".to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document: None,
+            removes: None,
+            chat: None,
+        };
+        let event = sign(alice, 0, None, Some(&body), ext).unwrap();
+        (event, body)
+    }
+
+    /// A node whose store already holds the channel create, as sync would have brought it.
+    fn node(dir: &Path, key: SigningKey, create: &Event, body: &[u8]) -> LocalEvents {
+        let mut node = LocalEvents::open(dir, key).unwrap();
+        node.store
+            .ingest_with_body(&create.bytes, Some(body), 0)
+            .unwrap();
+        node
+    }
+
+    /// Moves `from`'s applied chat events into `to`'s store, as a sync session would.
+    fn exchange(from: &LocalEvents, to: &mut LocalEvents) {
+        let events = from
+            .store
+            .applied_events(&from.author(), None, None, usize::MAX)
+            .unwrap();
+        for event in &events {
+            if event.header.extensions.kind == CHAT_MESSAGE_KIND {
+                to.store.ingest(&event.bytes, now_ms()).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn test_two_members_exchange_chat_and_a_non_member_is_refused() {
+        let (alice, bob, carol) = (key(51), key(52), key(53));
+        let (create, body) = create_event(&alice, &bob);
+        let group = create.id;
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let dir_c = tempfile::tempdir().unwrap();
+        let mut node_a = node(dir_a.path(), alice, &create, &body);
+        let mut node_b = node(dir_b.path(), bob, &create, &body);
+        let mut node_c = node(dir_c.path(), carol, &create, &body);
+
+        // A non-member's write is refused at admission: nothing is signed or recorded.
+        let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
+        assert!(refused.is_err());
+        assert!(node_c.store.chat_records(&group).unwrap().is_empty());
+
+        let first = node_a
+            .send_chat(group, ChatMessage::new("hello from alice", Vec::new()).unwrap())
+            .unwrap();
+        let second = node_b
+            .send_chat(group, ChatMessage::new("hello from bob", Vec::new()).unwrap())
+            .unwrap();
+
+        exchange(&node_a, &mut node_b);
+        exchange(&node_b, &mut node_a);
+
+        let timeline_a = node_a.chat_timeline(group).unwrap();
+        let timeline_b = node_b.chat_timeline(group).unwrap();
+        let texts_a: Vec<&str> = timeline_a
+            .iter()
+            .map(|record| record.message.text.as_str())
+            .collect();
+        let texts_b: Vec<&str> = timeline_b
+            .iter()
+            .map(|record| record.message.text.as_str())
+            .collect();
+        assert_eq!(texts_a, texts_b);
+        assert_eq!(texts_a.len(), 2);
+        let ids: Vec<Hash> = timeline_a.iter().map(|record| record.id).collect();
+        assert!(ids.contains(&first));
+        assert!(ids.contains(&second));
+    }
+
+    #[test]
+    fn test_send_rate_admits_the_configured_burst_and_refuses_past_it() {
+        let (alice, bob) = (key(54), key(55));
+        let (create, body) = create_event(&alice, &bob);
+        let group = create.id;
+        let dir = tempfile::tempdir().unwrap();
+        let mut node = node(dir.path(), alice, &create, &body);
+        // The configuration seam (#3950): a small burst in a wide window, so the test
+        // does not depend on how fast the sends happen. The default configuration is
+        // the world-chat 50 per 10 seconds, unit-tested in the chat module.
+        node.chat_rate = SendRate::new(crate::chat::ChatRateConfig {
+            max: 3,
+            window_ms: 60_000,
+        });
+        for index in 0..3 {
+            node.send_chat(
+                group,
+                ChatMessage::new(&format!("message {index}"), Vec::new()).unwrap(),
+            )
+            .unwrap();
+        }
+        let refused = node.send_chat(
+            group,
+            ChatMessage::new("one too many", Vec::new()).unwrap(),
+        );
+        assert!(refused.is_err());
     }
 }

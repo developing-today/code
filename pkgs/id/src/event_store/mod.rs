@@ -59,6 +59,7 @@ use redb::{
 
 use crate::chain::{self, Event};
 
+mod chat;
 mod claims;
 mod documents;
 mod ingest;
@@ -158,6 +159,9 @@ pub enum StoreError {
     /// refuses further calls. Reopening it rebuilds them.
     #[error("event store is unusable after a failed write: reopen it")]
     Unusable,
+    /// The reader is not a member of the group whose chat they asked to read (#3950).
+    #[error("the reader is not a member of this group")]
+    NotMember,
 }
 
 fn corrupt(message: impl Into<String>) -> StoreError {
@@ -1349,6 +1353,7 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            chat: None,
         }
     }
 
