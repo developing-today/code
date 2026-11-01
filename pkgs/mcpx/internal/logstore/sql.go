@@ -61,7 +61,7 @@ func CheckReadOnly(query string) error {
 // (e.g. user_version(42), journal_mode(DELETE)) is an assignment in call
 // form and is refused.
 var functionFormReadPragmas = map[string]bool{
-	"table_info": true, "table_xinfo": true,
+	"table_info": true, "table_xinfo": true, "table_list": true,
 	"index_list": true, "index_info": true, "index_xinfo": true,
 	"foreign_key_list": true, "foreign_key_check": true,
 	"integrity_check": true, "quick_check": true,

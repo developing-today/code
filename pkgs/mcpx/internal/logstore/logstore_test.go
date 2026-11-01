@@ -611,6 +611,7 @@ func TestReadOnlyGuardRejectsAnythingThatWrites(t *testing.T) {
 		`WITH t AS (SELECT 1) SELECT * FROM t`,
 		`PRAGMA table_info(records)`,
 		`PRAGMA table_xinfo(records)`,
+		`PRAGMA table_list(records)`,
 		`PRAGMA index_list(records)`,
 		`PRAGMA main.table_info(records)`,
 		`PRAGMA journal_mode`,
