@@ -40,6 +40,13 @@ evolution only, never on execution-budget behaviour.
       snapshot hashes recorded in the run; guest-level cold start (restore
       step-2 snapshot, apply `inc`) reproduces the step-3 snapshot hash
       `4e07408562…` exactly.
+- [x] DO host hardened per Codex review on this PR (2026-11-01): SQLite
+      BLOB snapshots normalized to Uint8Array before plaza_restore, all
+      request handling serialized (shared lazy-init promise; update -> hash
+      -> journal insert is one unit), step inputs validated before any guest
+      mutation with the guest discarded on journal failure, guest output
+      pointers normalized unsigned, wrangler declared in nix-common.nix.
+      Smoke PASS + tsc clean after the fixes.
 - [ ] Counter sequence compared against the native reference runner
       (native runner over the same scripted sequence via the existing
       sandbox/world_fixture machinery — next increment).

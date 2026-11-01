@@ -88,8 +88,12 @@ export class PlazaGuest {
     if (len < 0) throw new Error("guest returned a negative output length");
     if (len > this.limits.messageBytes) throw new Error(`guest output exceeds ${this.limits.messageBytes} bytes`);
     const mem = new Uint8Array(this.ex.memory.buffer);
-    if (outputPtr + len > mem.length) throw new Error("guest returned output outside linear memory");
-    return mem.slice(outputPtr, outputPtr + len);
+    // Normalize the i32 pointer to unsigned before the bounds check and the
+    // slice, as sandbox.rs does: a negative pointer must fail the bounds
+    // check, never slice from the end of memory.
+    const ptr = outputPtr >>> 0;
+    if (ptr + len > mem.length) throw new Error("guest returned output outside linear memory");
+    return mem.slice(ptr, ptr + len);
   }
 
   update(participant: number, event: Uint8Array): void {
