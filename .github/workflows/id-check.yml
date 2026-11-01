@@ -202,7 +202,7 @@ jobs:
 
       - name: Run the checked-in session snapshot test natively
         run: >-
-          nix develop ./pkgs/id --command cargo test
+          nix develop ./pkgs/id --command cargo test -p id
           --manifest-path pkgs/id/Cargo.toml --lib
           world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable
           -- --exact
