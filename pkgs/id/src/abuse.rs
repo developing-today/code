@@ -25,6 +25,14 @@
 //! Time is injected as `now_ms` (milliseconds on any monotonic
 //! clock the caller chooses) so the evaluator is deterministic and
 //! unit-testable without sleeping.
+//!
+//! Retained state is bounded by pruning, never by the connection
+//! cap: [`AbuseEvaluator::prune_idle_endpoints`] evicts endpoints
+//! with no open connections whose buckets have fully refilled
+//! (a state indistinguishable from never having been seen, so
+//! eviction changes no admission decision), and
+//! [`CounterRegistry::prune`] drops counter rows idle past a
+//! caller-chosen retention. Callers run both periodically.
 
 use std::collections::{HashMap, HashSet};
 
@@ -134,6 +142,12 @@ impl TokenBucket {
         self.last_refill_ms = now_ms;
     }
 
+    /// Whether the bucket currently holds its full capacity.
+    fn is_full(&mut self, now_ms: u64) -> bool {
+        self.refill(now_ms);
+        self.tokens_milli >= self.capacity_milli
+    }
+
     /// Takes `cost` whole tokens if the bucket holds them.
     fn try_take(&mut self, cost: u64, now_ms: u64) -> bool {
         self.refill(now_ms);
@@ -216,11 +230,20 @@ pub struct Counters {
     pub bytes: u64,
 }
 
+/// One registry row: the counters plus the last time traffic was
+/// recorded for the pair, which is what [`CounterRegistry::prune`]
+/// ages out on.
+#[derive(Clone, Copy, Debug, Default)]
+struct CounterEntry {
+    counters: Counters,
+    last_seen_ms: u64,
+}
+
 /// Per-(local node, remote endpoint) counters with a snapshot API
 /// for the observability surface.
 #[derive(Clone, Debug, Default)]
 pub struct CounterRegistry {
-    counters: HashMap<(NodeId, EndpointId), Counters>,
+    counters: HashMap<(NodeId, EndpointId), CounterEntry>,
 }
 
 impl CounterRegistry {
@@ -230,26 +253,52 @@ impl CounterRegistry {
     }
 
     /// Records `frames` admitted frames and `bytes` admitted bytes
-    /// for traffic between `local` and `remote`.
-    pub fn record(&mut self, local: NodeId, remote: EndpointId, frames: u64, bytes: u64) {
+    /// for traffic between `local` and `remote`, stamped at
+    /// `now_ms` for pruning.
+    pub fn record(
+        &mut self,
+        local: NodeId,
+        remote: EndpointId,
+        frames: u64,
+        bytes: u64,
+        now_ms: u64,
+    ) {
         let entry = self.counters.entry((local, remote)).or_default();
-        entry.frames = entry.frames.saturating_add(frames);
-        entry.bytes = entry.bytes.saturating_add(bytes);
+        entry.counters.frames = entry.counters.frames.saturating_add(frames);
+        entry.counters.bytes = entry.counters.bytes.saturating_add(bytes);
+        entry.last_seen_ms = entry.last_seen_ms.max(now_ms);
     }
 
     /// The counters for one pair, if any traffic was recorded.
     #[must_use]
     pub fn get(&self, local: &NodeId, remote: &EndpointId) -> Option<Counters> {
-        self.counters.get(&(*local, *remote)).copied()
+        self.counters.get(&(*local, *remote)).map(|e| e.counters)
     }
 
     /// All counters, sorted by (local node, remote endpoint) so
     /// snapshots are deterministic.
     #[must_use]
     pub fn snapshot(&self) -> Vec<((NodeId, EndpointId), Counters)> {
-        let mut rows: Vec<_> = self.counters.iter().map(|(k, v)| (*k, *v)).collect();
+        let mut rows: Vec<_> = self
+            .counters
+            .iter()
+            .map(|(k, e)| (*k, e.counters))
+            .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         rows
+    }
+
+    /// Drops rows whose last recorded traffic is at least
+    /// `retention_ms` before `now_ms`, returning how many rows
+    /// were dropped. This is the registry's bound on retained
+    /// state: without it, every distinct endpoint ever seen would
+    /// keep a row forever. Snapshot before pruning if lifetime
+    /// totals are needed.
+    pub fn prune(&mut self, now_ms: u64, retention_ms: u64) -> usize {
+        let before = self.counters.len();
+        self.counters
+            .retain(|_, e| now_ms.saturating_sub(e.last_seen_ms) < retention_ms);
+        before - self.counters.len()
     }
 }
 
@@ -289,6 +338,20 @@ impl EndpointState {
             ),
             connections: HashSet::new(),
         }
+    }
+}
+
+impl EndpointState {
+    /// Whether evicting this state changes nothing: no open
+    /// connections, and every bucket back at full capacity, so a
+    /// future first check sees exactly the state a fresh endpoint
+    /// would get.
+    fn is_idle_and_full(&mut self, now_ms: u64) -> bool {
+        self.connections.is_empty()
+            && self.authorized_frames.is_full(now_ms)
+            && self.authorized_bytes.is_full(now_ms)
+            && self.preauth_frames.is_full(now_ms)
+            && self.preauth_bytes.is_full(now_ms)
     }
 }
 
@@ -379,7 +442,7 @@ impl AbuseEvaluator {
             &mut state.preauth_frames
         };
         if bucket.try_take(1, now_ms) {
-            self.registry.record(self.local_node, endpoint, 1, 0);
+            self.registry.record(self.local_node, endpoint, 1, 0, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -410,7 +473,7 @@ impl AbuseEvaluator {
             &mut state.preauth_bytes
         };
         if bucket.try_take(bytes, now_ms) {
-            self.registry.record(self.local_node, endpoint, 0, bytes);
+            self.registry.record(self.local_node, endpoint, 0, bytes, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
@@ -422,6 +485,25 @@ impl AbuseEvaluator {
     #[must_use]
     pub fn counters(&self) -> &CounterRegistry {
         &self.registry
+    }
+
+    /// Evicts endpoint states that carry no information - no open
+    /// connections and every bucket fully refilled - returning how
+    /// many were evicted. An evicted endpoint's next check behaves
+    /// exactly as a never-seen endpoint's, so callers may run this
+    /// on any schedule to bound retained state; endpoints with
+    /// open connections or partially drained buckets are kept.
+    pub fn prune_idle_endpoints(&mut self, now_ms: u64) -> usize {
+        let before = self.endpoints.len();
+        self.endpoints.retain(|_, s| !s.is_idle_and_full(now_ms));
+        before - self.endpoints.len()
+    }
+
+    /// Drops counter rows idle for at least `retention_ms`,
+    /// returning how many were dropped; see
+    /// [`CounterRegistry::prune`].
+    pub fn prune_counters(&mut self, now_ms: u64, retention_ms: u64) -> usize {
+        self.registry.prune(now_ms, retention_ms)
     }
 }
 
@@ -565,5 +647,61 @@ mod tests {
         let snapshot = eval.counters().snapshot();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].0, ([1; 32], ep));
+    }
+
+    #[test]
+    fn prune_evicts_only_idle_fully_refilled_endpoints() {
+        let mut eval = evaluator();
+        let idle = endpoint(20);
+        let connected = endpoint(21);
+        let drained = endpoint(22);
+        // idle: traffic at t=0, no open connection. After enough
+        // time every bucket refills, so the state carries nothing.
+        eval.check_frame(idle, true, 0).expect("frame");
+        // connected: an open connection pins the state.
+        let conn = eval.open_connection(connected, 0).expect("conn");
+        // drained: burst spent at t=0 and not yet refilled.
+        for _ in 0..180 {
+            eval.check_frame(drained, true, 0).expect("burst");
+        }
+        // At t=0 nothing is prunable: idle's frame bucket is one
+        // token short of full, drained is empty, connected is open.
+        assert_eq!(eval.prune_idle_endpoints(0), 0);
+        // By 3 s idle's one spent token has refilled, so it is
+        // evictable. Keep drained non-full by spending one of its
+        // refilled tokens just before the prune.
+        eval.check_frame(drained, true, 2_999).expect("one more");
+        assert_eq!(eval.prune_idle_endpoints(3_000), 1);
+        // The connected endpoint survives until its connection
+        // closes and its buckets refill.
+        eval.close_connection(&connected, conn);
+        assert_eq!(eval.prune_idle_endpoints(3_000), 1);
+        // An evicted endpoint behaves exactly like a fresh one:
+        // its full authorized burst is available again.
+        for _ in 0..180 {
+            eval.check_frame(idle, true, 3_000).expect("fresh burst");
+        }
+        assert!(eval.check_frame(idle, true, 3_000).is_err());
+    }
+
+    #[test]
+    fn prune_counters_drops_rows_idle_past_retention() {
+        let mut eval = evaluator();
+        let old = endpoint(23);
+        let fresh = endpoint(24);
+        eval.check_frame(old, true, 0).expect("frame");
+        eval.check_frame(fresh, true, 10_000).expect("frame");
+        // Retention 5 s at t=10 s: old (idle 10 s) drops, fresh stays.
+        assert_eq!(eval.prune_counters(10_000, 5_000), 1);
+        assert_eq!(eval.counters().get(&[1; 32], &old), None);
+        assert_eq!(
+            eval.counters().get(&[1; 32], &fresh),
+            Some(Counters {
+                frames: 1,
+                bytes: 0
+            })
+        );
+        // Nothing left to drop on a repeat prune at the same time.
+        assert_eq!(eval.prune_counters(10_000, 5_000), 0);
     }
 }
