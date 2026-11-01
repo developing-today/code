@@ -8,6 +8,7 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
+import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
@@ -38,7 +39,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
+import type { DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -70,6 +71,7 @@ import {
   renderProgram,
   renderProgramProject,
   renderQuota,
+  buildRoadmapDrill,
   renderRoadmap,
   renderServiceDetail,
   renderSessions,
@@ -321,18 +323,29 @@ const PWA_MANIFEST = {
   ],
 };
 
+/** #1211: the fail-soft facet fallbacks — an empty view is the honest
+ *  degraded form of a facet whose read threw (the renderers already
+ *  banner absent data, e.g. buildAttention's tier-source-missing
+ *  flag); a throwing facet must never 500 a whole page. */
+function emptyQuotaView(): QuotaView {
+  return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+}
+function emptyUsageView(): UsageView {
+  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+}
+
 async function boardContext() {
-  const board = await source.board();
+  const board = await source.board().catch(() => []);
   const refs = allRefs(board);
-  const items = await source.items(refs);
+  const items = await source.items(refs).catch(() => new Map());
   return { board, items };
 }
 
 async function roadmapContext() {
-  const rows = await source.roadmap();
+  const rows = await source.roadmap().catch(() => []);
   const refs = allRefs(rows);
   const [items, poolResult] = await Promise.all([
-    source.items(refs),
+    source.items(refs).catch(() => new Map()),
     source.projects().then(
       (pool) => ({ pool, failed: false }),
       () => ({ pool: [] as ProjectPoolItem[], failed: true }),
@@ -361,7 +374,12 @@ async function roadmapContext() {
   } else {
     reconciliation = reconcileRoadmap(rows, poolResult.pool);
   }
-  return { rows, items, reconciliation };
+  // #1168: the drill-down index rides the same pass as the
+  // reconciliation, and only exists when the reconciliation is
+  // available — an unavailable source must not render as "no epic yet".
+  const drill =
+    reconciliation.availability === "available" ? buildRoadmapDrill(rows, reconciliation, poolResult.pool) : undefined;
+  return { rows, items, reconciliation, drill };
 }
 
 // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
@@ -395,7 +413,11 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
 }
 
 async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
+  const [feed, summary, coverage] = await Promise.all([
+    source.attention().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverage().catch(() => []),
+  ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
@@ -468,8 +490,8 @@ async function todayContext() {
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota(),
-    source.orchestration(),
+    source.quota().catch(() => emptyQuotaView()),
+    source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
@@ -482,7 +504,7 @@ async function overviewContext() {
   const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
-    source.quota(),
+    source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
     actionsStore.byObject().catch(() => new Map()),
@@ -670,24 +692,30 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/roadmap") {
-    const { rows, items, reconciliation } = await roadmapContext();
+    const { rows, items, reconciliation, drill } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation));
+    return html(
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+    );
   }
 
   if (path === "/quota") {
-    const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
     return html(renderQuota(quota, prov(), usage, provDetail()));
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
   if (serviceMatch) {
-    const usage = await source.usage();
+    const usage = await source.usage().catch(() => emptyUsageView());
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
       `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      404,
     );
   }
 
@@ -1119,7 +1147,7 @@ async function handler(req: Request): Promise<Response> {
     if (id === null) {
       return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
     }
-    const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+    const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const subject = board.find((b) => b.id === id) ?? rows.find((r) => r.subject === id);
     if (subject) {
       const title = subject.title;
@@ -1127,8 +1155,8 @@ async function handler(req: Request): Promise<Response> {
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
       const [items, comments, allComments, records, pool, allActions] = await Promise.all([
-        source.items(refs),
-        source.comments(refs),
+        source.items(refs).catch(() => new Map()),
+        source.comments(refs).catch(() => []),
         commentsStore.all(),
         source.registry().catch(() => []),
         source.projects().catch(() => []),
@@ -1163,10 +1191,10 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`);
+    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
   }
 
-  return json({ error: "not found", path }, 404);
+  return notFoundResponse(path);
 }
 
 /**
@@ -1179,7 +1207,17 @@ async function handler(req: Request): Promise<Response> {
  */
 
 async function fetchHandler(req: Request): Promise<Response> {
-  const res = await handler(req);
+  // #1211: the top-level error boundary. A throwing handler degrades
+  // to a styled 500 page (JSON for /api) instead of rejecting the
+  // fetch; the render-health record below still runs, accounting the
+  // failure as an unsuccessful render.
+  let res: Response;
+  try {
+    res = await handler(req);
+  } catch (err) {
+    console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
+    res = errorBoundaryResponse(new URL(req.url).pathname, err);
+  }
   if (req.method === "GET") {
     const route = manifestRouteFor(new URL(req.url).pathname);
     if (route && (res.headers.get("content-type") ?? "").includes("text/html")) {
