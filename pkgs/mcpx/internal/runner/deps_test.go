@@ -1579,3 +1579,137 @@ func TestMaterialiseDepsRemovesStaleNPMRCAndBunLockfiles(t *testing.T) {
 		}
 	}
 }
+
+// Codex round (PR #2589): a deno config that names an external
+// import map ("importMap") must have that map's aliases carried into
+// the generated config, or every alias only the external map defines
+// disappears when the generated config replaces the project's.
+func TestLoadProjectDenoConfigExternalImportMap(t *testing.T) {
+	project := t.TempDir()
+	mapsDir := filepath.Join(project, "maps")
+	if err := os.MkdirAll(mapsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := `{
+		"imports": {
+			"ext": "./ext.ts",
+			"shared": "./from-map.ts",
+			"lib/": "./lib/"
+		},
+		"scopes": {
+			"./tools/": { "helper": "./h.ts" }
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(mapsDir, "import_map.json"), []byte(external), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := `{
+		"importMap": "./maps/import_map.json",
+		"imports": { "inline": "./inline.ts", "shared": "./from-config.ts" }
+	}`
+	if err := os.WriteFile(filepath.Join(project, "deno.json"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imports, scopes, _, cfgDir, ok := loadProjectDenoConfig(project)
+	if !ok {
+		t.Fatal("config with an external import map did not load")
+	}
+	if cfgDir != project {
+		t.Fatalf("cfgDir = %q, want %q", cfgDir, project)
+	}
+	want := map[string]string{
+		"ext":    "./maps/ext.ts",    // relocated from the map file's directory
+		"lib/":   "./maps/lib/",      // trailing slash (prefix mapping) preserved
+		"shared": "./from-config.ts", // inline config wins over the external map
+		"inline": "./inline.ts",      // inline entry carried
+	}
+	for k, v := range want {
+		if imports[k] != v {
+			t.Fatalf("imports[%q] = %q, want %q (all imports: %v)", k, imports[k], v, imports)
+		}
+	}
+	toolScope, okScope := scopes["./maps/tools/"]
+	if !okScope {
+		t.Fatalf("external scope key not relocated to ./maps/tools/: %v", scopes)
+	}
+	if toolScope["helper"] != "./maps/h.ts" {
+		t.Fatalf("scope mapping = %q, want ./maps/h.ts", toolScope["helper"])
+	}
+}
+
+// Codex round (PR #2589): the workdir identity must cover the
+// external import map's content too — it is part of the project
+// configuration the generated config carries, so two projects whose
+// external maps differ must not share a materialised workdir. A
+// named external map that cannot be read makes the whole config
+// unreadable, like an unparseable deno.json.
+func TestProjectDenoConfigIdentityCoversExternalImportMap(t *testing.T) {
+	write := func(alias string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "import_map.json"), []byte(`{"imports": {"@app/": "`+alias+`"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "deno.json"), []byte(`{"importMap": "./import_map.json"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	a, b := write("./src-a/"), write("./src-b/")
+	ida, idb := projectDenoConfigIdentity(a), projectDenoConfigIdentity(b)
+	if ida == "" || idb == "" {
+		t.Fatalf("projects with external import maps must have identities, got %q and %q", ida, idb)
+	}
+	if ida == idb {
+		t.Fatalf("different external import maps produced one identity %q", ida)
+	}
+	broken := t.TempDir()
+	if err := os.WriteFile(filepath.Join(broken, "deno.json"), []byte(`{"importMap": "./missing.json"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, ok := loadProjectDenoConfig(broken); ok {
+		t.Fatal("config naming a missing external import map loaded as ok")
+	}
+	if got := projectDenoConfigIdentity(broken); got != "" {
+		t.Fatalf("config with an unreadable external import map must have empty identity, got %q", got)
+	}
+}
+
+// Codex round (PR #2589): end to end — when a resolved dependency
+// set makes the generated deno.json replace the project's, aliases
+// defined only in the project's external import map survive,
+// rebased against the project directory.
+func TestMaterialiseDepsDenoPreservesExternalImportMap(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "import_map.json"), []byte(`{
+		"imports": { "@app/": "./src/" }
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "deno.json"), []byte(`{
+		"importMap": "./import_map.json",
+		"imports": { "lib": "jsr:@scope/lib@1" }
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scriptDir := filepath.Join(project, "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if _, err := materialiseDeps(dir, KindDeno, &Deps{
+		Packages: []string{"zod@3.0.0"},
+	}, true, scriptDir); err != nil {
+		t.Fatal(err)
+	}
+	dj := readJSON(t, filepath.Join(dir, "deno.json"))
+	imports := dj["imports"].(map[string]any)
+	wantAlias := "file://" + filepath.ToSlash(filepath.Join(project, "src")) + "/"
+	if imports["@app/"] != wantAlias {
+		t.Fatalf("external import map alias not preserved/rebased: %v (want %q)", imports, wantAlias)
+	}
+	if imports["lib"] != "jsr:@scope/lib@1" {
+		t.Fatalf("inline mapping not preserved: %v", imports)
+	}
+}

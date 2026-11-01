@@ -1297,9 +1297,15 @@ func writeBytesIfChanged(path string, content []byte) error {
 // directory upward, nearest first, deno.json before deno.jsonc in
 // each directory. It returns the config's import mappings and
 // scopes, plus the directory the config was found in (relative
-// mappings are relative to THAT directory). ok is false when no
-// project config exists or it cannot be parsed -- a config mcpx
-// cannot read must not fail a run it was only enriching.
+// mappings are relative to THAT directory). A config that names an
+// external import map ("importMap": "./import_map.json") has that
+// map loaded and merged under its inline mappings -- the generated
+// config replaces the project's, so dropping the external map would
+// silently drop every alias only it defines (Codex review,
+// PR #2589). ok is false when no project config exists or it cannot
+// be parsed -- including a named external map that cannot be read --
+// a config mcpx cannot read must not fail a run it was only
+// enriching.
 func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[string]map[string]string, compilerOptions json.RawMessage, cfgDir string, ok bool) {
 	for d := dir; ; d = filepath.Dir(d) {
 		for _, name := range []string{"deno.json", "deno.jsonc"} {
@@ -1310,6 +1316,10 @@ func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[st
 			var parsed struct {
 				Imports map[string]string            `json:"imports"`
 				Scopes  map[string]map[string]string `json:"scopes"`
+				// ImportMap names an external import map file
+				// whose mappings this config carries; see the
+				// merge below.
+				ImportMap string `json:"importMap"`
 				// CompilerOptions travels raw: the generated
 				// config replaces the project's, and dropping
 				// jsx/jsxImportSource silently reverts a
@@ -1320,12 +1330,135 @@ func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[st
 			if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
 				return nil, nil, nil, "", false
 			}
-			return parsed.Imports, parsed.Scopes, parsed.CompilerOptions, d, true
+			imports, scopes = parsed.Imports, parsed.Scopes
+			if parsed.ImportMap != "" && !strings.HasPrefix(parsed.ImportMap, "http://") && !strings.HasPrefix(parsed.ImportMap, "https://") {
+				extImports, extScopes, extOK := loadExternalDenoImportMap(d, parsed.ImportMap)
+				if !extOK {
+					return nil, nil, nil, "", false
+				}
+				imports, scopes = mergeDenoImportMaps(extImports, extScopes, imports, scopes)
+			}
+			// A remote (http/https) importMap cannot be read from
+			// disk; Deno resolves those only when it loads the
+			// project config itself, which the generated config
+			// replaces -- such a project's external aliases are
+			// not carried (documented limitation, unchanged from
+			// before external maps were handled at all).
+			return imports, scopes, parsed.CompilerOptions, d, true
 		}
 		if filepath.Dir(d) == d {
 			return nil, nil, nil, "", false
 		}
 	}
+}
+
+// loadExternalDenoImportMap reads the external import map a project
+// deno config names ("importMap" field, resolved relative to the
+// config's directory) and returns its mappings re-expressed relative
+// to that same directory: external entries resolve against the map
+// file's own directory, while loadProjectDenoConfig's contract (and
+// its callers' rebasing) is mappings relative to the config
+// directory. ok is false when the file cannot be read or parsed.
+func loadExternalDenoImportMap(cfgDir, ref string) (imports map[string]string, scopes map[string]map[string]string, ok bool) {
+	mapPath := ref
+	if !filepath.IsAbs(mapPath) {
+		mapPath = filepath.Join(cfgDir, ref)
+	}
+	raw, err := os.ReadFile(mapPath)
+	if err != nil {
+		return nil, nil, false
+	}
+	var parsed struct {
+		Imports map[string]string            `json:"imports"`
+		Scopes  map[string]map[string]string `json:"scopes"`
+	}
+	if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
+		return nil, nil, false
+	}
+	mapDir := filepath.Dir(mapPath)
+	if mapDir == cfgDir {
+		return parsed.Imports, parsed.Scopes, true
+	}
+	imports = make(map[string]string, len(parsed.Imports))
+	for k, v := range parsed.Imports {
+		imports[k] = relocateDenoMapping(v, mapDir, cfgDir)
+	}
+	scopes = make(map[string]map[string]string, len(parsed.Scopes))
+	for scope, inner := range parsed.Scopes {
+		relocated := make(map[string]string, len(inner))
+		for k, v := range inner {
+			relocated[k] = relocateDenoMapping(v, mapDir, cfgDir)
+		}
+		scopes[relocateDenoMapping(scope, mapDir, cfgDir)] = relocated
+	}
+	return imports, scopes, true
+}
+
+// relocateDenoMapping re-expresses a relative mapping written
+// against one directory as the equivalent mapping relative to
+// another, in the ./ or ../ spelling rebaseDenoMapping recognises.
+// Non-relative values (npm:, jsr:, http(s):, bare specifiers,
+// absolute paths) travel unchanged, as does a trailing slash — it is
+// what makes a mapping a prefix mapping.
+func relocateDenoMapping(v, fromDir, toDir string) string {
+	if !strings.HasPrefix(v, "./") && !strings.HasPrefix(v, "../") {
+		return v
+	}
+	abs := filepath.Join(fromDir, v)
+	rel, err := filepath.Rel(toDir, abs)
+	if err != nil {
+		return v
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, ".") {
+		rel = "./" + rel
+	}
+	if strings.HasSuffix(v, "/") && !strings.HasSuffix(rel, "/") {
+		// filepath.Rel cleans the trailing slash away; restore it —
+		// it is what makes the mapping a prefix mapping.
+		rel += "/"
+	}
+	return rel
+}
+
+// mergeDenoImportMaps layers a config's inline mappings over an
+// external import map's: per Deno's semantics the config file's own
+// entries win key-for-key, and scopes merge per scope (a scope the
+// inline config names inherits the external scope's entries it does
+// not override).
+func mergeDenoImportMaps(extImports map[string]string, extScopes map[string]map[string]string, inlineImports map[string]string, inlineScopes map[string]map[string]string) (map[string]string, map[string]map[string]string) {
+	imports := make(map[string]string, len(extImports)+len(inlineImports))
+	for k, v := range extImports {
+		imports[k] = v
+	}
+	for k, v := range inlineImports {
+		imports[k] = v
+	}
+	if len(imports) == 0 {
+		imports = nil
+	}
+	var scopes map[string]map[string]string
+	if len(extScopes)+len(inlineScopes) > 0 {
+		scopes = make(map[string]map[string]string, len(extScopes)+len(inlineScopes))
+		for scope, inner := range extScopes {
+			merged := make(map[string]string, len(inner))
+			for k, v := range inner {
+				merged[k] = v
+			}
+			scopes[scope] = merged
+		}
+		for scope, inner := range inlineScopes {
+			merged, exists := scopes[scope]
+			if !exists {
+				merged = make(map[string]string, len(inner))
+				scopes[scope] = merged
+			}
+			for k, v := range inner {
+				merged[k] = v
+			}
+		}
+	}
+	return imports, scopes
 }
 
 // projectDenoConfigIdentity identifies the project Deno configuration
