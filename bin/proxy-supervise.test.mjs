@@ -46,6 +46,23 @@ http.createServer((req, res) => {
 }).listen(port, '127.0.0.1');
 `;
 
+const FAKE_FAIL_ON_PORT = (marker, port) => FAKE(marker).replace(
+  'const port = Number(process.env.FAKE_PROXY_PORT);',
+  `const port = Number(process.env.FAKE_PROXY_PORT);\nif (port === ${port}) process.exit(3);`,
+);
+
+const FAKE_FAIL_ON_RECOVERY = (marker, canonicalPort, altPort, counterFile) => FAKE(marker).replace(
+  'const port = Number(process.env.FAKE_PROXY_PORT);',
+  `const port = Number(process.env.FAKE_PROXY_PORT);\nif (port === ${canonicalPort}) process.exit(3);\nif (port === ${altPort}) { const countFile = ${JSON.stringify(counterFile)}; let count = 0; try { count = Number(fs.readFileSync(countFile, 'utf8')); } catch {} fs.writeFileSync(countFile, String(count + 1)); if (count > 0) process.exit(3); }`,
+);
+
+const useBuild = (w, name, script) => {
+  const file = path.join(w.root, name);
+  fs.writeFileSync(file, script);
+  w.proxy.command = [process.execPath, file];
+  w.proxy.hashFiles = [file];
+};
+
 const getHealth = (port) =>
   new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port, path: '/health', timeout: 1500 }, (res) => {
@@ -199,6 +216,106 @@ test('swap strategy validates on alt but settles on canonical', async (t) => {
   const r3 = await w.run();
   assert.equal(r3.action, 'noop');
   assert.equal(r3.pid, r2.pid);
+});
+
+test('swap final-start failure restarts the previous build on canonical', async (t) => {
+  const w = await makeWorld(t, { strategy: 'swap' });
+  const oldFile = path.join(w.root, 'old-build.mjs');
+  fs.copyFileSync(w.scriptPath, oldFile);
+  w.proxy.command = [process.execPath, oldFile];
+  w.proxy.hashFiles = [oldFile];
+  const r1 = await w.run();
+
+  useBuild(w, 'new-build.mjs', FAKE_FAIL_ON_PORT('v2', w.canonicalPort));
+  const r2 = await w.run();
+  assert.equal(r2.action, 'swap-failed-old-restarted');
+  assert.equal(r2.port, w.canonicalPort);
+  assert.notEqual(r2.pid, r1.pid);
+  assert.ok(pidAlive(r2.pid));
+  assert.match((await getHealth(w.canonicalPort)).body, /v1/);
+  assert.equal((await getHealth(w.altPort)).status, 0);
+
+  const state = JSON.parse(fs.readFileSync(path.join(w.stateDir, 'fake-proxy.json'), 'utf8'));
+  assert.equal(state.current.pid, r2.pid);
+  assert.equal(state.current.port, w.canonicalPort);
+  assert.equal(state.lastError.targetPort, w.canonicalPort);
+  const endpoint = JSON.parse(fs.readFileSync(path.join(w.endpointDir, 'fake-proxy', 'endpoint.json'), 'utf8'));
+  assert.equal(endpoint.port, w.canonicalPort);
+  assert.equal(endpoint.pid, r2.pid);
+});
+
+test('swap final-start failure falls back to the validated build on alternate', async (t) => {
+  const w = await makeWorld(t, { strategy: 'swap' });
+  const oldFile = path.join(w.root, 'old-build.mjs');
+  fs.copyFileSync(w.scriptPath, oldFile);
+  w.proxy.command = [process.execPath, oldFile];
+  w.proxy.hashFiles = [oldFile];
+  await w.run();
+
+  // The old process has already loaded its original contents, but its
+  // immutable command path now represents a previous build that cannot
+  // restart on canonical. The validated new build remains healthy on alt.
+  fs.writeFileSync(oldFile, FAKE_FAIL_ON_PORT('old-restart-fails', w.canonicalPort));
+  useBuild(w, 'new-build.mjs', FAKE_FAIL_ON_PORT('v2', w.canonicalPort));
+  const r = await w.run();
+  assert.equal(r.action, 'swap-failed-new-on-alternate');
+  assert.equal(r.port, w.altPort);
+  assert.match((await getHealth(w.altPort)).body, /v2/);
+  assert.equal((await getHealth(w.canonicalPort)).status, 0);
+
+  const state = JSON.parse(fs.readFileSync(path.join(w.stateDir, 'fake-proxy.json'), 'utf8'));
+  assert.equal(state.current.pid, r.pid);
+  assert.equal(state.current.port, w.altPort);
+  const endpoint = JSON.parse(fs.readFileSync(path.join(w.endpointDir, 'fake-proxy', 'endpoint.json'), 'utf8'));
+  assert.equal(endpoint.port, w.altPort);
+  assert.equal(endpoint.pid, r.pid);
+});
+
+test('swap failure marks current explicitly when every recovery start fails', async (t) => {
+  const w = await makeWorld(t, { strategy: 'swap' });
+  const oldFile = path.join(w.root, 'old-build.mjs');
+  fs.copyFileSync(w.scriptPath, oldFile);
+  w.proxy.command = [process.execPath, oldFile];
+  w.proxy.hashFiles = [oldFile];
+  await w.run();
+
+  fs.writeFileSync(oldFile, FAKE_FAIL_ON_PORT('old-restart-fails', w.canonicalPort));
+  const counterFile = path.join(w.root, 'alternate-start-count');
+  useBuild(w, 'new-build.mjs', FAKE_FAIL_ON_RECOVERY('v2', w.canonicalPort, w.altPort, counterFile));
+  const result = await w.run();
+  assert.equal(result.action, 'swap-failed-unrecovered');
+  assert.equal((await getHealth(w.canonicalPort)).status, 0);
+  assert.equal((await getHealth(w.altPort)).status, 0);
+
+  const state = JSON.parse(fs.readFileSync(path.join(w.stateDir, 'fake-proxy.json'), 'utf8'));
+  assert.equal(state.current.failed, true);
+  assert.equal(state.current.port, w.altPort);
+  assert.equal(state.lastError.targetPort, w.canonicalPort);
+  assert.equal(fs.existsSync(path.join(w.endpointDir, 'fake-proxy', 'endpoint.json')), false);
+});
+
+test('interrupted swap failure restarts the desired build on alternate', async (t) => {
+  const w = await makeWorld(t, { strategy: 'ab' });
+  await w.run();
+  useBuild(w, 'new-build.mjs', FAKE_FAIL_ON_PORT('v2', w.canonicalPort));
+  const candidate = await w.run();
+  assert.equal(candidate.port, w.altPort);
+  assert.match((await getHealth(w.altPort)).body, /v2/);
+
+  w.proxy.strategy = 'swap';
+  const recovered = await w.run();
+  assert.equal(recovered.action, 'swap-failed-kept-on-alternate');
+  assert.equal(recovered.port, w.altPort);
+  assert.match((await getHealth(w.altPort)).body, /v2/);
+  assert.equal((await getHealth(w.canonicalPort)).status, 0);
+
+  const state = JSON.parse(fs.readFileSync(path.join(w.stateDir, 'fake-proxy.json'), 'utf8'));
+  assert.equal(state.current.pid, recovered.pid);
+  assert.equal(state.current.port, w.altPort);
+  assert.equal(state.lastError.targetPort, w.canonicalPort);
+  const endpoint = JSON.parse(fs.readFileSync(path.join(w.endpointDir, 'fake-proxy', 'endpoint.json'), 'utf8'));
+  assert.equal(endpoint.port, w.altPort);
+  assert.equal(endpoint.pid, recovered.pid);
 });
 
 test('broken new build keeps the old instance serving', async (t) => {

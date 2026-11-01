@@ -93,6 +93,18 @@ export const pidAlive = (pid) => {
   }
 };
 
+// Capture the running build's argv before stopping it. Nix store paths
+// are immutable, so this lets a swap recovery restart the actual previous
+// command even after the active config has advanced to a new build.
+const commandForPid = (pid) => {
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    return argv.length > 0 ? argv : null;
+  } catch {
+    return null;
+  }
+};
+
 // Epoch ms at which a pid started, from /proc (Linux). null elsewhere.
 export const pidStartedAt = (pid) => {
   try {
@@ -294,6 +306,21 @@ const spawnInstance = async (cfg, proxy, env, port) => {
   return { pid: child.pid, unit: null, isDead: () => exited || !pidAlive(child.pid) };
 };
 
+const startHealthyInstance = async (cfg, proxy, env, port) => {
+  const instance = await spawnInstance(cfg, proxy, env, port);
+  const healthy = instance.pid !== null && (await waitHealthy(
+    proxy,
+    port,
+    cfg.healthTimeoutSeconds,
+    instance.isDead,
+  ));
+  if (!healthy) {
+    if (pidAlive(instance.pid)) await stopInstance(instance.pid, 2, cfg, instance.unit);
+    else if (instance.unit) systemctl(cfg, ['stop', instance.unit]);
+  }
+  return { ...instance, healthy };
+};
+
 export const stopInstance = async (pid, drainSeconds, cfg = null, unit = null) => {
   if (unit && cfg) systemctl(cfg, ['stop', unit]);
   if (!pidAlive(pid)) return 'already-dead';
@@ -435,11 +462,40 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
         log(JSON.stringify(result));
         return result;
       }
+      const desiredCommand = commandForPid(current.pid) || proxy.command;
       await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       const fin = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
       const okFin = await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, fin.isDead);
       if (!okFin) {
-        result.action = 'swap-failed';
+        if (pidAlive(fin.pid)) await stopInstance(fin.pid, 2, cfg, fin.unit);
+        else if (fin.unit) systemctl(cfg, ['stop', fin.unit]);
+        const lastError = { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort };
+        const desiredProxy = { ...proxy, command: desiredCommand };
+        const kept = await startHealthyInstance(cfg, desiredProxy, env, current.port);
+        if (kept.healthy) {
+          const recovered = { ...current, port: current.port, pid: kept.pid, unit: kept.unit, startedAt: new Date().toISOString() };
+          delete recovered.live;
+          delete recovered.failed;
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: proxy.canonicalPort });
+          result.action = 'swap-failed-kept-on-alternate';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+        const failedCurrent = {
+          port: current.port,
+          hash: current.hash,
+          pid: kept.pid ?? current.pid,
+          unit: kept.unit ?? current.unit,
+          startedAt: current.startedAt,
+          failed: true,
+        };
+        try { fs.unlinkSync(endpointFile(cfg, proxy.name)); } catch { /* absent or already removed */ }
+        writeJsonAtomic(stateFile(cfg, proxy.name), { current: failedCurrent, lastError });
+        result.action = 'swap-failed-unrecovered';
+        result.error = fin.error || kept.error || 'canonical and alternate recovery starts were unhealthy';
         log(JSON.stringify(result));
         return result;
       }
@@ -540,6 +596,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     if (proxy.strategy === 'swap' && targetPort !== proxy.canonicalPort) {
       // Candidate validated on the alternate port. Stop it and the old
       // instance, then start the same build on the canonical port.
+      const previousCommand = current?.live ? commandForPid(current.pid) : null;
       await stopInstance(newPid, cfg.drainSeconds, cfg, inst.unit);
       if (current?.live && current.pid !== newPid) await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       const final = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
@@ -547,8 +604,55 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       if (!finalHealthy) {
         if (pidAlive(final.pid)) await stopInstance(final.pid, 2, cfg, final.unit);
         else if (final.unit) systemctl(cfg, ['stop', final.unit]);
-        result.action = 'swap-failed';
-        writeJsonAtomic(stateFile(cfg, proxy.name), { ...state, lastError: { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort } });
+        const lastError = { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort };
+        const oldProxy = { ...proxy, command: previousCommand || proxy.command };
+        const old = current?.live
+          ? await startHealthyInstance(cfg, oldProxy, env, proxy.canonicalPort)
+          : { healthy: false, error: 'no previous live build to restart' };
+        if (old.healthy) {
+          const recovered = { ...current, port: proxy.canonicalPort, pid: old.pid, unit: old.unit, startedAt: new Date().toISOString() };
+          delete recovered.live;
+          delete recovered.failed;
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: targetPort });
+          result.action = 'swap-failed-old-restarted';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+
+        const candidate = await startHealthyInstance(cfg, proxy, env, targetPort);
+        if (candidate.healthy) {
+          const recovered = {
+            port: targetPort,
+            hash,
+            pid: candidate.pid,
+            unit: candidate.unit,
+            startedAt: new Date().toISOString(),
+            validatedOnPort: targetPort,
+          };
+          writeJsonAtomic(stateFile(cfg, proxy.name), { current: recovered, lastError });
+          writeEndpoint(cfg, proxy, { ...recovered, previousPort: proxy.canonicalPort });
+          result.action = 'swap-failed-new-on-alternate';
+          result.port = recovered.port;
+          result.pid = recovered.pid;
+          log(JSON.stringify(result));
+          return result;
+        }
+
+        const failedCurrent = {
+          port: targetPort,
+          hash,
+          pid: candidate.pid ?? final.pid,
+          unit: candidate.unit ?? final.unit,
+          startedAt: new Date().toISOString(),
+          failed: true,
+        };
+        try { fs.unlinkSync(endpointFile(cfg, proxy.name)); } catch { /* absent or already removed */ }
+        writeJsonAtomic(stateFile(cfg, proxy.name), { current: failedCurrent, lastError });
+        result.action = 'swap-failed-unrecovered';
+        result.error = final.error || old.error || candidate.error || 'all swap recovery starts were unhealthy';
         log(JSON.stringify(result));
         return result;
       }
@@ -631,7 +735,15 @@ const main = async () => {
   for (const p of selected) {
     try {
       const r = await reconcile(cfg, p, { dryRun });
-      if (['roll-failed-old-kept', 'swap-failed', 'abort-occupied'].includes(r.action)) failures++;
+      if ([
+        'roll-failed-old-kept',
+        'swap-failed',
+        'swap-failed-old-restarted',
+        'swap-failed-new-on-alternate',
+        'swap-failed-kept-on-alternate',
+        'swap-failed-unrecovered',
+        'abort-occupied',
+      ].includes(r.action)) failures++;
     } catch (e) {
       failures++;
       console.log(JSON.stringify({ name: p.name, action: 'error', error: String(e).slice(0, 300) }));
