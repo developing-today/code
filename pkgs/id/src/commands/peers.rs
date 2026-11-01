@@ -499,7 +499,15 @@ mod tests {
 
     #[test]
     fn test_peer_row_control_character_names_stay_one_row() {
-        for name in ["a\nb", "a\rb", "a\tb", "a\r\nb", "\n", "\u{0}", "x\nforged\trow\t0"] {
+        for name in [
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\r\nb",
+            "\n",
+            "\u{0}",
+            "x\nforged\trow\t0",
+        ] {
             let row = format_peer_row(&announcement(1, Some(name)));
             assert_one_row_four_fields(&row);
             assert!(
