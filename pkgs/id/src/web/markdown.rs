@@ -1328,6 +1328,35 @@ fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<Stri
     map
 }
 
+/// Parse an `<img>` width/height value into a pixel count (#2180,
+/// grammar pinned by triage task 3225). The whole stack is
+/// numeric-pixel -- the PM node stores a JSON number, the emitter
+/// writes bare integers, the editor renders `${width}px` -- so only
+/// lossless normalizations are accepted: trim surrounding
+/// whitespace, strip ONE trailing `px` suffix (ASCII
+/// case-insensitive), then the rest must be a pixel integer, where a
+/// decimal form counts only when its value is exactly integral
+/// (`200.0` -> 200, `200.5` refused). Percents, other units, and
+/// junk return `None`; the caller warns instead of dropping the
+/// value silently, as the pre-#2180 bare-`u64` parse did.
+fn parse_dimension(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    let body = if trimmed.len() >= 2 && trimmed[trimmed.len() - 2..].eq_ignore_ascii_case("px") {
+        &trimmed[..trimmed.len() - 2]
+    } else {
+        trimmed
+    };
+    if let Ok(n) = body.parse::<u64>() {
+        return Some(n);
+    }
+    let f = body.parse::<f64>().ok()?;
+    if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= u64::MAX as f64 {
+        Some(f as u64)
+    } else {
+        None
+    }
+}
+
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
@@ -1349,15 +1378,17 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     if let Some(title) = attr("title") {
         attrs["title"] = json!(title);
     }
-    if let Some(w) = attr("width")
-        && let Ok(n) = w.parse::<u64>()
-    {
-        attrs["width"] = json!(n);
+    if let Some(w) = attr("width") {
+        match parse_dimension(w) {
+            Some(n) => attrs["width"] = json!(n),
+            None => tracing::warn!("dropping unsupported image width {w:?} in <img> import"),
+        }
     }
-    if let Some(h) = attr("height")
-        && let Ok(n) = h.parse::<u64>()
-    {
-        attrs["height"] = json!(n);
+    if let Some(h) = attr("height") {
+        match parse_dimension(h) {
+            Some(n) => attrs["height"] = json!(n),
+            None => tracing::warn!("dropping unsupported image height {h:?} in <img> import"),
+        }
     }
 
     Some(json!({
@@ -4624,6 +4655,62 @@ Some text
         assert_eq!(img["attrs"]["alt"], "pic");
         assert_eq!(img["attrs"]["width"], 200);
         assert_eq!(img["attrs"]["height"], 150);
+    }
+
+    #[test]
+    fn test_img_dimension_grammar_kept_forms() {
+        // #2180: lossless pixel forms are kept (grammar pinned by
+        // triage task 3225): bare, padded, px/PX-suffixed,
+        // integral-decimal, plus-form, and zero.
+        for (raw, want) in [
+            ("200", 200),
+            (" 200 ", 200),
+            ("200px", 200),
+            ("200PX", 200),
+            ("200.0", 200),
+            ("200.00", 200),
+            ("+200", 200),
+            ("0", 0),
+        ] {
+            let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
+                .expect("img parses");
+            assert_eq!(node["attrs"]["width"], want, "width {raw:?} kept as {want}");
+        }
+        let node = parse_img_tag("<img src=\"x.png\" height=\"150px\" />").expect("img parses");
+        assert_eq!(node["attrs"]["height"], 150, "height shares the grammar");
+    }
+
+    #[test]
+    fn test_img_dimension_grammar_refused_forms() {
+        // #2180: values with no lossless numeric-pixel form are
+        // refused (attr absent; the import path warns) -- never
+        // silently truncated or reinterpreted.
+        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx"] {
+            let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
+                .expect("img parses");
+            assert!(
+                node["attrs"].get("width").is_none(),
+                "width {raw:?} refused: {node}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_img_px_dimension_roundtrips_as_bare_integer() {
+        // #2180 end-to-end: `width="200px"` imports as the number
+        // 200 and the emitter writes it back as a bare integer.
+        let md = "<img src=\"/blob/abc\" width=\"200px\" />\n";
+        let doc = markdown_to_prosemirror(md);
+        let content = &doc["content"];
+        let img = if content[0]["type"] == "paragraph" {
+            &content[0]["content"][0]
+        } else {
+            &content[0]
+        };
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["width"], 200);
+        let out = prosemirror_to_markdown(&doc).unwrap();
+        assert!(out.contains("width=\"200\""), "px form re-emits bare: {out}");
     }
 
     #[test]
