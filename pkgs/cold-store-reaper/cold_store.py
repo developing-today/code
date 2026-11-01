@@ -1174,7 +1174,7 @@ class ColdStore:
             )
         if apply:
             conn = self.db()
-            with conn:
+            try:
                 for plan in plans:
                     for f in plan["prune"]:
                         status, _h, _resp = http_request(
@@ -1189,10 +1189,21 @@ class ColdStore:
                             raise ColdStoreError(
                                 f"trash failed for backup {f['name']} (HTTP {status})"
                             )
-                        self.ledger_add(
-                            conn, "trash", f["size"], "backup-prune", f["name"]
-                        )
-            conn.close()
+                        # Per-file commit boundary (#2550): the trash
+                        # has already happened in Drive, so this file's
+                        # ledger row commits in its own transaction
+                        # before the next candidate is attempted. A
+                        # mid-run failure can then no longer roll back
+                        # rows for files that really were trashed
+                        # (trashed files are invisible to list_backups,
+                        # so a rolled-back row could never be rewritten
+                        # by a retry).
+                        with conn:
+                            self.ledger_add(
+                                conn, "trash", f["size"], "backup-prune", f["name"]
+                            )
+            finally:
+                conn.close()
         for plan in plans:
             for f in plan["keep"] + plan["prune"]:
                 del f["stamp"]
