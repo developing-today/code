@@ -13,12 +13,18 @@ set -uo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$SELF_DIR/laptop-untracked-review.sh"
-[ -f "$SCRIPT" ] || { echo "FAIL: script not found at $SCRIPT" >&2; exit 1; }
+[ -f "$SCRIPT" ] || {
+  echo "FAIL: script not found at $SCRIPT" >&2
+  exit 1
+}
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 failures=0
-fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
+fail() {
+  echo "FAIL: $1" >&2
+  failures=$((failures + 1))
+}
 check() { # $1 description, $2 expected, $3 actual
   if [ "$2" != "$3" ]; then fail "$1 — expected [$2], got [$3]"; fi
 }
@@ -82,17 +88,17 @@ check "case1: track commit contains exactly this run's files" \
   "$(printf 'my notes.md\nnewnote.md')" "$(commit_files "$P1" HEAD)"
 check "case1: pre-staged edit still staged afterwards" \
   "tracked.txt" "$(staged_names "$P1")"
-grep -Fq -- "- hatch-personal: .gitignore updated" "$TMP_ROOT/case1.log" \
-  || fail "case1: report missing '.gitignore updated'"
-grep -Fq -- "- hatch-personal: committed 2 newly tracked file(s)" "$TMP_ROOT/case1.log" \
-  || fail "case1: report missing 'committed 2 newly tracked file(s)'"
-grep -Fq -- "- hatch-personal: SECRET-SHAPED untracked, left alone: api.key" "$TMP_ROOT/case1.log" \
-  || fail "case1: secret-shaped handling changed"
-[ -n "$(git -C "$P1" ls-files --others --exclude-standard -- api.key)" ] \
-  || fail "case1: api.key should still be untracked"
+grep -Fq -- "- hatch-personal: .gitignore updated" "$TMP_ROOT/case1.log" ||
+  fail "case1: report missing '.gitignore updated'"
+grep -Fq -- "- hatch-personal: committed 2 newly tracked file(s)" "$TMP_ROOT/case1.log" ||
+  fail "case1: report missing 'committed 2 newly tracked file(s)'"
+grep -Fq -- "- hatch-personal: SECRET-SHAPED untracked, left alone: api.key" "$TMP_ROOT/case1.log" ||
+  fail "case1: secret-shaped handling changed"
+[ -n "$(git -C "$P1" ls-files --others --exclude-standard -- api.key)" ] ||
+  fail "case1: api.key should still be untracked"
 check "case1: public repo got no commits" "1" "$(commit_count "$H1/hatch")"
-grep -Fq -- "- hatch: untracked (public repo, report only): pub.md" "$TMP_ROOT/case1.log" \
-  || fail "case1: public report-only handling changed"
+grep -Fq -- "- hatch: untracked (public repo, report only): pub.md" "$TMP_ROOT/case1.log" ||
+  fail "case1: public report-only handling changed"
 
 # --- Case 2: dirty .gitignore (unstaged) is never mutated or committed ---
 H2="$(new_home case2)"
@@ -109,10 +115,10 @@ check "case2: .gitignore byte-identical after the run" \
   "$GI2_BEFORE" "$(sha256sum "$P2/.gitignore" | cut -d' ' -f1)"
 check "case2: .gitignore still unstaged-dirty" \
   " M .gitignore" "$(git -C "$P2" status --porcelain -- .gitignore)"
-grep -Fq -- "- hatch-personal: junk NOT ignored (.gitignore has uncommitted changes, left untouched): junk.tmp" "$TMP_ROOT/case2.log" \
-  || fail "case2: report missing per-file dirty-.gitignore skip"
-grep -Fq -- "skipped 1 junk ignore(s) this run (index and worktree preserved)" "$TMP_ROOT/case2.log" \
-  || fail "case2: report missing dirty-.gitignore summary"
+grep -Fq -- "- hatch-personal: junk NOT ignored (.gitignore has uncommitted changes, left untouched): junk.tmp" "$TMP_ROOT/case2.log" ||
+  fail "case2: report missing per-file dirty-.gitignore skip"
+grep -Fq -- "skipped 1 junk ignore(s) this run (index and worktree preserved)" "$TMP_ROOT/case2.log" ||
+  fail "case2: report missing dirty-.gitignore summary"
 
 # --- Case 2b: dirty .gitignore (staged) — skip, staged change preserved ---
 H2B="$(new_home case2b)"
@@ -125,8 +131,8 @@ run_review "$H2B" "$TMP_ROOT/case2b.log"
 check "case2b: only the track commit happened" "2" "$(commit_count "$P2B")"
 check "case2b: staged .gitignore change still staged" \
   ".gitignore" "$(staged_names "$P2B")"
-grep -Fq -- "skipped 1 junk ignore(s) this run" "$TMP_ROOT/case2b.log" \
-  || fail "case2b: report missing dirty-.gitignore summary"
+grep -Fq -- "skipped 1 junk ignore(s) this run" "$TMP_ROOT/case2b.log" ||
+  fail "case2b: report missing dirty-.gitignore summary"
 
 # --- Case 3: junk name unsafe as a .gitignore pattern is skipped ---
 H3="$(new_home case3)"
@@ -137,10 +143,10 @@ run_review "$H3" "$TMP_ROOT/case3.log"
 check "case3: only the track commit happened" "2" "$(commit_count "$P3")"
 check "case3: .gitignore untouched" \
   "# personal" "$(cat "$P3/.gitignore")"
-grep -Fq -- "- hatch-personal: junk NOT ignored (name is unsafe as a .gitignore pattern, left alone): weird[1].tmp" "$TMP_ROOT/case3.log" \
-  || fail "case3: report missing unsafe-pattern skip"
-[ -n "$(git -C "$P3" ls-files --others --exclude-standard -- 'weird[1].tmp')" ] \
-  || fail "case3: weird[1].tmp should still be untracked"
+grep -Fq -- "- hatch-personal: junk NOT ignored (name is unsafe as a .gitignore pattern, left alone): weird[1].tmp" "$TMP_ROOT/case3.log" ||
+  fail "case3: report missing unsafe-pattern skip"
+[ -n "$(git -C "$P3" ls-files --others --exclude-standard -- 'weird[1].tmp')" ] ||
+  fail "case3: weird[1].tmp should still be untracked"
 
 # --- Case 4: failed commits are reported, nothing is silently lost ---
 H4="$(new_home case4)"
@@ -151,10 +157,10 @@ printf 'junk\n' >"$P4/junk2.tmp"
 printf 'ok\n' >"$P4/ok3.md"
 run_review "$H4" "$TMP_ROOT/case4.log"
 check "case4: no commits were made" "1" "$(commit_count "$P4")"
-grep -Fq -- "- hatch-personal: .gitignore commit FAILED" "$TMP_ROOT/case4.log" \
-  || fail "case4: report missing .gitignore commit failure"
-grep -Fq -- "- hatch-personal: track commit FAILED" "$TMP_ROOT/case4.log" \
-  || fail "case4: report missing track commit failure"
+grep -Fq -- "- hatch-personal: .gitignore commit FAILED" "$TMP_ROOT/case4.log" ||
+  fail "case4: report missing .gitignore commit failure"
+grep -Fq -- "- hatch-personal: track commit FAILED" "$TMP_ROOT/case4.log" ||
+  fail "case4: report missing track commit failure"
 check "case4: tracked file left staged after the failed commit" \
   "ok3.md" "$(staged_names "$P4")"
 
@@ -175,8 +181,8 @@ check "case5: created .gitignore carries the junk path" \
   "fresh.tmp" "$(git -C "$P5" show HEAD~1:.gitignore | tail -1)"
 check "case5: .gitignore is tracked after the run" \
   ".gitignore" "$(git -C "$P5" ls-files -- .gitignore)"
-grep -Fq -- "- hatch-personal: .gitignore updated" "$TMP_ROOT/case5.log" \
-  || fail "case5: report missing '.gitignore updated'"
+grep -Fq -- "- hatch-personal: .gitignore updated" "$TMP_ROOT/case5.log" ||
+  fail "case5: report missing '.gitignore updated'"
 
 # --- Case 6: large tracked batch commits via the pathspec file ---
 # --- (Codex P2 on PR #3747: argv expansion hits ARG_MAX at scale; ---
@@ -194,8 +200,8 @@ check "case6: track commit holds all 401 files" \
   "401" "$(commit_files "$P6" HEAD | wc -l)"
 check "case6: glob-character name committed literally" \
   "weird[track].md" "$(git -C "$P6" ls-files -- 'weird[track].md')"
-grep -Fq -- "- hatch-personal: committed 401 newly tracked file(s)" "$TMP_ROOT/case6.log" \
-  || fail "case6: report missing 'committed 401 newly tracked file(s)'"
+grep -Fq -- "- hatch-personal: committed 401 newly tracked file(s)" "$TMP_ROOT/case6.log" ||
+  fail "case6: report missing 'committed 401 newly tracked file(s)'"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
