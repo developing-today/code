@@ -1,6 +1,7 @@
 // Request validation helpers: priority mapping, model parsing, and the
 // body validators for POST /v1/sessions and POST /v1/tasks. Pure functions —
 // unit-tested without a server.
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 export class ValidationError extends Error {
   status = 400;
@@ -107,6 +108,11 @@ function optString(body: Record<string, unknown>, field: string): string | undef
   return v;
 }
 
+function optNonBlankString(body: Record<string, unknown>, field: string): string | undefined {
+  const value = optString(body, field);
+  return value?.trim() ? value : undefined;
+}
+
 function optBool(body: Record<string, unknown>, field: string, dflt: boolean): boolean {
   const v = body[field];
   if (v === undefined || v === null) return dflt;
@@ -131,7 +137,7 @@ export function parseSessionRequest(body: unknown): SessionRequest {
   return {
     repo: reqString(b, "repo"),
     prompt: reqString(b, "prompt"),
-    title: optString(b, "title"),
+    title: optNonBlankString(b, "title"),
     model: parseModel(b.model),
     directory: optString(b, "directory"),
     priority: resolvePriority(b.priority),
@@ -140,13 +146,11 @@ export function parseSessionRequest(body: unknown): SessionRequest {
   };
 }
 
-/** Session-directory scoping for POST /v1/sessions (issue #2903).
- * OIDC callers (workflows in allowlisted repos) may only run inside the
- * target repo's laptop primary clone: directory omitted (default) or
- * exactly the repo's scoped directory. Anything else is rejected BEFORE
- * any issue/task/session is created. Bearer callers hold the laptop
- * secret, so they keep the free-form directory — a deliberate choice,
- * documented in the README. */
+/** Session-directory scoping for POST /v1/sessions (issue #2664).
+ * Every caller may use only the target repo's configured laptop clone or a
+ * path inside it. Blank input selects the clone; relative and out-of-tree
+ * paths are rejected before any issue/task/session is created. Caller type
+ * is used only in diagnostics; the path policy is identical for both. */
 export function resolveSessionDirectory(
   callerType: "oidc" | "bearer",
   repo: string,
@@ -154,15 +158,24 @@ export function resolveSessionDirectory(
   repoDirs: Record<string, string>,
 ): string {
   const scoped = repoDirs[repo];
-  if (directory === undefined) return scoped!;
-  if (callerType === "bearer") return directory;
-  const norm = (d: string) => (d.length > 1 ? d.replace(/\/+$/, "") : d);
-  if (scoped === undefined || norm(directory) !== norm(scoped)) {
+  if (scoped === undefined || !isAbsolute(scoped)) {
     throw new ValidationError(
-      `directory: OIDC callers may only omit directory or use the repo clone (${scoped ?? "unknown"})`,
+      `directory: no absolute repo directory is configured for ${repo}`,
     );
   }
-  return scoped;
+  const root = resolve(scoped);
+  if (directory === undefined || !directory.trim()) return root;
+  if (!isAbsolute(directory)) {
+    throw new ValidationError(
+      `directory: ${callerType} callers must use an absolute path inside the repo directory (${root})`,
+    );
+  }
+  const target = resolve(directory);
+  const fromRoot = relative(root, target);
+  if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new ValidationError(`directory: ${callerType} callers must stay inside the repo directory (${root})`);
+  }
+  return target;
 }
 
 export interface TaskRequest {
