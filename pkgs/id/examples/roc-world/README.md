@@ -12,6 +12,9 @@ examples/tic-tac-toe/     app: a two-player game
 
 ## The module ABI
 
+The host/guest boundary is specified in [ABI v1](ABI.md), including the
+`plaza_*` exports, buffer ownership, and capability protocol.
+
 A world program provides these functions:
 
 ```
