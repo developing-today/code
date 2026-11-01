@@ -11,7 +11,12 @@
 # Local changes vs the upstream one-liner:
 #   - the web port binds to host loopback and the host's tailnet
 #     address only — no public endpoint (Grist needs no inbound
-#     webhooks; the aggregator reaches it over the tailnet);
+#     webhooks; the aggregator reaches it over the tailnet). The
+#     tailnet address is PM_STACK_TAILNET_IP from the rendered .env
+#     (deploy.sh detects it via `tailscale ip -4`); when it is unset
+#     the second binding falls back to loopback, so the stack binds
+#     loopback only — never a public interface, never another host's
+#     address (#781);
 #   - state lives in a named volume at /persist (Grist's own path
 #     for its SQLite-backed documents);
 #   - configuration comes from ./.env, rendered by deploy.sh from
@@ -23,11 +28,15 @@ services:
     image: gristlabs/grist-oss@sha256:d761de16871ad0022c0ff966b46a92360c23073db8414ebb356cf879f510b1c4
     ports:
       - "127.0.0.1:8484:8484"
-      - "100.99.113.103:8484:8484"
+      - "${PM_STACK_TAILNET_IP:-127.0.0.1}:8484:8484"
     env_file:
       - .env
     environment:
-      GRIST_DEFAULT_EMAIL: drewrypope@gmail.com
+      # Rendered by deploy.sh from the SOPS key grist_default_email;
+      # the fallback is the operator's documented default address,
+      # kept only so a secrets file without the key renders the same
+      # value the stack has always run with (#781).
+      GRIST_DEFAULT_EMAIL: ${GRIST_DEFAULT_EMAIL:-drewrypope@gmail.com}
     volumes:
       - grist_data:/persist
     restart: unless-stopped
