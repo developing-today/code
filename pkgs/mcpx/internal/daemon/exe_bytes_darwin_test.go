@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"os"
 	"testing"
 
@@ -18,7 +17,7 @@ import (
 // program — the same comparison the linux /proc read makes.
 func exeBytes(t *testing.T, pid int) []byte {
 	t.Helper()
-	raw, err := unix.SysctlRaw(fmt.Sprintf("kern.procargs2.%d", pid))
+	raw, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
 		t.Fatalf("sysctl kern.procargs2.%d: %v", pid, err)
 	}
