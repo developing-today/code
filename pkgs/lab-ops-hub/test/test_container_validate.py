@@ -1344,7 +1344,7 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # URL recorded — and fetched — carried a host spelling the
         # Worker never certifies: its u.hostname is the punycode
         # A-label form (#659). The return now rebuilds from the
-        # A-label form of the judged host whenever the host is
+        # A-label form of the host whenever the host is
         # non-ASCII, composing with the existing triggers and the
         # root-dot re-attachment (#647). Expected values below are
         # the Worker's WHATWG returns, pinned from a Python<->TS
@@ -1376,6 +1376,34 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://user@example.com:8080/p?q=1#f": (
                 "http://user@example.com:8080/p?q=1#f"
             ),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_alabel_derived_from_original_spelling(self):
+        # Codex review of PR #3781: deriving the returned A-label
+        # from the NFKC-mapped judged label changes the DOMAIN for
+        # three spelling families, because NFKC is not UTS-46
+        # mapping. The return now re-encodes each label from its
+        # original spelling with the stdlib IDNA codec (nameprep
+        # maps before it normalizes). Expected values are the
+        # Worker's WHATWG returns.
+        cases = {
+            # U+0345 maps to U+03B9 BEFORE normalization: NFKC
+            # reorders U+0301 (ccc 230) ahead of U+0345 (ccc 240),
+            # so encoding the judged label lost the mapping's
+            # position and returned xn--hxa0a.
+            "http://ᾴ.com/": "http://xn--kxad.com/",
+            # Deleting the ignored U+00AD brings e and U+0301
+            # together; the result must NFC-compose to é
+            # (xn--9ca), not punycode the uncomposed pair
+            # (xn--e-xbb, which WHATWG rejects).
+            "http://e­́.com/": "http://xn--9ca.com/",
+            # UTS-46 maps U+03F2 (lunate sigma) to U+03C3; NFKC
+            # compatibility-decomposes it to U+03C2 instead
+            # (xn--3xa). Both spellings return the sigma form.
+            "http://ϲ.com/": "http://xn--4xa.com/",
+            "http://Ϲ.com/": "http://xn--4xa.com/",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)

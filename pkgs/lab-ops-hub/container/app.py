@@ -477,33 +477,59 @@ def validate_crawl_url(raw):
             # (punycode) form — the form the Worker's u.hostname
             # carries — instead of returning the raw U-label spelling
             # the fetcher would then resolve under a different name
-            # than the Worker certified (#659). The A-labels are the
-            # encoded_labels already computed for the RFC 1035 length
-            # check above, with one deviation re-applied: UTS-46 maps
-            # U+0345 to U+03B9, a mapping NFKC does not perform, so
-            # the host string still carries U+0345 (or, where NFKC
-            # composed it into a precomposed ypogegrammeni letter
-            # such as U+1FB3, carries that) and only _judge_idna_label
-            # applies the map, for judging (#596). A label whose
-            # canonical decomposition carries U+0345 is therefore
-            # re-encoded here from its decomposed, U+0345-mapped,
-            # recomposed form, so the returned A-label is the one
-            # the Worker returns. (IP literals take the
-            # canonical-address return below instead, and WHATWG
-            # serializes those without a root dot, as here.)
-            def _return_label(label, encoded):
-                decomposed = unicodedata.normalize("NFD", label)
-                if "\u0345" not in decomposed:
-                    return encoded
-                mapped = unicodedata.normalize(
-                    "NFC", decomposed.translate({0x0345: "\u03b9"})
+            # than the Worker certified (#659). The A-labels are NOT
+            # the encoded_labels already computed for the RFC 1035 length
+            # check above: those punycode the NFKC-mapped judged
+            # label, and NFKC is not UTS-46 mapping — it reorders
+            # combining marks before U+0345 can map (so
+            # ᾴ came back xn--hxa0a for the Worker's
+            # xn--kxad), it maps U+03F2 to U+03C2 where UTS-46 maps
+            # it to U+03C3 (xn--3xa for xn--4xa), and it never
+            # NFC-composes a base letter with a combining mark an
+            # ignored codepoint's deletion brought together
+            # (e­́ came back xn--e-xbb for xn--9ca) — each a
+            # different domain than the Worker certified, not a
+            # different spelling of one (Codex review of PR #3781).
+            # Instead each label is re-encoded from the ORIGINAL
+            # spelling (host_before_mapping, separators translated,
+            # root dot stripped, ignored codepoints deleted exactly
+            # as in judging) with the stdlib IDNA codec: nameprep
+            # applies the UTS-46-compatible mapping BEFORE
+            # normalization, in the Worker's order (#596's U+0345
+            # map included). A label the codec refuses — it judges
+            # by Unicode 3.2 tables — falls back to the
+            # NFC-normalized punycode of the same original label.
+            # (IP literals take the canonical-address return below
+            # instead, and WHATWG serializes those without a root
+            # dot, as here.)
+            _return_source = host_before_mapping.translate(
+                {0x3002: ".", 0xFF0E: ".", 0xFF61: "."}
+            )
+            if has_root_dot and _return_source.endswith("."):
+                _return_source = _return_source[:-1]
+            _original_labels = _return_source.split(".")
+
+            def _return_label(judged_label, original_label):
+                if judged_label.isascii():
+                    return judged_label
+                candidate = original_label.translate(
+                    {cp: None for cp in _UTS46_IGNORED}
                 )
-                return "xn--" + mapped.encode("punycode").decode("ascii")
+                if candidate.isascii():
+                    return judged_label
+                try:
+                    return candidate.encode("idna").decode("ascii")
+                except (UnicodeError, ValueError):
+                    return "xn--" + unicodedata.normalize(
+                        "NFC", candidate
+                    ).encode("punycode").decode("ascii")
 
             return_host = (
                 ".".join(
-                    _return_label(label, encoded)
-                    for label, encoded in zip(host.split("."), encoded_labels)
+                    _return_label(judged_label, original_label)
+                    for judged_label, original_label in zip(
+                        host.split("."), _original_labels
+                    )
                 )
                 if not host.isascii()
                 else host
