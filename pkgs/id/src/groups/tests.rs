@@ -597,6 +597,28 @@ fn test_a_cut_manage_chain_refuses_the_add_as_no_chain() {
 }
 
 #[test]
+fn test_a_delegated_add_concurrent_with_a_strong_removal_of_the_delegatee_is_void() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write)],
+            with_removal(Removal::Strong, None),
+        ),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 4, Role::Read, &["d0"]),
+        remove("r0", 1, g, 2, &["d0"]),
+    ]);
+    assert_eq!(outcome(&p, "r0"), Outcome::Applied);
+    assert_eq!(
+        role_of(&p, g, 4),
+        None,
+        "strong remove voids the removed member's concurrent operations, delegated or not"
+    );
+}
+
+#[test]
 fn test_a_read_scoped_device_of_a_manager_may_not_add_a_member() {
     let g = id("g");
     let p = project(&[
