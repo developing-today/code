@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn check_module_refuses_a_different_module() {
-        let wasm: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        let wasm: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
         let other: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
         let mut recorded = header(0, true);
         assert!(check_module(&recorded, wasm).is_err(), "no module recorded");
@@ -1116,7 +1116,7 @@ mod tests {
         use crate::world_net::{WORLD_ALPN, WorldProtocol};
         use crate::world_session::WorldService;
 
-        const TIC_TAC_TOE: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
+        const TIC_TAC_TOE: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 
         /// A tic-tac-toe game as a live instance plays it: a leading install,
         /// one chat line, and five moves. Returns the runner and the fixture a

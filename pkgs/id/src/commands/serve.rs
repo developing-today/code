@@ -778,6 +778,16 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    let apps_root = std::env::var_os("ID_APPS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("apps"));
+    let app_discovery = crate::app_manifest::discover_apps(&apps_root);
+    for app in app_discovery.apps {
+        info!(app = %app.manifest.app.id, path = %app.path.display(), "serve: discovered app");
+    }
+    for error in app_discovery.errors {
+        warn!(%error, "serve: app discovery failed");
+    }
     #[cfg(not(feature = "world"))]
     let _ = &world_allowed_caps;
     let key = load_or_create_keypair(KEY_FILE).await?;
