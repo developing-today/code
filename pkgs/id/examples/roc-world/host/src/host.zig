@@ -30,6 +30,12 @@ fn hostExpectFailed(_: [*]const u8, _: usize) callconv(.c) void {}
 var last_crash: [4096]u8 = undefined;
 var last_crash_len: usize = 0;
 
+const PLAZA_ABI_VERSION: u32 = 1;
+
+export fn plaza_abi_version() u32 {
+    return PLAZA_ABI_VERSION;
+}
+
 fn hostCrashed(bytes: [*]const u8, len: usize) callconv(.c) void {
     last_crash_len = @min(len, last_crash.len);
     @memcpy(last_crash[0..last_crash_len], bytes[0..last_crash_len]);

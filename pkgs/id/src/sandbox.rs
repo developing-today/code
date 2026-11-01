@@ -178,6 +178,7 @@ impl Sandbox {
                 matches!(
                     export.name(),
                     "memory"
+                        | "plaza_abi_version"
                         | "plaza_alloc"
                         | "plaza_init"
                         | "plaza_update"
@@ -933,6 +934,26 @@ mod tests {
         assert_eq!(world.view().unwrap(), b"hello");
         world.update(1, b"event").unwrap();
         assert_eq!(world.view().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn checked_in_roc_examples_export_abi_version_one() {
+        for wasm in [
+            include_bytes!("../examples/roc-counter/counter.wasm").as_slice(),
+            include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm").as_slice(),
+        ] {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut store = Store::new(&runner.engine, ());
+            store.set_fuel(runner.limits.fuel).unwrap();
+            let instance = Instance::new(&mut store, &runner.module, &[]).unwrap();
+            let abi_version = instance
+                .get_typed_func::<(), i32>(&mut store, "plaza_abi_version")
+                .unwrap()
+                .call(&mut store, ())
+                .unwrap();
+
+            assert_eq!(abi_version, 1);
+        }
     }
 
     #[test]
