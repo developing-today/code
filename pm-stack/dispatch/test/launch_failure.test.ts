@@ -38,9 +38,7 @@ describe("handleLaunchFailure", () => {
       new Error("opencode refused the session"),
     );
     expect(msg).toBe("opencode refused the session");
-    expect(calls.cancels).toEqual([
-      [4135, "dispatch launch failed: opencode refused the session"],
-    ]);
+    expect(calls.cancels).toEqual([[4135, "dispatch launch failed: opencode refused the session"]]);
     expect(calls.comments).toHaveLength(1);
     expect(calls.comments[0][0]).toBe("developing-today/code");
     expect(calls.comments[0][1]).toBe(2901);
