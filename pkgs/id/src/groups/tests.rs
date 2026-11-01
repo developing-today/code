@@ -619,6 +619,29 @@ fn test_a_delegated_add_concurrent_with_a_strong_removal_of_the_delegatee_is_voi
 }
 
 #[test]
+fn test_a_descendant_of_a_voided_delegated_add_takes_no_effect() {
+    // Member 2's delegated add makes member 4 a manager; member 4 adds member 5.
+    // A concurrent strong removal of member 2 voids the first add, and the
+    // descendant add must fall with it — the fold must still project.
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write)],
+            with_removal(Removal::Strong, None),
+        ),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 4, Role::Manage, &["d0"]),
+        add("a1", 4, g, 5, Role::Read, &["a0"]),
+        remove("r0", 1, g, 2, &["d0"]),
+    ]);
+    assert_eq!(outcome(&p, "r0"), Outcome::Applied);
+    assert_eq!(role_of(&p, g, 4), None);
+    assert_eq!(role_of(&p, g, 5), None);
+}
+
+#[test]
 fn test_a_read_scoped_device_of_a_manager_may_not_add_a_member() {
     let g = id("g");
     let p = project(&[
@@ -1910,7 +1933,12 @@ fn test_an_admin_scoped_device_grant_is_applied_under_weak_remove_without_a_read
 fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_past() {
     let g = id("g");
     let events = vec![
-        custom("g", 1, &[], with_removal(Removal::Weak, Some(Delegation::KeepPrior))),
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(Removal::Weak, Some(Delegation::KeepPrior)),
+        ),
         add("a0", 1, g, 2, Role::Write, &["g"]),
         add("a1", 1, g, 3, Role::Write, &["a0"]),
         delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),

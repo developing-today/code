@@ -518,6 +518,12 @@ impl Membership {
             other.group_id == op.group_id
                 && Self::removed_member(other) == Some(*originator)
                 && self.concurrent(&other.id, &op.id)
+                // A delegated operation that removes the remover in turn is a mutual
+                // removal and stands, as in `void_concurrent_delegated`.
+                && !matches!(
+                    &op.action,
+                    GroupAction::Remove { member } if member.id() == other.author
+                )
         })
     }
 
@@ -525,18 +531,7 @@ impl Membership {
     /// promotion of the least manager at the operation's dependencies, which changes
     /// nothing. `None` when no manager stands there.
     fn placeholder_for(&self, op: &AuthOperation) -> Option<AuthOperation> {
-        let group = match op.group_id {
-            AuthId::Group(group) => group,
-            AuthId::Key(_) => return None,
-        };
-        let target = self.manager_at(group, &op.dependencies)?;
-        Some(AuthOperation {
-            action: GroupAction::Promote {
-                member: GroupMember::Individual(target),
-                access: Access::read(),
-            },
-            ..op.clone()
-        })
+        Self::placeholder_in(&self.state, op)
     }
 
     /// After a removal is applied, void every accepted delegated operation whose
@@ -594,7 +589,62 @@ impl Membership {
                     .unwrap_or_else(|| op.clone())
             })
             .collect();
-        rebuild(&ops)
+        if self.voided.is_empty() {
+            return rebuild(&ops);
+        }
+        // Voiding an operation can strip a later operation of the authority it was
+        // accepted with (a member added by a voided add goes on to act). Replaying
+        // such a descendant unchanged fails, and treating that as an invariant
+        // failure would make the whole event set unprojectable. Instead the
+        // descendant stands as a placeholder too, mirroring the resolver's rule
+        // that operations depending on filtered state are not applied.
+        // `Graph::process` consumes the state and an error loses it, so each
+        // operation is tried as a prefix replay from the last good state.
+        let mut state = Graph::init();
+        let mut replayed: Vec<AuthOperation> = Vec::new();
+        for op in &ops {
+            let mut trial = replayed.clone();
+            trial.push(op.clone());
+            match rebuild(&trial) {
+                Ok(next) => {
+                    state = next;
+                    replayed = trial;
+                }
+                Err(_) => {
+                    if let Some(noop) = Self::placeholder_in(&state, op) {
+                        let mut trial = replayed.clone();
+                        trial.push(noop);
+                        if let Ok(next) = rebuild(&trial) {
+                            state = next;
+                            replayed = trial;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(state)
+    }
+
+    /// The no-op placeholder for `op` against an explicit graph state: a promotion
+    /// of the least manager at the operation's dependencies, which changes nothing.
+    fn placeholder_in(state: &GroupState, op: &AuthOperation) -> Option<AuthOperation> {
+        let AuthId::Group(group) = op.group_id else {
+            return None;
+        };
+        let heads: HashSet<Hash> = op.dependencies.iter().copied().collect();
+        let target = Graph::members_at(state, heads, AuthId::Group(group))
+            .ok()?
+            .into_iter()
+            .filter(|(id, access)| matches!(id, AuthId::Key(_)) && access.is_manage())
+            .map(|(id, _)| id)
+            .min()?;
+        Some(AuthOperation {
+            action: GroupAction::Promote {
+                member: GroupMember::Individual(target),
+                access: Access::read(),
+            },
+            ..op.clone()
+        })
     }
 
     /// Whether the event is held, waiting for an `after` hash.
@@ -780,6 +830,34 @@ mod tests {
         assert_eq!(outcome_of(&outcomes, 12), Outcome::Applied);
         assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(4))));
         assert!(!layer.is_effective(&id(12)));
+    }
+
+    #[test]
+    fn test_a_delegated_mutual_removal_stands_in_either_order() {
+        // Member 2, acting on member 1's delegated Manage, removes member 3;
+        // member 3 concurrently removes member 2. A mutual removal stands in
+        // both arrival orders.
+        for remove_first in [true, false] {
+            let mut layer = Membership::new();
+            layer.receive(create(10, 1, &[1, 3])).unwrap();
+            layer
+                .receive(auth(11, 1, Some(10), &[10], add(2, Access::write())))
+                .unwrap();
+            let delegated = auth_as(12, 1, 2, Some(10), &[11], remove(3));
+            let removal = auth(13, 3, Some(10), &[11], remove(2));
+            if remove_first {
+                layer.receive(removal).unwrap();
+                layer.receive(delegated).unwrap();
+            } else {
+                layer.receive(delegated).unwrap();
+                layer.receive(removal).unwrap();
+            }
+            assert!(
+                layer.is_effective(&id(12)),
+                "mutual removal stands (remove_first={remove_first})"
+            );
+            assert!(!member_keys(&layer, 10).contains(&AuthId::Key(key(3))));
+        }
     }
 
     #[test]
