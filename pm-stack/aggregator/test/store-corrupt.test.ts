@@ -4,7 +4,7 @@
 // <file>.corrupt-<timestamp> with its original bytes preserved, never
 // silently overwritten by the next persist.
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionsStore, type NewAction } from "../src/actions.ts";
@@ -65,6 +65,32 @@ describe("actions store corruption handling (#1452)", () => {
     expect(quarantinedIn(dir, "actions.json").length).toBe(1);
   });
 
+  test("unreadable store (directory in place of file) -> loud quarantine, empty store, fresh persist leaves the quarantine untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-actions-unreadable-"));
+    const file = join(dir, "actions.json");
+    mkdirSync(file); // readFile on a directory fails with EISDIR — a non-ENOENT read error (#2980)
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+    let store: ActionsStore;
+    try {
+      store = new ActionsStore(file);
+      expect(await store.all()).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+    expect(errors.some((m) => m.includes("could not be read"))).toBe(true);
+    const quarantined = quarantinedIn(dir, "actions.json");
+    expect(quarantined.length).toBe(1);
+    expect(statSync(join(dir, quarantined[0])).isDirectory()).toBe(true);
+    expect(existsSync(file)).toBe(false);
+    await store!.add(newAction());
+    const persisted = JSON.parse(readFileSync(file, "utf8"));
+    expect(persisted.version).toBe(1);
+    expect(persisted.actions.length).toBe(1);
+    expect(quarantinedIn(dir, "actions.json").length).toBe(1);
+  });
+
   test("valid file -> loads unchanged, no quarantine", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agg-actions-valid-"));
     const file = join(dir, "actions.json");
@@ -111,6 +137,32 @@ describe("comments store corruption handling (#1452)", () => {
     writeFileSync(file, JSON.stringify({ version: 1, nope: [] }));
     const store = new CommentsStore(file);
     expect(await store.all()).toEqual([]);
+    expect(quarantinedIn(dir, "comments.json").length).toBe(1);
+  });
+
+  test("unreadable store (directory in place of file) -> loud quarantine, empty store, fresh persist leaves the quarantine untouched", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-comments-unreadable-"));
+    const file = join(dir, "comments.json");
+    mkdirSync(file); // readFile on a directory fails with EISDIR — a non-ENOENT read error (#2980)
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); };
+    let store: CommentsStore;
+    try {
+      store = new CommentsStore(file);
+      expect(await store.all()).toEqual([]);
+    } finally {
+      console.error = origError;
+    }
+    expect(errors.some((m) => m.includes("could not be read"))).toBe(true);
+    const quarantined = quarantinedIn(dir, "comments.json");
+    expect(quarantined.length).toBe(1);
+    expect(statSync(join(dir, quarantined[0])).isDirectory()).toBe(true);
+    expect(existsSync(file)).toBe(false);
+    await store!.add({ objectRef: "gh:developing-today/code#2980", kind: "note", author: drew, body: "fresh start" });
+    const persisted = JSON.parse(readFileSync(file, "utf8"));
+    expect(persisted.version).toBe(1);
+    expect(persisted.comments.length).toBe(1);
     expect(quarantinedIn(dir, "comments.json").length).toBe(1);
   });
 
