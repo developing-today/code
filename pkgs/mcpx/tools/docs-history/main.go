@@ -921,11 +921,18 @@ func diffChangedLines(diff string) map[string]map[int]bool {
 	inHunk := false
 	for _, ln := range strings.Split(diff, "\n") {
 		switch {
+		case strings.HasPrefix(ln, "diff --git "):
+			// A new file's header ends the previous file's hunk;
+			// without this, header lines (including "--- a/...",
+			// which looks like a deletion) bleed into it.
+			inHunk = false
 		case strings.HasPrefix(ln, "+++ b/"):
 			file = strings.TrimPrefix(ln, "+++ b/")
 			inHunk = false
 		case strings.HasPrefix(ln, "+++ "):
 			file = strings.TrimSpace(strings.TrimPrefix(ln, "+++ "))
+			inHunk = false
+		case strings.HasPrefix(ln, "--- "):
 			inHunk = false
 		case hunkRe.MatchString(ln):
 			m := hunkRe.FindStringSubmatch(ln)

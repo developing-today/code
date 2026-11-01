@@ -89,9 +89,9 @@ func TestMigratedBlockLeadingWithID(t *testing.T) {
 
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
-		"Session-isolated process pools":      "session-isolated-process-pools",
+		"Session-isolated process pools":        "session-isolated-process-pools",
 		"[feat(a11y): Teletypewriter](../x.md)": "feata11y-teletypewriter",
-		"~~Modes and scopes~~ — shipped":      "modes-and-scopes-shipped",
+		"~~Modes and scopes~~ — shipped":        "modes-and-scopes-shipped",
 	}
 	for in, want := range cases {
 		if got := Slugify(in); got != want {
@@ -287,6 +287,17 @@ func TestRenderAnchorForRenamedSection(t *testing.T) {
 	out := Render(ParseDocument("x.md", src), false)
 	if !strings.Contains(out, "<a id=\"old-name\"></a>\n## New name") {
 		t.Error("renamed section should get an explicit anchor for its frozen ID")
+	}
+}
+
+func TestDiffChangedLinesStopsAtFileBoundary(t *testing.T) {
+	diff := "diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1,2 +1,3 @@\n ctx\n+added\n ctx2\ndiff --git a/docs/b.md b/docs/b.md\n--- a/docs/b.md\n+++ b/docs/b.md\n@@ -1,1 +1,1 @@\n-other\n+other2\n"
+	changed := diffChangedLines(diff)
+	if len(changed["docs/a.md"]) != 1 || !changed["docs/a.md"][1] {
+		t.Fatalf("a.md changed lines = %v, want only line 1", changed["docs/a.md"])
+	}
+	if len(changed["docs/b.md"]) != 1 || !changed["docs/b.md"][0] {
+		t.Fatalf("b.md changed lines = %v, want only line 0", changed["docs/b.md"])
 	}
 }
 
