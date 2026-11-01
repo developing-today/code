@@ -36,6 +36,13 @@ unicode-width = "0.2"
 [dev-dependencies]
 # Decodes the QR images rendered by the extracted module's round-trip tests.
 rqrr = { version = "0.11.0", default-features = false }
+# Crate-split fallout (#3447): the presentation ANSI-diff tests and the
+# connectivity startup-wait tests moved into this crate with the modules,
+# but their test-only dependencies stayed behind in the parent crate's
+# dev-dependencies, so this crate's test targets did not compile on
+# their own. Same pins as the parent crate. Dev only; no runtime effect.
+vt100 = "=0.16.2"
+iroh = { version = "1", features = ["test-utils"] }
 
 [lints.rust]
 # Rust compiler lints
