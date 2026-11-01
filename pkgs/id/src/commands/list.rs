@@ -78,7 +78,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         let req = postcard::to_allocvec(&MetaRequest::List)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
@@ -144,7 +144,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
     let req = postcard::to_allocvec(&MetaRequest::List)?;
     send.write_all(&req).await?;
     send.finish()?;
-    let resp_buf = recv.read_to_end(1024 * 1024).await?;
+    let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
     let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 

@@ -456,7 +456,7 @@ impl ReplContext {
             let req = postcard::to_allocvec(&MetaRequest::List)?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(1024 * 1024).await?;
+            let resp_buf = read_capped_response(&mut recv).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
@@ -865,7 +865,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::List)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
@@ -1062,7 +1062,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
@@ -1103,7 +1103,7 @@ impl ReplContext {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
         match resp {
