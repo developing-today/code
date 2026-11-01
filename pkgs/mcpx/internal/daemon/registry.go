@@ -510,6 +510,11 @@ func hideSchemaPropsPinned(schema json.RawMessage, hide []string, pinVals map[st
 	return out
 }
 
+func schemaUsesDraft07Dependencies(root map[string]any) bool {
+	dialect, _ := root["$schema"].(string)
+	return strings.Contains(dialect, "draft-07") || strings.Contains(dialect, "draft-06") || strings.Contains(dialect, "draft-04") || strings.Contains(dialect, "draft-03")
+}
+
 // hidePropsAtScope removes the hidden properties from one schema
 // object's properties and required lists, and recurses into its
 // same-instance applicators (allOf, anyOf, oneOf) and the targets of
@@ -811,6 +816,32 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 		p.resPath = p.path
 	}
 	defer func() { p.resRoot, p.resPath = savedResRoot, savedResPath }()
+	var promotedSubs []any
+	if condition, hasIf := m["if"]; len(p.pinVals) > 0 && hasIf {
+		if valid, decided := p.branchVerdict(condition); decided {
+			// The pin fixes the conditional before enforcement.
+			// Replace the predicate with its fixed verdict so
+			// references into the selected then/else schema keep
+			// their original locations.
+			m["if"] = valid
+			selected := "else"
+			if valid {
+				selected = "then"
+			}
+			if sm, ok := m[selected].(map[string]any); ok {
+				p.hidePropsAtPath(sm, p.path+"/"+selected)
+			}
+		} else {
+			// Mixed conditions still need their fixed pin
+			// contribution projected, and these schemas share the
+			// enclosing instance scope.
+			for _, key := range []string{"if", "then", "else"} {
+				if sm, ok := m[key].(map[string]any); ok {
+					p.hidePropsAtPath(sm, p.path+"/"+key)
+				}
+			}
+		}
+	}
 
 	if props, ok := m["properties"].(map[string]any); ok {
 		for _, h := range p.hide {
@@ -838,7 +869,6 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 		}
 	}
 	var promoted []string
-	var promotedSubs []any
 	if deps, ok := m["dependentRequired"].(map[string]any); ok {
 		keptDeps := map[string]any{}
 		triggers := make([]string, 0, len(deps))
@@ -919,6 +949,62 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 			delete(m, "dependentSchemas")
 		}
 	}
+	if schemaUsesDraft07Dependencies(p.root) {
+		if deps, ok := m["dependencies"].(map[string]any); ok {
+			keptDeps := map[string]any{}
+			triggers := make([]string, 0, len(deps))
+			for prop := range deps {
+				triggers = append(triggers, prop)
+			}
+			sort.Strings(triggers)
+			for _, prop := range triggers {
+				dep := deps[prop]
+				switch d := dep.(type) {
+				case []any:
+					kept := make([]any, 0, len(d))
+					for _, name := range d {
+						if s, ok := name.(string); ok && p.hidden(s) {
+							continue
+						}
+						kept = append(kept, name)
+					}
+					if p.hidden(prop) {
+						for _, name := range kept {
+							if s, ok := name.(string); ok {
+								promoted = append(promoted, s)
+							}
+						}
+					} else if len(kept) > 0 {
+						keptDeps[prop] = kept
+					}
+				case map[string]any:
+					p.hidePropsAtPath(d, p.path+"/dependencies/"+escapePointerSegment(prop))
+					if p.hidden(prop) {
+						if len(d) > 0 {
+							promotedSubs = append(promotedSubs, d)
+						}
+					} else {
+						keptDeps[prop] = dep
+					}
+				case bool:
+					if p.hidden(prop) {
+						if !d {
+							promotedSubs = append(promotedSubs, d)
+						}
+					} else {
+						keptDeps[prop] = dep
+					}
+				default:
+					keptDeps[prop] = dep
+				}
+			}
+			if len(keptDeps) > 0 {
+				m["dependencies"] = keptDeps
+			} else {
+				delete(m, "dependencies")
+			}
+		}
+	}
 	if len(promoted) > 0 {
 		req, _ := m["required"].([]any)
 		seen := map[string]bool{}
@@ -942,6 +1028,7 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 			continue
 		}
 		kept := make([]any, 0, len(subs))
+		keptIndices := make([]int, 0, len(subs))
 		decidedValid := 0
 		var remaps [][2]string
 		for i, sub := range subs {
@@ -983,6 +1070,7 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 				})
 			}
 			kept = append(kept, sub)
+			keptIndices = append(keptIndices, i)
 		}
 		switch key {
 		case "allOf":
@@ -995,6 +1083,11 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 			if decidedValid > 0 {
 				// One branch always matches once the pins
 				// merge: the disjunction constrains nothing.
+				// Preserve projected alternatives referenced from
+				// elsewhere in this resource before dropping the choice.
+				for i, sub := range kept {
+					p.preserveDroppedBranch(key, keptIndices[i], sub)
+				}
 				delete(m, key)
 			} else if len(kept) == 0 {
 				unsatisfiable = true

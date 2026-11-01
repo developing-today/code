@@ -763,3 +763,74 @@ func TestHideSchemaPropsPinnedDropsConjunctDecidedBranches(t *testing.T) {
 		}
 	}
 }
+
+// Codex P2 on PR #2976: conditionals that inspect a hidden pin must
+// select the same branch as enforcement after the pin is merged.
+func TestHideSchemaPropsPinnedProjectsConditionals(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"tailnet":{},"limit":{},"cursor":{}},"additionalProperties":false,"if":{"required":["tailnet"]},"then":{"required":["limit"]},"else":{"required":["cursor"]}}`)
+	out := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+		{`{"cursor":1}`, false},
+	} {
+		if got := compiled.ValidateJSON(json.RawMessage(tc.input)) == nil; got != tc.valid {
+			t.Errorf("%s valid=%v want %v (schema %s)", tc.input, got, tc.valid, out)
+		}
+	}
+}
+
+// Codex P2 on PR #2976: draft-07 dependencies are activated by a
+// hidden pin after enforcement merges it, so both legacy forms must
+// become unconditional constraints in the advertised schema.
+func TestHideSchemaPropsPinnedProjectsDraft07Dependencies(t *testing.T) {
+	for _, tc := range []struct{ name, dependency string }{
+		{"array", `"tailnet":["limit"]`},
+		{"schema", `"tailnet":{"required":["limit"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"tailnet":{},"limit":{}},"dependencies":{` + tc.dependency + `}}`)
+			out := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+			compiled, err := schemaval.Compile(out)
+			if err != nil {
+				t.Fatalf("compile %s: %v", out, err)
+			}
+			if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err == nil {
+				t.Errorf("pin-triggered dependency must reject {}: %s", out)
+			}
+			if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err != nil {
+				t.Errorf("promoted dependency should accept limit: %v (%s)", err, out)
+			}
+		})
+	}
+}
+
+// Codex P2 on PR #2976: when a pin makes an anyOf branch certain,
+// collapsing the choice must preserve other alternatives referenced
+// elsewhere in the resource.
+func TestHideSchemaPropsPinnedCollapsedAnyOfKeepsReferences(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{},"cursor":{"$ref":"#/anyOf/1/properties/limit"}},"anyOf":[{"required":["tailnet"]},{"properties":{"limit":{"type":"string"}}}]}`)
+	out := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("collapsed choice must leave no dangling reference: %v (%s)", err, out)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	} {
+		if got := compiled.ValidateJSON(json.RawMessage(tc.input)) == nil; got != tc.valid {
+			t.Errorf("%s valid=%v want %v (schema %s)", tc.input, got, tc.valid, out)
+		}
+	}
+}

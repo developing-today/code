@@ -1723,3 +1723,27 @@ func TestEffectiveSchemaPinnedDiscardedBranchKeepsReferences(t *testing.T) {
 		{`{"limit":"bad"}`, false},
 	})
 }
+
+// Codex P2 on PR #2976: collapsing an anyOf because a pinned branch
+// always matches must preserve referenced caller-dependent alternatives.
+func TestEffectiveSchemaPinnedCollapsedAnyOfKeepsReferences(t *testing.T) {
+	reproCheckPinned(t, `{"anyOf":[{"required":["tailnet"]},{"properties":{"limit":{"type":"string"}}}],"properties":{"cursor":{"$ref":"#/anyOf/1/properties/limit"}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	})
+}
+
+// Codex P2 on PR #2976: an additionalProperties rule also validates
+// every merged pin not covered by properties or patternProperties.
+func TestEffectiveSchemaPinnedAdditionalPropertiesChecksPins(t *testing.T) {
+	reproCheckPinned(t, `{"properties":{"limit":{"type":"number"}},"additionalProperties":false}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, false},
+	})
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1180,6 +1181,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 			// input cannot change it: a valid one always matches,
 			// an invalid one never does.
 			kept := make([]any, 0, len(subs))
+			keptIndices := make([]int, 0, len(subs))
 			decidedValid := 0
 			for i, sub := range subs {
 				valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, verdictRoot, resolving)
@@ -1227,6 +1229,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 					branchRemaps = append(branchRemaps, branchRemap{key: k, oldIndex: i, newIndex: len(kept)})
 				}
 				kept = append(kept, stripPinnedScopeRes(sub, pinned, pinVals, root, resRoot, resolving))
+				keptIndices = append(keptIndices, i)
 			}
 			switch k {
 			case "allOf":
@@ -1237,6 +1240,16 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				if decidedValid > 0 {
 					// One branch always matches: the disjunction
 					// constrains nothing.
+					// Keep projected alternatives referenced elsewhere
+					// in this resource before collapsing the choice.
+					if atResRoot {
+						for i, sub := range kept {
+							pointer := "#/anyOf/" + strconv.Itoa(keptIndices[i])
+							if schemaPointerReferenced(m, pointer) {
+								preservedBranches = append(preservedBranches, preservedBranch{pointer: pointer, value: sub})
+							}
+						}
+					}
 				} else if len(kept) == 0 {
 					unsatisfiable = true
 				} else {
@@ -1291,6 +1304,23 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 			default:
 				promotedSubs = append(promotedSubs, conjunct)
 			}
+		case "additionalProperties":
+			// Rules run against the merged arguments. A pin that is
+			// not covered by this scope's properties or
+			// patternProperties is therefore tested by
+			// additionalProperties even when it is hidden from the
+			// caller-facing schema (Codex P2 on PR #2976).
+			if len(pinVals) > 0 {
+				for name, value := range pinVals {
+					if scopeDeclaresProperty(m, name) {
+						continue
+					}
+					if valid, decided := pinnedValueVerdict(val, value, root); decided && !valid {
+						unsatisfiable = true
+					}
+				}
+			}
+			out[k] = val
 		case "not":
 			// A negation inverts the effect of the schemas inside
 			// it: stripping a pinned requirement there does not
@@ -1731,6 +1761,67 @@ func pinnedSchemaVerdict(schema any, pinned map[string]bool, pinVals map[string]
 		return false, false
 	}
 	return compiled.Validate(dec) == nil, true
+}
+
+// scopeDeclaresProperty mirrors the declaration check performed by
+// additionalProperties at one schema object: only its adjacent
+// properties and matching patternProperties exempt a name.
+func scopeDeclaresProperty(scope map[string]any, name string) bool {
+	if props, ok := scope["properties"].(map[string]any); ok {
+		if _, exists := props[name]; exists {
+			return true
+		}
+	}
+	patterns, _ := scope["patternProperties"].(map[string]any)
+	for pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err == nil && re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedValueVerdict validates one fixed pin value against a schema
+// applied to that property's value, resolving rule-local references
+// and retaining the enclosing dialect where necessary.
+func pinnedValueVerdict(schema, value any, root map[string]any) (bool, bool) {
+	if b, ok := schema.(bool); ok {
+		return b, true
+	}
+	inlined, ok := inlineLocalRefs(schema, root, map[string]bool{}, dialectIgnoresRefSiblings(root))
+	if !ok {
+		return false, false
+	}
+	if im, ok := inlined.(map[string]any); ok {
+		if _, declares := im["$schema"]; !declares {
+			if dialect, isString := root["$schema"].(string); isString && dialect != "" {
+				withDialect := make(map[string]any, len(im)+1)
+				for k, v := range im {
+					withDialect[k] = v
+				}
+				withDialect["$schema"] = dialect
+				inlined = withDialect
+			}
+		}
+	}
+	rawSchema, err := json.Marshal(inlined)
+	if err != nil {
+		return false, false
+	}
+	compiled, err := schemaval.Compile(rawSchema)
+	if err != nil {
+		return false, false
+	}
+	rawValue, err := json.Marshal(value)
+	if err != nil {
+		return false, false
+	}
+	instance, err := schemaval.DecodeInstance(rawValue)
+	if err != nil {
+		return false, false
+	}
+	return compiled.Validate(instance) == nil, true
 }
 
 // collectConditionNames gathers the property names a condition schema
