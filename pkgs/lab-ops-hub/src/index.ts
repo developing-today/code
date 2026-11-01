@@ -6,6 +6,7 @@ import {
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
+  uploadKey,
   validateCrawlUrl,
   validateMachineBody,
   validateNoteBody,
@@ -360,7 +361,7 @@ export default {
         const file = form.get("file") as File | null;
         if (!file) return json({ error: "multipart field 'file' required" }, 400);
         const buf = await file.arrayBuffer();
-        const key = `uploads/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
         await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
           .bind(key, file.name, file.type || null, buf.byteLength)
