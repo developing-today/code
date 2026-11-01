@@ -10,6 +10,7 @@
 package source
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -142,24 +143,67 @@ func readDir(dir string, opt Options, explicit bool) (Resolved, error) {
 			"name a file, or set plumbing.sourceDirAllowed", dir)
 	}
 	var files []string
-	walk := func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if path == dir || opt.Recursive {
-				return nil
+	rootInfo, err := os.Stat(dir)
+	if err != nil {
+		return Resolved{}, fmt.Errorf("reading %s: %w", dir, err)
+	}
+	if rootInfo.IsDir() {
+		var walk func(string, []os.FileInfo) error
+		walk = func(path string, ancestors []os.FileInfo) error {
+			info, err := os.Stat(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
 			}
-			return fs.SkipDir
-		}
-		if !wanted(path, opt.Extensions) {
+			for _, ancestor := range ancestors {
+				if os.SameFile(info, ancestor) {
+					return nil
+				}
+			}
+			ancestors = append(ancestors, info)
+
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", path, err)
+			}
+			for _, entry := range entries {
+				entryPath := filepath.Join(path, entry.Name())
+				entryInfo, err := entry.Info()
+				if err != nil {
+					return fmt.Errorf("reading %s: %w", entryPath, err)
+				}
+				if entryInfo.Mode()&fs.ModeSymlink != 0 {
+					entryInfo, err = os.Stat(entryPath)
+					if err != nil {
+						if errors.Is(err, fs.ErrNotExist) {
+							// A dangling link has no regular target to read.
+							continue
+						}
+						return fmt.Errorf("reading %s: %w", entryPath, err)
+					}
+				}
+
+				if entryInfo.IsDir() {
+					if opt.Recursive {
+						if err := walk(entryPath, ancestors); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				if !entryInfo.Mode().IsRegular() || !wanted(entryPath, opt.Extensions) {
+					continue
+				}
+				files = append(files, entryPath)
+			}
 			return nil
 		}
-		files = append(files, path)
-		return nil
-	}
-	if err := filepath.WalkDir(dir, walk); err != nil {
-		return Resolved{}, fmt.Errorf("reading %s: %w", dir, err)
+		if err := walk(dir, nil); err != nil {
+			return Resolved{}, err
+		}
+	} else if rootInfo.Mode().IsRegular() && wanted(dir, opt.Extensions) {
+		// Preserve the existing behavior for an explicit @dir: path that names
+		// a regular file rather than a directory.
+		files = append(files, dir)
 	}
 	if len(files) == 0 {
 		return Resolved{}, fmt.Errorf("%s holds no files to read", dir)
