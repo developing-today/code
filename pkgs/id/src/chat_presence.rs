@@ -30,6 +30,15 @@
 //!   is not a member of the channel, so a private channel's roster (and the fact that
 //!   anyone is live in it) never leaks to non-members.
 //!
+//! # Authentication
+//!
+//! A heartbeat is a claim about its `node`, so the transport must authenticate the
+//! claim before it reaches the table: the serve receive path accepts a frame only
+//! when the heartbeat's node equals the gossip message's transport-authenticated
+//! sender. Membership filtering alone cannot stop impersonation — it checks the
+//! claimed key — so callers of [`PresenceTable::update`] must bind the claim to an
+//! authenticated sender the same way.
+//!
 //! # Roster
 //!
 //! The roster for a channel is the backing group's membership — the member set of the
@@ -141,11 +150,12 @@ pub struct RosterEntry {
     pub typing: bool,
 }
 
-/// The latest accepted heartbeat for one node, plus when it arrived locally.
+/// The latest accepted heartbeat for one node. Expiry is computed from the
+/// heartbeat's own stamp, never from a local arrival time, so re-delivering a
+/// captured heartbeat cannot extend its life (see [`PresenceTable::update_at`]).
 #[derive(Clone, Debug)]
 struct Entry {
     heartbeat: PresenceHeartbeat,
-    received_at: u64,
 }
 
 /// Thread-safe in-memory table of the latest presence heartbeat per node.
@@ -201,7 +211,10 @@ impl PresenceTable {
     ///   which could otherwise poison the ordering check below.
     /// - **Ordering.** A heartbeat older than the stored one for the same node is
     ///   dropped: out-of-order delivery never regresses the table. Equal timestamps
-    ///   are a tie; the most recent arrival wins.
+    ///   are a tie; the most recent arrival wins — but because expiry is computed
+    ///   from the stamp (`ts + PRESENCE_TTL_SECS`), a duplicate delivery of the
+    ///   same heartbeat never extends its life, and no claim can outlive its
+    ///   stamp's freshness bound no matter when copies of it arrive.
     /// - **Scoping.** Channels (and typing claims) the sender is not a member of,
     ///   per `is_member`, are filtered out before the heartbeat is stored.
     ///
@@ -244,13 +257,7 @@ impl PresenceTable {
         {
             return false;
         }
-        entries.insert(
-            node,
-            Entry {
-                heartbeat,
-                received_at: now,
-            },
-        );
+        entries.insert(node, Entry { heartbeat });
         true
     }
 
@@ -272,7 +279,7 @@ impl PresenceTable {
         match entries.get(node) {
             Some(entry)
                 if entry.heartbeat.channels.contains(channel)
-                    && now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS =>
+                    && now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS =>
             {
                 Liveness::Live
             }
@@ -290,7 +297,7 @@ impl PresenceTable {
             .iter()
             .filter(|(_, entry)| {
                 entry.heartbeat.channels.contains(channel)
-                    && now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS
+                    && now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS
             })
             .map(|(node, _)| *node)
             .collect();
@@ -324,7 +331,7 @@ impl PresenceTable {
                     .get(&node)
                     .filter(|entry| entry.heartbeat.channels.contains(channel));
                 let liveness = match entry {
-                    Some(entry) if now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS => {
+                    Some(entry) if now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS => {
                         Liveness::Live
                     }
                     _ => Liveness::Offline,
@@ -332,12 +339,12 @@ impl PresenceTable {
                 RosterEntry {
                     node,
                     liveness,
-                    last_seen: entry.map(|entry| entry.received_at),
+                    last_seen: entry.map(|entry| entry.heartbeat.ts),
                     typing: match entry {
                         Some(entry) => {
                             liveness == Liveness::Live
                                 && entry.heartbeat.is_typing_in(channel)
-                                && now.saturating_sub(entry.received_at) <= TYPING_TTL_SECS
+                                && now.saturating_sub(entry.heartbeat.ts) <= TYPING_TTL_SECS
                         }
                         None => false,
                     },
@@ -384,7 +391,7 @@ impl PresenceTable {
             return 0;
         };
         let before = entries.len();
-        entries.retain(|_, entry| now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS);
+        entries.retain(|_, entry| now.saturating_sub(entry.heartbeat.ts) <= PRESENCE_TTL_SECS);
         before - entries.len()
     }
 
@@ -632,6 +639,29 @@ mod tests {
         assert_eq!(decode_frame(&bare), None);
         assert_eq!(decode_frame(b"garbage"), None);
         assert_eq!(decode_frame(&[]), None);
+    }
+
+    #[test]
+    fn duplicate_delivery_does_not_extend_expiry() {
+        // A captured heartbeat re-delivered inside the freshness window is
+        // accepted (equal stamp, latest arrival wins) but must not extend the
+        // claim's life: expiry runs from the stamp, so the node still goes
+        // stale at ts + TTL, and a typing claim dies on its own stamp clock.
+        let table = PresenceTable::new();
+        let chan = channel("general");
+        let alice = key(1);
+        let mut hb = heartbeat(alice, vec![chan], 9_000);
+        hb.typing = vec![chan];
+        assert!(table.update_at(hb.clone(), 9_000, &|_, _| true));
+        let replay_at = 9_000 + PRESENCE_TTL_SECS;
+        assert!(table.update_at(hb, replay_at, &|_, _| true));
+        assert_eq!(table.liveness_at(&alice, &chan, replay_at), Liveness::Live);
+        assert_eq!(
+            table.liveness_at(&alice, &chan, replay_at + 1),
+            Liveness::Offline
+        );
+        let roster = table.roster_at(&chan, &[alice], replay_at);
+        assert!(!roster[0].typing, "a replayed typing claim must not refresh");
     }
 
     #[test]

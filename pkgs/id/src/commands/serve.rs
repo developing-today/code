@@ -1569,12 +1569,21 @@ async fn run_gossip_loop(
                 Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
                         if let Some(heartbeat) = decode_frame(&msg.content) {
-                            debug!(
-                                "presence heartbeat from {}: {} channel(s)",
-                                heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                                heartbeat.channels.len()
-                            );
-                            recv_presence.update(heartbeat);
+                            // Presence is a claim about `node`, and the gossip
+                            // topic is public: accept the frame only when the
+                            // claimed node is the message's authenticated
+                            // sender, so nobody can forge or suppress another
+                            // node's presence (#2809 Codex review).
+                            if heartbeat.node == *msg.sender.as_bytes() {
+                                debug!(
+                                    "presence heartbeat from {}: {} channel(s)",
+                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat.channels.len()
+                                );
+                                recv_presence.update(heartbeat);
+                            } else {
+                                debug!("presence heartbeat with unauthenticated node, dropped");
+                            }
                         } else {
                             match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
@@ -1613,12 +1622,25 @@ async fn run_gossip_loop(
 
     // Spawn stale cleanup task — probes stale peers before removal
     let cleanup_discovery = peer_discovery;
+    let cleanup_presence = chat_presence;
 
     let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(STALE_CHECK_INTERVAL);
 
         loop {
             interval.tick().await;
+
+            // Presence entries expire on their own stamps; prune them here so a
+            // long-running server does not retain every node key it has ever
+            // seen (#2809 Codex review). This runs even when no discovery peer
+            // is stale.
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let pruned = cleanup_presence.prune_at(now_secs);
+            if pruned > 0 {
+                debug!("pruned {} expired presence entrie(s)", pruned);
+            }
 
             let stale = cleanup_discovery.stale_peers();
             if stale.is_empty() {
