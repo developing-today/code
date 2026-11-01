@@ -181,20 +181,26 @@ cd ready-for-agent
 ./install.sh clone    # one-time: clone the repos it serves into ./repos/
 ```
 
-- **Register a repo** through the harness's GraphQL API (loopback
-  `http://127.0.0.1:6056/graphql`): mutation
-  `addLocalRepository(path: "<absolute path to a full clone>")`.
-  Do **not** use the `ready-for-agent add` CLI from an interactive
-  SSH shell on this host — its in-process git inspection returns
+- **Register + configure repos declaratively (#1203):**
+  [`ready-for-agent/config.json`](ready-for-agent/config.json) names
+  every served repository (clone URL, local dir, `mergePolicy`,
+  `defaultModel`, `includeAllIssueAuthors`, paused). `./install.sh
+  clone` clones/fetches them all into `ready-for-agent/repos/`, and
+  every `./install.sh` run finishes by applying the config through
+  the harness's GraphQL API via
+  [`ready-for-agent/apply-config.sh`](ready-for-agent/apply-config.sh)
+  (addLocalRepository for unregistered clones, a full-object
+  updateRepositorySettings built from the live settings with only
+  the config-owned fields overridden, pause/unpause to match; a
+  converged harness receives no mutations, so re-runs are no-ops;
+  `DRY_RUN=1 ./apply-config.sh` previews). Fleet posture:
+  `mergePolicy: OFF` (human merge) on every repo. Do **not** use the
+  `ready-for-agent add` CLI from an interactive SSH shell on this
+  host - its in-process git inspection returns
   `NOT_A_GIT_REPOSITORY` for valid repos there (it succeeds from
-  the service's clean environment, which is what GraphQL uses).
-- **Configure a repo** with `updateRepositorySettings` (a
-  full-object input — every field is required, so read the current
-  settings first) and `unpauseRepository`. Fleet posture for
-  `developing-today/code`: `mergePolicy: OFF` (human merge),
-  `includeAllIssueAuthors: true`, `defaultModel:
-opencode-go/kimi-k3.1-pro` on the OpenCode backend. A repo with
-  no build model set refuses Implement ("No build model set").
+  the service's clean environment, which is what GraphQL uses). A
+  repo with no build model set refuses Implement ("No build model
+  set") - the config's `defaultModel` is what prevents that.
 - **Dispatch:** label an issue `ready-for-agent`, then Implement
   from the UI, via GraphQL `implementNow(repositoryId, nativeId:
 "<issue number>")`, or via the CLI `ready-for-agent intake
