@@ -17,7 +17,7 @@
 
 ```
 existing JSON surfaces          notification engine           Web Push
-/api/attention.json  ─┐         (in the aggregator)           (RFC 8030 + VAPID)
+attention view       ─┐         (in the aggregator)           (RFC 8030 + VAPID)
   needs-drew tier     ├─ poll ─► diff vs engine state ─┬─► vendor push service ─► phone
 /api/quota.json      ─┤         dedupe · quiet hours   │    (FCM / Apple / Mozilla)
 /api/health          ─┘         batching · escalation  └─► send log (jsonl)
@@ -38,11 +38,25 @@ invents no new detection.
 
 | Class | Source | Trigger | Recommended default |
 |---|---|---|---|
-| `needs-drew` | `/api/attention.json`; the `needs-drew` tier is derived in `src/derive.ts:308-324` | an item *enters* the needs-drew tier | **on** |
+| `needs-drew` | the full attention view (below); the `needs-drew` tier is derived in `src/derive.ts:308-324` | an item *enters* the needs-drew tier | **on** |
 | `quota-wall` | `/api/quota.json` + the quota registry | a pool reaches 100% / closed before its reset | **on** |
 | `quota-near-wall` | same | a pool crosses 85% with time left to reset | **off**, except sole-door pools (below) |
 | `stack-health` | `/api/health` section diagnoses | a stack section flips ok → failing | **on** |
-| `blocked-age` | `/api/attention.json` item ages | a needs-drew item is still unacted after the age threshold (§5) | **digest only** (never a per-item push) |
+| `blocked-age` | the full attention view, item ages | a needs-drew item is still unacted after the age threshold (§5) | **digest only** (never a per-item push) |
+
+**The engine's attention source is the complete view, not the
+flat API array.** The engine runs in-process and consumes the same
+attention view the dashboard renders — `view.all` **plus**
+`view.drewExtra` (`src/derive.ts:379,463`): the non-session
+needs-drew items (decisions, tasks, gaps with no matching session)
+that `src/render.ts:2402` includes in the displayed queue.
+`/api/attention.json` (`src/server.ts:780-789`) returns only
+`view.all` + watchdog entries, so an engine naively polling the API
+would never see those items — no entry push, no blocked-age
+escalation, for exactly the items most likely to be waiting on
+Drew. Slice (c) therefore also extends `/api/attention.json` to
+carry the drewExtra entries, so external consumers see the same
+queue the HTML renders.
 
 Two rules keep `quota-*` honest against the standing quota doctrine
 (2026-10-29: pools are *supposed* to reach ~100% at reset; routine
@@ -142,7 +156,21 @@ and the contract is:
 
 **Branch A — tailnet-only (today's reality).** The aggregator binds
 `127.0.0.1:4870` + the tailnet name; there is no public route
-(#1182 triage, verified at `f00dde689`). Subscriptions are created
+(#1182 triage, verified at `f00dde689`).
+
+*Prerequisite — a trusted HTTPS origin.* The canonical tailnet URL
+today is **plain HTTP** (`pm-stack/aggregator/README.md:38`:
+`http://amd-6.raptor-pumpkinseed.ts.net:4870`), and plain HTTP on a
+remote host is not a browser secure context: service workers and
+`PushManager` are both restricted to secure contexts, so **no
+subscription can be created on the current origin at all**,
+regardless of the outbound-only sending path. Branch A therefore
+starts by serving the aggregator through **Tailscale Serve**
+(`https://amd-6.<tailnet>.ts.net`, Tailscale-issued certificate) —
+or an equivalent trusted certificate — and that HTTPS origin is the
+PWA origin (`PM_AGG_PUBLIC_ORIGIN` defaults to it on this branch).
+The plain-HTTP listener stays for local/plumbing use; nothing
+PWA-related ever points at it. Subscriptions are created
 from the tailnet origin while the phone is on the tailnet, pushes
 are delivered by the vendor service over the phone's normal
 connectivity, and the click opens the tailnet URL — which needs
@@ -232,15 +260,19 @@ and no release silently drops the eviction behaviour.
 
 ## 7. Implementation slices (filed as sub-issues of #1184)
 
-a. **PWA installability** — manifest, icons, iOS meta, install
-   affordance; `/sw.js` untouched.
+a. **PWA installability** — Tailscale Serve HTTPS mapping for the
+   aggregator (the §4 branch-A prerequisite: config + README/topology
+   docs), manifest, icons, iOS meta, install affordance; `/sw.js`
+   untouched.
 b. **Web Push plumbing** — VAPID secret wiring, subscription store
    + API, service worker push/notification-click handlers, §6
    step-2 kill-switch migration, §4 branch-B Access deep-link
    check (when #1182 lands).
-c. **Notification engine** — pollers over attention/quota/health,
-   class triggers per §1 (incl. the quota-doctrine rules), dedupe,
-   quiet hours, batching, escalation ladder, send log.
+c. **Notification engine** — pollers over the full attention view
+   (incl. drewExtra, §1), quota, and health; class triggers per §1
+   (incl. the quota-doctrine rules), dedupe, quiet hours, batching,
+   escalation ladder, send log; extends `/api/attention.json` with
+   the drewExtra entries (§1).
 d. **Preferences + deep links** — `/notifications` page (per-class
    toggles, quiet hours), per-class deep-link acceptance per §3.
 e. **Measurement** — weekly sent-vs-acted-on roll-up on
