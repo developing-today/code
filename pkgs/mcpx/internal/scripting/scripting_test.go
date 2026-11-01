@@ -194,6 +194,18 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"regex after re-export newline", "export { readFile } from \"node:fs\"\n/a+/.test(\"aa\");\n"},
 		{"regex after prefix increment on new line", "let n = 1; n\n++/a+/.lastIndex;\n"},
 		{"division after same-line postfix increment", "let n = 4;\nconst ratio = n++ / 2;\n"},
+		{"regex as new operand", "const r = new /a+/.constructor(\"x\");\n"},
+		{"division after class expression with object heritage", "const q = class extends {C: Object}.C {} / 2;\n"},
+		{"division after function expression with debugger default", "const f = function(a = () => {debugger\n}) {} / 2;\n"},
+		{"division after spread object across comment", "const obj = {... /*c*/ {} / 2};\n"},
+		{"regex after prefix increment across comment after line break", "let n=1; n\n/*comment*/++/a+/.lastIndex;\n"},
+		{"division after braced unicode escape identifier", "const \\u{61} = 4; const q = \\u{61} / 2;\n"},
+		{"division after hex unicode escape identifier", "const \\u0061 = 4; const q = \\u0061 / 2;\n"},
+		{"division after TypeScript instantiation expression", "function f<T>() { return 4; } const q = f<number> / 2;\n"},
+		{"division after TypeScript instantiation call", "function f<T>() { return 4; } const q = f<number>() / 2;\n"},
+		{"division after private keyword-named member", "class C { #return=4; f(){ return this.#return / 2; } }\n"},
+		{"division after object with import-named property", "const obj = { import: \"foo\"\n / 2 };\n"},
+		{"comparison chain with capitalised operand stays relational", "const ok = a < Foo > b;\nconst q = 4 / 2;\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
