@@ -187,6 +187,25 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// expression in expression position (Codex P2 on #1659:
 	// class C extends /a+/.constructor {}).
 	inClassHeritage := false
+	// heritageBraceDepth counts '{' opened inside a class heritage
+	// expression itself (an object-literal heritage operand,
+	// class extends {C: Object}.C {}): those braces are operands
+	// of the heritage expression, not the class body, so they must
+	// neither consume the pending body frame nor end the heritage
+	// state (Codex P2 on #3334).
+	heritageBraceDepth := 0
+	// dotRun counts consecutive '.' significant characters: a '{'
+	// after a spread token '...' is the spread object operand
+	// even when trivia (whitespace or a comment) intervenes
+	// between the dots and the brace (Codex P2 on #3334).
+	dotRun := 0
+	// instAngleDepth / instActive track a speculative TypeScript
+	// instantiation-expression generic list (f<number> / 2): the
+	// list is recognised by the lookahead in
+	// looksLikeInstantiation, and its closing '>' completes the
+	// operand (Codex P2 on #3334).
+	instActive := false
+	instAngleDepth := 0
 	// Static module declaration state (Codex P2 on #1659):
 	// inModuleDecl while an import/export declaration that began
 	// in statement position is being scanned; expectModuleString
@@ -275,6 +294,47 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	for i := scanStart; i < n; i++ {
 		ch := chars[i]
 
+		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex && ch == '\\' && i+1 < n && chars[i+1] == 'u' {
+			// A Unicode escape in an identifier (\u{61}, \u0061):
+			// the escape is part of the identifier token, so its
+			// braces are not structural delimiters (Codex P2 on
+			// #3334: const \u{61} = 4; \u{61} / 2 — the escape's
+			// '}' read as a block closure and the slash opened
+			// a phantom regex). Consume the whole escape as one
+			// identifier character (a neutral placeholder: an
+			// escaped spelling never forms a keyword).
+			end := -1
+			if i+2 < n && chars[i+2] == '{' {
+				for j := i + 3; j < n; j++ {
+					if chars[j] == '}' {
+						end = j
+						break
+					}
+					if !isHexDigit(chars[j]) {
+						break
+					}
+				}
+			} else if i+5 < n && isHexDigit(chars[i+2]) && isHexDigit(chars[i+3]) && isHexDigit(chars[i+4]) && isHexDigit(chars[i+5]) {
+				end = i + 5
+			}
+			if end >= 0 {
+				if len(curIdent) == 0 {
+					identPrev = prevChar
+					identPrevSig = prevSig
+					prevIdent = lastIdent
+				}
+				curIdent = append(curIdent, 'x')
+				// The escape is an identifier character: it
+				// carries the operand classification the main
+				// loop would have given an ordinary letter.
+				prevSig = 'x'
+				prevChar = 'x'
+				dotRun = 0
+				i = end
+				continue
+			}
+		}
+
 		if !inSingleLineComment && !inMultiLineComment && inString == 0 && !inRegex {
 			if isIdentChar(ch) {
 				if len(curIdent) == 0 {
@@ -293,10 +353,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// defeat the property-name guards below (Codex
 				// P2 on #1659: {class : 1}).
 				nextSig := nextSignificant(chars, i)
-				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
+				if isExprKeyword(lastIdent) && lastIdentPrev != '.' && lastIdentPrev != '#' {
 					prevSig = 'o'
 				}
-				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && identPrevSig == 'x' {
+				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && lastIdentPrev != '#' && identPrevSig == 'x' {
 					// Binary keyword operators: an expression follows,
 					// so a '/' opens a regex literal (Codex P2 on
 					// #1659: "source" in /a+/ and for (const m of
@@ -308,7 +368,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// to follow an operand (identPrevSig == 'x').
 					prevSig = 'o'
 				}
-				if (lastIdent == "as" || lastIdent == "satisfies") && lastIdentPrev != '.' && identPrevSig == 'x' {
+				if (lastIdent == "as" || lastIdent == "satisfies") && lastIdentPrev != '.' && lastIdentPrev != '#' && identPrevSig == 'x' {
 					// A TypeScript assertion on an operand: a type
 					// (possibly generic) follows, and the asserted
 					// value stays the operand throughout.
@@ -318,7 +378,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					typeSawToken = false
 					typeStackDepth = len(stack)
 				}
-				if lastIdent == "default" && prevIdent == "export" && lastIdentPrev != '.' {
+				if lastIdent == "default" && prevIdent == "export" && lastIdentPrev != '.' && lastIdentPrev != '#' {
 					// export default <expression>: an expression
 					// follows the keyword pair, so a '/' opens a
 					// regex literal instead of dividing (Codex
@@ -332,7 +392,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// property name ({class : 1}), not a declaration:
 				// it must not set pending body state that a later
 				// '{' would consume (Codex P2 on #1659).
-				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
+				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && lastIdentPrev != '#' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
 					if lastIdent == "class" {
 						inClassHeritage = true
 					}
@@ -344,19 +404,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 						expectDeclStackDepth = len(stack)
 					}
 				}
-				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
+				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' && lastIdentPrev != '#' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
 					expectDeclBody = true
 					expectDeclParenDepth = 0
 					expectDeclStackDepth = len(stack)
 				}
-				if lastIdent == "extends" && lastIdentPrev != '.' && inClassHeritage && nextSig != ':' {
+				if lastIdent == "extends" && lastIdentPrev != '.' && lastIdentPrev != '#' && inClassHeritage && nextSig != ':' {
 					// A class heritage expression follows
 					// 'extends': it is in expression position, so
 					// a '/' opens a regex literal (Codex P2 on
 					// #1659: class C extends /a+/.constructor {}).
 					prevSig = 'o'
 				}
-				if (lastIdent == "import" || lastIdent == "export") && lastIdentPrev != '.' &&
+				if (lastIdent == "import" || lastIdent == "export") && lastIdentPrev != '.' && lastIdentPrev != '#' &&
+					nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' &&
 					(lastIdentPrev == 0 || lastIdentPrev == ';' || lastIdentPrev == '{' || lastIdentPrev == '}') {
 					// A static module declaration in statement
 					// position: its module-specifier string ends
@@ -364,7 +425,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					inModuleDecl = true
 					expectModuleString = false
 				}
-				if lastIdent == "from" && lastIdentPrev != '.' && inModuleDecl {
+				if lastIdent == "from" && lastIdentPrev != '.' && lastIdentPrev != '#' && inModuleDecl {
 					expectModuleString = true
 				}
 			}
@@ -402,7 +463,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				regexEscaped = false
 			}
 			if ((lastIdent == "debugger" || lastIdent == "break" || lastIdent == "continue") ||
-				((prevIdent == "break" || prevIdent == "continue") && lastIdent != "")) && lastIdentPrev != '.' {
+				((prevIdent == "break" || prevIdent == "continue") && lastIdent != "")) && lastIdentPrev != '.' && lastIdentPrev != '#' {
 				// Automatic semicolon insertion ends a debugger /
 				// break / continue statement at the newline: a '/'
 				// on the next line opens a regex, it is not
@@ -411,7 +472,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				prevSig = 'o'
 				lastIdent = ""
 				lastIdentPrev = 0
-				funcClassFrames = nil
+				// Only frames in this statement's own scope end
+				// here — the same scoping the ';' expiry uses. A
+				// debugger/break/continue statement nested inside
+				// a pending frame's parameter default or body
+				// (function(a = () => {debugger\n}) {}) must not
+				// clear the outer frame (Codex P2 on #3334).
+				keptFrames := funcClassFrames[:0]
+				for _, fr := range funcClassFrames {
+					if !(fr.parenDepth == 0 && len(stack) <= fr.stackDepth) {
+						keptFrames = append(keptFrames, fr)
+					}
+				}
+				funcClassFrames = keptFrames
 			}
 			if typeAngleDepth == 0 && inTypeAssert && typeSawToken && len(stack) <= typeStackDepth {
 				inTypeAssert = false
@@ -435,7 +508,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// consumes it; later characters on the same line see no
 		// break (postfix ++/-- classification consults this).
 		brokeLine := lineBreakPending
-		if !isJSWhitespace(ch) {
+		if !isJSWhitespace(ch) && !inSingleLineComment && !inMultiLineComment {
+			// Comment characters are trivia: they must not
+			// consume a pending line break, or a prefix ++/--
+			// after a comment reads as a postfix on the previous
+			// line's operand (Codex P2 on #3334:
+			// n\n/*comment*/++ /a+/). The comment OPENER is not
+			// yet flagged as a comment here; it restores the
+			// pending break explicitly below.
 			lineBreakPending = false
 		}
 
@@ -542,11 +622,17 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if ch == '/' && i+1 < n {
 			if chars[i+1] == '/' {
 				inSingleLineComment = true
+				if brokeLine {
+					lineBreakPending = true
+				}
 				i++
 				continue
 			}
 			if chars[i+1] == '*' {
 				inMultiLineComment = true
+				if brokeLine {
+					lineBreakPending = true
+				}
 				i++
 				continue
 			}
@@ -569,6 +655,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// expression or a function statement after 'else', whose
 		// keyword is not recognised as expression-position, and
 		// U+2028/U+2029 appearing inside a regex literal.
+		// Instantiation expressions are recognised only for
+		// primitive or capitalised type names (see
+		// looksLikeInstantiation): f<lowercase> / 2 remains a
+		// pinned blind spot, since it is indistinguishable from
+		// a relational chain by local inspection.
 		if ch == '/' {
 			if inTypeAssert && typeAngleDepth == 0 {
 				// The assertion carried no generic list
@@ -625,7 +716,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// position (Codex P2 on #1659: for await (const x of
 			// [1]) /a+/.test(..)).
 			isControl := isControlKeyword(lastIdent) || (lastIdent == "await" && prevIdent == "for")
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControl && lastIdentPrev != '.'})
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: isControl && lastIdentPrev != '.' && lastIdentPrev != '#'})
 			lastIdent = ""
 			lastIdentPrev = 0
 		case '{':
@@ -639,7 +730,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// or class expression is likewise an operand closure:
 			// const n = function() {} / 2 divides.
 			kwIdent := lastIdent
-			if lastIdentPrev == '.' {
+			if lastIdentPrev == '.' || lastIdentPrev == '#' {
 				kwIdent = ""
 			}
 			exprAfter := !isObjectBrace(prevChar, kwIdent)
@@ -663,19 +754,44 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// (Codex P2 on #1659: 4 as { toFixed(): string } / 2).
 				exprAfter = false
 			}
-			if i >= 3 && chars[i-1] == '.' && chars[i-2] == '.' && chars[i-3] == '.' {
+			if dotRun >= 3 || (i >= 3 && chars[i-1] == '.' && chars[i-2] == '.' && chars[i-3] == '.') {
 				// A '{' right after a spread token is the spread
 				// object operand, not a statement block: its '}'
 				// is an operand, so a following '/' divides
-				// (Codex P2 on #1659: {...{} / 2}).
+				// (Codex P2 on #1659: {...{} / 2}). dotRun counts
+				// significant '.' characters, so trivia between
+				// the spread token and the brace does not defeat
+				// it (Codex P2 on #3334: {... /*c*/ {} / 2}).
 				exprAfter = false
 			}
-			if len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 {
+			// A '{' inside a class heritage expression at
+			// expression position (right after 'extends' or an
+			// operator), or nested inside such a brace, is a
+			// heritage operand — an object literal — not the
+			// class body: it must not consume the pending body
+			// frame (Codex P2 on #3334: class extends
+			// {C: Object}.C {} / 2 — the heritage object ate
+			// the frame and the body's '}' read as a block
+			// closure, opening a phantom regex at the slash).
+			// After a completed operand closer ('>', ')', ']')
+			// a '{' cannot start another heritage operand —
+			// class C<T> {} and class C extends mixin() {} are
+			// bodies, not heritage objects.
+			heritageExprBrace := inClassHeritage && (heritageBraceDepth > 0 ||
+				(prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
+			if heritageExprBrace {
+				heritageBraceDepth++
+				exprAfter = false
+			}
+			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}
-			inClassHeritage = false
-			if expectDeclBody && expectDeclParenDepth == 0 {
+			if !heritageExprBrace {
+				inClassHeritage = false
+				heritageBraceDepth = 0
+			}
+			if !heritageExprBrace && expectDeclBody && expectDeclParenDepth == 0 {
 				exprAfter = true
 				expectDeclBody = false
 			}
@@ -696,6 +812,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			if ch == '}' && heritageBraceDepth > 0 {
+				heritageBraceDepth--
+			}
 			if top.char == '(' {
 				for fi := range funcClassFrames {
 					if funcClassFrames[fi].parenDepth > 0 {
@@ -761,6 +880,26 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				pendingStmtColon = true
 			}
 			prevSig = 'o'
+		case ch == '<' && instActive:
+			instAngleDepth++
+			prevSig = 'x'
+		case ch == '>' && instActive:
+			instAngleDepth--
+			if instAngleDepth <= 0 {
+				instAngleDepth = 0
+				instActive = false
+			}
+			prevSig = 'x'
+		case ch == '<' && !inTypeAssert && prevSig == 'x' && looksLikeInstantiation(chars, i):
+			// A TypeScript instantiation expression
+			// (f<number> / 2): the generic list's closing '>'
+			// completes the operand, so the slash divides
+			// (Codex P2 on #3334). Recognition is deliberately
+			// narrow (see looksLikeInstantiation) so ordinary
+			// relational chains keep the operator reading.
+			instActive = true
+			instAngleDepth = 1
+			prevSig = 'x'
 		case ch == '<' && inTypeAssert && typeAngleDepth == 0 && !typeSawAngle && (prevChar == ']' || isSimpleTypeName(lastIdent)):
 			// A completed simple type (4 as number < /a+/) or a
 			// bracketed type (x as T[] < y) cannot take a generic
@@ -782,6 +921,15 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			prevSig = 'x'
 		case ch == '!' && wasOperand:
+			prevSig = 'x'
+		case ch == '#' && i+1 < n && isIdentChar(chars[i+1]):
+			// A '#' directly before an identifier is a private
+			// name (#return): the name that follows is a property
+			// name, never a keyword — every keyword guard above
+			// therefore also excludes lastIdentPrev == '#' — and
+			// the pair is an operand fragment (Codex P2 on
+			// #3334: this.#return / 2 read the slash as a regex
+			// opener after the phantom return keyword).
 			prevSig = 'x'
 		case isJSWhitespace(ch):
 			// Whitespace does not change the ruling.
@@ -839,6 +987,8 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			typeAngleDepth = 0
 			typeSawAngle = false
 			typeSawToken = false
+			instActive = false
+			instAngleDepth = 0
 			// A statement boundary expires any keyword context: a
 			// '{' after ';' must not be classified by a keyword an
 			// earlier statement ended with (Codex P2 on #1659:
@@ -854,6 +1004,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// significant character ends the arrow context.
 			prevTokenArrow = ch == '>' && i > 0 && chars[i-1] == '='
 			prevChar = ch
+			if ch == '.' {
+				dotRun++
+			} else {
+				dotRun = 0
+			}
 		}
 	}
 
@@ -896,10 +1051,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 // isExprKeyword reports whether kw is a keyword after which an
 // expression (and therefore possibly a regex literal) follows:
-// return /re/, typeof /re/, case /re/:, and friends.
+// return /re/, typeof /re/, case /re/:, and friends. "new" is
+// included: its operand is an expression, so new /a+/ constructs
+// the regex (Codex P2 on #3334: new stayed classified as an
+// operand and the slash was read as division).
 func isExprKeyword(kw string) bool {
 	switch kw {
-	case "return", "throw", "case", "typeof", "void", "delete", "await", "yield", "else", "do":
+	case "return", "throw", "case", "typeof", "void", "delete", "await", "yield", "else", "do", "new":
 		return true
 	}
 	return false
@@ -1051,6 +1209,77 @@ func nextSignificant(chars []rune, from int) rune {
 		return c
 	}
 	return 0
+}
+
+// isHexDigit reports whether ch is an ASCII hex digit (for
+// \uXXXX and \u{...} identifier escapes).
+func isHexDigit(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
+// looksLikeInstantiation reports whether the '<' at index lt opens
+// a TypeScript instantiation-expression generic list whose operand
+// classification matters: the list must balance using only
+// type-shaped tokens, must contain at least one recognisable type
+// name (a primitive type or a capitalised identifier — the shapes
+// generic arguments actually take), and the token after the
+// closing '>' must be one that follows an operand (a '/', '(',
+// '.', operator, or delimiter) rather than another operand, which
+// would make the '<' a relational operator instead
+// (a < Foo > b is a comparison chain, f<Foo> / 2 is not).
+func looksLikeInstantiation(chars []rune, lt int) bool {
+	n := len(chars)
+	depth := 0
+	sawTypeName := false
+	for j := lt; j < n; j++ {
+		c := chars[j]
+		switch {
+		case isIdentChar(c):
+			start := j
+			for j < n && isIdentChar(chars[j]) {
+				j++
+			}
+			name := string(chars[start:j])
+			j--
+			if isSimpleTypeName(name) || name == "keyof" || name == "typeof" || name == "readonly" {
+				sawTypeName = true
+			} else if len(name) > 0 {
+				if r := []rune(name)[0]; unicode.IsUpper(r) {
+					sawTypeName = true
+				}
+			}
+		case c == '<':
+			depth++
+		case c == '>':
+			depth--
+			if depth == 0 {
+				if !sawTypeName {
+					return false
+				}
+				switch nextSignificant(chars, j+1) {
+				case '/', '(', '.', '[', ';', ',', ')', ']', '}', '?', ':', '+', '-', '*', '%', '=', '!', '&', '|', '<', '>', 0:
+					return true
+				}
+				return false
+			}
+		case isJSWhitespace(c) || c == '\n' || c == ',' || c == '.' || c == '[' || c == ']' ||
+			c == '{' || c == '}' || c == '(' || c == ')' || c == '|' || c == '&' || c == '?' ||
+			c == ':' || c == ';' || c == '-' || c == '#':
+			// Type-shaped punctuation.
+		case c == '=' && j+1 < n && chars[j+1] == '>':
+			j++
+		case c == '\'' || c == '"' || c == '`':
+			// A literal type: skip to its closing quote.
+			for j++; j < n && chars[j] != c; j++ {
+				if chars[j] == '\\' {
+					j++
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func isRegexFlag(ch rune) bool {
