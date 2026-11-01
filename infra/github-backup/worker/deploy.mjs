@@ -17,6 +17,8 @@
 //   deploy.mjs [--dry-run]                 validate, upload + deploy HEAD
 //   deploy.mjs --deploy-version <id>       deploy (or roll back to) an
 //                                          existing version at 100%
+//                                          (--dry-run is rejected with
+//                                          --deploy-version, #3474)
 //
 // Needs CLOUDFLARE_ACCOUNT_ID and BWS_ACCESS_TOKEN; deploy.sh sets
 // them. The API token comes from Bitwarden by name (default
@@ -39,6 +41,18 @@ const deployVersionAt = args.indexOf("--deploy-version");
 const deployVersion = deployVersionAt >= 0 ? args[deployVersionAt + 1] : null;
 if (deployVersionAt >= 0 && !deployVersion) {
   throw new Error("--deploy-version needs a version id");
+}
+if (dryRun && deployVersion !== null) {
+  // #3474: the deployVersion branch runs before the dryRun branch and
+  // createDeployment() invokes wrangler versions deploy WITHOUT
+  // --dry-run, so "--dry-run --deploy-version <id>" would perform a
+  // real 100% deployment while looking like a preview. There is no
+  // non-deploying preview of a versions deployment, so reject the
+  // combination outright — before any bws/wrangler invocation.
+  throw new Error(
+    "--dry-run cannot be combined with --deploy-version: a dry run never deploys, " +
+    "but --deploy-version always deploys at 100%. Drop --dry-run to roll back for real."
+  );
 }
 
 requireEnv("CLOUDFLARE_ACCOUNT_ID");
