@@ -248,11 +248,11 @@ mod tests {
         let err = Invite::from_query(&format!("key={KEY}&key={other_key}&node={NODE}&name=Ann"))
             .unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
-        let err = Invite::from_query(&format!("key=invalid&key={KEY}&node={NODE}&name=Ann"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key=invalid&key={KEY}&node={NODE}&name=Ann")).unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
-        let err = Invite::from_query(&format!("key={KEY}&key=invalid&node={NODE}&name=Ann"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key={KEY}&key=invalid&node={NODE}&name=Ann")).unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
 
         // Duplicate node (both valid, invalid first, invalid last)
@@ -267,8 +267,8 @@ mod tests {
         assert!(format!("{err:#}").contains("node"), "{err:#}");
 
         // Duplicate name
-        let err = Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=Eve"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=Eve")).unwrap_err();
         assert!(format!("{err:#}").contains("name"), "{err:#}");
         // Invalid escapes are refused whether they occur first or last
         assert!(Invite::from_query(&format!("key={KEY}&node={NODE}&name=%zz&name=Eve")).is_err());
