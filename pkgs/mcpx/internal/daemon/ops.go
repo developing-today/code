@@ -435,7 +435,10 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 
 // completionCaller names the caller a completion rate-limit window
 // binds: the session the caller resolved to, else its PID, else its
-// per-call id. The per-call fallback means a caller with neither a
+// per-call id. A PIDShared PID is the daemon's own (every /v1/exec run
+// reports it), not the caller's, so it falls through to the per-call id
+// too -- the same !PIDShared guard CallerOwned applies (#3783). The
+// per-call fallback means a caller with neither a
 // session nor a PID is effectively unwindowed per caller -- which is
 // honest, because there is nothing stable to bind -- and the per-server
 // window (completion.serverPerMinute) remains the backstop that does
@@ -444,7 +447,7 @@ func completionCaller(cc config.CallContext) string {
 	switch {
 	case cc.SessionID != "":
 		return "session:" + cc.SessionID
-	case cc.PID > 0:
+	case cc.PID > 0 && !cc.PIDShared:
 		return "pid:" + strconv.Itoa(cc.PID)
 	default:
 		return "call:" + cc.CallID
