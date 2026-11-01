@@ -393,12 +393,16 @@ async function roadmapContext() {
 // registry age from the source's already-loaded feed.
 async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["diagnostics"]>>["orchestration"]) {
   if (cfg.source !== "live") return [];
-  const health = await healthContext(false);
+  const [health, projectAudit] = await Promise.all([
+    healthContext(false),
+    source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
+  ]);
   return watchdogTierItems({
     now: Date.now(),
     feedAgeMs: health.feed.ageMs,
     feedGeneratedAt: health.feed.generatedAt,
     ...(diagnosis ? { orchestration: diagnosis } : {}),
+    projectAudit,
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
@@ -805,15 +809,17 @@ async function handler(req: Request): Promise<Response> {
     return new Response(null, { status: 302, headers: { Location: target } });
   }
   if (path === "/api/projects.json") {
-    const [pool, census, poolAvailable] = await Promise.all([
+    const [pool, census, poolAvailable, audit] = await Promise.all([
       source.projects().catch(() => []),
       source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+      source.projectAudit ? source.projectAudit().catch(() => null) : Promise.resolve(null),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     return json({
       project: "developing-today#4",
       items: pool,
+      audit,
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });

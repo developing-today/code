@@ -7,6 +7,7 @@ import {
   isUnmatchedCharge,
   loadFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   projectPoolSectionProblem,
   sanitizeCollectionError,
   sanitizeQuotaView,
@@ -137,6 +138,25 @@ describe("feed project-pool section gate (#2399)", () => {
     expect(pool.length).toBe(2);
     expect(isProjectPoolSection(pool)).toBe(true);
     expect(poolFromFeed({ projects: pool }).length).toBe(2);
+  });
+});
+
+describe("Project #4 audit feed section (#1218)", () => {
+  const audit = {
+    title: "Developing Today",
+    number: 4,
+    url: "https://github.com/orgs/developing-today/projects/4",
+    generatedAt: "2026-11-01T20:00:00.000Z",
+    totalItems: 1,
+    fields: [{ id: "status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] }],
+    views: [{ id: "board", name: "Board", layout: "BOARD_LAYOUT", filter: null }],
+    counts: { status: { Todo: 1 }, area: { "(unset)": 1 }, repo: { "developing-today/code": 1 } },
+  };
+
+  test("returns only a well-shaped audit snapshot", () => {
+    expect(projectAuditFromFeed({ projectAudit: audit })).toEqual(audit);
+    expect(projectAuditFromFeed({ projectAudit: { ...audit, totalItems: "1" } as never })).toBeNull();
+    expect(projectAuditFromFeed({})).toBeNull();
   });
 });
 

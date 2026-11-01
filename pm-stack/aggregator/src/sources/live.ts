@@ -18,6 +18,7 @@ import {
   coverageFromFeed,
   poolAvailableFromFeed,
   poolFromFeed,
+  projectAuditFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
@@ -812,6 +813,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async projectAudit() {
+      const feed = await getFeed();
+      return projectAuditFromFeed(feed);
     },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();

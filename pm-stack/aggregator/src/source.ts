@@ -11,6 +11,7 @@ import type {
   GhItem,
   OrchestrationSection,
   ProjectPoolItem,
+  ProjectAudit,
   Provenance,
   ProvenanceDetail,
   QuotaView,
@@ -50,6 +51,8 @@ export interface Source {
   registry(): Promise<SessionRecord[]>;
   /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */
   projects(): Promise<ProjectPoolItem[]>;
+  /** Scheduled Project #4 audit snapshot; null when unavailable or malformed. */
+  projectAudit?(): Promise<ProjectAudit | null>;
   /** The collector's per-repo backlog census (#1220), when the source
    * carries one; null = not collected. Optional so fixtures and test
    * doubles keep working — the coverage panel degrades honestly. */
