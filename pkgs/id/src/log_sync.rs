@@ -6,6 +6,10 @@
 //! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
 //! stream pair, over the same store (#179).
 //!
+//! A group-sync initiator is not built yet. When one calls `sync_with`, it must persist successful
+//! completion after that call returns successfully, keyed by topic and peer, for later selection.
+//! Completion recording is deferred until that initiator exists.
+//!
 //! Three decisions shape the session:
 //!
 //! - **Arrival order is the write path.** Each operation is handed to an ingest worker, which verifies
