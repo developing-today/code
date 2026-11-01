@@ -24,7 +24,7 @@ use crate::world_limits::WorldExecutionProfile;
 /// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
 /// present — even empty, like `grants = []` — is authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "snake_case")]
+#[serde(default, rename_all = "snake_case", deny_unknown_fields)]
 pub struct WorldManifest {
     /// A content hash of an already-installed module, encoded as 1 to 64 plain
     /// hexadecimal digits (no `blake3:` prefix). Mutually exclusive with
@@ -148,11 +148,54 @@ impl ApplyStep {
 ///
 /// # Errors
 ///
-/// Invalid TOML, or fields that name an unknown capability.
+/// Invalid TOML, an unknown key (top-level, or inside `[profile]`), or
+/// fields that name an unknown capability.
 pub fn parse(text: &str) -> Result<WorldManifest> {
+    reject_unknown_profile_keys(text)?;
     let manifest: WorldManifest = toml::from_str(text).map_err(anyhow::Error::new)?;
     manifest.validate()?;
     Ok(manifest)
+}
+
+/// The `[profile]` table's known keys: the fields of
+/// [`WorldExecutionProfile`]. The list lives here, next to [`parse`],
+/// because the profile struct itself must stay lenient: it is also
+/// deserialized from host-returned JSON (see `current_world_state` in
+/// `commands::world`), where a newer host may send fields this build
+/// does not know.
+const PROFILE_KEYS: [&str; 6] = [
+    "wasm_fuel",
+    "wasm_memory_bytes",
+    "wasm_message_bytes",
+    "native_memory_bytes",
+    "native_cpu_seconds",
+    "native_call_deadline_ms",
+];
+
+/// Reject unknown keys in a manifest's `[profile]` table, naming the key.
+///
+/// `WorldManifest` denies unknown top-level keys via serde, but the
+/// nested profile cannot use `deny_unknown_fields` (see
+/// [`PROFILE_KEYS`]), so [`parse`] checks the table itself: a typo'd
+/// limit key (`wasm_fuell = 1`) must fail loudly instead of silently
+/// leaving the live profile alone (#2876).
+fn reject_unknown_profile_keys(text: &str) -> Result<()> {
+    let document: toml::Table = toml::from_str(text).map_err(anyhow::Error::new)?;
+    let Some(profile) = document.get("profile") else {
+        return Ok(());
+    };
+    let Some(profile) = profile.as_table() else {
+        // Not a table: the manifest deserialization in `parse` reports it.
+        return Ok(());
+    };
+    for key in profile.keys() {
+        ensure!(
+            PROFILE_KEYS.contains(&key.as_str()),
+            "unknown key {key:?} in [profile] of world manifest (known keys: {})",
+            PROFILE_KEYS.join(", ")
+        );
+    }
+    Ok(())
 }
 
 impl WorldManifest {
@@ -461,6 +504,33 @@ wasm_fuel = 5_000_000
             Some(BTreeMap::from([("round".to_owned(), 1_800_000_000_000)]))
         );
         assert_eq!(round_trip(&manifest).unwrap(), manifest);
+    }
+
+    #[test]
+    fn unknown_top_level_keys_are_rejected() {
+        // #2876: a typo'd or bogus top-level key must fail parse, naming
+        // the key — never silently drop a revocation the admin wrote.
+        let err = parse("grant = []").unwrap_err();
+        assert!(format!("{err}").contains("grant"), "{err}");
+        let err = parse("bogus_key = 1").unwrap_err();
+        assert!(format!("{err}").contains("bogus_key"), "{err}");
+    }
+
+    #[test]
+    fn typoed_field_keys_are_rejected() {
+        // The probe matrix from #2876: each of these used to parse clean
+        // and plan zero steps.
+        for text in ["ceilin = []", "schedule = {}", "seeds = 99"] {
+            assert!(parse(text).is_err(), "parsed clean: {text}");
+        }
+    }
+
+    #[test]
+    fn unknown_profile_keys_are_rejected() {
+        // #2876: same strictness inside [profile], enforced by parse
+        // itself because the profile struct stays lenient for host JSON.
+        let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
+        assert!(format!("{err}").contains("wasm_fuell"), "{err}");
     }
 
     #[test]
