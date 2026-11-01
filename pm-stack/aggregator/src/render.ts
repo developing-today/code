@@ -638,7 +638,7 @@ function layout(
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js" defer></script>${extra}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}</body></html>`;
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -2398,7 +2398,7 @@ export function renderAttention(
   const sections = attentionSections(view, coverage, counts, act);
   return layout(
     "Needs you",
-    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
+    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
 ${sections.header}${sections.queues}${sections.sessions}`,
     provenance,
     "/attention",
@@ -5547,7 +5547,11 @@ function subscriptionRow(s: PushSubscriptionRow): string {
   const classes = Object.entries(s.classes ?? {})
     .map(([k, v]) => `${esc(k)}: ${v ? "on" : "off"}`)
     .join(", ");
-  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · quiet ${esc(s.quiet?.start ?? "?")}–${esc(s.quiet?.end ?? "?")} ${esc(s.quiet?.tz ?? "")}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
+  const quiet =
+    s.quiet?.enabled === false
+      ? "quiet hours off"
+      : `quiet hours ${s.quiet?.start ?? "?"}–${s.quiet?.end ?? "?"} ${s.quiet?.tz ?? ""}`;
+  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · ${esc(quiet)}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
 <br><span class="muted">${esc(s.user_agent ?? "")}</span>
 <br><button data-unsub="${esc(s.endpoint)}">Remove this subscription</button></div>`;
 }
@@ -5574,15 +5578,32 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
 <style>.incident:target { outline: 2px solid #1f6feb; }</style>
 <h2>Push delivery on this browser</h2>
 <div class="card" id="push-panel">
-<span id="push-status" class="muted">checking…</span><br>
+<span id="push-status" class="muted">checking…</span>
+<div id="push-guide" hidden>
+<div id="push-guide-ios" hidden>
+<p><strong>On iPhone, Apple only allows web push from the installed app:</strong></p>
+<ol>
+<li>Open this page in <strong>Safari</strong> — if you got here from inside another app, use its menu to open the page in Safari instead.</li>
+<li>Tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+<li>Open the dashboard from the new home-screen icon, come back to this Alerts page, and tap <strong>Enable push on this browser</strong> — and tap <strong>Allow</strong> when it asks about notifications.</li>
+</ol>
+</div>
+<div id="push-guide-other" hidden>
+<p><strong>This browser can't receive web push</strong> — most often because the page is open inside another app (an in-app browser) or in a browser without push support. Open this page's address in your regular browser (Chrome, Safari, or Firefox) and enable push there.</p>
+</div>
+</div>
+<p><label><input type="checkbox" id="push-class-incident" checked> <strong>Incident alerts</strong></label><br>
+<span class="muted">A watchdog reports something down. Incident alerts always come through immediately, the moment they're posted.</span></p>
+<p><label><input type="checkbox" id="push-quiet-enabled" checked> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications overnight, between <input type="time" id="push-quiet-start" value="23:00"> and <input type="time" id="push-quiet-end" value="07:00"> (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.</span></p>
 <button id="push-enable">Enable push on this browser</button>
-<label><input type="checkbox" id="push-class-incident" checked> incident class</label>
-<label>quiet <input type="time" id="push-quiet-start" value="23:00">–<input type="time" id="push-quiet-end" value="07:00"></label>
+<button id="push-test">Send a test alert</button>
 <button id="push-save-prefs">Save preferences</button>
 <button id="push-disable">Disable push on this browser</button>
+<br><span id="push-test-result" class="muted"></span>
 </div>
 <h2>Subscriptions (${view.subscriptions.length})</h2>
-${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above (on the phone, install the PWA first: Web Push on iOS requires the installed app).</p>`}
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
 <h2>Open incidents (${open.length})</h2>
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
@@ -5590,6 +5611,7 @@ ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}`
 <table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
+const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
 async function post(path) { const r = await fetch(path, { method: "POST" }); if (!r.ok) alert("failed: HTTP " + r.status); location.reload(); }
 document.querySelectorAll("[data-ack]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.ack + "/ack")));
 document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.close + "/close")));
@@ -5598,26 +5620,96 @@ document.querySelectorAll("[data-unsub]").forEach((b) => b.addEventListener("cli
   location.reload();
 }));
 const status = document.getElementById("push-status");
+const DENIED_TEXT = "Notifications are blocked for this site on this device. On iPhone: Settings → Notifications → this app — allow notifications; or delete the home-screen app, re-add it, and tap Allow when asked. On a computer: the lock icon in the address bar → site settings → Notifications → Allow.";
+const PLAIN_ERRORS = {
+  denied: DENIED_TEXT,
+  dismissed: "The notification prompt was closed without a choice — nothing was turned on. Tap Enable push again and choose Allow.",
+  unsupported: "Push isn't available in this browser — follow the steps below to get it working.",
+  "subscribe-failed": "The browser couldn't register for push — check the connection and try again.",
+  "save-failed": "Your choice couldn't be saved on the server — try again.",
+  "not-subscribed": "This browser isn't subscribed yet — enable push first.",
+};
+function showError(e) {
+  status.textContent = PLAIN_ERRORS[e && e.code] || "Something went wrong — try again.";
+}
+function syncQuietInputs() {
+  const on = document.getElementById("push-quiet-enabled").checked;
+  document.getElementById("push-quiet-start").disabled = !on;
+  document.getElementById("push-quiet-end").disabled = !on;
+}
+document.getElementById("push-quiet-enabled").addEventListener("change", syncQuietInputs);
+function applyPrefs(mine) {
+  if (mine.classes && typeof mine.classes.incident === "boolean") {
+    document.getElementById("push-class-incident").checked = mine.classes.incident;
+  }
+  if (mine.quiet) {
+    document.getElementById("push-quiet-enabled").checked = mine.quiet.enabled !== false;
+    if (mine.quiet.start) document.getElementById("push-quiet-start").value = mine.quiet.start;
+    if (mine.quiet.end) document.getElementById("push-quiet-end").value = mine.quiet.end;
+    syncQuietInputs();
+  }
+}
 async function refreshStatus() {
-  if (!window.pmPush || !window.pmPush.supported()) { status.textContent = "Web Push is not supported in this browser (on iOS, install the PWA first)."; return; }
+  const guide = document.getElementById("push-guide");
+  if (!window.pmPush || !window.pmPush.supported()) {
+    status.textContent = "Push isn't available in this browser yet — the steps below get it working.";
+    guide.hidden = false;
+    const pf = window.pmPush && window.pmPush.platform ? window.pmPush.platform() : { ios: false };
+    document.getElementById("push-guide-ios").hidden = !pf.ios;
+    document.getElementById("push-guide-other").hidden = pf.ios;
+    return;
+  }
+  guide.hidden = true;
   const sub = await window.pmPush.current().catch(() => null);
-  status.textContent = sub ? "This browser is subscribed — pushes will land here." : "This browser is not subscribed yet.";
+  if (sub) {
+    status.textContent = "This browser is subscribed — pushes will land here.";
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint);
+    if (mine) applyPrefs(mine);
+  } else if (window.pmPush.permission() === "denied") {
+    status.textContent = DENIED_TEXT;
+  } else {
+    status.textContent = "This browser is not subscribed yet — tap Enable push below.";
+  }
 }
 refreshStatus();
+syncQuietInputs();
 function prefs() {
   return {
     classes: { incident: document.getElementById("push-class-incident").checked },
-    quiet: { start: document.getElementById("push-quiet-start").value || "23:00", end: document.getElementById("push-quiet-end").value || "07:00", tz: "America/Chicago" },
+    quiet: {
+      enabled: document.getElementById("push-quiet-enabled").checked,
+      start: document.getElementById("push-quiet-start").value || "23:00",
+      end: document.getElementById("push-quiet-end").value || "07:00",
+      tz: "America/Chicago",
+    },
   };
 }
 document.getElementById("push-enable").addEventListener("click", async () => {
-  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { alert(String(e)); }
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
 });
 document.getElementById("push-save-prefs").addEventListener("click", async () => {
-  try { await window.pmPush.updatePrefs(prefs()); location.reload(); } catch (e) { alert(String(e)); }
+  try { await window.pmPush.updatePrefs(prefs()); location.reload(); } catch (e) { showError(e); }
 });
 document.getElementById("push-disable").addEventListener("click", async () => {
-  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { alert(String(e)); }
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("push-test").addEventListener("click", async () => {
+  const out = document.getElementById("push-test-result");
+  out.textContent = "sending…";
+  try {
+    const r = await fetch("/api/push/test", { method: "POST" });
+    if (!r.ok) { out.textContent = "The test couldn't be sent — the server answered HTTP " + r.status + "."; return; }
+    const s = await r.json();
+    if (!s.subscriptions) {
+      out.textContent = "No subscriptions yet — enable push first, then try the test.";
+    } else if (s.sent > 0) {
+      out.textContent = "Test sent to " + s.sent + " subscription" + (s.sent === 1 ? "" : "s") + " — look for a notification titled 'Test alert'.";
+    } else {
+      out.textContent = "The test reached no device (" + s.errors + " failed, " + s.gone + " no longer there) — the subscriptions may be stale; disable push and enable it again.";
+    }
+  } catch (e) {
+    out.textContent = "The test couldn't be sent — network or server error.";
+  }
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);
