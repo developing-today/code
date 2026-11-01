@@ -319,13 +319,11 @@ impl PresenceTable {
         sorted
             .into_iter()
             .map(|node| {
-                let entry = entries.get(&node).filter(|entry| {
-                    entry.heartbeat.channels.contains(channel)
-                });
+                let entry = entries
+                    .get(&node)
+                    .filter(|entry| entry.heartbeat.channels.contains(channel));
                 let liveness = match entry {
-                    Some(entry)
-                        if now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS =>
-                    {
+                    Some(entry) if now.saturating_sub(entry.received_at) <= PRESENCE_TTL_SECS => {
                         Liveness::Live
                     }
                     _ => Liveness::Offline,
@@ -467,15 +465,26 @@ mod tests {
         let members = [alice, bob];
         let alice_table = PresenceTable::new();
         let bob_table = PresenceTable::new();
-        let exchange = |from: &PresenceTable, to: &PresenceTable, hb: PresenceHeartbeat, now: u64| {
-            let frame = encode_frame(&hb);
-            let decoded = decode_frame(&frame).expect("presence frame decodes");
-            assert!(to.update_at(decoded, now, &|_, _| true));
-            let _ = from;
-        };
+        let exchange =
+            |from: &PresenceTable, to: &PresenceTable, hb: PresenceHeartbeat, now: u64| {
+                let frame = encode_frame(&hb);
+                let decoded = decode_frame(&frame).expect("presence frame decodes");
+                assert!(to.update_at(decoded, now, &|_, _| true));
+                let _ = from;
+            };
 
-        exchange(&alice_table, &bob_table, heartbeat(alice, vec![chan], 2_000), 2_000);
-        exchange(&bob_table, &alice_table, heartbeat(bob, vec![chan], 2_000), 2_000);
+        exchange(
+            &alice_table,
+            &bob_table,
+            heartbeat(alice, vec![chan], 2_000),
+            2_000,
+        );
+        exchange(
+            &bob_table,
+            &alice_table,
+            heartbeat(bob, vec![chan], 2_000),
+            2_000,
+        );
         // Both nodes show each other live.
         assert_eq!(bob_table.liveness_at(&alice, &chan, 2_010), Liveness::Live);
         assert_eq!(alice_table.liveness_at(&bob, &chan, 2_010), Liveness::Live);
@@ -483,7 +492,11 @@ mod tests {
         // Stop: no heartbeats from alice. Past the TTL she reads as gone on bob's
         // roster, while bob (still heartbeating) stays live.
         let after_stop = 2_000 + PRESENCE_TTL_SECS + 10;
-        assert!(bob_table.update_at(heartbeat(bob, vec![chan], after_stop), after_stop, &|_, _| true));
+        assert!(bob_table.update_at(
+            heartbeat(bob, vec![chan], after_stop),
+            after_stop,
+            &|_, _| true
+        ));
         let roster = bob_table.roster_at(&chan, &members, after_stop);
         let alice_row = roster.iter().find(|row| row.node == alice).unwrap();
         assert_eq!(alice_row.liveness, Liveness::Offline);
@@ -491,8 +504,16 @@ mod tests {
 
         // Resume: alice's next heartbeat makes her live again, no rejoin needed.
         let resumed = after_stop + 5;
-        exchange(&alice_table, &bob_table, heartbeat(alice, vec![chan], resumed), resumed);
-        assert_eq!(bob_table.liveness_at(&alice, &chan, resumed), Liveness::Live);
+        exchange(
+            &alice_table,
+            &bob_table,
+            heartbeat(alice, vec![chan], resumed),
+            resumed,
+        );
+        assert_eq!(
+            bob_table.liveness_at(&alice, &chan, resumed),
+            Liveness::Live
+        );
         let roster = bob_table.roster_at(&chan, &members, resumed);
         assert!(roster.iter().all(|row| row.liveness == Liveness::Live));
     }
@@ -539,17 +560,24 @@ mod tests {
             &bob_predicate,
         ));
         assert_eq!(table.liveness_at(&alice, &public, 4_000), Liveness::Live);
-        assert_eq!(table.liveness_at(&alice, &private, 4_000), Liveness::Offline);
+        assert_eq!(
+            table.liveness_at(&alice, &private, 4_000),
+            Liveness::Offline
+        );
 
         // Read-side scoping: a non-member viewer gets no roster for the private
         // channel at all; a member viewer does.
         let members = [alice, bob];
-        assert!(table
-            .roster_for_viewer_at(&private, &[alice], &bob, 4_000)
-            .is_none());
-        assert!(table
-            .roster_for_viewer_at(&public, &members, &bob, 4_000)
-            .is_some());
+        assert!(
+            table
+                .roster_for_viewer_at(&private, &[alice], &bob, 4_000)
+                .is_none()
+        );
+        assert!(
+            table
+                .roster_for_viewer_at(&public, &members, &bob, 4_000)
+                .is_some()
+        );
     }
 
     #[test]
@@ -580,8 +608,15 @@ mod tests {
         // Replay: re-delivering the last genuine heartbeat after the node went
         // silent is refused by the freshness bound, so it cannot resurrect her.
         let silent_now = 6_100 + PRESENCE_TTL_SECS + 30;
-        assert!(!table.update_at(heartbeat(alice, vec![chan], 6_100), silent_now, &|_, _| true));
-        assert_eq!(table.liveness_at(&alice, &chan, silent_now), Liveness::Offline);
+        assert!(
+            !table.update_at(heartbeat(alice, vec![chan], 6_100), silent_now, &|_, _| {
+                true
+            })
+        );
+        assert_eq!(
+            table.liveness_at(&alice, &chan, silent_now),
+            Liveness::Offline
+        );
         // A far-future stamp is refused too: it must not poison ordering.
         assert!(!table.update_at(heartbeat(alice, vec![chan], u64::MAX), 6_100, &|_, _| true));
     }
@@ -611,6 +646,9 @@ mod tests {
         assert!(first.update_at(heartbeat(alice, vec![chan], 8_000), 8_000, &|_, _| true));
         let restarted = PresenceTable::new();
         assert_eq!(restarted.count(), 0);
-        assert_eq!(restarted.liveness_at(&alice, &chan, 8_000), Liveness::Offline);
+        assert_eq!(
+            restarted.liveness_at(&alice, &chan, 8_000),
+            Liveness::Offline
+        );
     }
 }

@@ -1575,7 +1575,8 @@ async fn run_gossip_loop(
                                 heartbeat.channels.len()
                             );
                             recv_presence.update(heartbeat);
-                        } else match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
+                        } else {
+                            match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
                                 debug!(
                                     "peer announcement from {}: blob_count={}",
@@ -1583,8 +1584,12 @@ async fn run_gossip_loop(
                                 );
                                 recv_discovery.update(announcement);
                             }
-                            Err(e) => {
-                                debug!("failed to deserialize peer announcement: {}", e);
+                                Err(e) => {
+                                    debug!(
+                                        "failed to deserialize peer announcement: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                     }
