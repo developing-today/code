@@ -5,6 +5,7 @@
 # from pkgs/lab-ops-hub (stdlib only).
 import importlib.util
 import pathlib
+import time
 import unittest
 
 _APP_PATH = pathlib.Path(__file__).resolve().parent.parent / "container" / "app.py"
@@ -1585,6 +1586,18 @@ class TestFetchCrawl(unittest.TestCase):
 
             def do_GET(self):
                 seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/drip":
+                    self.send_response(200)
+                    self.send_header("content-length", "8")
+                    self.end_headers()
+                    for _ in range(8):
+                        time.sleep(0.1)
+                        try:
+                            self.wfile.write(b"x")
+                            self.wfile.flush()
+                        except OSError:
+                            break
+                    return
                 if self.path == "/to-userinfo":
                     port = self.server.server_address[1]
                     self.send_response(302)
@@ -1653,6 +1666,15 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = self.fetch("/ok")
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_slow_drip_body_obeys_total_deadline(self):
+        from unittest import mock
+
+        # Patch to a short deadline; a per-read timeout would allow these
+        # regularly spaced bytes to complete the entire response.
+        with mock.patch.object(app, "_CRAWL_TIMEOUT_SECONDS", 0.25, create=True):
+            with self.assertRaises(TimeoutError):
+                self.fetch("/drip")
 
     def test_redirect_failures_raise_not_a_302_result(self):
         # #576: urllib raises HTTPError carrying the 3xx code for
