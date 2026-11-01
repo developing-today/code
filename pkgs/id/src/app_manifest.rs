@@ -190,10 +190,28 @@ pub fn discover_apps(root: impl AsRef<Path>) -> AppDiscovery {
             .with_context(|| format!("read {}", manifest_path.display()))
             .and_then(|source| parse_app_manifest(&source, folder_name));
         match parsed {
-            Ok(manifest) => discovery.apps.push(DiscoveredApp {
-                path: folder,
-                manifest,
-            }),
+            Ok(manifest) => {
+                if let Some(source) = manifest
+                    .program
+                    .as_ref()
+                    .and_then(|program| program.source.as_ref())
+                {
+                    let source_path = folder.join(source);
+                    if !source_path.exists() {
+                        discovery.errors.push(format!(
+                            "{}: program.source {} does not exist in app folder {}",
+                            manifest_path.display(),
+                            source.display(),
+                            folder.display()
+                        ));
+                        continue;
+                    }
+                }
+                discovery.apps.push(DiscoveredApp {
+                    path: folder,
+                    manifest,
+                });
+            }
             Err(error) => discovery
                 .errors
                 .push(format!("{}: {error:#}", manifest_path.display())),
@@ -269,6 +287,7 @@ route = "/tic-tac-toe"
         let invalid = root.path().join("mismatched");
         fs::create_dir_all(&valid).unwrap();
         fs::create_dir_all(&invalid).unwrap();
+        fs::create_dir_all(valid.join("program")).unwrap();
         fs::write(valid.join("app.toml"), MANIFEST).unwrap();
         fs::write(invalid.join("app.toml"), MANIFEST).unwrap();
 
@@ -277,5 +296,20 @@ route = "/tic-tac-toe"
         assert_eq!(discovery.apps[0].manifest.app.id, "tic-tac-toe");
         assert_eq!(discovery.errors.len(), 1);
         assert!(discovery.errors[0].contains("does not match folder name"));
+    }
+
+    #[test]
+    fn discovery_rejects_app_whose_program_source_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let ghost = root.path().join("tic-tac-toe");
+        fs::create_dir_all(&ghost).unwrap();
+        fs::write(ghost.join("app.toml"), MANIFEST).unwrap();
+
+        let discovery = discover_apps(root.path());
+        assert_eq!(discovery.apps.len(), 0);
+        assert_eq!(discovery.errors.len(), 1);
+        assert!(discovery.errors[0].contains("program.source"));
+        assert!(discovery.errors[0].contains("program/"));
+        assert!(discovery.errors[0].contains("does not exist"));
     }
 }
