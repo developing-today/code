@@ -485,16 +485,27 @@ async function attentionRender() {
   return { view, coverage, counts, act };
 }
 
+async function todaySignals() {
+  const [health, quotaResult] = await Promise.all([
+    healthContext(false).catch(() => null),
+    source
+      .quota()
+      .then((quota) => ({ quota, unavailable: false }))
+      .catch(() => ({ quota: emptyQuotaView(), unavailable: true })),
+  ]);
+  return { health, quota: quotaResult.quota, quotaUnavailable: quotaResult.unavailable };
+}
+
 async function todayContext() {
-  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
+  const [{ board, items }, { rows }, { view, coverage }, signals, summary] = await Promise.all([
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota().catch(() => emptyQuotaView()),
+    todaySignals(),
     source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, ...signals };
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
@@ -680,14 +691,15 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/today") {
     if (url.searchParams.get("full") !== "1") {
-      return html(renderTodayShell(prov(), provDetail()));
+      const signals = await todaySignals();
+      return html(renderTodayShell(prov(), provDetail(), signals.health, signals.quota, signals.quotaUnavailable));
     }
-    const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail(), health, quotaUnavailable));
   }
   if (path === "/frag/today") {
-    const { today, view, coverage, quota } = await todayContext();
-    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    const { today, view, coverage, quota, health, quotaUnavailable } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage, health, quotaUnavailable)}</div>`;
     return sseResponse(ssePatch("#today-main", wrapped));
   }
 
