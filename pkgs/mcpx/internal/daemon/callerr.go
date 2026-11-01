@@ -9,6 +9,7 @@ import (
 
 	"github.com/dezren39/mcpx/internal/diagnose"
 	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/dezren39/mcpx/internal/pool"
 	"github.com/dezren39/mcpx/internal/settings"
 )
 
@@ -19,6 +20,27 @@ type callSetKey struct{}
 // sees only the daemon's.
 func withCallSettings(ctx context.Context, cs *settings.Set) context.Context {
 	return context.WithValue(ctx, callSetKey{}, cs)
+}
+
+// withRequestedCallTimeout threads a caller's requested pool.callTimeout
+// (#1864 item 4) from the request's call settings onto ctx, where the pool
+// reads it. Only a value that arrived in the call-settings header counts:
+// the merged set's other layers are the daemon's own configuration, which
+// the pool has already resolved into the ceiling this request is clamped
+// to. Threading it can only ever lower one call's budget, never raise it.
+func withRequestedCallTimeout(ctx context.Context) context.Context {
+	cs, ok := ctx.Value(callSetKey{}).(*settings.Set)
+	if !ok || cs == nil {
+		return ctx
+	}
+	v, ok := cs.Value("pool.callTimeout")
+	if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+		return ctx
+	}
+	if d := cs.Duration("pool.callTimeout"); d > 0 {
+		return pool.WithCallTimeout(ctx, d)
+	}
+	return ctx
 }
 
 // repairAutonomy is the request's repair.autonomy, already lowered to

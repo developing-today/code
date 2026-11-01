@@ -304,7 +304,7 @@ func (r *Registry) CallAsk(ctx context.Context, id, server, tool string, cc conf
 	}
 	r.beginAsk(id, server, key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
 	return p.Call(ctx, key, tool, args)
 }
 
@@ -317,7 +317,7 @@ func (r *Registry) ReadResourceAsk(ctx context.Context, id, server, uri string, 
 	key := r.keyFor(p, cc)
 	r.beginAsk(id, server, key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
 	return p.ReadResource(ctx, key, upstreamResourceURI(ctx, p, uri))
 }
 
@@ -330,7 +330,7 @@ func (r *Registry) GetPromptAsk(ctx context.Context, id, server, name string, ar
 	key := r.keyFor(p, cc)
 	r.beginAsk(id, server, key, cc.SessionID)
 	defer r.endAsk(id)
-	ctx = withAskCall(ctx, id)
+	ctx = withRequestedCallTimeout(withAskCall(ctx, id))
 	return p.GetPrompt(ctx, key, name, args)
 }
 

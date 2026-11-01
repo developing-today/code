@@ -70,7 +70,11 @@ func (s *Server) callSettings(r *http.Request) *settings.Set {
 	ov := map[string]string{}
 	for path, v := range given {
 		decl, ok := sch.Lookup(path)
-		if !ok || decl.Scope != settings.ScopeCall {
+		// CallRequest settings are admitted as requests, not orders:
+		// pool.callTimeout's only reader from a call set clamps it to the
+		// pool's configured value before use (#1864 item 4), so admitting
+		// it here cannot raise the daemon's bound.
+		if !ok || (decl.Scope != settings.ScopeCall && !decl.CallRequest) {
 			continue
 		}
 		nv, err := settings.Normalize(*decl, v)
