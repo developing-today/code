@@ -159,6 +159,12 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
  */
 export const ORCHESTRATION_STALE_MS = 90 * 60_000;
 
+// The collector is scheduled every five minutes. No grace is possible if a
+// stop just after a write must be visible by the next interval: slow runs,
+// scheduler jitter and transport delays can therefore cause transient alarms.
+// This is evaluated on request, not pushed to an already-open browser.
+export const FEED_STALE_MS = 5 * 60_000;
+
 /** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
 export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
 

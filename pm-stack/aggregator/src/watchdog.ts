@@ -17,7 +17,7 @@
 // orchestrator's own alerting and are out of scope here.
 //
 // Thresholds (documented here, at the derivation site, per #1148):
-// - fleet feed: age > 15 min is stale (FEED_STALE_MS, the same bound
+// - fleet feed: age >= 5 min is stale (FEED_STALE_MS, the same bound
 //   health.ts and live.ts apply to feed-backed facets).
 // - orchestration section: stale past 90 min (ORCHESTRATION_STALE_MS
 //   in feed.ts, applied by diagnoseOrchestrationSection), and the
@@ -26,17 +26,17 @@
 // - registry facet: stale past 1 h (WATCHDOG_REGISTRY_STALE_MS). The
 //   registry facet's age is the feed age of the records it merged
 //   (live.ts provenanceDetail), so this is the slower, second alarm
-//   behind the feed's own 15 min item: the feed item says collection
+//   behind the feed's own 5 min item: the feed item says collection
 //   stopped; the registry item says session identity data itself is
 //   now an hour old.
 // - service probes: a failed probe (ok === false) for Kaneo, Grist,
 //   or Pad breaches immediately; the probe cache (60 s, health.ts)
 //   is the debounce.
-import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
+import { ageMsText, FEED_STALE_MS, GENERATED_AT_FUTURE_SKEW_MS, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
 import type { TierItem } from "./model.ts";
 
 /** Feed freshness bound — mirrors health.ts / live.ts FEED_STALE_MS. */
-export const WATCHDOG_FEED_STALE_MS = 15 * 60_000;
+export const WATCHDOG_FEED_STALE_MS = FEED_STALE_MS;
 /** Orchestration staleness bound — the diagnosis applies it; named
  *  here so the watchdog's contract reads in one place. */
 export const WATCHDOG_ORCHESTRATION_STALE_MS = ORCHESTRATION_STALE_MS;
@@ -114,8 +114,8 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
 
   // Fleet feed: future-dated (buildHealth's own failure diagnosis -
   // a generatedAt >60s ahead is never fresh, and its clamped age of 0
-  // must not suppress this alarm until the future time + 15m),
-  // stale past 15 min, or absent entirely.
+  // must not suppress this alarm until the future time + 5m),
+  // stale at 5 min, or absent entirely.
   const feedFutureMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) - now : NaN;
   if (!Number.isNaN(feedFutureMs) && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS) {
     put(
@@ -141,14 +141,14 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "Check the fleet-feed collector (sandbox timer fleet-feed-collector) and the feed file it pushes; the card clears itself when a readable feed lands.",
       ),
     );
-  } else if (inputs.feedAgeMs > WATCHDOG_FEED_STALE_MS) {
+  } else if (inputs.feedAgeMs >= WATCHDOG_FEED_STALE_MS) {
     const generatedMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) : now - inputs.feedAgeMs;
     put(
       item(
         "fleet-feed",
         `Watchdog: fleet feed is stale — last collected ${ageMsText(inputs.feedAgeMs)} ago`,
         "watchdog: feed stale",
-        `Feed age ${ageMsText(inputs.feedAgeMs)} is past the 15m freshness threshold (#1148 watchdog); feed-backed facets are flipping stale over the dead feed.`,
+        `Feed age ${ageMsText(inputs.feedAgeMs)} is at or past the 5m freshness threshold (#1148 watchdog); feed-backed facets are flipping stale over the dead feed.`,
         (Number.isNaN(generatedMs) ? now - inputs.feedAgeMs : generatedMs) + WATCHDOG_FEED_STALE_MS,
         now,
         "Check the fleet-feed collector (sandbox timer fleet-feed-collector, ~5 min cadence); the card clears itself when the feed is fresh again.",
@@ -207,7 +207,7 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
         "registry",
         `Watchdog: registry facet is stale — session records ${ageMsText(inputs.registryAgeMs)} old`,
         "watchdog: registry stale",
-        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} old — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 15m alarm.`,
+        `The identity registry's merged session records are ${ageMsText(inputs.registryAgeMs)} old — past the 1h registry threshold (#1148 watchdog) — so session identity/coverage data is decaying behind the feed's own 5m alarm.`,
         (Number.isNaN(generatedMs) ? now - inputs.registryAgeMs : generatedMs) + WATCHDOG_REGISTRY_STALE_MS,
         now,
         "Check the registry inputs (session launch records in the fleet feed); the card clears itself when fresh records merge.",

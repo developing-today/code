@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
 import { buildHealth, createProbeCache, recordRender, resolveBuildVersion, type HealthInputs, type ProbeFetch } from "../src/health.ts";
@@ -49,7 +52,7 @@ function inputs(over: Partial<HealthInputs> = {}): HealthInputs {
   return {
     mode: "live",
     cfg,
-    feed: feedAt(5 * 60_000),
+    feed: feedAt(4 * 60_000),
     feedFileMtimeMs: NOW - 4 * 60_000,
     diagnosis: LIVE_DIAGNOSIS,
     ...over,
@@ -77,6 +80,35 @@ function service(view: Awaited<ReturnType<typeof buildHealth>>, id: string) {
 }
 
 describe("buildHealth probes", () => {
+  test("a stopped collector is visible on the health page by the next five-minute interval", async () => {
+    // An isolated stand-in collector writes only a temporary feed. Freeze the
+    // observation clock immediately after its last write and advance it to the
+    // next interval: this tests the worst-case stop without a five-minute wait.
+    const stoppedAt = NOW;
+    const dir = await mkdtemp(join(tmpdir(), "collector-stop-"));
+    const path = join(dir, "feed.json");
+    const collector = spawn({ cmd: [process.execPath, "-e", "await Bun.write(process.argv[1], process.argv[2]); setInterval(() => {}, 1000)", path, JSON.stringify(feedAt(0))], stdout: "ignore", stderr: "inherit" });
+    try {
+      for (let i = 0; i < 100 && !(await Bun.file(path).exists()); i++) await Bun.sleep(10);
+      const feed = await Bun.file(path).json() as FleetFeed;
+      collector.kill();
+      await collector.exited;
+      const { fetcher } = fakeFetcher(allUp);
+      const opts = { fetcher, cache: createProbeCache() };
+      const before = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt });
+      expect(service(before, "fleet-feed").state).toBe("up");
+      const view = await buildHealth(inputs({ feed }), { ...opts, now: stoppedAt + 5 * 60_000 });
+      expect(service(view, "fleet-feed").state).toBe("stale");
+      expect(view.degraded).toBe(true);
+      const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
+      expect(html).toContain("past the 5m freshness threshold");
+      expect(html).toContain("stale");
+    } finally {
+      collector.kill();
+      await collector.exited;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("all services up: 200s and Grist's 302 prove life; projector never probed", async () => {
     const { fetcher, calls } = fakeFetcher((url) =>
       url.startsWith("http://127.0.0.1:8484") ? { status: 302 } : allUp(),

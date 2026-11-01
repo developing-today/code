@@ -12,11 +12,11 @@
 #      - an incident flag file ($PM_DRILL_INCIDENT_FLAG) must not exist —
 #        during a real incident the stack is not a drill canvas;
 #      - the collector timer must be active and the feed must currently
-#        be FRESH (age <= the staleness threshold). A feed that is
+#        be FRESH (age < the staleness threshold). A feed that is
 #        already stale is a real incident, not a drill.
 #   2. Stops fleet-feed-collector.timer (and any in-flight oneshot).
 #   3. Polls the aggregator's /api/health until the feed's age crosses
-#      FEED_STALE_MS — 15 minutes, the #1148 watchdog threshold the code
+#      FEED_STALE_MS — 5 minutes, the #1148 watchdog threshold the code
 #      itself uses (src/health.ts, src/sources/live.ts) — and records
 #      the health payload at that moment as the fired-signal evidence.
 #   4. Restores, ALWAYS once the kill has happened (trap on
@@ -48,7 +48,7 @@ set -uo pipefail
 STATE_DIR="${PM_DRILL_STATE_DIR:-$HOME/.local/state/pm-drills}"
 INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"
 MAX_WAIT_MIN="${PM_DRILL_MAX_WAIT_MIN:-25}"
-STALE_MS=900000 # FEED_STALE_MS in aggregator src/health.ts + src/sources/live.ts
+STALE_MS=300000 # FEED_STALE_MS in aggregator src/feed.ts
 COLLECTOR_TIMER="fleet-feed-collector.timer"
 COLLECTOR_SERVICE="fleet-feed-collector.service"
 ISSUE_REPO="developing-today/code"
@@ -134,7 +134,7 @@ systemctl is-active --quiet "$COLLECTOR_TIMER" || die "$COLLECTOR_TIMER is not a
 BASELINE="$(health_json | feed_facts)"
 BASE_AGE="${BASELINE%% *}"
 [ "$BASE_AGE" -ge 0 ] || die "cannot read aggregator /api/health; refusing to drill blind"
-[ "$BASE_AGE" -le "$STALE_MS" ] || die "feed is already stale at drill start (age ${BASE_AGE}ms > ${STALE_MS}ms): that is a real incident, not a drill"
+[ "$BASE_AGE" -lt "$STALE_MS" ] || die "feed is already stale at drill start (age ${BASE_AGE}ms >= ${STALE_MS}ms): that is a real incident, not a drill"
 log "preconditions ok: collector active, feed fresh (age ${BASE_AGE}ms), no incident flag, lock held"
 
 # --- kill -------------------------------------------------------------------
@@ -159,7 +159,7 @@ while [ "$WAITED" -lt "$MAX_WAIT_SEC" ]; do
 	WAITED=$((WAITED + 60))
 	FACTS="$(health_json | feed_facts)"
 	AGE="${FACTS%% *}"
-	if [ "$AGE" -gt "$STALE_MS" ]; then
+	if [ "$AGE" -ge "$STALE_MS" ]; then
 		SIGNAL=1
 		health_json >"$EVIDENCE_FILE" 2>/dev/null || true
 		log "SIGNAL FIRED: feed age ${AGE}ms crossed the ${STALE_MS}ms staleness threshold after ~${WAITED}s stopped (health payload saved)"
@@ -177,7 +177,7 @@ for _ in 1 2 3 4 5 6; do
 	sleep 20
 	FACTS="$(health_json | feed_facts)"
 	AGE="${FACTS%% *}"
-	if [ "$AGE" -ge 0 ] && [ "$AGE" -le "$STALE_MS" ]; then
+	if [ "$AGE" -ge 0 ] && [ "$AGE" -lt "$STALE_MS" ]; then
 		CONFIRMED=1
 		log "restoration confirmed: feed fresh again (age ${AGE}ms)"
 		break
@@ -207,7 +207,7 @@ if [ "${PM_DRILL_NO_POST:-0}" != "1" ] && command -v gh >/dev/null 2>&1; then
 	if [ "$OUTCOME" = "passed" ]; then
 		gh issue comment "$ISSUE" --repo "$ISSUE_REPO" --body "✅ **Chaos drill passed — kill-collector** (queue task 2667, first slice of this issue, epic #$EPIC)
 
-- Stopped \`$COLLECTOR_TIMER\` on the sandbox at $STARTED_AT; the aggregator's feed-age signal crossed the 15-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
+- Stopped \`$COLLECTOR_TIMER\` on the sandbox at $STARTED_AT; the aggregator's feed-age signal reached the 5-minute \`FEED_STALE_MS\` (#1148) threshold — the honesty signal fired instead of the dashboard presenting a dead feed as fine. Health payload at the signal moment was captured by the drill.
 - Collector restored (timer restarted + immediate collection run) and restoration confirmed via \`/api/health\`: feed fresh again.
 - Script: \`pm-stack/aggregator/scripts/kill-collector-drill.sh\` (interlocked: flock, incident-flag refusal, refuses to start on an already-stale feed; always restores via trap). Result JSON is written to \`~/.local/state/pm-drills/kill-collector-result.json\` on the sandbox per run." >/dev/null 2>&1 &&
 			log "posted result comment on #$ISSUE" || log "WARN: gh comment on #$ISSUE failed"
