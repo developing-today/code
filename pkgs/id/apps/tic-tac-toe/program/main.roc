@@ -1,4 +1,4 @@
-app [program] { pf: platform "../roc-world/platform.roc" }
+app [program] { pf: platform "../../../examples/roc-world/platform.roc" }
 
 import pf.RocJson
 

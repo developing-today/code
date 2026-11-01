@@ -608,6 +608,70 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
+  // #1277: bulk triage — one mediated batch, validated and appended
+  // item by item under the exact single-action rules above. Every
+  // accepted item becomes its OWN attributed audit entry (never one
+  // opaque batch record), so the batch is recoverable from the
+  // entries themselves; every rejected item is reported by ref with
+  // its error and appends nothing, so a partial batch never silently
+  // drops work — the failed items simply remain in Needs-you.
+  if (req.method === "POST" && path === "/api/actions/batch") {
+    try {
+      const body = (await readJsonBody(req)) as { actions?: unknown };
+      if (!Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > 100) {
+        return json({ error: "actions must be an array of 1-100 action objects" }, 400);
+      }
+      const entries: unknown[] = body.actions;
+      // The published-item checks (#1291/#1293) need the section once,
+      // not once per item.
+      const section = entries.some(
+        (a) => typeof a === "object" && a !== null && (a as { kind?: unknown }).kind === "triage",
+      )
+        ? await source.orchestration().catch(() => null)
+        : null;
+      const results: {
+        index: number;
+        objectRef: string | null;
+        ok: boolean;
+        action?: unknown;
+        deduped?: boolean;
+        error?: string;
+      }[] = [];
+      for (const [index, raw] of entries.entries()) {
+        const objectRef =
+          typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
+            ? (raw as { objectRef: string }).objectRef
+            : null;
+        const parsed = validateNewAction(raw);
+        if (!parsed.ok) {
+          results.push({ index, objectRef, ok: false, error: parsed.error });
+          continue;
+        }
+        if (parsed.value.kind === "triage" && section) {
+          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          if (problem) {
+            results.push({ index, objectRef, ok: false, error: problem });
+            continue;
+          }
+        }
+        try {
+          const { action, created } = await actionsStore.add(parsed.value);
+          results.push({ index, objectRef, ok: true, action, ...(created ? {} : { deduped: true }) });
+        } catch (err) {
+          results.push({
+            index,
+            objectRef,
+            ok: false,
+            error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+      const recorded = results.filter((r) => r.ok).length;
+      return json({ results, recorded, failed: results.length - recorded }, 200);
+    } catch (err) {
+      return json({ error: `invalid batch: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
   if (req.method === "POST" && path === "/api/actions/result") {
     try {
       const body = (await readJsonBody(req)) as { id?: unknown; outcome?: unknown; byRun?: unknown; note?: unknown };

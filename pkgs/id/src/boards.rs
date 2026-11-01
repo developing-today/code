@@ -5,7 +5,15 @@
 //! and deletions add [`BoardObject::Supersede`] and [`BoardObject::Tombstone`]
 //! records. [`BoardGraph`] checks signatures, canonical references, board scope,
 //! and the authority rules needed to accept an object. [`BoardObject::Theme`]
-//! adds signed, portable themes a board applies by reference
+//! Federation (#3806) adds signed, opt-in [`BoardObject::BoardListing`]
+//! records and [`BoardGraph::replicate_board_from`]: a listing names a
+//! host that replicates the board's signed object set, replication
+//! converges two native hosts on the same set with no primary-host
+//! authority, and [`BoardGraph::replica_status_against`] makes a lagging
+//! replica explicit instead of silently presenting it as current.
+//! [`HostServingPolicy`] is the host-local serving layer: delisting a
+//! board stops that host serving it and never deletes signed objects
+//! or claims global erasure. It also adds signed, portable themes a board applies by reference
 //! ([`Board::theme_ref`]), and [`BoardGraph::compose_view`] projects the
 //! three-layer view (personal filter / board view / host view) under the
 //! transparency rule: hidden is never erased. It does not render markup,
@@ -293,6 +301,35 @@ pub struct Theme {
     pub forked_from: Option<ArtifactHash>,
 }
 
+/// A signed, opt-in host listing for one board (#3806).
+///
+/// The board creator signs a listing naming a host (by its Ed25519 key)
+/// that replicates the board's signed object set. Listings are versioned
+/// per (board, host): the first listing is version 1, and every later
+/// listing supersedes the previous one and advances the version by
+/// exactly one, so publication and withdrawal both follow the signed
+/// version/supersede rules of the graph — never host clocks and never
+/// an unsigned host assertion. A withdrawal is a newer listing with
+/// `listed == false`. Delisting is host-local in effect: it ends this
+/// listing's replication offer, deletes nothing from any graph, and
+/// makes no claim of global erasure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardListing {
+    /// Board root hash being listed.
+    pub board: ArtifactHash,
+    /// Canonical Ed25519 hex key of the host offering replication.
+    pub host: String,
+    /// One-based per-(board, host) listing version.
+    pub version: u64,
+    /// True publishes the listing; false withdraws it.
+    pub listed: bool,
+    /// Optional human/transport contact for the host (plain data).
+    pub contact: Option<String>,
+    /// Previous listing for the same board and host, if any.
+    pub supersedes: Option<ArtifactHash>,
+}
+
 /// One typed body carried by a [`SignedBoardObject`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -323,6 +360,8 @@ pub enum BoardObject {
     Tombstone(Tombstone),
     /// Signed portable theme.
     Theme(Theme),
+    /// Signed opt-in host listing / withdrawal.
+    BoardListing(BoardListing),
 }
 
 impl BoardObject {
@@ -341,6 +380,7 @@ impl BoardObject {
             Self::Supersede(_) => "supersede",
             Self::Tombstone(_) => "tombstone",
             Self::Theme(_) => "theme",
+            Self::BoardListing(_) => "board_listing",
         }
     }
 
@@ -357,6 +397,7 @@ impl BoardObject {
             Self::ModerationAction(value) => Some(&value.board),
             Self::Supersede(value) => Some(&value.board),
             Self::Tombstone(value) => Some(&value.board),
+            Self::BoardListing(value) => Some(&value.board),
         }
     }
 
@@ -443,6 +484,16 @@ impl BoardObject {
                     unique.len() == value.assets.len(),
                     "duplicate theme asset reference"
                 );
+            }
+            Self::BoardListing(value) => {
+                ensure!(
+                    is_public_key(&value.host),
+                    "listing host is not canonical Ed25519 hex"
+                );
+                ensure!(value.version > 0, "listing version numbers start at 1");
+                if let Some(contact) = &value.contact {
+                    validate_text("listing contact", contact, false)?;
+                }
             }
             Self::Supersede(value) => ensure!(
                 value.previous != value.replacement,
@@ -709,6 +760,37 @@ impl BoardGraph {
                     );
                 }
             }
+            BoardObject::BoardListing(value) => {
+                let root = self.require_board(&value.board)?;
+                ensure!(
+                    root.artifact.author == author,
+                    "a board listing must be signed by the board creator"
+                );
+                if let Some(previous_hash) = &value.supersedes {
+                    let previous =
+                        self.require_scoped(previous_hash, &value.board, "board_listing")?;
+                    let BoardObject::BoardListing(previous_listing) = &previous.object else {
+                        unreachable!("require_scoped checked board_listing kind")
+                    };
+                    ensure!(
+                        previous_listing.host == value.host,
+                        "a listing can supersede only a listing for the same host"
+                    );
+                    ensure!(
+                        previous.artifact.author == author,
+                        "a listing can supersede only the same author's listing"
+                    );
+                    ensure!(
+                        value.version == previous_listing.version + 1,
+                        "listing version must advance by exactly one from the superseded listing"
+                    );
+                } else {
+                    ensure!(
+                        value.version == 1,
+                        "the first listing for a host starts at version 1"
+                    );
+                }
+            }
             BoardObject::Tombstone(value) => {
                 let target = self.require_scoped(&value.target, &value.board, "")?;
                 ensure!(
@@ -801,6 +883,216 @@ impl BoardGraph {
             }
             _ => false,
         })
+    }
+
+    /// Every hash in one board's replication set: the board root plus
+    /// every object scoped to it, plus the dependency closure a fresh
+    /// graph needs before [`Self::validate_links`] will accept those
+    /// objects — the root's `theme_ref` theme and `forked_from`
+    /// ancestor root, recursively (an ancestor's own theme and fork
+    /// lineage, and a theme's fork lineage). Themes and ancestor roots
+    /// name no board (`board_ref` is `None`), so a scope-only filter
+    /// would export a set that can never be accepted elsewhere:
+    /// themed and forked boards would stall replication forever
+    /// (Codex P1 on PR #4048). This set — not a server-side copy — is
+    /// what hosts replicate and converge on.
+    pub fn board_object_set(&self, board: &ArtifactHash) -> BTreeSet<ArtifactHash> {
+        let mut set: BTreeSet<ArtifactHash> = self
+            .objects
+            .iter()
+            .filter(|(hash, signed)| {
+                *hash == board || signed.object.board_ref() == Some(board)
+            })
+            .map(|(hash, _)| hash.clone())
+            .collect();
+        let mut frontier: Vec<ArtifactHash> = set.iter().cloned().collect();
+        while let Some(hash) = frontier.pop() {
+            let Some(signed) = self.objects.get(&hash) else {
+                continue;
+            };
+            let dependencies: Vec<&ArtifactHash> = match &signed.object {
+                BoardObject::Board(body) => body
+                    .forked_from
+                    .iter()
+                    .chain(body.theme_ref.iter())
+                    .collect(),
+                BoardObject::Theme(body) => body.forked_from.iter().collect(),
+                _ => Vec::new(),
+            };
+            for dependency in dependencies {
+                if self.objects.contains_key(dependency)
+                    && set.insert(dependency.clone())
+                {
+                    frontier.push(dependency.clone());
+                }
+            }
+        }
+        set
+    }
+
+    /// The board's replication set as signed objects, in content-hash
+    /// order. Any host can serve this export; accepting it needs only
+    /// the graph's own signature and scope checks.
+    pub fn export_board(&self, board: &ArtifactHash) -> Result<Vec<SignedBoardObject>> {
+        self.require_board(board)?;
+        Ok(self
+            .board_object_set(board)
+            .iter()
+            .filter_map(|hash| self.objects.get(hash))
+            .cloned()
+            .collect())
+    }
+
+    /// Replicate one board's signed object set from another host's
+    /// graph into this one. Objects already present are skipped, and
+    /// the rest are accepted in dependency order by repeated passes, so
+    /// the two hosts converge on the identical signed set regardless of
+    /// arrival order and with no primary-host authority: every object
+    /// still passes this graph's signature, scope, and authority checks.
+    pub fn replicate_board_from(
+        &mut self,
+        source: &BoardGraph,
+        board: &ArtifactHash,
+    ) -> Result<ReplicationReport> {
+        let exported = source.export_board(board)?;
+        let already_present = exported
+            .iter()
+            .filter(|object| {
+                object
+                    .hash()
+                    .map(|hash| self.objects.contains_key(&hash))
+                    .unwrap_or(false)
+            })
+            .count();
+        let mut pending: Vec<SignedBoardObject> = exported
+            .into_iter()
+            .filter(|object| {
+                object
+                    .hash()
+                    .map(|hash| !self.objects.contains_key(&hash))
+                    .unwrap_or(false)
+            })
+            .collect();
+        let mut transferred = Vec::new();
+        while !pending.is_empty() {
+            let mut progressed = false;
+            let mut remaining = Vec::new();
+            for object in pending {
+                match self.insert(object.clone()) {
+                    Ok(hash) => {
+                        transferred.push(hash);
+                        progressed = true;
+                    }
+                    Err(_) => remaining.push(object),
+                }
+            }
+            pending = remaining;
+            ensure!(
+                progressed,
+                "board replication stalled: {} signed objects could not be accepted (a referenced object is missing from the source set or fails verification)",
+                pending.len()
+            );
+        }
+        Ok(ReplicationReport {
+            board: board.clone(),
+            transferred,
+            already_present,
+            status: self.replica_status_against(board, source),
+        })
+    }
+
+    /// How this graph's replica of `board` compares to a source graph.
+    /// A replica is [`ReplicaState::Complete`] only while it holds the
+    /// source's whole board set; a replica behind on a signed listing
+    /// version, or missing objects, is reported explicitly as
+    /// [`ReplicaState::Stale`] or [`ReplicaState::Incomplete`] — a
+    /// lagging replica is never silently presented as current, and a
+    /// newer signed object is never overwritten by an older replica
+    /// (the graph is append-only and keeps every signed version).
+    pub fn replica_status_against(&self, board: &ArtifactHash, source: &BoardGraph) -> ReplicaStatus {
+        let expected = source.board_object_set(board);
+        let mut missing: Vec<ArtifactHash> = expected
+            .difference(
+                &self
+                    .objects
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+            )
+            .cloned()
+            .collect();
+        if expected.is_empty() {
+            missing = vec![board.clone()];
+        }
+        let local_listings = self.latest_listings(board);
+        let mut listing_version_lag = BTreeMap::new();
+        for (host, (_, source_listing)) in source.latest_listings(board) {
+            let local_version = local_listings
+                .get(&host)
+                .map(|(_, listing)| listing.version)
+                .unwrap_or(0);
+            if source_listing.version > local_version {
+                listing_version_lag.insert(host, (local_version, source_listing.version));
+            }
+        }
+        let present_objects = expected.len().saturating_sub(missing.len());
+        let state = if missing.is_empty() {
+            ReplicaState::Complete
+        } else if !listing_version_lag.is_empty() {
+            ReplicaState::Stale
+        } else {
+            ReplicaState::Incomplete
+        };
+        ReplicaStatus {
+            board: board.clone(),
+            state,
+            expected_objects: expected.len(),
+            present_objects,
+            missing,
+            listing_version_lag,
+        }
+    }
+
+    /// The newest signed listing per host for `board`. Versions are the
+    /// signed per-host sequence; when two listings share a version (a
+    /// signed fork), the greater content hash wins — a deterministic
+    /// rule every peer computes identically, never a host clock.
+    pub fn latest_listings(
+        &self,
+        board: &ArtifactHash,
+    ) -> BTreeMap<String, (ArtifactHash, BoardListing)> {
+        let mut latest: BTreeMap<String, (ArtifactHash, BoardListing)> = BTreeMap::new();
+        for (hash, signed) in &self.objects {
+            let BoardObject::BoardListing(listing) = &signed.object else {
+                continue;
+            };
+            if &listing.board != board {
+                continue;
+            }
+            let replace = match latest.get(&listing.host) {
+                None => true,
+                Some((current_hash, current)) => {
+                    (listing.version, hash) > (current.version, current_hash)
+                }
+            };
+            if replace {
+                latest.insert(listing.host.clone(), (hash.clone(), listing.clone()));
+            }
+        }
+        latest
+    }
+
+    /// Hosts whose newest signed listing for `board` is a publication.
+    /// A withdrawal is a newer listing with `listed == false`, so
+    /// delisting takes effect by signed version, not by host assertion.
+    pub fn active_listings(
+        &self,
+        board: &ArtifactHash,
+    ) -> BTreeMap<String, (ArtifactHash, BoardListing)> {
+        self.latest_listings(board)
+            .into_iter()
+            .filter(|(_, (_, listing))| listing.listed)
+            .collect()
     }
 
     /// Compose the three-layer view of one board: the board layer
@@ -1143,6 +1435,81 @@ pub struct BoardView {
     /// deterministic content-hash order. The moderation log is public:
     /// it is listed whether or not each entry currently hides anything.
     pub moderation_log: Vec<ArtifactHash>,
+}
+
+/// Whether a replica holds a source board's full signed set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplicaState {
+    /// The replica holds every object of the source board set.
+    Complete,
+    /// The replica is behind on at least one signed listing version:
+    /// its view of who serves the board (and what the set is) is old.
+    Stale,
+    /// Objects are missing without a listing-version lag (for example
+    /// the board root itself has not arrived yet).
+    Incomplete,
+}
+
+/// Explicit comparison of one replica against a source board set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplicaStatus {
+    /// Board root compared.
+    pub board: ArtifactHash,
+    /// Complete / stale / incomplete verdict.
+    pub state: ReplicaState,
+    /// Objects in the source board set.
+    pub expected_objects: usize,
+    /// Of those, objects this replica already holds.
+    pub present_objects: usize,
+    /// Source objects this replica does not hold yet.
+    pub missing: Vec<ArtifactHash>,
+    /// Per host, `(replica version, source version)` where the signed
+    /// listing version in this replica lags the source.
+    pub listing_version_lag: BTreeMap<String, (u64, u64)>,
+}
+
+/// Outcome of one [`BoardGraph::replicate_board_from`] pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplicationReport {
+    /// Board root replicated.
+    pub board: ArtifactHash,
+    /// Hashes newly accepted into this graph, in acceptance order.
+    pub transferred: Vec<ArtifactHash>,
+    /// Exported objects this graph already held.
+    pub already_present: usize,
+    /// Replica status against the source after the pass.
+    pub status: ReplicaStatus,
+}
+
+/// One host's local serving policy. This is the host layer, kept
+/// deliberately OUTSIDE the signed graph: it is unsigned, host-local,
+/// and governs only what this host serves. Delisting a board here
+/// stops this host serving it; the board's signed objects stay in the
+/// graph and on every other host, portability is replication plus
+/// re-listing elsewhere, and no delisting — here or in a signed
+/// [`BoardListing`] withdrawal — is a promise of global deletion.
+/// Host policy is also separate from board moderation: moderation is
+/// the board's signed log inside the graph, this policy is not.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostServingPolicy {
+    /// Board roots this host will not serve.
+    pub delisted_boards: BTreeSet<ArtifactHash>,
+    /// Optional local note (for example the legal basis); plain data.
+    pub note: Option<String>,
+}
+
+impl HostServingPolicy {
+    /// Whether this host serves `board` under its local policy.
+    pub fn serves_board(&self, board: &ArtifactHash) -> bool {
+        !self.delisted_boards.contains(board)
+    }
+
+    /// Delist `board` on this host only. Returns true if it was served
+    /// before this call. The signed graph is untouched.
+    pub fn delist_board(&mut self, board: &ArtifactHash) -> bool {
+        self.delisted_boards.insert(board.clone())
+    }
 }
 
 fn validate_board_id(value: &str) -> Result<()> {
@@ -2093,6 +2460,206 @@ mod tests {
         assert!(view.objects.contains(&posts[1]));
         assert!(!view.objects.contains(&posts[2]));
         assert!(view.objects.contains(&posts[3]));
+    }
+
+    fn listing(
+        key: &SigningKey,
+        seq: u64,
+        board: ArtifactHash,
+        host: &SigningKey,
+        version: u64,
+        listed: bool,
+        supersedes: Option<ArtifactHash>,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            seq,
+            "",
+            BoardObject::BoardListing(BoardListing {
+                board,
+                host: hex_encode(&host.verifying_key().to_bytes()),
+                version,
+                listed,
+                contact: Some("iroh://host.example".to_owned()),
+                supersedes,
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn listing_publish_and_withdraw_follow_signed_versions() {
+        let owner = key(7);
+        let host = key(9);
+        let host_hex = hex_encode(&host.verifying_key().to_bytes());
+        let mut graph = BoardGraph::default();
+        let root = graph.insert(board(&owner)).unwrap();
+
+        // Only the board creator may list the board.
+        let foreign = listing(&key(8), 1, root.clone(), &host, 1, true, None);
+        assert!(graph.insert(foreign).is_err());
+        // The first listing for a host starts at version 1.
+        let starts_at_two = listing(&owner, 2, root.clone(), &host, 2, true, None);
+        assert!(graph.insert(starts_at_two).is_err());
+
+        let v1 = graph
+            .insert(listing(&owner, 1, root.clone(), &host, 1, true, None))
+            .unwrap();
+        assert!(graph.active_listings(&root).contains_key(&host_hex));
+
+        // A version may not skip: v3 superseding v1 is rejected.
+        let skip = listing(&owner, 3, root.clone(), &host, 3, false, Some(v1.clone()));
+        assert!(graph.insert(skip).is_err());
+
+        // Withdrawal is the next signed version with listed == false.
+        graph
+            .insert(listing(&owner, 2, root.clone(), &host, 2, false, Some(v1)))
+            .unwrap();
+        assert!(graph.active_listings(&root).is_empty());
+        let (_, latest) = &graph.latest_listings(&root)[&host_hex];
+        assert_eq!(latest.version, 2);
+        assert!(!latest.listed);
+    }
+
+    #[test]
+    fn two_hosts_converge_via_replication() {
+        let owner = key(7);
+        let host = key(9);
+        let mut source = BoardGraph::default();
+        let root = source.insert(board(&owner)).unwrap();
+        let thread = source.insert(thread(&owner, root.clone(), "welcome")).unwrap();
+        source.insert(post(&owner, root.clone(), thread, "hello")).unwrap();
+        source
+            .insert(listing(&owner, 1, root.clone(), &host, 1, true, None))
+            .unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert_eq!(report.transferred.len(), source.board_object_set(&root).len());
+        assert_eq!(replica.board_object_set(&root), source.board_object_set(&root));
+
+        // A second pass is a no-op: the hosts have converged.
+        let again = replica.replicate_board_from(&source, &root).unwrap();
+        assert!(again.transferred.is_empty());
+        assert_eq!(again.status.state, ReplicaState::Complete);
+    }
+
+    #[test]
+    fn themed_board_replicates_with_its_theme() {
+        // Codex P1 on PR #4048: a theme names no board, so a
+        // scope-only export dropped it and the themed board root
+        // could never validate in a fresh graph.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let theme_hash = source.insert(theme(&owner, 1, None)).unwrap();
+        let root = source.insert(themed_board(&owner, theme_hash.clone())).unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&theme_hash));
+        assert_eq!(replica.board_object_set(&root), source.board_object_set(&root));
+    }
+
+    #[test]
+    fn theme_fork_lineage_replicates_with_themed_board() {
+        // The closure follows a theme's own fork lineage, not just
+        // the theme the board names directly.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let base_theme = source.insert(theme(&owner, 1, None)).unwrap();
+        let derived_theme = source
+            .insert(theme(&owner, 2, Some(base_theme.clone())))
+            .unwrap();
+        let root = source
+            .insert(themed_board(&owner, derived_theme.clone()))
+            .unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&derived_theme));
+        assert!(report.transferred.contains(&base_theme));
+    }
+
+    #[test]
+    fn forked_board_replicates_with_ancestor_root() {
+        // A forked board's root names its source root in
+        // `forked_from`; the ancestor root (and its own theme, by
+        // recursion) must travel with the fork's replication set.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let theme_hash = source.insert(theme(&owner, 1, None)).unwrap();
+        let ancestor = source
+            .insert(themed_board(&owner, theme_hash.clone()))
+            .unwrap();
+        let fork = SignedBoardObject::sign(
+            &owner,
+            1,
+            "",
+            BoardObject::Board(Board {
+                board_id: "forked-board".to_owned(),
+                forked_from: Some(ancestor.clone()),
+                theme_ref: None,
+            }),
+        )
+        .unwrap();
+        let fork_root = source.insert(fork).unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&ancestor));
+        assert!(report.transferred.contains(&theme_hash));
+        assert_eq!(
+            replica.board_object_set(&fork_root),
+            source.board_object_set(&fork_root)
+        );
+    }
+
+    #[test]
+    fn stale_replica_is_explicit_not_silent() {
+        let owner = key(7);
+        let host = key(9);
+        let host_hex = hex_encode(&host.verifying_key().to_bytes());
+        let mut source = BoardGraph::default();
+        let root = source.insert(board(&owner)).unwrap();
+        let v1 = source
+            .insert(listing(&owner, 1, root.clone(), &host, 1, true, None))
+            .unwrap();
+
+        let mut replica = BoardGraph::default();
+        replica.replicate_board_from(&source, &root).unwrap();
+
+        // The source advances: a withdrawal and new content the replica
+        // has not seen. The replica must report itself stale, naming
+        // exactly what it is missing and the listing-version lag.
+        source
+            .insert(listing(&owner, 2, root.clone(), &host, 2, false, Some(v1)))
+            .unwrap();
+        let status = replica.replica_status_against(&root, &source);
+        assert_eq!(status.state, ReplicaState::Stale);
+        assert_eq!(status.listing_version_lag[&host_hex], (1, 2));
+        assert_eq!(status.missing.len(), 1);
+        assert!(status.present_objects < status.expected_objects);
+    }
+
+    #[test]
+    fn delisting_is_host_local_and_never_global_erasure() {
+        let owner = key(7);
+        let mut graph = BoardGraph::default();
+        let root = graph.insert(board(&owner)).unwrap();
+        let before = graph.len();
+
+        let mut policy = HostServingPolicy::default();
+        assert!(policy.serves_board(&root));
+        assert!(policy.delist_board(&root));
+        assert!(!policy.serves_board(&root));
+        // The signed graph is untouched: delisting removed nothing,
+        // and another host's policy still serves the board.
+        assert_eq!(graph.len(), before);
+        assert!(HostServingPolicy::default().serves_board(&root));
     }
 
 }

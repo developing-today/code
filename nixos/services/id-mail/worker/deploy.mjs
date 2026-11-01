@@ -13,8 +13,22 @@ const KNOWN_TRANSPORTS = ["email"];
 const MODES = ["template", "free"];
 const PLACEHOLDER = "{code}";
 
+// Strict argument validation (#3281): the only accepted invocation is
+// `deploy.mjs [--dry-run]`. Anything else — a typo'd `--dry-rnu`, a
+// stray positional, an unknown flag — aborts here, before any config,
+// bws, wrangler or API work: the old `argv.includes("--dry-run")`
+// check silently treated every unrecognized argument as a request for
+// the real deploy sequence (retire, deploy, secret put).
+const args = process.argv.slice(2);
+const unknownArgs = args.filter((arg) => arg !== "--dry-run");
+if (args.length > 1 || unknownArgs.length > 0) {
+  const offenders = unknownArgs.length > 0 ? unknownArgs : args;
+  console.error(`unrecognized argument(s): ${offenders.join(" ")}\nusage: deploy.mjs [--dry-run]`);
+  process.exit(2);
+}
+const dryRun = args.includes("--dry-run");
+
 const config = JSON.parse(readFileSync(join(here, "config.json"), "utf8"));
-const dryRun = process.argv.includes("--dry-run");
 
 const problems = validate(config);
 if (problems.length > 0) {
