@@ -45,7 +45,10 @@ function json(status: number, body: unknown): Response {
 
 async function readJsonBody(req: Request): Promise<unknown> {
   const text = await req.text();
-  if (text.length > MAX_BODY_BYTES) throw new ValidationError("body: too large");
+  // The cap is in bytes (MAX_BODY_BYTES): measure the UTF-8 byte length,
+  // not String.length (UTF-16 code units) — a multibyte body can be far
+  // larger in bytes than in code units (#3010).
+  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) throw new ValidationError("body: too large");
   if (!text.trim()) throw new ValidationError("body: required JSON object");
   try {
     return JSON.parse(text);
