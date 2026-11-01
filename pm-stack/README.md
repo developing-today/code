@@ -264,6 +264,10 @@ cd grist
   **Program roadmap**, table **Roadmap**, rows from
   `seed/roadmap.json` (the PM-stack phases, the cluster register
   headlines, the four-repo fleet).
+- **Choice-list edits:** use `grist/update-choice-options.py` (REST
+  columns PATCH, verified on v1.7.21 under the roadmap ACL) — never
+  `/apply` `UpdateColumn` (blocked by access rules) and never the
+  document SQLite. Runbook: `grist/CHOICE-OPTIONS.md` (#1287).
 
 ## Day-2 operations
 
