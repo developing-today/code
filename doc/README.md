@@ -39,8 +39,8 @@ Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`
 - [Roc worlds architecture](2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md)
 - [Research workflow design](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md)
 - [Project-management stack design](2026-10-24T11-05-38Z_design_project-management-stack/2026-10-24T11-05-38Z_design_project-management-stack.md)
-- [PM stack forecasting: velocity, quota walls, and stall risk](2026-11-01T21-07-00Z_design_pm-stack_forecasting/2026-11-01T21-07-00Z_design_pm-stack_forecasting.md)
 - [T3 Code V2 integration](2026-10-26T21-18-21Z_feature_t3code-v2-integration/main.md)
+- [PM stack forecasting: velocity, quota walls, and stall risk](2026-11-01T21-07-00Z_design_pm-stack_forecasting/2026-11-01T21-07-00Z_design_pm-stack_forecasting.md)
 
 Two names break the pattern. They stay as they are because other documents link to them: `2026-03-23T00:00:00Z_feature_file_list_ui/` has colons in its name, and `2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md` is a file, not a folder.
 
