@@ -501,6 +501,9 @@ func Validate(set Setting, raw string) error {
 		if err != nil {
 			return fmt.Errorf("want a duration like 30s or 5m, got %q", raw)
 		}
+		if set.Path == "proxy.timeout" && d <= 0 {
+			return fmt.Errorf("proxy.timeout must be greater than zero, got %q", raw)
+		}
 		if set.Path == "protoTasks.maxTTL" && d > 0 && d < time.Millisecond {
 			// Store.Start clamps in whole milliseconds; a positive
 			// sub-millisecond max would truncate to 0 and delete every

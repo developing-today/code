@@ -32,6 +32,7 @@ func Registry() []Setting {
 	s = append(s, protoMessagesSettings()...)
 	s = append(s, protoTasksSettings()...)
 	s = append(s, upstreamSettings()...)
+	s = append(s, proxySettings()...)
 	s = append(s, envSettings()...)
 	s = append(s, presetSettings()...)
 	s = append(s, specSettings()...)

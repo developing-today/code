@@ -375,12 +375,16 @@ type Defaults struct {
 		RemoteTimeout string `json:"remoteTimeout"`
 		SearchTimeout string `json:"searchTimeout"`
 	} `json:"embeddings"`
+	Proxy struct {
+		Timeout string `json:"timeout"`
+	} `json:"proxy"`
 }
 
 // Embeddings defaults.
 var (
 	EmbeddingsRemoteTimeout = mustDur(builtin.Embeddings.RemoteTimeout, "embeddings.remoteTimeout")
 	EmbeddingsSearchTimeout = mustDur(builtin.Embeddings.SearchTimeout, "embeddings.searchTimeout")
+	ProxyUpstreamTimeout    = mustDur(builtin.Proxy.Timeout, "proxy.timeout")
 )
 
 // Upstream connection defaults.
