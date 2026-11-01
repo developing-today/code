@@ -1339,6 +1339,7 @@ pub struct WorldRuntimeArgs {
 /// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
 /// `id-core`'s `world_limits` and validates through this trait, which the
 /// CLI argument struct implements here in its own crate.
+#[cfg(feature = "world")]
 impl crate::world_limits::WorldLimitArgs for WorldRuntimeArgs {
     fn world_fuel(&self) -> u64 {
         self.world_fuel
@@ -4576,7 +4577,7 @@ mod tests {
 /// `world_limits` in the Phase 1 crate split (#3447): they parse this
 /// crate's CLI, so they live with it; the profile/resolve tests stayed
 /// in `id-core`'s `world_limits`.
-#[cfg(test)]
+#[cfg(all(test, feature = "world"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod world_limits_args_tests {
     use std::time::Duration;

@@ -20,7 +20,7 @@ The root crate re-exports the extracted modules and their public items at their 
 
 The root package's dev-dependency enables `id-core`'s `test-utils` feature so root unit tests can use the extracted connectivity dial helpers. That feature is not enabled by normal dependencies or shipped builds.
 
-Shared types follow their defining leaf modules: `Refusal` is defined at the `id-core` root and re-exported by the existing root modules that used it; `SandboxLimits`, `NativeLimits`, and `MAX_WORLD_MODULE_BYTES` are defined in `id_core::world_limits` and re-exported at their historical paths. `RuntimeLimits::from_args` stays with the root CLI because it consumes CLI-owned arguments; `WorldLimitArgs` is the narrow trait boundary implemented by the CLI argument type. This keeps CLI parsing out of the foundation crate while retaining the existing call paths.
+Shared types follow their defining leaf modules: `Refusal` is defined at the `id-core` root and re-exported by the existing root modules that used it; `SandboxLimits`, `NativeLimits`, and `MAX_WORLD_MODULE_BYTES` are defined in `id_core::world_limits` and re-exported at their historical paths. `RuntimeLimits::from_args` is defined in `id_core::world_limits` and takes the `WorldLimitArgs` trait, which the root CLI implements for its argument type. This keeps CLI parsing out of the foundation crate while retaining the existing call paths.
 
 ## Build and test selection
 
