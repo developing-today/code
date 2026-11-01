@@ -868,6 +868,7 @@ class ColdStore:
         if not session_uri:
             raise ColdStoreError("resumable session create returned no Location header")
         sent = 0
+        stalls = 0
         file_id = None
         with open(path, "rb") as f:
             while sent < total or total == 0:
@@ -889,11 +890,26 @@ class ColdStore:
                     break
                 if status == 308:
                     range_hdr = headers.get("Range") or headers.get("range") or ""
-                    # "bytes=0-12345" => next byte is 12346
+                    # "bytes=0-12345" => next byte is 12346. Progress means
+                    # the acknowledged offset strictly increases. A missing
+                    # or unparseable Range acknowledges nothing: sent stays
+                    # at the last acknowledged offset and the chunk is
+                    # resent from there (#2797).
                     try:
-                        sent = int(range_hdr.rsplit("-", 1)[1]) + 1
+                        acknowledged = int(range_hdr.rsplit("-", 1)[1]) + 1
                     except (IndexError, ValueError):
-                        sent += len(chunk)
+                        acknowledged = sent
+                    if acknowledged > sent:
+                        sent = acknowledged
+                        stalls = 0
+                    else:
+                        stalls += 1
+                        if stalls >= 3:
+                            raise ColdStoreError(
+                                "resumable upload stalled: server acknowledged "
+                                f"{sent} of {total} bytes after 3 consecutive "
+                                "non-advancing 308 responses"
+                            )
                     f.seek(sent)
                     continue
                 raise ColdStoreError(f"chunk upload failed (HTTP {status})")
