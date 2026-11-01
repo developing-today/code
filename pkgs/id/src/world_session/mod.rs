@@ -886,6 +886,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         .await
         {
             Ok(isolation) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,
@@ -905,6 +906,7 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
     if let Some(result) = policy_frame(hub, &lease, &frame).await {
         match result {
             Ok(policy) => {
+                io.mark_authorized();
                 let _ = send_json(
                     lease.service().frame_meter(),
                     io,

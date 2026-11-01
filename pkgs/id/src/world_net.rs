@@ -1454,6 +1454,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn successful_join_switches_only_that_stream_to_authorized_limits() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+        let mut inviter = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        inviter
+            .send_json(&serde_json::json!({
+                "type": "invite",
+                "admin_token": "admin",
+                "display_name": "Guest"
+            }))
+            .await
+            .unwrap();
+        let invite = next(&mut inviter).await.unwrap();
+        let capability = invite["capability"].as_str().unwrap().to_owned();
+        inviter.close();
+
+        let mut client = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        client.send_json(&join(&capability, None)).await.unwrap();
+        assert_eq!(next(&mut client).await.unwrap()["type"], "snapshot");
+
+        // The pre-authorization burst is 30 frames. The join uses one
+        // pre-auth frame; after the capability is validated, this stream
+        // can continue past that limit while chat's own 50-message cap
+        // remains unchanged.
+        for index in 0..31 {
+            client
+                .send_json(&serde_json::json!({
+                    "type": "chat",
+                    "text": format!("authorized {index}")
+                }))
+                .await
+                .unwrap();
+            assert_eq!(next(&mut client).await.unwrap()["type"], "event");
+        }
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
     fn join(capability: &str, after: Option<u64>) -> serde_json::Value {
         serde_json::json!({"type": "join", "capability": capability, "after": after})
     }
