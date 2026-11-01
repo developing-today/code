@@ -27,6 +27,8 @@ export class AutoSaveManager {
   private saveInFlight = false;
   /** A save was requested while one was in flight or a retry was pending; run one follow-up. */
   private followUpRequested = false;
+  /** The editor owning this manager closed; late completions must be ignored. */
+  private disposed = false;
 
   constructor(saveFn: () => Promise<SaveResult>) {
     this.saveFn = saveFn;
@@ -34,6 +36,8 @@ export class AutoSaveManager {
 
   /** Called when user makes a local edit (editor:change event) */
   onContentChange(): void {
+    if (this.disposed) return;
+
     this.editGeneration++;
 
     // Clear any pending timers
@@ -58,6 +62,8 @@ export class AutoSaveManager {
 
   /** Called when another client saves (NewVersion received) */
   onNewVersion(): void {
+    if (this.disposed) return;
+
     // Cancel any pending save — their version is newer
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
@@ -88,6 +94,8 @@ export class AutoSaveManager {
 
   /** Manual save — Ctrl+S or button click. Cancels debounce and saves immediately. */
   saveNow(): void {
+    if (this.disposed) return;
+
     // Cancel debounce timer — we're saving right now
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
@@ -102,6 +110,8 @@ export class AutoSaveManager {
 
   /** Clean up all timers (called when editor closes) */
   cancel(): void {
+    if (this.disposed) return;
+
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -117,10 +127,13 @@ export class AutoSaveManager {
     this.followUpRequested = false;
     this.state = "idle";
     this.updateIndicator();
+    this.disposed = true;
   }
 
   /** Execute the save and handle the result, serialized against other saves */
   private async triggerSave(): Promise<void> {
+    if (this.disposed) return;
+
     if (this.saveInFlight) {
       // Coalesce into exactly one follow-up once the in-flight save settles.
       this.followUpRequested = true;
@@ -158,6 +171,8 @@ export class AutoSaveManager {
 
   /** Transition state based on save outcome */
   private onSaveResult(result: SaveResult, startGeneration: number): void {
+    if (this.disposed) return;
+
     if (result.ok) {
       if (this.followUpRequested || this.editGeneration !== startGeneration) {
         // Edits arrived after this save started (or a save was requested
@@ -218,6 +233,8 @@ export class AutoSaveManager {
 
   /** Update the save button text/state to reflect current state */
   updateIndicator(): void {
+    if (this.disposed) return;
+
     const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
     if (!saveBtn) return;
 
