@@ -117,6 +117,7 @@ rec {
     # and nothing here builds from it.
     dezren39-nix = {
       url = "github:dezren39/nix";
+      inputs.opencode.follows = "opencode";
     };
     systems = {
       # TODO: use this?
