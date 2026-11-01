@@ -358,17 +358,23 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 	// refused request never acquires a pool lease or wakes an upstream.
 	// The caller is the identity callContext already resolved, never
 	// anything else the request reports.
+	// Both keys use the canonical (configured) server name: Pool also
+	// answers to the namespace spelling, and keying by the raw request
+	// spelling would give one server a budget per spelling (Codex
+	// review, PR #3730). CanonicalName is a registry map read -- it
+	// acquires no lease and wakes no upstream.
+	serverName := s.reg.CanonicalName(req.Server)
 	if refused := s.completeLimiter.admit([]limitCheck{
 		{
 			Name:  "completion.perMinute",
 			What:  "this caller and server",
-			Key:   "caller\x00" + completionCaller(cc) + "\x00" + req.Server,
+			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
 			Limit: cs.Int("completion.perMinute"),
 		},
 		{
 			Name:  "completion.serverPerMinute",
 			What:  "this server",
-			Key:   "server\x00" + req.Server,
+			Key:   "server\x00" + serverName,
 			Limit: cs.Int("completion.serverPerMinute"),
 		},
 	}); refused != nil {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
@@ -82,5 +84,42 @@ func TestHandleCompleteRateLimitHotChangeAndZeroDisables(t *testing.T) {
 	s.set = completeLimitSet(t, "0", "0")
 	if w := postComplete(t, s, "sess-1"); w.Code != http.StatusBadRequest {
 		t.Fatalf("after disabling: got %d (%s), want 400 (admitted, pool miss)", w.Code, w.Body)
+	}
+}
+
+// The namespace spelling of a server resolves to the same pool, so it
+// must share the same rate-limit budget: switching spellings after
+// exhausting one is not a fresh budget (Codex review, PR #3730).
+func TestHandleCompleteRateLimitCanonicalizesServerSpelling(t *testing.T) {
+	reg := &Registry{
+		pools: map[string]*pool.Pool{},
+		views: map[string]*config.Resolved{"srv": {Namespace: "ns"}},
+		order: []string{"srv"},
+	}
+	if got := reg.CanonicalName("srv"); got != "srv" {
+		t.Fatalf("CanonicalName(srv) = %q", got)
+	}
+	if got := reg.CanonicalName("ns"); got != "srv" {
+		t.Fatalf("CanonicalName(ns) = %q, want srv", got)
+	}
+	if got := reg.CanonicalName("nope"); got != "nope" {
+		t.Fatalf("CanonicalName(nope) = %q, want unchanged", got)
+	}
+	s := &Server{set: completeLimitSet(t, "1", "0"), reg: reg}
+	post := func(server string) *httptest.ResponseRecorder {
+		body := `{"server":"` + server + `","ref":{"type":"ref/prompt","name":"p"},` +
+			`"argument":{"name":"a","value":""},"session":"sess-1"}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/complete", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		s.handleComplete(w, req)
+		return w
+	}
+	// Neither spelling has a pool, so an admitted request is the pool
+	// lookup's 400 under either spelling; only a refusal is a 429.
+	if w := post("srv"); w.Code != http.StatusBadRequest {
+		t.Fatalf("first request under the configured name: got %d (%s), want 400 (admitted)", w.Code, w.Body)
+	}
+	if w := post("ns"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("namespace spelling after exhausting the name: got %d (%s), want 429 (shared budget)", w.Code, w.Body)
 	}
 }
