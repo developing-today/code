@@ -167,6 +167,97 @@ func TestScanSkipsBesideFileLease(t *testing.T) {
 	}
 }
 
+func TestScanBesideLeaseClassifierPermutations(t *testing.T) {
+	// #3112 / Codex P1 on #3728: the beside-lease classifier
+	// must be distinguishable from an unconditional ".lease-"
+	// substring filter — a genuine entry whose name merely
+	// contains the infix stays an entry, and lease recognition
+	// must not depend on the match predicate.
+	write := func(t *testing.T, dir, name string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	keys := func(entries []cache.Entry) map[string]bool {
+		out := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			out[e.Key] = true
+		}
+		return out
+	}
+
+	t.Run("infix name without a sibling stays an entry", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "solo.lease-999")
+		entries, err := cache.Scan(dir, "files", 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := keys(entries); len(got) != 1 || !got["solo.lease-999"] {
+			t.Fatalf("Scan keys = %v, want only solo.lease-999", got)
+		}
+	})
+
+	t.Run("infix name with a directory sibling stays an entry", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "data"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, dir, "data.lease-999")
+		entries, err := cache.Scan(dir, "files", 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := keys(entries); len(got) != 2 || !got["data"] || !got["data.lease-999"] {
+			t.Fatalf("Scan keys = %v, want data and data.lease-999 (a directory entry's leases live inside it)", got)
+		}
+	})
+
+	t.Run("match accepting the lease but not its sibling still skips the lease", func(t *testing.T) {
+		dir := t.TempDir()
+		entry := write(t, dir, "entry.bin")
+		write(t, dir, "other.bin")
+		lease, err := cache.Acquire(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lease.Release()
+		match := func(name string) bool {
+			return strings.HasPrefix(name, "entry.bin.lease-") || name == "other.bin"
+		}
+		entries, err := cache.Scan(dir, "files", 0, match)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := keys(entries); len(got) != 1 || !got["other.bin"] {
+			t.Fatalf("Scan keys = %v, want only other.bin: lease recognition must precede the match predicate", got)
+		}
+	})
+
+	t.Run("directory entry with an inside lease scans once, leased", func(t *testing.T) {
+		dir := t.TempDir()
+		d := filepath.Join(dir, "dentry")
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lease, err := cache.Acquire(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lease.Release()
+		entries, err := cache.Scan(dir, "files", 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Key != "dentry" || !entries[0].Leased {
+			t.Fatalf("Scan = %v, want the single leased directory entry", entries)
+		}
+	})
+}
+
 func TestPruneNeverRemovesBesideFileLease(t *testing.T) {
 	// #3112: with the lease file aged oldest, a prune sized to
 	// force a victim used to select the lease file itself and
