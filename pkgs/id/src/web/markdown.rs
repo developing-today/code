@@ -848,6 +848,26 @@ fn indentation_columns(line: &str) -> usize {
     col
 }
 
+/// Remove exactly `columns` leading indentation columns, accounting for
+/// tabs advancing to the next multiple of four. Used to inspect content
+/// inside a footnote continuation without erasing additional indentation
+/// that may make the line an indented code block.
+fn strip_indentation_columns(line: &str, columns: usize) -> &str {
+    let mut col = 0;
+    for (index, c) in line.char_indices() {
+        let next = match c {
+            ' ' => col + 1,
+            '\t' => col + 4 - (col % 4),
+            _ => return line,
+        };
+        if next >= columns {
+            return &line[index + c.len_utf8()..];
+        }
+        col = next;
+    }
+    line
+}
+
 /// Whether a stripped line carries a list marker as its outermost
 /// container prefix (a bullet, or an ordered marker): such a line
 /// starts a new list item. The marker shapes mirror
@@ -1154,9 +1174,15 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                 // definition and then collected the literal line as
                 // a real footnote (Codex P2 on #1565's twenty-third
                 // cut). Mirrors the opening-body check above.
-                let content = next.trim_start();
-                prev_is_content =
-                    !content.is_empty() && !starts_new_block(content);
+                let content = strip_indentation_columns(next, 4);
+                // The first four columns continue the footnote. Any
+                // remaining four columns are still an indented code
+                // block, not paragraph content eligible for an
+                // unindented lazy continuation (Codex P2 on #1565's
+                // twenty-fifth cut).
+                prev_is_content = indentation_columns(content) < 4
+                    && !content.trim().is_empty()
+                    && !starts_new_block(content.trim_start_matches(' '));
                 j += 1;
                 continue;
             }
@@ -1410,11 +1436,38 @@ fn find_label_close(s: &str) -> Option<usize> {
     None
 }
 
-fn is_link_reference_definition_start(stripped: &str) -> bool {
-    if !stripped.starts_with('[') {
-        return false;
+/// The closing bracket of a valid link reference label. CommonMark
+/// labels cannot be empty/whitespace-only, contain an unescaped opening
+/// bracket, or exceed 999 characters. Keeping this check with the shape
+/// check prevents a malformed `[]:` candidate from splitting a paragraph
+/// and promoting the next definition during synthesis (Codex P2 on
+/// #1565's twenty-fifth cut).
+fn link_reference_definition_label_close(s: &str) -> Option<usize> {
+    if !s.starts_with('[') {
+        return None;
     }
-    match find_label_close(stripped) {
+    let close = find_label_close(s)?;
+    let label = &s[1..close];
+    if label.trim().is_empty() || label.chars().count() > 999 {
+        return None;
+    }
+    let mut escaped = false;
+    for c in label.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '[' => return None,
+            _ => {}
+        }
+    }
+    Some(close)
+}
+
+fn is_link_reference_definition_start(stripped: &str) -> bool {
+    match link_reference_definition_label_close(stripped) {
         Some(close) => stripped[close + 1..].starts_with(':'),
         None => false,
     }
@@ -1641,11 +1694,13 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                         text.push_str(next);
                         if let Some(close) = find_label_close(&text) {
                             if text[close + 1..].starts_with(':') {
-                                found = Some((
-                                    lines[i..=j].to_vec(),
-                                    text[close + 2..].to_string(),
-                                    j + 1,
-                                ));
+                                if link_reference_definition_label_close(&text).is_some() {
+                                    found = Some((
+                                        lines[i..=j].to_vec(),
+                                        text[close + 2..].to_string(),
+                                        j + 1,
+                                    ));
+                                }
                             }
                             break;
                         }
@@ -1655,7 +1710,8 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                 }
             };
         let single_start = is_link_reference_definition_start(def_stripped).then(|| {
-            let close = find_label_close(def_stripped).expect("start shape checked");
+            let close =
+                link_reference_definition_label_close(def_stripped).expect("start shape checked");
             (vec![line], def_stripped[close + 2..].to_string(), i + 1)
         });
         // A line carrying a list marker starts a NEW list item
@@ -5965,6 +6021,57 @@ mod tests {
             "fenced reference definition is not promoted to a link: {first:?}"
         );
         assert_eq!(first, second, "indented blockquote fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_indented_code_does_not_enable_footnote_lazy_continuation() {
+        // #1565 twenty-fifth cut (Codex P2): remove only the
+        // footnote's four-column continuation indent before deciding
+        // whether an indented line is paragraph content. The
+        // remaining four columns here are code, so the following
+        // type-7 HTML block must be handled by the outer scan and its
+        // definition-shaped interior must not be synthesized.
+        let original = "[^a]: First.\n\n        code\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<_> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["a"],
+            "indented code must not synthesize fake: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(first.contains("First."), "footnote body survives: {first:?}");
+        assert!(first.contains("code"), "indented code survives: {first:?}");
+        assert_eq!(first, second, "indented-code continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_empty_reference_labels_do_not_split_paragraph() {
+        // #1565 twenty-fifth cut (Codex P2): empty and
+        // whitespace-only labels are not link reference definitions.
+        // Treating either as a block boundary promoted the following
+        // `[url]` out of the same paragraph and resolved a link that
+        // remains literal in the source document.
+        for invalid_label in ["[]", "[   ]"] {
+            let original =
+                format!("{invalid_label}: /bad\n[url]: /target\n\n[^orphan]: [target][url]\n");
+            let (first, second) = two_saves(&original);
+            assert!(
+                first.contains("\\[target\\]\\[url\\]"),
+                "invalid label must not promote the following definition: {first:?}"
+            );
+            assert!(
+                !first.contains("[target](/target)"),
+                "invalid-label candidate must not resolve the orphan link: {first:?}"
+            );
+            assert_eq!(first, second, "invalid-label round-trip is a fixpoint");
+        }
     }
 
     #[test]
