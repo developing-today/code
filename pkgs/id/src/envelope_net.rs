@@ -199,11 +199,16 @@ async fn receive(hub: &WorldHub, body: &[u8]) -> Reply {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
     use iroh::{
         address_lookup::MemoryLookup,
         endpoint::{RelayMode, presets},
         protocol::Router,
     };
+    use iroh_blobs::{Hash, store::mem::MemStore};
+    use tokio::sync::Mutex;
 
     use super::*;
     use crate::commands::put::add_raw;
@@ -214,10 +219,6 @@ mod tests {
     use crate::envelope_outbox::{Finish, Outbox, flush};
     use crate::world::{WorldCore, WorldHandle, WorldLimits};
     use crate::world_session::WorldService;
-    use iroh_blobs::{Hash, store::mem::MemStore};
-    use std::sync::Arc;
-    use std::time::Instant;
-    use tokio::sync::Mutex;
 
     const NOW: u64 = 1_000_000_000;
 
@@ -358,7 +359,7 @@ mod tests {
     /// hit; it does not test CLI routing, production envelope acceptance, or
     /// chat signature verification.
     #[tokio::test]
-    async fn review_gated_chat_frame_round_trips_and_resolves_local_blob() {
+    async fn test_review_gated_chat_frame_round_trips_and_resolves_local_blob() {
         let alice = endpoint().await;
         let bob = endpoint().await;
         let alice_frames = Arc::new(Mutex::new(Vec::new()));
