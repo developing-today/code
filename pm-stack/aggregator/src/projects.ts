@@ -284,9 +284,13 @@ export type DerivedProjectState = "Todo" | "In Progress" | "Done";
  * therefore disagrees with an "In Progress" derivation, and the
  * /projects page shows that disagreement rather than hiding it.
  */
-export function derivedProjectState(p: ProjectPoolItem, section?: OrchestrationSection | null): DerivedProjectState {
+export function derivedProjectState(
+  p: ProjectPoolItem,
+  section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
+): DerivedProjectState {
   if (p.state === "closed" || p.state === "merged") return "Done";
-  if (section && refInOrchestration(p.ref, section)) return "In Progress";
+  if ((section && refInOrchestration(p.ref, section)) || additionalInProgressRefs?.has(p.ref)) return "In Progress";
   return "Todo";
 }
 
@@ -308,8 +312,9 @@ function refInOrchestration(ref: RefKey, section: OrchestrationSection): boolean
 export function projectDisagreement(
   p: ProjectPoolItem,
   section?: OrchestrationSection | null,
+  additionalInProgressRefs?: ReadonlySet<RefKey>,
 ): { project: string; derived: DerivedProjectState } | null {
   if (!p.status) return null;
-  const derived = derivedProjectState(p, section);
+  const derived = derivedProjectState(p, section, additionalInProgressRefs);
   return p.status === derived ? null : { project: p.status, derived };
 }

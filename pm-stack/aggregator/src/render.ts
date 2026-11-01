@@ -79,6 +79,7 @@ import {
   SAAS_GROUP_LABELS,
   SESSION_SOURCE_LABELS,
   countedEstimate,
+  refsInText,
   refUrl,
 } from "./model.ts";
 import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
@@ -2810,10 +2811,25 @@ export interface OverviewData {
   quota: QuotaView;
   health: HealthView;
   board: BoardItem[];
+  /** Resolved board refs, used to distinguish open linked PRs. */
+  items?: Map<RefKey, GhItem>;
+  /** The same line-up source used by /projects for disagreement badges. */
+  orchestration?: OrchestrationSection | null;
   /** Dashboard actions by object ref, so the needs-you summary applies
    *  the same render-time suppression as /attention (Codex review on
    *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
   actionsByObject?: Map<string, DashAction[]>;
+}
+
+export type OverviewInProgressSignal = "project-status" | "active-session" | "open-pr";
+
+export interface OverviewInProgressItem {
+  ref: RefKey;
+  title: string;
+  repo: string;
+  url: string;
+  signals: OverviewInProgressSignal[];
+  disagreement: { project: string; derived: string } | null;
 }
 
 export interface OverviewSummary {
@@ -2824,7 +2840,93 @@ export interface OverviewSummary {
   quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
   recentDone: { title: string; repo: string }[];
-  inProgress: { title: string; repo: string }[];
+  inProgress: OverviewInProgressItem[];
+}
+
+function reconciledInProgress(data: OverviewData): OverviewInProgressItem[] {
+  const poolByRef = new Map(data.pool.map((item) => [item.ref, item]));
+  const rows = new Map<RefKey, {
+    ref: RefKey;
+    title: string;
+    repo: string;
+    url: string;
+    signals: Set<OverviewInProgressSignal>;
+  }>();
+  const ensure = (ref: RefKey, title?: string, repo?: string, url?: string) => {
+    const project = poolByRef.get(ref);
+    const item = data.items?.get(ref);
+    const existing = rows.get(ref);
+    if (existing) return existing;
+    const hashAt = ref.lastIndexOf("#");
+    const row = {
+      ref,
+      title: project?.title ?? item?.title ?? title ?? ref,
+      repo: project?.repo ?? (hashAt >= 0 ? ref.slice(0, hashAt) : repo ?? ""),
+      url: project?.issueUrl ?? item?.url ?? url ?? refUrl(ref),
+      signals: new Set<OverviewInProgressSignal>(),
+    };
+    rows.set(ref, row);
+    return row;
+  };
+  const signal = (ref: RefKey, kind: OverviewInProgressSignal, title?: string, repo?: string, url?: string) => {
+    ensure(ref, title, repo, url).signals.add(kind);
+  };
+
+  for (const item of data.pool) {
+    if (item.status === "In Progress") signal(item.ref, "project-status", item.title, item.repo, item.issueUrl);
+    if (item.contentKind === "pr" && item.state === "open") signal(item.ref, "open-pr", item.title, item.repo, item.issueUrl);
+  }
+  for (const goal of data.orchestration?.goals ?? []) {
+    for (const task of goal.linedUp) {
+      if (task.status !== "in-progress") continue;
+      if (task.ref) {
+        signal(task.ref, "active-session", task.title);
+        continue;
+      }
+      for (const ref of refsInText(task.title)) signal(ref, "active-session", task.title);
+      for (const match of task.title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) {
+        signal(`${match[1]}#${match[2]}`, "active-session", task.title);
+      }
+    }
+  }
+  for (const boardItem of data.board) {
+    const openPr = boardItem.links.some((link) => {
+      const item = data.items?.get(link.ref);
+      return item?.kind === "pr" && item.state === "open";
+    });
+    for (const link of boardItem.links) {
+      const item = data.items?.get(link.ref);
+      const title = item?.title ?? boardItem.title;
+      const repo = item?.ref.slice(0, link.ref.lastIndexOf("#")) ?? boardItem.repo;
+      if (boardItem.source === "orchestrator" && boardItem.orchStatus === "in-progress") {
+        signal(link.ref, "active-session", title, repo, item?.url);
+      }
+      // A board card ties its linked issue and PR to the same work item.
+      if (openPr) signal(link.ref, "open-pr", title, repo, item?.url);
+    }
+  }
+
+  const additionalInProgressRefs = new Set<RefKey>();
+  for (const row of rows.values()) {
+    if (row.signals.has("active-session") || row.signals.has("open-pr")) additionalInProgressRefs.add(row.ref);
+  }
+  const signalOrder: OverviewInProgressSignal[] = ["project-status", "active-session", "open-pr"];
+  return [...rows.values()]
+    .map((row) => {
+      const project = poolByRef.get(row.ref);
+      const disagreement = project
+        ? projectDisagreement(project, data.orchestration, additionalInProgressRefs)
+        : null;
+      return {
+        ref: row.ref,
+        title: row.title,
+        repo: row.repo,
+        url: row.url,
+        signals: signalOrder.filter((item) => row.signals.has(item)),
+        disagreement,
+      };
+    })
+    .sort((a, b) => a.repo.localeCompare(b.repo) || a.title.localeCompare(b.title) || a.ref.localeCompare(b.ref));
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
@@ -2888,18 +2990,7 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
-    // In-flight board entries carry their real status in orchStatus
-    // (in-progress | queued | blocked): only the running ones belong
-    // under "In progress" — queued/blocked entries must not fill the
-    // list ahead of running work (Codex review on PR 2424).
-    inProgress: data.board
-      .filter(
-        (b) =>
-          b.status === "in-progress" ||
-          (b.status === "in-flight" && (b.orchStatus === undefined || b.orchStatus === "in-progress")),
-      )
-      .slice(0, 5)
-      .map((b) => ({ title: b.title, repo: b.repo })),
+    inProgress: reconciledInProgress(data),
   };
 }
 
@@ -2937,14 +3028,25 @@ export function renderOverviewBody(summary: OverviewSummary): string {
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
       : `<p class="muted">${empty}</p>`;
+  const inProgressItems = summary.inProgress.length
+    ? `<ul>${summary.inProgress.map((item) => {
+        const signals = item.signals
+          .map((signal) => `<span class="badge ${signal === "open-pr" ? "open" : signal === "active-session" ? "orch" : "src"}">${signal === "project-status" ? "Project Status" : signal === "active-session" ? "Active session" : "Open PR"}</span>`)
+          .join(" ");
+        const clash = item.disagreement
+          ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(item.disagreement.project)} · derived: ${esc(item.disagreement.derived)}</span>`
+          : "";
+        return `<li><a href="${esc(item.url)}">${esc(item.title)}</a> <span class="muted">${esc(item.repo)}</span> ${signals}${clash}</li>`;
+      }).join("")}</ul>`
+    : `<p class="muted">Nothing in progress from the Project, active-session, or open-PR signals.</p>`;
   return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${healthStrip}
-<h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
+<h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
-<p class="muted">In progress + recently done are the board's lanes — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
+<p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
 
 /** The overview page (#1134): full server render. */
