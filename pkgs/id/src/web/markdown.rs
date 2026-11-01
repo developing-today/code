@@ -167,6 +167,23 @@ struct FenceTracker {
     open: Option<(char, usize)>,
 }
 
+/// The line to feed the FenceTracker: a fence delimiter may sit
+/// up to three columns in from its container's content edge
+/// (CommonMark), but strip_container_prefixes leaves those columns
+/// in place (`>   ```` arrives as two leading spaces), and
+/// FenceTracker::feed anchors the run at the first character -- so
+/// an indented opening fence inside a blockquote was missed and
+/// the "code" interior was scanned as live text (Codex P2 on
+/// #1565's twenty-fourth cut). Removing up to three leading spaces
+/// here keeps the four-column distinction: a line still indented
+/// after this (or tab-led, which is four columns at column 0)
+/// reaches the tracker space-led and opens no fence, exactly like
+/// indented code.
+fn fence_feed_line(line: &str) -> &str {
+    let spaces = line.chars().take_while(|&c| c == ' ').count().min(3);
+    &line[spaces..]
+}
+
 impl FenceTracker {
     /// Feed one line (already stripped of up to three leading
     /// spaces). Returns true when the line is a fence delimiter.
@@ -1013,7 +1030,7 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             container_stripped
         };
         let was_in_fence = fence.in_fence();
-        if indent <= 3 && fence.feed(fence_line) {
+        if indent <= 3 && fence.feed(fence_feed_line(fence_line)) {
             if was_in_fence {
                 fence_prefix.clear();
             } else {
@@ -1282,6 +1299,15 @@ fn link_reference_definition_needs_more(after: &str) -> bool {
 /// line is no definition, and the lines around it stay one
 /// paragraph (Codex P2 on #1565's twentieth cut).
 fn link_reference_definition_is_valid(after: &str) -> bool {
+    // The destination itself must be syntactically valid, not
+    // merely followed by an empty or complete title: `/bad(` has
+    // an unmatched parenthesis, so the line is no definition at
+    // all, the definition-shaped line after it stays paragraph
+    // text, and synthesis must not promote it (Codex P2 on
+    // #1565's twenty-fourth cut).
+    if !link_reference_destination_is_valid(after) {
+        return false;
+    }
     let Some(title) = link_reference_definition_title_text(after) else {
         return false;
     };
@@ -1303,6 +1329,54 @@ fn link_reference_definition_is_valid(after: &str) -> bool {
         Some(end) => title[end + 2..].trim().is_empty(),
         None => false,
     }
+}
+
+/// Whether the destination at the start of the accumulated
+/// after-colon text is syntactically a link destination: an
+/// angle destination ends at its unescaped `>` with no unescaped
+/// `<` or line ending inside; a bare destination is non-empty,
+/// contains no control characters, and keeps its parentheses
+/// balanced (escapes exempt) -- the CommonMark destination
+/// grammar. `/bad(` fails the balance check even though nothing
+/// follows it, which the title-only validation above accepted.
+fn link_reference_destination_is_valid(after: &str) -> bool {
+    let text = after.trim();
+    if text.is_empty() {
+        return false;
+    }
+    if let Some(inner) = text.strip_prefix('<') {
+        let Some(pos) = find_unescaped(inner, '>') else {
+            return false;
+        };
+        let dest = &inner[..pos];
+        return !dest.contains('\n') && !contains_unescaped(dest, '<');
+    }
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let dest = &text[..end];
+    if dest.is_empty() {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for c in dest.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            c if c.is_control() => return false,
+            _ => {}
+        }
+    }
+    depth == 0
 }
 
 /// Whether anything follows the destination in the accumulated
@@ -1499,7 +1573,7 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             container_stripped
         };
         let was_in_fence = fence.in_fence();
-        if indent <= 3 && fence.feed(fence_line) {
+        if indent <= 3 && fence.feed(fence_feed_line(fence_line)) {
             if was_in_fence {
                 fence_prefix.clear();
             } else {
@@ -5837,6 +5911,60 @@ mod tests {
             let (first, second) = two_saves(original);
             assert_eq!(first, second, "type-7-after-indented-code round-trip is a fixpoint");
         }
+    }
+
+    #[test]
+    fn test_invalid_destination_reference_candidate_does_not_split_paragraph() {
+        // #1565 twenty-fourth cut (Codex P2): `[bad]: /bad(` is
+        // no definition -- the destination itself is invalid (an
+        // unmatched parenthesis) even though nothing follows it.
+        // The validator accepted it on its empty title alone, so
+        // `[url]: /target` was collected as a separate definition
+        // and synthesis promoted the recovered footnote's
+        // `[target][url]` into a hyperlink the document never had.
+        let original = "[bad]: /bad(\n[url]: /target\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[target\\]\\[url\\]"),
+            "unresolved reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target]("),
+            "invalid-destination reference is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "invalid-destination round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_indented_fence_in_blockquote_hides_reference_definition() {
+        // #1565 twenty-fourth cut (Codex P2): the fence inside the
+        // blockquote is indented two columns relative to the
+        // container; container stripping left those spaces in
+        // place and FenceTracker anchors at the first character,
+        // so the opening was missed and the reference collector
+        // collected `[url]: /fake` out of literal code -- synthesis
+        // then resolved the orphan footnote's `[x][url]` into a
+        // hyperlink. With the fence recognized, the definition
+        // stays code and the reference stays literal, while the
+        // real footnote definition is still recovered.
+        let original = ">   ```\n>\n> [url]: /fake\n>   ```\n\n[^a]: [x][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let found = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "footnote_definition");
+        assert!(found, "real footnote definition after the blockquote fence is recovered");
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[x\\]\\[url\\]"),
+            "code-interior reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[x]("),
+            "fenced reference definition is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "indented blockquote fence round-trip is a fixpoint");
     }
 
     #[test]
