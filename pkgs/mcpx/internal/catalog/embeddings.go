@@ -353,8 +353,17 @@ func (idx *VectorIndex) Import(r io.Reader) (int, error) {
 	defer idx.mu.Unlock()
 
 	count := 0
+	var dimErr error
 	for k, v := range in.Vectors {
 		if len(v) == 0 {
+			continue
+		}
+		if err := checkDim(Vector(v)); err != nil {
+			// Reject the mismatched vector instead of counting and
+			// persisting a row loadFromDB would drop on the next open.
+			if dimErr == nil {
+				dimErr = fmt.Errorf("import vector %q: %w", k, err)
+			}
 			continue
 		}
 		vec := make(Vector, len(v))
@@ -373,5 +382,5 @@ func (idx *VectorIndex) Import(r io.Reader) (int, error) {
 			`, k, blob)
 		}
 	}
-	return count, nil
+	return count, dimErr
 }
