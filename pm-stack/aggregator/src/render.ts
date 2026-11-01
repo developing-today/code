@@ -4784,13 +4784,28 @@ function jsonForScript(json: string): string {
   return json.replace(/</g, "\\u003c");
 }
 
-export function renderAa(section: AaFeedSection | null, provenance: Provenance): string {
+const AA_COLLECTOR_CADENCE_MS = 5 * 60_000;
+
+function aaFreshnessChips(detail: ProvenanceDetail | undefined, section: AaFeedSection | null): string {
+  if (!detail) return "";
+  const aaFacet = detail.aa;
+  const olderThanOneCycle = aaFacet.state === "live" && aaFacet.ageMs !== undefined && aaFacet.ageMs > AA_COLLECTOR_CADENCE_MS;
+  const retainedAfterFailure = section?.status === "ok" && section.stale === true;
+  const chipDetail: ProvenanceDetail = olderThanOneCycle || retainedAfterFailure
+    ? { ...detail, aa: { ...aaFacet, state: "stale" } }
+    : detail;
+  return freshnessChips(chipDetail, ["aa"]);
+}
+
+export function renderAa(section: AaFeedSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
   if (!section) {
     return layout(
       "Cost Explorer",
       `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
+      "",
+      aaFreshnessChips(detail, null),
     );
   }
   if (section.status === "absent") {
@@ -4799,6 +4814,8 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
       `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. No successful collection exists yet to fall back to — the page fills in on the first successful collection.</div>`,
       provenance,
       "/aa",
+      "",
+      aaFreshnessChips(detail, section),
     );
   }
   const s: AaSection = section;
@@ -4820,6 +4837,15 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the import measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
+  const feedAge = detail?.aa.ageMs === undefined ? "unavailable" : ageMsText(detail.aa.ageMs);
+  const aaTabAge = detail
+    ? `<p class="muted" data-aa-age>AA data age: ${esc(feedAge)} (fleet-feed age).</p>`
+    : "";
+  const catalogTabAge = detail
+    ? catalog
+      ? `<p class="muted" data-catalog-age>Model catalog age: ${esc(feedAge)} (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried).</p>`
+      : `<p class="muted" data-catalog-age>Model catalog age: unavailable — no catalog in this feed (fleet-feed age: ${esc(feedAge)}).</p>`
+    : "";
   const modelCards = catalog
     ? `<div class="board">
 <div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
@@ -4870,6 +4896,7 @@ ${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReas
 <div class="card xpl-detail" id="xpl-detail"></div>
 <div class="card" id="xpl-tray" hidden><strong>Hidden</strong> <span id="xpl-traychips"></span></div>
 <section id="xtab-aa">
+${aaTabAge}
 <div id="xpl-legend" class="strip"></div>
 <div class="xpl-charts" id="xpl-charts">
 <div class="chart" data-chart="xpl-c1"><h3>Completion time × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c1"> size dots by cost</label><button type="button" data-dl="xpl-c1">Download PNG</button></span><svg id="xpl-c1" viewBox="0 0 680 400" role="img" aria-label="Completion time by score scatter chart"></svg><p class="muted" data-note></p></div>
@@ -4930,6 +4957,7 @@ ${aaConfigsTable(s.configs)}
 ${s.cai ? aaCaiTable(s.cai) : ""}
 </section>
 <section id="xtab-models" hidden>
+${catalogTabAge}
 <h2>The fleet's model universe</h2>
 <p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
 ${modelCards}
@@ -4952,7 +4980,7 @@ ${modelCards}
 </section>
 ${coverageHtml}
 <script type="application/json" id="xpl-data">${explorerJson}</script>`;
-  return layout("Cost Explorer", body, provenance, "/aa", AA_EXPLORER_SCRIPT);
+  return layout("Cost Explorer", body, provenance, "/aa", AA_EXPLORER_SCRIPT, aaFreshnessChips(detail, section));
 }
 
 // --- Sessions / identity registry page (#906 §3) ------------------------------

@@ -26,7 +26,7 @@ import {
 import { PAGES } from "../src/pages.ts";
 import { renderAa } from "../src/render.ts";
 import { FIXTURE_AA, fixtureSource } from "../src/sources/fixtures.ts";
-import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance } from "../src/model.ts";
+import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance, ProvenanceDetail } from "../src/model.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -41,6 +41,23 @@ const PROV: Provenance = {
   registry: "x",
   aa: "fixtures",
 };
+
+function aaProvenanceDetail(ageMs?: number, state: ProvenanceDetail["aa"]["state"] = "live"): ProvenanceDetail {
+  const fixtures = { text: "fixtures", state: "fixtures" as const };
+  return {
+    board: fixtures,
+    roadmap: fixtures,
+    items: fixtures,
+    comments: fixtures,
+    quota: fixtures,
+    usage: fixtures,
+    attention: fixtures,
+    orchestration: fixtures,
+    dns: fixtures,
+    registry: fixtures,
+    aa: { text: "live (fleet feed)", state, ...(ageMs === undefined ? {} : { ageMs }) },
+  };
+}
 
 describe("stripJsonComments", () => {
   test("removes // and /* */ comments but keeps URLs inside strings", () => {
@@ -633,6 +650,33 @@ describe("aa-explorer manifest + render", () => {
     const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
     expect(absent).toContain("Supabase query failed (HTTP 500)");
     expect(absent).not.toContain("Rankings");
+  });
+
+  test("freshness chips and both tab ages use labelled fleet-feed provenance", () => {
+    const html = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(2 * 60_000));
+
+    expect(html).toContain('class="fchip live" title="live (fleet feed)"');
+    expect(html).toContain("aa · live · 2m old");
+    expect(html).toContain("AA data age: 2m old (fleet-feed age)");
+    expect(html).toContain(
+      "Model catalog age: 2m old (fleet-feed age; catalog and AA are read in the same collector run; no separate catalog timestamp is carried)",
+    );
+  });
+
+  test("an AA facet older than one collector cycle is stale, as is a retained stale section", () => {
+    const oldFeed = renderAa(FIXTURE_AA, PROV, aaProvenanceDetail(6 * 60_000));
+    expect(oldFeed).toContain('class="fchip stale" title="live (fleet feed)"');
+    expect(oldFeed).toContain("aa · stale · 6m old");
+
+    const retained = renderAa({ ...FIXTURE_AA, stale: true }, PROV, aaProvenanceDetail(2 * 60_000));
+    expect(retained).toContain('class="fchip stale" title="live (fleet feed)"');
+  });
+
+  test("legacy callers without provenance detail keep rendering without chips or tab-age claims", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    expect(html).not.toContain('class="fchip');
+    expect(html).not.toContain("AA data age:");
+    expect(html).not.toContain("Model catalog age:");
   });
 
   test("fixtureSource().aa() returns the fixture section", async () => {
