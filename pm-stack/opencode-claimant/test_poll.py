@@ -65,6 +65,20 @@ class TestIsActiveRoot(unittest.TestCase):
         self.assertFalse(poll.is_active_root("nope", NOW))
         self.assertFalse(poll.is_active_root({"id": "ses_x"}, NOW))
 
+    def test_resumed_session_counts_via_the_active_set(self):
+        # A resumed root keeps its stored outcome/idle from the earlier
+        # run; the server's active set overrides those markers.
+        s = root(outcome="failed")
+        s["time"]["idle"] = NOW
+        self.assertFalse(poll.is_active_root(s, NOW, set()))
+        self.assertFalse(poll.is_active_root(s, NOW, None))
+        self.assertTrue(poll.is_active_root(s, NOW, {"ses_x"}))
+
+    def test_active_set_membership_overrides_staleness(self):
+        s = root()
+        s["time"]["updated"] = NOW - 90 * MIN
+        self.assertTrue(poll.is_active_root(s, NOW, {"ses_x"}))
+
     def test_count_active_roots_over_a_mixed_list(self):
         finished = root(outcome="failed")
         finished["time"]["idle"] = NOW
@@ -74,6 +88,10 @@ class TestIsActiveRoot(unittest.TestCase):
                      "time": {"created": NOW - 90 * MIN,
                               "updated": NOW - 90 * MIN}}]
         self.assertEqual(poll.count_active_roots(sessions, NOW), 2)
+        # The same list with ses_old in the server's active set (a
+        # resumed zombie-looking root) counts it too.
+        self.assertEqual(
+            poll.count_active_roots(sessions, NOW, {"ses_old"}), 3)
 
 
 if __name__ == "__main__":

@@ -54,9 +54,16 @@ def is_root_session(s):
         and not s.get("parent_id")
 
 
-def is_active_root(s, now_ms):
+def is_active_root(s, now_ms, active_ids=None):
     if not is_root_session(s):
         return False
+    # The server's active set is authoritative: a RESUMED session keeps
+    # its stored outcome/idle from the earlier run while it is mid-run
+    # again (the aggregator's mapper overrides stored outcomes the same
+    # way, pm-stack/aggregator/src/sources/opencode.ts). Membership
+    # counts the root no matter what its stored markers say.
+    if active_ids is not None and s.get("id") in active_ids:
+        return True
     t = s.get("time") or {}
     if t.get("idle") or s.get("outcome"):
         return False
@@ -64,8 +71,9 @@ def is_active_root(s, now_ms):
     return now_ms - updated < ACTIVE_WINDOW_MS
 
 
-def count_active_roots(sessions, now_ms):
-    return sum(1 for s in sessions if is_active_root(s, now_ms))
+def count_active_roots(sessions, now_ms, active_ids=None):
+    return sum(1 for s in sessions
+               if is_active_root(s, now_ms, active_ids))
 
 
 HELPER = os.environ.get(
@@ -81,6 +89,33 @@ def load_helper():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def fetch_active_ids():
+    """Session ids the server currently holds active (GET
+    /api/session/active), or None when unreadable. The response's data
+    is a map keyed by session id (a list shape is accepted too)."""
+    try:
+        with open(AUTH_FILE) as f:
+            password = json.load(f)["password"]
+    except Exception:
+        return None
+    req = urllib.request.Request(
+        OPENCODE_URL.rstrip("/") + "/api/session/active")
+    token = base64.b64encode(f"opencode:{password}".encode()).decode()
+    req.add_header("Authorization", f"Basic {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            data = json.loads(res.read() or "null")
+    except Exception:
+        return None
+    if isinstance(data, dict) and "data" in data:
+        data = data["data"]
+    if isinstance(data, dict):
+        return set(data.keys())
+    if isinstance(data, list):
+        return {x for x in data if isinstance(x, str)}
+    return None
 
 
 def fetch_sessions():
@@ -139,7 +174,8 @@ def main():
         out["cap_room"] = None
     else:
         roots = [s for s in sessions if is_root_session(s)]
-        active = count_active_roots(roots, int(time.time() * 1000))
+        active = count_active_roots(roots, int(time.time() * 1000),
+                                    fetch_active_ids())
         out["live_root_sessions"] = len(roots)
         out["active_root_sessions"] = active
         out["cap_room"] = max(0, CAP - active)

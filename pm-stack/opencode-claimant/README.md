@@ -78,7 +78,11 @@ few sessions were active. The gate refinement (task 4408) counts only
 `time.idle` and an `outcome` (both verified on the live server: 50
 roots, 46 finished, at the gate check), a running one carries neither,
 and a marker-less root silent for 30+ minutes is treated as a zombie,
-not a worker. `poll.py` still reports the raw root total as
+not a worker. A root the server itself holds in `GET
+/api/session/active` always counts — a resumed session keeps its
+stored outcome from the earlier run while it is mid-run again, so the
+server's active set overrides the stored markers (the same rule the
+aggregator's session mapper applies). `poll.py` still reports the raw root total as
 `live_root_sessions` alongside the new `active_root_sessions`;
 `cap_room` derives from the active count. An unreadable server still
 yields `cap_room: null` — the cap fails closed, which is the safe
