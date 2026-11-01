@@ -2,6 +2,8 @@
 // body validators for POST /v1/sessions and POST /v1/tasks. Pure functions —
 // unit-tested without a server.
 
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+
 export class ValidationError extends Error {
   status = 400;
 }
@@ -151,11 +153,13 @@ export function parseSessionRequest(body: unknown): SessionRequest {
 /** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).
  * One rule for every caller type (OIDC and bearer alike): a missing, empty,
  * or whitespace-only directory resolves to the target repo's clone, and an
- * explicit directory must be an absolute, normalized path equal to or inside
- * that clone. Relative paths, other repos' clones, and arbitrary absolute
- * paths are rejected BEFORE any issue/task/session is created. (This
- * supersedes the #2903-era bearer free-form directory; extra roots and
- * allowlists stay out of scope per design issue #2668.) */
+ * explicit directory must be an absolute path equal to or inside that
+ * clone AFTER symlink resolution (issue #3999). Relative paths, other
+ * repos' clones, arbitrary absolute paths, and in-clone paths whose
+ * resolved form escapes the clone (a committed symlink such as the
+ * code clone's worktrees or nixpkgs links) are rejected BEFORE any
+ * issue/task/session is created. Extra roots and allowlists stay out
+ * of scope per design issue #2668. */
 export function resolveSessionDirectory(
   callerType: "oidc" | "bearer",
   repo: string,
@@ -166,31 +170,65 @@ export function resolveSessionDirectory(
   if (scoped === undefined) {
     throw new ValidationError(`directory: no repo directory is configured for ${repo}`);
   }
-  const root = normalizeDirectory(scoped);
+  const root = canonicalizeDirectory(scoped);
   if (directory === undefined || directory.trim() === "") return root;
-  const norm = normalizeDirectory(directory);
-  if (norm === root || norm.startsWith(`${root}/`)) return norm;
+  const resolved = canonicalizeDirectory(directory);
+  if (resolved === root || resolved.startsWith(`${root}/`)) return resolved;
   throw new ValidationError(
     `directory: ${callerType} callers may only run inside the target repo clone (${root}) or a directory within it`,
   );
 }
 
-/** Lexical absolute-path normalization: collapses duplicate slashes, "."
- * and ".." segments and trailing slashes. Relative paths are rejected. */
-function normalizeDirectory(d: string): string {
+/** Canonicalize an absolute directory path: resolve each component's
+ * symlinks as it is appended, so a ".." segment pops the RESOLVED parent
+ * (kernel order), not the lexical one. A component that does not exist
+ * cannot be a symlink, so the remaining tail is appended lexically onto
+ * the canonical prefix (the nearest-existing-ancestor rule); a dangling
+ * symlink still resolves through its readlink target, so a committed
+ * link pointing outside the clone is judged by where it points, not by
+ * whether its target happens to exist on this machine. Relative paths
+ * are rejected. */
+function canonicalizeDirectory(d: string, depth = 0): string {
   if (!d.startsWith("/")) {
     throw new ValidationError(`directory: must be an absolute path, got "${d}"`);
   }
-  const parts: string[] = [];
+  if (depth > 40) {
+    throw new ValidationError(`directory: too many symlink levels in "${d}"`);
+  }
+  let resolved = "/";
   for (const seg of d.split("/")) {
     if (seg === "" || seg === ".") continue;
     if (seg === "..") {
-      parts.pop();
+      resolved = resolved.slice(0, resolved.lastIndexOf("/")) || "/";
       continue;
     }
-    parts.push(seg);
+    const next = resolved === "/" ? `/${seg}` : `${resolved}/${seg}`;
+    resolved = resolveComponent(next, depth);
   }
-  return `/${parts.join("/")}`;
+  return resolved;
+}
+
+function resolveComponent(path: string, depth: number): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    // Nonexistent (or dangling): fall through to the symlink check.
+  }
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      const target = readlinkSync(path);
+      const parent = path.slice(0, path.lastIndexOf("/")) || "/";
+      const absolute = target.startsWith("/")
+        ? target
+        : parent === "/"
+          ? `/${target}`
+          : `${parent}/${target}`;
+      return canonicalizeDirectory(absolute, depth + 1);
+    }
+  } catch {
+    // Not present at all: a plain lexical component.
+  }
+  return path;
 }
 
 export interface TaskRequest {
