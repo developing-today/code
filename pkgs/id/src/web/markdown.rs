@@ -1560,7 +1560,360 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     for (placeholder, raw) in substitutions {
         output = output.replace(&placeholder, &format!("<{raw}>"));
     }
-    Ok(output)
+    Ok(strip_end_list_separators(doc, &output))
+}
+
+/// The start number a PM list renders with in Markdown, when it
+/// renders as an ordered list: ordered_list always (attrs.order,
+/// default 1); a task_list only when it carries attrs.order (#1370
+/// ordered task runs render as `1. [ ]`). Bullet-rendering lists and
+/// non-lists return None.
+fn ordered_start(node: &Value) -> Option<u64> {
+    let order = node["attrs"]["order"].as_u64();
+    match node["type"].as_str() {
+        Some("ordered_list") => Some(order.unwrap_or(1)),
+        Some("task_list") => order,
+        _ => None,
+    }
+}
+
+fn list_kind(node: &Value) -> Option<&str> {
+    match node["type"].as_str() {
+        Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
+        _ => None,
+    }
+}
+
+/// The tightness a PM list effectively renders with: the stored
+/// `attrs.tight` when present; for a legacy task_list without the
+/// attribute, the same inference json_to_ast applies (loose if any
+/// item has more than one block child, else tight); bullet/ordered
+/// lists without the attribute render loose (json_to_ast defaults
+/// them to false). Boundary decisions in collect_boundary_kinds must
+/// use this, not the raw attribute: comparing raw attrs mistook a
+/// legacy tight task list for loose (CodeRabbit review, PR #3258).
+fn effective_tight(node: &Value) -> bool {
+    if let Some(tight) = node["attrs"]["tight"].as_bool() {
+        return tight;
+    }
+    if node["type"].as_str() == Some("task_list") {
+        return !node["content"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.len() > 1)
+            })
+        });
+    }
+    false
+}
+
+/// #1397: comrak's renderer separates adjacent list siblings with an
+/// `<!-- end list -->` comment - renderer-internal markup that lands in
+/// the user's file. Where the two lists are of DIFFERENT PM kinds the
+/// comment is the only thing keeping them apart, and it is not needed:
+/// a change of list type ends a list on reparse all by itself (and the
+/// #1370 parse-side split rebuilds task/plain runs), so the separator
+/// line is dropped and the lists sit directly adjacent in the text -
+/// tight lists stay tight, loose lists keep their blank lines. Where
+/// the kinds are the SAME (two ordered lists, two task lists) dropping
+/// it would merge the lists and lose restart/order information, so the
+/// separator stays for those pairs. It also stays for a DIFFERENT-kind
+/// pair that renders as the same ordered Markdown list (an ordered_list
+/// next to a task_list carrying `attrs.order`, or vice versa) when the
+/// second list does not start exactly where the first list's numbering
+/// ends: merging those on reparse renumbers the second run and loses
+/// its restart (Codex review, PR #3258). If the lines found in the output
+/// do not line up one-to-one with the boundaries computed from the doc,
+/// the output is returned untouched.
+/// The fence run a rendered line opens or closes, if any: returns the
+/// fence character and the remainder of the line starting at the run.
+/// List-marker prefixes are stripped first (blockquote `>` markers and
+/// indentation, then bullet / ordered / task-checkbox markers, repeated
+/// for nested items), because a code block that is a list item's first
+/// block renders its opening fence immediately after the marker
+/// (`- ``` `). Plain lines return their own trimmed remainder.
+fn list_fence_rest(line: &str) -> Option<(char, &str)> {
+    let mut rest = line.trim_start_matches(['>', ' ']).trim_start();
+    loop {
+        let mut stripped = false;
+        for marker in ["- ", "+ ", "* ", "[ ] ", "[x] ", "[X] "] {
+            if let Some(r) = rest.strip_prefix(marker) {
+                rest = r.trim_start();
+                stripped = true;
+                break;
+            }
+        }
+        if stripped {
+            continue;
+        }
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 {
+            let after = &rest[digits..];
+            for marker in [". ", ") "] {
+                if let Some(r) = after.strip_prefix(marker) {
+                    rest = r.trim_start();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    if rest.starts_with("```") {
+        Some(('`', rest))
+    } else if rest.starts_with("~~~") {
+        Some(('~', rest))
+    } else {
+        None
+    }
+}
+
+/// Whether a list's first item renders empty (no text, no block content
+/// beyond empty paragraphs): an empty list item cannot interrupt a
+/// paragraph under CommonMark, whatever its marker (Codex review,
+/// PR #3258: `- a\n\n1.\n2. b` saved without the blank reparsed the
+/// empty `1.` as lazy continuation text and lost the ordered list).
+fn list_starts_with_empty_item(list: &Value) -> bool {
+    let Some(first) = list["content"].as_array().and_then(|items| items.first()) else {
+        return false;
+    };
+    fn node_is_empty(node: &Value) -> bool {
+        if node["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+            return false;
+        }
+        match node["type"].as_str() {
+            Some("paragraph" | "list_item" | "task_list_item" | "text") | None => {}
+            Some(_) => return false,
+        }
+        node["content"]
+            .as_array()
+            .is_none_or(|parts| parts.iter().all(node_is_empty))
+    }
+    node_is_empty(first)
+}
+
+fn strip_end_list_separators(doc: &Value, output: &str) -> String {
+    // Recompute with kinds: the drop decision needs them, so collect
+    // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
+    // alongside.
+    let mut kinds: Vec<(String, String, bool, bool, bool)> = Vec::new();
+    collect_boundary_kinds(doc, &mut kinds);
+    if kinds.is_empty() {
+        return output.to_string();
+    }
+    let is_separator_line = |line: &str| {
+        line.trim_start_matches(['>', ' ']).trim() == "<!-- end list -->"
+    };
+    let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
+    let lines: Vec<&str> = output.lines().collect();
+    // Codex review, PR #3258: a separator-looking line inside a fenced
+    // code block is authored content, not renderer markup - it must
+    // neither count toward the boundary correspondence nor be dropped.
+    // Track fence state (``` / ~~~, optionally blockquote-prefixed) and
+    // only treat lines outside fences as separators.
+    let mut in_fence = false;
+    let mut fence_char = '`';
+    let mut fence_len = 0usize;
+    let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        // Codex review, PR #3258: a fence can open immediately after a
+        // list marker (a list item whose first block is a code block
+        // renders as `- ``` `): strip any list-marker prefixes (bullet,
+        // ordered, task checkbox, nested) before looking for the fence
+        // run, or the opener is missed, the fence's literal content is
+        // counted as a separator, and the closing fence is mistaken
+        // for an opener that hides the real separator.
+        let fence_rest = list_fence_rest(line);
+        let fence_marker = fence_rest.map(|(c, _)| c);
+        match fence_marker {
+            Some(c) if !in_fence => {
+                in_fence = true;
+                fence_char = c;
+                fence_len = fence_rest
+                    .map(|(_, rest)| rest.chars().take_while(|&ch| ch == c).count())
+                    .unwrap_or(0);
+                is_separator.push(false);
+            }
+            // CodeRabbit review, PR #3258: a fence closes only on a
+            // BARE run of the fence character at least as long as the
+            // opener. A content line such as ```rust starts with the
+            // marker but is not a closer; ending the fence there let a
+            // separator-looking line later in the code block be counted
+            // (and dropped) as renderer markup, losing authored lines.
+            Some(c)
+                if c == fence_char
+                    && fence_rest.is_some_and(|(_, rest)| {
+                        rest.trim_end().chars().all(|ch| ch == c)
+                            && rest.trim_end().len() >= fence_len
+                    }) =>
+            {
+                in_fence = false;
+                is_separator.push(false);
+            }
+            _ => is_separator.push(!in_fence && is_separator_line(line)),
+        }
+    }
+    let found = is_separator.iter().filter(|b| **b).count();
+    if found != kinds.len() {
+        return output.to_string();
+    }
+    let mut boundary = kinds.iter();
+    let mut kept: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut idx = 0;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if is_separator[idx] {
+            match boundary.next() {
+                Some((a, b, tight_pair, merge_safe, needs_blank)) if a != b && *merge_safe => {
+                    // Drop the separator. The renderer also puts a blank
+                    // line on each side of it; with the comment gone,
+                    // blanks between the lists would fuse them into ONE
+                    // loose list on reparse. A tight pair keeps no blank
+                    // line at all; a loose pair keeps exactly one. A
+                    // needs_blank pair also keeps exactly one: an ordered
+                    // list starting above 1 cannot interrupt the previous
+                    // item's paragraph, so with no blank line at all its
+                    // first line reparses as a lazy continuation and the
+                    // list is lost (Codex review, PR #3258).
+                    let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
+                    let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
+                    if prev_blank && next_blank {
+                        if *tight_pair && !*needs_blank {
+                            kept.pop();
+                        }
+                        idx += 1; // skip the following blank line too
+                    }
+                }
+                _ => kept.push(line),
+            }
+        } else {
+            kept.push(line);
+        }
+        idx += 1;
+    }
+    let mut out = kept.join("\n");
+    if output.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// (prev PM kind, PM kind, both tight, merge-safe, needs-blank) for every list
+/// adjacency in the doc, in render order, interleaved with authored
+/// htmlBlocks (recorded as ("", "", false, false, false) so they consume a
+/// separator-line slot but are never dropped - see
+/// strip_end_list_separators' caller contract). Merge-safe is false
+/// only when dropping the separator would merge two ordered-rendering
+/// lists whose numbering does not continue across the boundary.
+fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool, bool)>) {
+    let Some(content) = node["content"].as_array() else {
+        return;
+    };
+    let mut prev_list: Option<&Value> = None;
+    // Effective tight of the current consecutive bullet_list run's
+    // FIRST list (the tight json_to_ast's coalesce renders with).
+    let mut bullet_run_tight: Option<bool> = None;
+    for child in content {
+        let kind = list_kind(child);
+        if let (Some(prev), Some(kind)) = (prev_list, kind)
+            && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
+        {
+            // Codex review, PR #3258: when prev is a bullet_list that
+            // json_to_ast coalesced with earlier bullet siblings, the
+            // rendered list carries the FIRST sibling's tight, so the
+            // boundary must compare that effective tightness - the last
+            // original sibling's attr can differ and silently loosens
+            // the following run on reparse.
+            let prev_tight = if list_kind(prev) == Some("bullet_list") {
+                bullet_run_tight.unwrap_or_else(|| effective_tight(prev))
+            } else {
+                effective_tight(prev)
+            };
+            let child_tight = effective_tight(child);
+            let tight_pair = prev_tight && child_tight;
+            // Two lists that both render as ordered Markdown merge into
+            // one list on reparse if the separator goes; the merge is
+            // lossless only when the second list starts exactly where
+            // the first list's numbering ends (start + item count), so
+            // convert_list_runs recomputes the same run orders.
+            let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
+                (Some(prev_start), Some(next_start)) => {
+                    let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
+                    // attrs.order comes from the request's PM JSON; a
+                    // crafted start near u64::MAX must not overflow the
+                    // sum (debug builds panic, release builds wrap and
+                    // could drop a separator that should stay).
+                    prev_start.checked_add(prev_count) == Some(next_start)
+                }
+                _ => true,
+            };
+            // Codex review, PR #3258: two lists that render as the same
+            // Markdown list family (bullet-rendering: bullet_list and
+            // order-less task_list; ordered-rendering: ordered_list and
+            // ordered task_list) merge into ONE list on reparse when the
+            // separator drops, and convert_list_runs then copies one
+            // run's tight onto both. When their tight attributes differ
+            // that silently loosens/tightens a run and breaks the save
+            // fixpoint, so the separator stays. Different families split
+            // on reparse by marker type and keep their own tightness.
+            let renders_ordered = |n: &Value| ordered_start(n).is_some();
+            let tight_differs = prev_tight != child_tight;
+            let tight_merge_safe =
+                !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
+            let merge_safe = ordered_merge_safe && tight_merge_safe;
+            // Codex review, PR #3258: an ordered-rendering list that
+            // starts above 1 cannot interrupt a paragraph, so when the
+            // previous list does not itself render ordered, the boundary
+            // must keep a blank line or the second list's first line
+            // reparses as a lazy continuation of the previous item.
+            let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
+                && ordered_start(prev).is_none())
+                || list_starts_with_empty_item(child);
+            out.push((
+                list_kind(prev).unwrap_or_default().to_string(),
+                kind.to_string(),
+                tight_pair,
+                merge_safe,
+                needs_blank,
+            ));
+        }
+        if child["type"].as_str() == Some("code_block")
+            && child["attrs"]["htmlBlock"].as_bool() == Some(true)
+            && child["content"].as_array().is_some_and(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|n| n["text"].as_str())
+                    .collect::<String>()
+                    .trim()
+                    == "<!-- end list -->"
+            })
+        {
+            out.push((String::new(), String::new(), false, false, false));
+        }
+        // Codex review, PR #3258: lists inside a table cell are
+        // flattened to text by append_table_cell_child and emit no
+        // separator, so boundaries collected there have no line in
+        // the output to correspond to - skip the cell's subtree.
+        if !matches!(child["type"].as_str(), Some("table_header" | "table_cell")) {
+            collect_boundary_kinds(child, out);
+        }
+        if kind.is_some() {
+            if kind == Some("bullet_list") {
+                if prev_list.is_none_or(|p| list_kind(p) != Some("bullet_list")) {
+                    bullet_run_tight = Some(effective_tight(child));
+                }
+            } else {
+                bullet_run_tight = None;
+            }
+            prev_list = Some(child);
+        } else {
+            prev_list = None;
+            bullet_run_tight = None;
+        }
+    }
 }
 
 /// Whether a node value is a delimiter-mark wrapper (#1418): the
@@ -3076,6 +3429,439 @@ mod tests {
             assert!(first.contains(needle), "item {needle} preserved: {first:?}");
         }
         assert_eq!(first, second, "blockquote lists are a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_no_end_list_artefact() {
+        // #1397: adjacent lists of DIFFERENT kinds (bullet vs ordered vs
+        // task) must save separated by blank lines only - never with the
+        // renderer's <!-- end list --> comment, which used to reopen as a
+        // phantom html code_block between the lists.
+        for original in [
+            "- a\n\n1. b\n",
+            "1. a\n\n- b\n",
+            "- a\n- b\n\n1. c\n2. d\n",
+            "1. [ ] a\n\n- b\n",
+            // Ordered plain/task pair whose numbering CONTINUES across
+            // the boundary (task run starts at 2): merging on reparse
+            // recomputes the same run order, so the separator drops.
+            "1. a\n\n2. [ ] b\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert!(
+                !first.contains("```html"),
+                "no html-fence artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_ordered_task_restart_keeps_separator() {
+        // Codex review on PR #3258: an ordered_list next to a task_list
+        // carrying attrs.order (or vice versa) renders as the SAME
+        // ordered Markdown list type. When the second list restarts at
+        // 1 instead of continuing the first list's numbering, dropping
+        // the separator merges them on reparse and convert_list_runs
+        // renumbers the second run (order 2), silently losing the
+        // restart - so the separator stays for these pairs.
+        for original in [
+            "1. plain\n\n<!-- end list -->\n\n1. [ ] restarted\n",
+            "1. [ ] first\n\n<!-- end list -->\n\n1. plain\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains("<!-- end list -->"),
+                "separator preserved for restart pair {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "restart shape is a fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse preserves both lists and the restart for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(content[1]["attrs"]["order"], 1, "second list restarts at 1 for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_adjacent_task_plain_tight_mismatch_keeps_separator() {
+        // Codex review on PR #3258 (P2): a tight bullet list next to a
+        // loose task list renders as the SAME Markdown list family.
+        // Dropping the separator merges them on reparse and
+        // convert_list_runs copies tight:false onto both runs, so the
+        // next save inserts a blank line inside the first list - the
+        // separator stays when tight differs within one render family.
+        let original = "- a\n- aa\n\n<!-- end list -->\n\n- [ ] b\n\n- [ ] c\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator preserved for tight-mismatched pair: {first:?}"
+        );
+        assert_eq!(first, second, "tight-mismatch shape is a fixpoint");
+        assert_eq!(
+            markdown_to_prosemirror(&first),
+            markdown_to_prosemirror(original),
+            "reparse preserves both lists and their tightness"
+        );
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists");
+        assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
+        assert_eq!(content[1]["attrs"]["tight"], false, "second list stays loose");
+    }
+
+    #[test]
+    fn test_coalesced_bullet_run_boundary_uses_first_lists_tight() {
+        // Codex review on PR #3258 (P2): a loose bullet list followed by
+        // a tight bullet list coalesces in json_to_ast using the FIRST
+        // list's tight (loose). The boundary to a following tight task
+        // list must be judged against that effective tightness: the two
+        // render as one loose bullet list, so dropping the separator
+        // merged everything into one loose list on reparse and silently
+        // loosened the task run (its next save grew a blank line inside
+        // it). The separator stays.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": false}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "aa"}]}]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}]},
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "d"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator kept for coalesced loose-bullet -> tight-task boundary: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "coalesced-boundary shape is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_legacy_task_list_boundary_uses_inferred_tight() {
+        // CodeRabbit review on PR #3258: collect_boundary_kinds compared
+        // raw attrs.tight, so a legacy task_list without the attribute
+        // (json_to_ast infers tight for single-paragraph items) counted
+        // as tight-differing next to an explicitly tight bullet list and
+        // kept a separator the rendered output does not need. With the
+        // inferred tightness the pair is a tight same-family pair whose
+        // separator drops, and the save is a fixpoint.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            !first.contains("end list"),
+            "no separator for inferred-tight legacy task pair: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "legacy-tight pair is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_fence_closes_only_on_bare_run() {
+        // CodeRabbit review on PR #3258 (Major): the fence scanner closed
+        // a fence on ANY line starting with the marker, so a ```rust
+        // content line ended the block early and a separator-looking line
+        // later in the block was counted as renderer markup. A fence now
+        // closes only on a bare run at least as long as its opener: the
+        // authored line inside the block below must neither count toward
+        // the boundary correspondence nor be dropped, while the real
+        // bullet -> ordered separator still drops.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "```\ncode\n```rust\n<!-- end list -->\nmore\n```\n\n- a\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's authored line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```rust\n<!-- end list -->\nmore"),
+            "code block content survives intact: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_boundary_order_overflow_does_not_panic() {
+        // CodeRabbit review on PR #3258: the merge-safety check computed
+        // prev_start + prev_count on a request-supplied attrs.order; a
+        // start near u64::MAX overflowed (panic in debug builds, wrap in
+        // release). Checked addition treats overflow as not-merge-safe,
+        // so the separator stays and nothing panics.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "ordered_list", "attrs": {"tight": true, "order": u64::MAX}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true, "order": 1}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "18446744073709551615. a\n\n<!-- end list -->\n\n1. [ ] b\n",
+        );
+        assert!(
+            out.contains("<!-- end list -->"),
+            "separator kept when the start sum overflows: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_code_fence_is_not_a_separator() {
+        // Codex review on PR #3258 (P2): a fenced code block whose
+        // literal content is the separator text is authored content.
+        // It must not satisfy the boundary count, and must survive
+        // while the real boundary separator drops. (Unit-level: the
+        // markdown-text roundtrip of a bare HTML-comment fence hits
+        // the parse-side htmlBlock handling, a different mechanism.)
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- a\n\n<!-- end list -->\n\n1. b\n\n```\n<!-- end list -->\n```\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```\n<!-- end list -->\n```"),
+            "code fence content survives verbatim: {out:?}"
+        );
+        assert!(
+            out.starts_with("- a\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_fence_after_list_marker_survives() {
+        // Codex review on PR #3258 (P2): a list item whose first block
+        // is a fenced code block renders its opener immediately after
+        // the list marker (`- ``` `). The scanner missed that opener,
+        // counted the fence's literal separator-looking line, mistook
+        // the closing fence for an opener (hiding the real separator),
+        // and the counts still matched - so the literal was deleted.
+        // The fence content must survive and the real separator drop.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- ```\n  <!-- end list -->\n  ```\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the fence's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("- ```\n  <!-- end list -->\n  ```"),
+            "fenced code block survives verbatim: {out:?}"
+        );
+        assert!(
+            out.contains("```\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_adjacent_list_before_empty_first_item_keeps_blank() {
+        // Codex review on PR #3258 (P2): `- a\n\n1.\n2. b` saved
+        // without the blank line - an empty list item cannot interrupt
+        // a paragraph even when its marker starts at 1, so the empty
+        // `1.` reparsed as lazy continuation text and the ordered list
+        // was lost. The boundary keeps exactly one blank line.
+        let original = "- a\n\n1.\n2. b\n";
+        let (first, second) = two_saves(original);
+        // The blank line is kept; the renderer spells the empty item
+        // with a trailing space (`1. `), so the saved form is not
+        // byte-identical to the hand-written original.
+        assert_eq!(
+            first, "- a\n\n1. \n2. b\n",
+            "blank kept before the empty item: {first:?}"
+        );
+        assert!(!first.contains("end list"), "no artefact: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists survive reparse: {content:?}");
+        assert_eq!(content[1]["type"], "ordered_list");
+        assert_eq!(content[1]["content"].as_array().unwrap().len(), 2, "both ordered items survive");
+    }
+
+    #[test]
+    fn test_table_cell_list_boundaries_do_not_consume_separator() {
+        // Codex review on PR #3258 (P2): lists inside a table cell are
+        // flattened to text and emit no separator. Their boundaries
+        // must not consume the correspondence of a real top-level
+        // boundary - here the doc has one real boundary (bullet ->
+        // ordered at top level) and one cell-internal pair; the saved
+        // text drops exactly the real separator.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "table", "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": [
+                            {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]}
+                            ]},
+                            {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "y"}]}]}
+                            ]}
+                        ]}
+                    ]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let mut kinds = Vec::new();
+        collect_boundary_kinds(&doc, &mut kinds);
+        assert_eq!(kinds.len(), 1, "only the top-level boundary is collected: {kinds:?}");
+        let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
+        assert!(!out.contains("end list"), "real separator dropped: {out:?}");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_to_ordered_starting_above_one_keeps_blank() {
+        // Codex review on PR #3258 (P2): a tight bullet list followed by
+        // a tight ordered list starting above 1 saved as `- a\n2. b` -
+        // an ordered marker above 1 cannot interrupt a paragraph, so on
+        // reparse `2. b` became a lazy continuation of the bullet item
+        // and the ordered list (and its start) was lost. The boundary
+        // keeps exactly one blank line instead of none.
+        for original in ["- a\n\n2. b\n", "- [ ] a\n\n3. b\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "blank kept, start preserved: {first:?}");
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(content[1]["type"], "ordered_list", "second list stays ordered for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_adjacent_different_kind_lists_in_blockquote_fixpoint() {
+        // #1397: the blockquote shape was not even a save fixpoint.
+        let (first, second) = two_saves("> - a\n>\n> 1. b\n");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert_eq!(first, second, "blockquote shape is a fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let quote = &doc["content"][0];
+        assert_eq!(quote["type"], "blockquote");
+        let kinds: Vec<&str> = quote["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
+    }
+
+    #[test]
+    fn test_saved_end_list_artefact_reopens_without_phantom_block() {
+        // #1397: a file already saved WITH the renderer artefact between
+        // two lists reopens as exactly the two lists - no phantom
+        // code_block between them.
+        let doc = markdown_to_prosemirror("- a\n\n<!-- end list -->\n\n1. b\n");
+        let kinds: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["bullet_list", "ordered_list"]);
     }
 
     #[test]
