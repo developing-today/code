@@ -48,6 +48,7 @@ var implementedEffectProbes = map[string]string{
 	"registry.limit":             "TestRegistryLimitReachesTheCLI",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -58,20 +59,21 @@ var implementedEffectProbes = map[string]string{
 // implemented probe name to appear here, so a declared probe must
 // really exist -- not just be spelled the same in two maps.
 var effectProbeFuncs = map[string]func(*testing.T){
-	"TestLoggingFileOffWritesNoDurableLog":           TestLoggingFileOffWritesNoDurableLog,
-	"TestOutputJSONIsReachableFromTheEnvironment":    TestOutputJSONIsReachableFromTheEnvironment,
-	"TestPathsConfigFileChangesWhichConfigLoads":     TestPathsConfigFileChangesWhichConfigLoads,
-	"TestPoolDefaultsAreReachableFromTheEnvironment": TestPoolDefaultsAreReachableFromTheEnvironment,
-	"TestRegistryLimitReachesTheCLI":                 TestRegistryLimitReachesTheCLI,
-	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":   TestRegistryPageSizeChangesWhatTheCLIAsksFor,
-	"TestScriptCaptureConsoleOffDropsConsoleOutput":  TestScriptCaptureConsoleOffDropsConsoleOutput,
-	"TestScriptEnvIsReachableFromTheEnvironment":     TestScriptEnvIsReachableFromTheEnvironment,
-	"TestScriptPrefixIsReachableFromTheEnvironment":  TestScriptPrefixIsReachableFromTheEnvironment,
-	"TestScriptTypecheckOnRefusesATypeError":         TestScriptTypecheckOnRefusesATypeError,
-	"TestSearchLimitCapsTheResults":                  TestSearchLimitCapsTheResults,
-	"TestStateDirectoryIsReachableAsASetting":        TestStateDirectoryIsReachableAsASetting,
-	"TestStrictUnknownKeysRefusesATypo":              TestStrictUnknownKeysRefusesATypo,
-	"TestTheRegistryPageCapSaysItStoppedEarly":       TestTheRegistryPageCapSaysItStoppedEarly,
+	"TestLoggingFileOffWritesNoDurableLog":                  TestLoggingFileOffWritesNoDurableLog,
+	"TestOutputJSONIsReachableFromTheEnvironment":           TestOutputJSONIsReachableFromTheEnvironment,
+	"TestPathsConfigFileChangesWhichConfigLoads":            TestPathsConfigFileChangesWhichConfigLoads,
+	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment": TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
+	"TestPoolDefaultsAreReachableFromTheEnvironment":        TestPoolDefaultsAreReachableFromTheEnvironment,
+	"TestRegistryLimitReachesTheCLI":                        TestRegistryLimitReachesTheCLI,
+	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":          TestRegistryPageSizeChangesWhatTheCLIAsksFor,
+	"TestScriptCaptureConsoleOffDropsConsoleOutput":         TestScriptCaptureConsoleOffDropsConsoleOutput,
+	"TestScriptEnvIsReachableFromTheEnvironment":            TestScriptEnvIsReachableFromTheEnvironment,
+	"TestScriptPrefixIsReachableFromTheEnvironment":         TestScriptPrefixIsReachableFromTheEnvironment,
+	"TestScriptTypecheckOnRefusesATypeError":                TestScriptTypecheckOnRefusesATypeError,
+	"TestSearchLimitCapsTheResults":                         TestSearchLimitCapsTheResults,
+	"TestStateDirectoryIsReachableAsASetting":               TestStateDirectoryIsReachableAsASetting,
+	"TestStrictUnknownKeysRefusesATypo":                     TestStrictUnknownKeysRefusesATypo,
+	"TestTheRegistryPageCapSaysItStoppedEarly":              TestTheRegistryPageCapSaysItStoppedEarly,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {

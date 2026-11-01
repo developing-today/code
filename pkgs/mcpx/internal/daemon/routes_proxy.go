@@ -9,12 +9,42 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
+
+const proxyFeedbackCaptureLimit = 1 << 20
+
+type cappedFeedbackBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *cappedFeedbackBuffer) Write(p []byte) (int, error) {
+	remaining := b.limit - b.buf.Len()
+	if remaining > 0 {
+		_, _ = b.buf.Write(p[:min(len(p), remaining)])
+	}
+	if len(p) > remaining {
+		b.truncated = true
+	}
+	// The buffer is a side channel for feedback only. Reporting the whole
+	// input as written keeps io.TeeReader from truncating the client stream.
+	return len(p), nil
+}
+
+func (b *cappedFeedbackBuffer) String() string {
+	output := b.buf.String()
+	if b.truncated {
+		output += fmt.Sprintf("\n[mcpx: feedback output truncated after %d bytes]", b.limit)
+	}
+	return output
+}
 
 type openAITool struct {
 	Type     string         `json:"type"`
@@ -61,8 +91,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 2. Discover relevant tools semantically
 	maxTools := 5
 	if s.set != nil {
-		if m := s.set.Int("proxy.maxTools"); m > 0 {
-			maxTools = m
+		if value, ok := s.set.Value("proxy.maxTools"); ok {
+			if m, err := strconv.Atoi(value.Raw); err == nil && m > 0 {
+				maxTools = m
+			}
 		}
 	}
 
@@ -135,7 +167,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 4. Determine upstream endpoint
 	upstreamURL := ""
 	if s.set != nil {
-		upstreamURL = s.set.String("proxy.upstreamUrl")
+		if value, ok := s.set.Value("proxy.upstreamUrl"); ok {
+			upstreamURL = value.Raw
+		}
 	}
 	if upstreamURL == "" {
 		upstreamURL = os.Getenv("OPENAI_BASE_URL")
@@ -146,7 +180,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	apiKey := ""
 	if s.set != nil {
-		apiKey = s.set.String("proxy.apiKey")
+		if value, ok := s.set.Value("proxy.apiKey"); ok {
+			apiKey = value.Raw
+		}
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("OPENAI_API_KEY")
@@ -241,15 +277,20 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, upstrea
 		upReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(upReq)
+	upstreamTimeout := defaults.ProxyUpstreamTimeout
+	if s.set != nil {
+		upstreamTimeout = s.set.Duration("proxy.timeout")
+	}
+	client := &http.Client{Timeout: upstreamTimeout}
+	resp, err := client.Do(upReq)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, fmt.Errorf("upstream error: %w", err))
 		return
 	}
 	defer resp.Body.Close()
 
-	var buf bytes.Buffer
-	rdr := io.TeeReader(resp.Body, &buf)
+	buf := &cappedFeedbackBuffer{limit: proxyFeedbackCaptureLimit}
+	rdr := io.TeeReader(resp.Body, buf)
 
 	for k, vv := range resp.Header {
 		for _, v := range vv {

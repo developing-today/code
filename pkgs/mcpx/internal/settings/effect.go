@@ -58,6 +58,7 @@ var EffectProbes = map[string]string{
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe

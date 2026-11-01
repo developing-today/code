@@ -694,6 +694,12 @@ skipped launcher phases).
 | `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |
 | `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries |
 
+### proxy
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `proxy.timeout` | duration | `10m` | daemon | no | `--proxy-timeout` | `MCPX_PROXY_TIMEOUT` | how long the daemon waits for a chat-completions upstream |
+
 ### recipes
 
 | setting | kind | default | scope | hot | flag | variable | governs |

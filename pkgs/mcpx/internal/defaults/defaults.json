@@ -293,6 +293,9 @@
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
   },
+  "proxy": {
+    "timeout": "10m"
+  },
   "hooks": {
     "timeout": "2s"
   }
