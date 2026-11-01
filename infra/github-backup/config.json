@@ -88,7 +88,7 @@
     }
   ],
   "app": {
-    "name": "hatch-repo-backup",
+    "name": "developing-today-backup",
     "owner": "dezren39",
     "permissions": {
       "metadata": "read",
@@ -109,7 +109,7 @@
     }
   },
   "worker": {
-    "name": "hatch-repo-backup-webhook",
+    "name": "developing-today-backup",
     "queue_poll_path": "/queue",
     "webhook_path": "/github"
   },
