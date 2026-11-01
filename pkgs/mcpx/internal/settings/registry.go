@@ -108,7 +108,7 @@ func poolSettings() []Setting {
 		},
 		{
 			Path: "pool.callTimeout", Kind: KindDuration, Default: pool.CallTimeout,
-			Scope: ScopeDaemon, Hot: true,
+			Scope: ScopeDaemon, Hot: true, CallRequest: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Call timeout", Short: "how long one tool call may take",
 		},

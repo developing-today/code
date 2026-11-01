@@ -21,6 +21,8 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
+import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
@@ -36,8 +38,9 @@ import { githubCommentUrl } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
+import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
-import type { HealthView } from "./health.ts";
+import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
   type AaConfig,
@@ -78,7 +81,7 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
+import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
@@ -132,6 +135,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.acked { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
 .badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
@@ -144,6 +148,7 @@ a { color: #58a6ff; }
 .col h2 { margin: 2px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b949e; }
 .tblwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { border-collapse: collapse; width: 100%; }
+caption { caption-side: top; text-align: left; font-weight: 600; font-size: 12.5px; padding: 6px 8px; color: #8b949e; }
 th, td { border: 1px solid #30363d; padding: 6px 8px; vertical-align: top; text-align: left; }
 th { background: #161b22; }
 .tl-cell { min-width: 110px; }
@@ -279,6 +284,91 @@ body.xp-plan .xpl-costcol { display: none; }
 .hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
 .hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 2px 4px; }
 .xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+/* Non-colour cues (#1215): state badges also differ by icon prefix and
+   status dots by shape, so colour is never the only signal. */
+.badge.walled::before, .badge.blocked::before { content: "\\26d4  "; }
+.badge.drew::before { content: "\\26a0  "; }
+.badge.healthy::before, .badge.moving::before, .badge.merged::before, .badge.acked::before, .badge.act-applied::before { content: "\\2713  "; }
+.badge.near::before, .badge.implementing::before, .badge.stale::before, .badge.act-pending::before { content: "\\25f7  "; }
+.badge.review::before, .badge.conflict::before { content: "\\25c6  "; }
+.badge.act-rejected::before { content: "\\2715  "; }
+.badge.act-snoozed::before { content: "\\263e  "; }
+.badge.open::before { content: "\\25cf  "; }
+.dot.down, .dot.invalid { border-radius: 2px; }
+.dot.stale, .dot.absent { border-radius: 2px; transform: rotate(45deg); }
+.dot.fixtures { background: transparent; border: 2px solid #bc8cff; }
+/* Light theme (#1215): a real light palette under prefers-color-scheme;
+   the dark palette above stays the default for dark scheme. */
+@media (prefers-color-scheme: light) {
+  body { background: #ffffff; color: #1f2328; }
+  nav { background: #f6f8fa; border-bottom-color: #d1d9e0; }
+  .navgroup + .navgroup { border-left-color: #d1d9e0; }
+  .navlabel { color: #59636e; }
+  .navgroup[data-current="true"] .navlabel { color: #0969da; }
+  nav a { color: #0969da; }
+  nav a.active, nav a:hover { background: #eaeef2; }
+  nav a.active { background: #0969da26; color: #0550ae; box-shadow: inset 0 -2px 0 #0969da; }
+  a { color: #0969da; }
+  .card { background: #ffffff; border-color: #d1d9e0; }
+  .col { background: #f6f8fa; border-color: #d1d9e0; }
+  .col h2 { color: #59636e; }
+  .muted, .foot, caption { color: #59636e; }
+  .badge { border-color: #d1d9e0; }
+  .badge.open, .badge.orch, .badge.agent { color: #0969da; }
+  .badge.merged, .badge.healthy, .badge.moving, .badge.gh, .badge.acked, .badge.act-applied { color: #1a7f37; }
+  .badge.closed { color: #59636e; }
+  .badge.implementing, .badge.near, .badge.stalled, .badge.stale, .badge.msg, .badge.act-pending, .badge.whyuser { color: #9a6700; }
+  .badge.walled, .badge.drew, .badge.blocked, .badge.act-rejected { color: #cf222e; }
+  .badge.review, .badge.Muse, .badge.conflict, .badge.act-snoozed { color: #8250df; }
+  .badge.src { background: #eaeef2; color: #1f2328; }
+  th, td { border-color: #d1d9e0; }
+  th { background: #f6f8fa; }
+  .banner { color: #9a6700; }
+  .banner.drew { color: #cf222e; }
+  .chips a, .fchip, .qchip, .hchip, .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  /* The tray chip background lightens above, so its restore (x) button must drop its dark-surface foreground too (Codex P2 on PR #3308). */
+  .hchip button { color: #1f2328; }
+  .chips a.active { color: #0969da; }
+  .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
+  .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }
+  .dot { background: #59636e; }
+  .dot.up, .dot.self { background: #1a7f37; }
+  .dot.down, .dot.invalid { background: #cf222e; }
+  .dot.stale, .dot.absent { background: #9a6700; }
+  .dot.off, .dot.unknown { background: #59636e; }
+  .dot.fixtures { background: transparent; border-color: #8250df; }
+  .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
+  .cov, .cform, .actbox, .skel { background: #f6f8fa; border-color: #d1d9e0; }
+  /* Charts keep their authored dark surface in light mode: the SVG
+     foregrounds are generated for dark (model labels #c9d1d9, the
+     Pareto frontier #e6edf3), so a light chart background would wash
+     them out — the chart card and its controls stay dark instead. */
+  .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
+  .chart .muted { color: #8b949e; }
+  .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
+  .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
+  .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
+  .cform .kinds label { color: #1f2328; }
+  .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  .aform button.danger { color: #cf222e; border-color: #cf222e; }
+  .xtabs { border-bottom-color: #d1d9e0; }
+  .xtab { color: #59636e; }
+  .xtab:hover, .xtab.active { color: #1f2328; }
+  .xtab.active { background: #f6f8fa; border-color: #d1d9e0; }
+  .xp-seg button { background: #f6f8fa; color: #59636e; }
+  .xpl-table tr:hover td { background: #f6f8fa; }
+  .xpl-ctl button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  .card .sentline, .qblock .qanswered { color: #1a7f37; }
+  details.carddetail { border-top-color: #d1d9e0; }
+  details.carddetail dt { color: #59636e; }
+  details.carddetail summary, .cbox summary, .kids summary { color: #0969da; }
+  .kids { border-left-color: #d1d9e0; }
+  .obj .n { color: #0969da; }
+  .foot { border-top-color: #d1d9e0; }
+  .qblock { border-top-color: #d1d9e0; }
+  .cbox { border-top-color: #d1d9e0; }
+}
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
@@ -477,29 +567,54 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
 }
 
 /**
- * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
- * bar order, marking the active page's section. /pages itself stays out
- * of the bar (it is the full manifest) but is in the dropdown.
+ * The grouped nav links (#1135, #1215, #1497): one labelled section
+ * per PAGE_GROUP, in bar order, marking the active page's section.
+ * Since the #1497 curation the bar renders the PRIMARY-tier pages
+ * only; the Pages dropdown keeps every manifest page under the same
+ * sections, so demoted pages stay one click away.
  */
 export function navLinks(active: string, activeGroup?: string): string {
   // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
   // reaches it, so the bar always shows where you are (#1135).
   const activeRoute = manifestRouteFor(active) ?? active;
   const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
-  return groupedPages()
-    .filter((g) => g.pages.some((p) => p.id !== "pages"))
+  let activeMarked = false;
+  return primaryGroupedPages()
     .map(({ group, pages }) => {
       const anchors = pages
-        .filter((p) => p.id !== "pages")
-        .map(
-          (p) =>
-            `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
-        )
+        .map((p) => {
+          const isActive = p.route === activeRoute && !activeMarked;
+          if (isActive) activeMarked = true;
+          return `<a href="${p.route}"${isActive ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`;
+        })
         .join("");
       const current = group.id === groupOfActive ? ' data-current="true"' : "";
       return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
     })
     .join("");
+}
+
+/**
+ * The Pages dropdown (#906 §1, #1215, #1497): the same grouped model
+ * as the bar — one <optgroup> per manifest section — but EVERY page
+ * present, primary and dropdown-tier alike: this is where demoted
+ * pages live.
+ */
+export function pageDropdown(active: string): string {
+  let selectedMarked = false;
+  const groups = groupedPages()
+    .map(({ group, pages }) => {
+      const options = pages
+        .map((p) => {
+          const selected = p.route === active && !selectedMarked;
+          if (selected) selectedMarked = true;
+          return `<option value="${p.route}"${selected ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`;
+        })
+        .join("");
+      return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
+    })
+    .join("");
+  return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
 function layout(
@@ -512,21 +627,18 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either. The bar groups its links by section (#1135) so ten pages
-  // wrap onto a second row at phone width instead of scrolling
-  // sideways, and the page's own section stays marked.
+  // in either. Both use the same grouped model (#1215): the bar groups
+  // its links by section (#1135) so pages wrap onto a second row at
+  // phone width instead of scrolling sideways, the dropdown mirrors
+  // the sections as <optgroup>s, and both list every page.
   const links = navLinks(active);
-  const options = PAGES.map(
-    (p) =>
-      `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
-  ).join("");
-  const dropdown = `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${options}</select>`;
+  const dropdown = pageDropdown(active);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · aggregator</title><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
+<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main>${extra}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}</body></html>`;
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -554,7 +666,9 @@ export function commentBadge(objectRef: string, counts?: Map<string, number>): s
 
 export function authorBadge(a: DashAuthor): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
-  const link = a.sessionId ? ` <a href="/sessions#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
+  const link = a.sessionId
+    ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
+    : "";
   return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
 }
 
@@ -1548,7 +1662,7 @@ function timelineTable(
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number>,
 ): string {
-  const head = `<tr><th>Theme</th>${tl.lanes.map((l) => `<th>${esc(l.label)}</th>`).join("")}</tr>`;
+  const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
       const cells = tl.lanes
@@ -1557,10 +1671,10 @@ function timelineTable(
           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts)).join("")}</td>`;
         })
         .join("");
-      return `<tr><th>${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
     })
     .join("");
-  return `<div class="tblwrap"><table>${head}${body}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
 }
 
 export function renderRoadmap(
@@ -1681,9 +1795,9 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+<h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
-<h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${dashSection}`,
     provenance,
     "/board",
@@ -1698,7 +1812,7 @@ export function sessionRecordLine(
 ): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
   const parent = r.parentId
-    ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
+    ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
   const refs = r.taskRefs.length
     ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
@@ -1813,7 +1927,7 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -1839,7 +1953,7 @@ function chargesStripHtml(usage: UsageView): string {
     )
     .join("");
   const total = usage.charges.reduce((sum, c) => sum + c.amountUsd, 0);
-  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><tr><th>Date</th><th>Charge</th><th>Amount</th><th>Method</th><th>Evidence</th></tr>${rows}</table></div>`;
+  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
 }
 
 export function renderQuota(
@@ -1887,8 +2001,8 @@ export function renderQuota(
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
-  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><tr><th>Provider</th><th>Pool</th><th>From</th><th>To</th><th>Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table><tr><th>Rule</th><th>Pools</th></tr>
+  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
+<h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -1941,6 +2055,7 @@ ${attentionStripHtml(usage)}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
 ${chargesStripHtml(usage)}
+<h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
     provenance,
     "/quota",
@@ -2029,7 +2144,8 @@ export function renderServiceDetail(
   const body = `<p class="muted"><a href="/quota">← Usage &amp; billing</a></p>
 <h1>${esc(svc.name)}</h1>
 <div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
-<h2>All metrics</h2><div class="tblwrap"><table><tr><th>Metric</th><th>Used</th><th>Limit</th><th>%</th><th>Note</th></tr>${metricRows}</table></div>
+<h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
+<h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
 <h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
@@ -2105,7 +2221,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2175,7 +2291,7 @@ function tierItemCard(
   const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
@@ -2282,7 +2398,7 @@ export function renderAttention(
   const sections = attentionSections(view, coverage, counts, act);
   return layout(
     "Needs you",
-    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
+    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
 ${sections.header}${sections.queues}${sections.sessions}`,
     provenance,
     "/attention",
@@ -2744,7 +2860,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
     ? summary.projects
         .map(
           (proj) =>
-            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/projects">projects</a></div>`,
+            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/program#projects-pool">projects</a></div>`,
         )
         .join("")
     : `<p class="muted">No Project pool items collected yet.</p>`;
@@ -2767,7 +2883,8 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${healthStrip}
 <h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
-<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}`;
+<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
+<p class="muted">In progress + recently done are the board's lanes — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
 
 /** The overview page (#1134): full server render. */
@@ -2803,7 +2920,7 @@ function dnsTable(entries: DnsEntry[]): string {
         `<tr><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Domain</th><th>Next renewal</th><th>Price (list)</th><th>Auto-renew</th><th>Plan / status</th><th>Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Domain register</caption><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
 }
 
 export function renderDns(section: DnsSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -2840,7 +2957,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
   return layout("DNS register", body, provenance, "/dns", "", chips);
 }
 
-// --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
+// --- AA cost explorer page (ainventory import data via the fleet feed) -----
 
 /**
  * The Cost Explorer's client side: tabs, the shared filter bar, the
@@ -2858,6 +2975,30 @@ const AA_EXPLORER_SCRIPT = `<script>
   var CAI_POINTS = DATA.caiPoints || [];
   var CATALOG = DATA.catalog || null;
   var POINTS = AA_POINTS;
+  // Default benchmark vintage (2026-11-01, Drew): the payload carries
+  // every vintage the AA import holds (v5 beside v4.3.2 today); ranking
+  // across vintages compares scores from different methodologies, so
+  // the first-load view pins the newest vintage present. "All
+  // benchmarks" (bench "") stays one click away in the filter, and
+  // saved setups / perspective switches keep their existing semantics.
+  function benchVersionKey(b) {
+    var m = /v(\d+(?:\.\d+)*)/.exec(b || "");
+    return m ? m[1].split(".").map(function (n) { return parseInt(n, 10) || 0; }) : null;
+  }
+  function cmpVer(a, b) {
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++) { var d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+    return 0;
+  }
+  function latestBench(points) {
+    var best = "", bestKey = null;
+    (points || []).forEach(function (p) {
+      var k = benchVersionKey(p.benchmark);
+      if (!k) return;
+      if (!bestKey || cmpVer(k, bestKey) > 0) { bestKey = k; best = p.benchmark; }
+    });
+    return best;
+  }
   var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
   var famColor = {};
   var famList = [];
@@ -2954,7 +3095,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     q: "",
     creator: "",
     fam: "",
-    bench: "",
+    bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
     off: {},
@@ -2977,7 +3118,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
     api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
-    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
+    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the import's measured per-task figures, TTFT shown where timed).",
   };
   function basePoints() {
     return POINTS.filter(function (p) {
@@ -3107,7 +3248,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (note) {
       var missing = all.filter(function (p) { return cfg.x(p) == null || cfg.y(p) == null; });
       var names = missing.slice(0, 4).map(shortLabel).join(", ");
-      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the workbook (nothing is estimated)" +
+      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the import (nothing is estimated)" +
         (missing.length ? ": " + names + (missing.length > 4 ? " (+" + (missing.length - 4) + " more)" : "") + "." : ".");
     }
     if (!rows.length) { svg.innerHTML = ""; return; }
@@ -3193,6 +3334,10 @@ const AA_EXPLORER_SCRIPT = `<script>
       var f = sizeHi > sizeLo ? Math.min(1, Math.max(0, (t - sizeLo) / (sizeHi - sizeLo))) : 0.5;
       return 1.6 + Math.pow(f, 1.5) * 8.4;
     }
+    // 2026-11-01 (Drew, code#3335): every dot carries its family color;
+    // frontier membership is emphasis (white ring, full opacity), not
+    // the only color — on real data a chart's frontier can be a single
+    // dominant point, which used to grey out the whole chart.
     rows.forEach(function (p) {
       var cx = X(cfg.x(p)), cy = Y(cfg.y(p));
       var onF = !!p[cfg.flag];
@@ -3200,7 +3345,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       var r = radius(p, onF);
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
       var tip = p.family + " " + (p.effort || "") + " — " + scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + (onF ? col : "#9aa0a6") + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.9 : 0.5) + '" stroke="' + (S.sel === p.key ? "#fff" : onF ? col : "#6b7075") + '" stroke-width="' + (S.sel === p.key ? 2 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.95 : 0.45) + '" stroke="' + (S.sel === p.key || onF ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : onF ? 1.8 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (onF || S.sel === p.key) {
         var anchorEnd = cx > ML + PW * 0.78;
         g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - r - 3 : cx + r + 3) + '" y="' + (cy + 3) + '" font-size="8.6" fill="' + (onF ? "#c9d1d9" : "#8b949e") + '" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
@@ -3747,7 +3892,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     g += '<text x="10" y="' + (mt + ph / 2) + '" font-size="9" fill="#8b949e" text-anchor="middle" transform="rotate(-90 10 ' + (mt + ph / 2) + ')">time — faster is down</text>';
     pts.forEach(function (p) {
       var on = !!pickKeys[p.key], col = famColor[p.family];
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + (on ? col : "#9aa0a6") + '" fill-opacity="' + (on ? 0.95 : 0.35) + '" stroke="' + (on ? "#fff" : "#6b7075") + '" stroke-width="' + (on ? 1.4 : 0.7) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + col + '" fill-opacity="' + (on ? 0.95 : 0.4) + '" stroke="' + (on ? "#fff" : col) + '" stroke-width="' + (on ? 1.6 : 0.8) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
     });
     return g + "</svg>";
   }
@@ -3802,7 +3947,7 @@ const AA_EXPLORER_SCRIPT = `<script>
         (band.priceCeil != null ? " · Relative price ceiling " + fmt$(band.priceCeil) + " · Relative time ceiling " + fmtT(band.timeCeil) : " · no candidate carries all three measures") + "</p>" +
         bandScatter(band) +
         '<div class="board">' + (cards || '<p class="muted">No recommendation survives the limits of this band.</p>') + "</div>" +
-        '<details><summary>Why these choices?</summary><p class="muted">' + whyCounts + '</p><div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th>Lab</th><th>Decision</th></tr></thead><tbody>' + whyRows + "</tbody></table></div></details>";
+        '<details><summary>Why these choices?</summary><p class="muted">' + whyCounts + '</p><div class="tblwrap"><table class="xpl-table"><caption>Why these choices — decisions by model and effort</caption><thead><tr><th scope="col">Model / effort</th><th scope="col">Lab</th><th scope="col">Decision</th></tr></thead><tbody>' + whyRows + "</tbody></table></div></details>";
     }).join("");
     wrap.querySelectorAll("[data-pick]").forEach(function (b) {
       b.addEventListener("click", function () { selectPoint(b.getAttribute("data-pick")); });
@@ -3872,10 +4017,10 @@ const AA_EXPLORER_SCRIPT = `<script>
   function bandGroup(title, blurb, bands) {
     var rowsHtml = bands.map(function (b) {
       var leader = b.choices.length ? b.choices[0] : null;
-      return "<tr><td><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></td><td>" +
+      return "<tr><th scope=\\\"row\\\"><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></th><td>" +
         (b.choices.length ? b.choices.map(function (p) { return chipFor(p, leader); }).join(" ") : '<span class="muted">No model meets the window of this band.</span>') + "</td></tr>";
     }).join("");
-    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><tbody>' + rowsHtml + "</tbody></table></div>";
+    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><caption>' + esc(title) + '</caption><tbody>' + rowsHtml + "</tbody></table></div>";
   }
   function renderBandComparisons() {
     var wrap = document.getElementById("xpl-bandgroups");
@@ -3961,10 +4106,10 @@ const AA_EXPLORER_SCRIPT = `<script>
           var near = qual.filter(function (p) { return p.cost <= cheapest.cost * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
           return near.map(function (p) { return chipFor(p, cheapest); }).join(" ");
         });
-        return "<tr><td><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></td>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+        return "<tr><th scope=\\\"row\\\"><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></th>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
       }).join("");
       var h6 = '<h3>Lowest price within each speed target</h3><p class="muted">Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within ' + Math.round(priceWin * 100) + "% of the tier's cheapest.</p>" +
-        '<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Speed target</th>' + tiers.map(function (ci) { return "<th>Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
+        '<div class="tblwrap"><table class="xpl-table"><caption>Lowest price within each speed target</caption><thead><tr><th scope="col">Speed target</th>' + tiers.map(function (ci) { return "<th scope=\\\"col\\\">Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
     }
     html = (typeof h1 !== "undefined" ? h1 : "") + (typeof h2 !== "undefined" ? h2 : "") + (typeof h3 !== "undefined" ? h3 : "") + (typeof h4 !== "undefined" ? h4 : "") + (typeof h5 !== "undefined" ? h5 : "") + (typeof h6 !== "undefined" ? h6 : "");
     wrap.innerHTML = html || '<p class="muted">No banded comparisons can be built — the visible configurations lack the measures they need.</p>';
@@ -3979,7 +4124,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
-      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · solid dots in the charts sit on that chart's frontier, gray are beaten on its axes";
+      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
       return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
     }).join("");
@@ -4136,7 +4281,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (pnote) {
       pnote.textContent = S.persp === "cai"
         ? "Coding agents perspective — the Coding Agent Index observations (model + effort + agent harness): score is the CAI score, cost the published cost per coding task, time the average agent wall time per task. Kept separate from the Intelligence Index; the two are never converted."
-        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the workbook's per-task figures (time excludes TTFT).";
+        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
     if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
@@ -4329,7 +4474,17 @@ const AA_EXPLORER_SCRIPT = `<script>
     render();
   }
   function loadSetups() {
-    try { return JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}"); } catch (e) { return {}; }
+    // #2851: the store is null-prototype — on a plain object a setup
+    // named "__proto__" assigns the prototype instead of becoming an
+    // entry (silently never saved), and an imported "__proto__" entry
+    // mutates the live store's prototype. Copy the parsed own keys
+    // into Object.create(null) so every name is an ordinary entry.
+    var out = Object.create(null);
+    try {
+      var parsed = JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}");
+      if (parsed && typeof parsed === "object") Object.keys(parsed).forEach(function (k) { out[k] = parsed[k]; });
+    } catch (e) { /* unreadable storage: empty store */ }
+    return out;
   }
   function storeSetups(obj) {
     try { localStorage.setItem("xpl-setups-v1", JSON.stringify(obj)); } catch (e) { /* storage unavailable: setups stay session-only */ }
@@ -4441,7 +4596,7 @@ function aaTimingsTable(testRuns: AaTestRun[]): string {
         `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Configuration</th><th>Intelligence</th><th>$/task</th><th>TTFT</th><th>First answer</th><th>E2E (500 tok)</th><th>Time / task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaConfigsTable(configs: AaConfig[]): string {
@@ -4451,7 +4606,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (AA label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -4463,8 +4618,8 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     )
     .join("");
   return `<h2>Coding Agent Index observations</h2>
-<p class="muted">The workbook's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
-<div class="tblwrap"><table><tr><th>Model</th><th>Effort</th><th>Harness</th><th>Version</th><th>CAI score</th><th>DeepSWE v1.1</th><th>Terminal-Bench 4.0</th><th>SWE-Atlas-QnA</th><th>$/task</th><th>Agent wall time / task</th><th>Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+<p class="muted">The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
+<div class="tblwrap"><table><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaNameList(names: string[]): string {
@@ -4483,7 +4638,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
     );
@@ -4491,7 +4646,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
   if (section.status === "absent") {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. No successful collection exists yet to fall back to — the page fills in on the first successful collection.</div>`,
       provenance,
       "/aa",
     );
@@ -4512,23 +4667,24 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted">Measured and reachable today, but no route sends them work — the actionable list.</p>${aaNameList(cov.catalogNotPooledMeasured)}
 <h3>Measured, in no catalog (${cov.measuredNotInCatalog.length})</h3>${aaNameList(cov.measuredNotInCatalog)}
 <details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
-<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
+<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the import measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
   const catalog = s.catalog;
   const modelCards = catalog
     ? `<div class="board">
 <div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
 <div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
-<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the workbook has an intelligence score for its name</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the import has an intelligence score for its name</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
   const explorerJson = jsonForScript(
     JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
   );
   const body = `<h1>Cost Explorer</h1>
+${s.stale ? `<div class="banner">The latest collection failed (${esc(s.staleReason ?? "unknown error")}) — showing the last good data, collected ${fmtDate(s.generatedAt)}. It refreshes automatically on the next successful collection.</div>` : ""}
 <p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
+<span class="muted">These are the import snapshot's figures, not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
 <div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
 <div class="card xpl-filters" id="xpl-filters">
@@ -4573,25 +4729,25 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
-<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; solid dots sit on it, gray are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only workbook measurements are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
+<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Score</th><th class="num">Score ×</th><th class="num xpl-costcol">Cost/task</th><th class="num xpl-costcol">Cost ×</th><th class="num">Time/task</th><th class="num">Time ×</th><th>Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num" id="xpl-scorehead">Intelligence</th><th class="num xpl-costcol">$/task</th><th class="num">Time/task</th><th class="num">TTFT</th><th class="num">Speed (t/s)</th><th class="num xpl-costcol">Score / $</th><th class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num" id="xpl-scorehead">Intelligence</th><th scope="col" class="num xpl-costcol">$/task</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">TTFT</th><th scope="col" class="num">Speed (t/s)</th><th scope="col" class="num xpl-costcol">Score / $</th><th scope="col" class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Pareto frontiers</h2>
 <p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
 <label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
 <p class="muted" id="xpl-pf-count"></p>
 <h3>Score first, with competitive time</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-score"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — score first, with competitive time</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-score"></tbody></table></div>
 <h3>Time first, with competitive score</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-speed"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — time first, with competitive score</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-speed"></tbody></table></div>
 <h3>Price first, strong in score and time</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-price"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — price first, strong in score and time</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-price"></tbody></table></div>
 <h3>Price–speed trade-offs</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Time / task</th><th class="num xpl-costcol">Cost / task</th><th class="num">Score · context</th></tr></thead><tbody id="xpl-pf-ps"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — price and speed trade-offs</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Time / task</th><th scope="col" class="num xpl-costcol">Cost / task</th><th scope="col" class="num">Score · context</th></tr></thead><tbody id="xpl-pf-ps"></tbody></table></div>
 <h2>Recommendations</h2>
 <p class="muted">Build a useful shortlist: first require a near-top score in each band, then trade price against speed and choose distinct labs. Score bands are non-overlapping and calculated from the filtered population before tradeoff limits; absolute limits apply first, then relative price/speed limits against the cheapest and fastest near-top models passing them. Unknown selected values cannot be recommended.</p>
 <div class="card xpl-filters">
@@ -4616,16 +4772,16 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <label>Near-leader window <select id="xf-bandscale"><option value="0.5">0.5× · Very tight</option><option value="0.75">0.75× · Tight</option><option value="1" selected>1× · Standard (score ±2 · time within 10% · price within 25%)</option><option value="1.5">1.5× · Generous</option><option value="2">2× · Wide</option><option value="3">3× · Broad</option></select></label>
 <div id="xpl-bandgroups"></div>
 <h2>Timing — Test_Runs</h2>
-<p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
+<p class="muted">Per-configuration timing from the import's Test_Runs data. "Not measured" means the import carries no value for that cell — nothing is estimated.</p>
 ${aaTimingsTable(s.testRuns)}
 <h2>Measured configurations</h2>
-<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
+<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the import.</p>
 ${aaConfigsTable(s.configs)}
 ${s.cai ? aaCaiTable(s.cai) : ""}
 </section>
 <section id="xtab-models" hidden>
 <h2>The fleet's model universe</h2>
-<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
+<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the import has one. Click a row for the plan note.</p>
 ${modelCards}
 <h3>Task projection — estimated, not measured</h3>
 <p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
@@ -4642,7 +4798,7 @@ ${modelCards}
 <span class="muted">The window applies to scheduled rates only (DeepSeek halves every token rate off-peak).</span>
 </div>
 <p class="muted" id="xpl-mcount"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th><th class="num xpl-costcol">Proj. $/task ~</th><th class="num">Proj. time/task ~</th><th class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Model catalog — providers, plans, and projected costs</caption><thead><tr><th scope="col">Model</th><th scope="col">Provider / plan</th><th scope="col" class="num">Context</th><th scope="col">Variants</th><th scope="col">Pool seats</th><th scope="col" class="num">AA score</th><th scope="col" class="num xpl-costcol">AA $/task</th><th scope="col" class="num xpl-costcol">Eff. $/task</th><th scope="col" class="num">AA time/task</th><th scope="col" class="num xpl-costcol">Proj. $/task ~</th><th scope="col" class="num">Proj. time/task ~</th><th scope="col" class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
 </section>
 ${coverageHtml}
 <script type="application/json" id="xpl-data">${explorerJson}</script>`;
@@ -4658,6 +4814,7 @@ export function renderSessions(
   provenance: Provenance,
   detail?: ProvenanceDetail,
   act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+  view?: RegistryView,
 ): string {
   const bySource = new Map<string, SessionRecord[]>();
   for (const r of records) bySource.set(r.source, [...(bySource.get(r.source) ?? []), r]);
@@ -4676,8 +4833,40 @@ export function renderSessions(
           .join("")}`,
     )
     .join("");
+  // #1209: when the server hands us a RegistryView, the page is one
+  // windowed/filtered/paginated slice of the store — say so, with the
+  // hidden counts, a search/filter form, and pagination links. Without
+  // a view (older callers/tests) the page renders what it was given.
+  let viewHtml = "";
+  if (view) {
+    const q = view.query;
+    const windowLabel = q.windowDays === null ? "all history" : `last ${q.windowDays} days`;
+    const filterBits = [
+      q.q ? `search "${esc(q.q)}"` : "",
+      q.agent ? `agent "${esc(q.agent)}"` : "",
+      q.task ? `task "${esc(q.task)}"` : "",
+    ].filter(Boolean);
+    const hiddenBits = [
+      view.hiddenByWindow > 0 ? `${view.hiddenByWindow} hidden by the ${windowLabel} window` : "",
+      view.hiddenByPagination > 0 ? `${view.hiddenByPagination} more on other pages` : "",
+    ].filter(Boolean);
+    const toggle =
+      q.windowDays === null
+        ? `<a href="/sessions${registryQueryString(q, { windowDays: 7, offset: 0 })}">last 7 days</a>`
+        : `<a href="/sessions${registryQueryString(q, { windowDays: null, offset: 0 })}">all history</a>`;
+    const prev =
+      q.offset > 0
+        ? `<a href="/sessions${registryQueryString(q, { offset: Math.max(0, q.offset - q.limit) })}">← prev</a>`
+        : "";
+    const next =
+      view.remainingAfterPage > 0
+        ? `<a href="/sessions${registryQueryString(q, { offset: q.offset + q.limit })}">next →</a>`
+        : "";
+    viewHtml = `<div class="card"><strong>${view.matched} of ${view.totalAll} sessions</strong> · window: ${esc(windowLabel)}${filterBits.length ? ` · ${filterBits.join(" · ")}` : ""}${hiddenBits.length ? `<br><span class="muted">${hiddenBits.join(" · ")}</span>` : ""}${view.pinnedIncluded ? `<br><span class="muted">A deep-linked session outside this view is pinned at the top of the list.</span>` : ""}<br>${toggle}${prev ? ` · ${prev}` : ""}${next ? ` · ${next}` : ""}
+<form method="get" action="/sessions"><label>Search <input type="search" name="q" value="${esc(q.q ?? "")}"></label> <label>Agent <input type="text" name="agent" value="${esc(q.agent ?? "")}"></label> <label>Task ref <input type="text" name="task" value="${esc(q.task ?? "")}"></label> <label>Window <select name="window"><option value="7"${q.windowDays === 7 ? " selected" : ""}>last 7 days</option><option value="1"${q.windowDays === 1 ? " selected" : ""}>last 24 hours</option><option value="30"${q.windowDays === 30 ? " selected" : ""}>last 30 days</option><option value="90"${q.windowDays === 90 ? " selected" : ""}>last 90 days</option><option value="all"${q.windowDays === null ? " selected" : ""}>all history</option></select></label> <button type="submit">Filter</button></form></div>`;
+  }
   const body = `<h1>Sessions — identity registry</h1>
-<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
+${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
 <p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
@@ -4692,14 +4881,20 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
-export function renderPages(provenance: Provenance): string {
-  const rows = PAGES.map(
-    (p) =>
-      `<tr><td><a href="${p.route}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${p.api ? `<a href="${p.api}"><code>${esc(p.api)}</code></a>` : '<span class="muted">—</span>'}</td><td>${esc(p.blurb)}</td></tr>`,
-  ).join("");
+export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
+  const byRoute = new Map(history.map((p) => [p.route, p]));
+  const rows = PAGES.map((p) => {
+    const h = byRoute.get(p.route);
+    const last =
+      !h || h.lastRenderedAt === null
+        ? '<span class="muted">not rendered since this process started</span>'
+        : `${esc(ageMsText(h.ageMs ?? 0))} · ${h.ok ? "ok" : '<span class="badge stale">last render failed</span>'}`;
+    const tier = p.nav === "primary" ? "Primary nav" : "Dropdown-only";
+    return `<tr><td><a href="${p.route}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${p.api ? `<a href="${p.api}"><code>${esc(p.api)}</code></a>` : '<span class="muted">—</span>'}</td><td>${tier}</td><td>${last}</td><td>${esc(p.blurb)}</td></tr>`;
+  }).join("");
   return layout(
     "All pages",
-    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar and the page dropdown render from the same list. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><tr><th>Page</th><th>Route</th><th>JSON twin</th><th>What it is</th></tr>${rows}</table></div>`,
+    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
     provenance,
     "/pages",
   );
@@ -4790,9 +4985,9 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
-<div class="tblwrap"><table><tr><th>Service</th><th>Port</th><th>Bind</th><th>Runs as</th><th>State</th><th>Consumed by</th><th>If it is down</th></tr>${serviceRows}</table></div>
+<div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 <h2>Feed sections</h2>
-<div class="tblwrap"><table><tr><th>Section</th><th>Present</th><th>Age</th><th>Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -4804,7 +4999,7 @@ ${degraded}${modeNote}
 ${facets}
 <h2>Pages</h2>
 <p class="muted">Render history of this process — a page nobody has opened since boot is labelled unrendered, not green.</p>
-<div class="tblwrap"><table><tr><th>Page</th><th>Route</th><th>Last rendered</th></tr>${pageRows}</table></div>`;
+<div class="tblwrap"><table><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
   return layout("Health", body, provenance, "/health");
 }
 
@@ -4839,17 +5034,56 @@ ${commentThreadHtml(objectRef, comments, opts)}`;
 // derived state (see src/projects.ts derivedProjectState) disagree,
 // BOTH are shown — neither side is silently preferred.
 
-export function renderProjects(
+/** #1220: the coverage panel — Project #4 pool vs backlog reality per
+ * repo (open issues and gate labels from the feed, pool size and unset
+ * Status/Area from the pool), with the week-over-week delta against the
+ * stored baseline in parentheses when a baseline exists. */
+function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined): string {
+  if (!coverage) return "";
+  const { current, baseline } = coverage;
+  const delta = diffCoverage(current, baseline);
+  const cell = (
+    repo: string,
+    v: number | null,
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+  ): string => {
+    if (v === null) return "—";
+    const d = delta.get(repo)?.[key];
+    return d === undefined || d === null || d === 0
+      ? `${v}`
+      : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
+  };
+  const rows = current.repos
+    .map(
+      (r) =>
+        `<tr><td>${esc(r.repo)}</td><td>${cell(r.repo, r.openIssues, "openIssues")}</td><td>${cell(r.repo, r.gateNow, "gateNow")}</td><td>${cell(r.repo, r.gateNext, "gateNext")}</td><td>${cell(r.repo, r.poolItems, "poolItems")}</td><td>${cell(r.repo, r.poolUnsetStatus, "poolUnsetStatus")}</td><td>${cell(r.repo, r.poolUnsetArea, "poolUnsetArea")}</td></tr>`,
+    )
+    .join("");
+  const note = baseline
+    ? `Week-over-week delta vs the ${esc(fmtDate(baseline.generatedAt))} snapshot in parentheses. Snapshot stored ${esc(fmtDate(current.generatedAt))}; it rotates into the baseline after a week.`
+    : `First snapshot stored ${esc(fmtDate(current.generatedAt))} — the week-over-week delta appears after the next weekly rotation.`;
+  return `<h2>Coverage — pool vs backlog (#1220)</h2>
+<table><caption>Coverage — pool vs backlog by repository</caption><thead><tr><th scope="col">Repo</th><th scope="col">Open issues</th><th scope="col">now gate</th><th scope="col">next gate</th><th scope="col">Pool items</th><th scope="col">Unset Status</th><th scope="col">Unset Area</th></tr></thead><tbody>${rows}</tbody></table>
+<p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
+}
+
+/** The Projects pool body (cards, chips, coverage) without the page
+ * shell — rendered standalone by renderProjects and, since the #1497
+ * merge, as the pool section of /program. */
+export function projectsBodyHtml(
   pool: ProjectPoolItem[],
-  provenance: Provenance,
   opts: {
     area?: string | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
+    coverage?: CoverageSnapshotFile | null;
+    /** Where the area chips point: /projects standalone, /program once merged (#1497). */
+    basePath?: string;
   } = {},
 ): string {
+  const base = opts.basePath ?? "/projects";
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
   // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
   // the /program index banner — without it they are silently mixed into
@@ -4860,26 +5094,21 @@ export function renderProjects(
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
   const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
-    `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    `<a href="${base}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
-        `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+        `<a href="${base}?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
     ...(unsetCount > 0
       ? [
-          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+          `<a href="${base}?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
         ]
       : []),
   ].join("");
   if (!pool.length) {
-    return layout(
-      "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks()
-        .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
-        .join(" · ")}</p>`,
-      provenance,
-      "/projects",
-    );
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+      .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
+      .join(" · ")}</p>`;
   }
   const areaWeights = areas
     .map((a) => {
@@ -4914,19 +5143,36 @@ export function renderProjects(
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${statusCtl}</div>`;
     })
     .join("");
-  const body = `<h1>Projects — GitHub Project pool</h1>
-<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
-${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+${coverageSectionHtml(opts.coverage)}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks()
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
+  return body;
+}
+
+export function renderProjects(
+  pool: ProjectPoolItem[],
+  provenance: Provenance,
+  opts: {
+    area?: string | null;
+    orchestration?: OrchestrationSection | null;
+    detail?: ProvenanceDetail;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
+    coverage?: CoverageSnapshotFile | null;
+    basePath?: string;
+  } = {},
+): string {
   return layout(
     "Projects",
-    body,
+    `<h1>Projects — GitHub Project pool</h1>
+${projectsBodyHtml(pool, opts)}`,
     provenance,
     "/projects",
     opts.identities ? ACTION_SCRIPT : "",
@@ -4971,12 +5217,12 @@ function trackedTable(tracked: TrackedIssue[]): string {
         : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Tracked issue</th><th>Title</th><th>State</th><th>Updated</th></tr>${rows}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
 }
 
 function poolSummaryHtml(live: ProgramLive): string {
   return live.pool.total
-    ? `<div class="card"><strong><a href="/projects">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
+    ? `<div class="card"><strong><a href="/program#projects-pool">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
     : `<div class="banner">No Project pool in the current feed — the collector embeds it from the org Project when a Projects token is available. Pool summaries appear here when it lands; tracked issues still resolve through the projector/fixtures chain.</div>`;
 }
 
@@ -4990,7 +5236,7 @@ function projectCard(s: ProjectSummary): string {
   const poolLine =
     s.poolArea === null
       ? `<span class="muted">No dedicated Project Area yet.</span>`
-      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
+      : `<strong><a href="/program?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
   const roadmapLine =
     s.roadmapArea === null
       ? `<span class="muted">No Grist roadmap area yet.</span>`
@@ -5011,7 +5257,20 @@ export function renderProgram(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  poolSection?: {
+    pool: ProjectPoolItem[];
+    area?: string | null;
+    coverage?: CoverageSnapshotFile | null;
+    orchestration?: OrchestrationSection | null;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
+  } | null,
 ): string {
+  const poolSectionHtml = poolSection
+    ? `<h2 id="projects-pool">Projects pool</h2>
+<p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program" })}`
+    : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
   const unset = live.pool.byArea.find((c) => c.name === "(unset)")?.count ?? 0;
@@ -5033,13 +5292,13 @@ ${poolSummaryHtml(live)}
 ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
-${trackedTable(live.tracked)}`;
+${trackedTable(live.tracked)}${poolSectionHtml}`;
   return layout(
     "Program status",
     body,
     provenance,
     "/program",
-    "",
+    poolSection?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "items", "roadmap"]) : "",
   );
 }
@@ -5238,4 +5497,264 @@ ${editorialHtml}`;
     "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
+}
+
+// --- Alerts page (#3676, the alert throat) ---------------------------------
+
+export interface AlertsPageView {
+  available: boolean;
+  incidents: Incident[];
+  events: IncidentEvent[];
+  subscriptions: PushSubscriptionRow[];
+  ackWindowMin: number;
+}
+
+function incidentCard(i: Incident): string {
+  const sev = i.severity === "critical" ? "closed" : i.severity === "warning" ? "implementing" : "open";
+  const times = [
+    `first seen ${fmtDate(i.first_seen_at)}`,
+    i.occurrences > 1 ? `${i.occurrences} occurrences, last ${fmtDate(i.last_seen_at)}` : null,
+    i.delivered_at
+      ? `pushed ${fmtDate(i.delivered_at)}`
+      : i.severity === "critical" && i.status === "open"
+        ? "not yet pushed"
+        : null,
+    i.escalated_at ? `escalated ${fmtDate(i.escalated_at)}` : null,
+    i.acked_at ? `acked ${fmtDate(i.acked_at)}` : null,
+    i.closed_at ? `closed ${fmtDate(i.closed_at)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const actions =
+    i.status === "open"
+      ? `<button data-ack="${esc(i.id)}">Ack</button> <button data-close="${esc(i.id)}">Close</button>`
+      : i.status === "acked"
+        ? `<button data-close="${esc(i.id)}">Close</button>`
+        : "";
+  return `<div class="card incident" id="incident-${esc(i.id)}">
+<strong>${esc(i.title)}</strong> <span class="badge ${sev}">${esc(i.severity)}</span> <span class="badge">${esc(i.status)}</span>
+${i.body ? `<br>${esc(i.body)}` : ""}
+<br><span class="muted">source <code>${esc(i.source)}</code> · key <code>${esc(i.incident_key)}</code> · ${esc(times)}</span>
+${actions ? `<br>${actions}` : ""}
+</div>`;
+}
+
+function subscriptionRow(s: PushSubscriptionRow): string {
+  let host = s.endpoint;
+  try {
+    host = new URL(s.endpoint).host;
+  } catch {}
+  const classes = Object.entries(s.classes ?? {})
+    .map(([k, v]) => `${esc(k)}: ${v ? "on" : "off"}`)
+    .join(", ");
+  const quiet =
+    s.quiet?.enabled === false
+      ? "quiet hours off"
+      : `quiet hours ${s.quiet?.start ?? "?"}–${s.quiet?.end ?? "?"} ${s.quiet?.tz ?? ""}`;
+  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · ${esc(quiet)}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
+<br><span class="muted">${esc(s.user_agent ?? "")}</span>
+<br><button data-unsub="${esc(s.endpoint)}">Remove this subscription</button></div>`;
+}
+
+export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapidPublicKey: string): string {
+  if (!view.available) {
+    return layout(
+      "Alerts",
+      `<h1>Alerts</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/alerts",
+    );
+  }
+  const open = view.incidents.filter((i) => i.status !== "closed");
+  const closed = view.incidents.filter((i) => i.status === "closed");
+  const events = view.events
+    .map(
+      (e) =>
+        `<tr><td>${fmtDate(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.title ?? e.incident_id)}</td><td class="muted">${esc(e.source ?? "")}${e.incident_key ? ` · ${esc(e.incident_key)}` : ""}</td></tr>`,
+    )
+    .join("");
+  // The push form's initial state is rendered from the newest stored
+  // subscription (Drew 2026-11-01): the page shows the saved truth on
+  // load even before — or entirely without — the client script
+  // matching this browser's own subscription. The client script
+  // still refines it per-browser via applyPrefs once it runs.
+  const formSub = [...view.subscriptions].sort((a, b) => (a.last_seen_at < b.last_seen_at ? 1 : -1))[0];
+  const formIncidentChecked = !formSub || formSub.classes?.incident !== false;
+  const formQuietOn = !formSub || formSub.quiet?.enabled !== false;
+  const formQuietStart = formSub?.quiet?.start ?? "23:00";
+  const formQuietEnd = formSub?.quiet?.end ?? "07:00";
+  const body = `<h1>Alerts</h1>
+<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
+<style>.incident:target { outline: 2px solid #1f6feb; }</style>
+<h2>Push delivery on this browser</h2>
+<div class="card" id="push-panel">
+<span id="push-status" class="muted">checking…</span>
+<div id="push-guide" hidden>
+<div id="push-guide-ios" hidden>
+<p><strong>On iPhone, Apple only allows web push from the installed app:</strong></p>
+<ol>
+<li>Open this page in <strong>Safari</strong> — if you got here from inside another app, use its menu to open the page in Safari instead.</li>
+<li>Tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+<li>Open the dashboard from the new home-screen icon, come back to this Alerts page, and tap <strong>Enable push on this browser</strong> — and tap <strong>Allow</strong> when it asks about notifications.</li>
+</ol>
+</div>
+<div id="push-guide-other" hidden>
+<p><strong>This browser can't receive web push</strong> — most often because the page is open inside another app (an in-app browser) or in a browser without push support. Open this page's address in your regular browser (Chrome, Safari, or Firefox) and enable push there.</p>
+</div>
+</div>
+<p><label><input type="checkbox" id="push-class-incident"${formIncidentChecked ? " checked" : ""}> <strong>Incident alerts</strong></label><br>
+<span class="muted">A watchdog reports something down. Incident alerts always come through immediately, the moment they're posted.</span></p>
+<p><label><input type="checkbox" id="push-quiet-enabled"${formQuietOn ? " checked" : ""}> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications overnight, between <input type="time" id="push-quiet-start" value="${formQuietStart}"${formQuietOn ? "" : " disabled"}> and <input type="time" id="push-quiet-end" value="${formQuietEnd}"${formQuietOn ? "" : " disabled"}> (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.</span></p>
+<button id="push-enable">Enable push on this browser</button>
+<button id="push-test">Send a test alert</button>
+<button id="push-save-prefs">Save preferences</button>
+<button id="push-disable">Disable push on this browser</button>
+<br><span id="push-test-result" class="muted"></span>
+</div>
+<h2>Subscriptions (${view.subscriptions.length})</h2>
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
+<h2>Open incidents (${open.length})</h2>
+${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
+${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
+<h2>Ledger — recent transitions</h2>
+<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+  const script = `<script>
+const VAPID = ${JSON.stringify(vapidPublicKey)};
+const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
+async function post(path) { const r = await fetch(path, { method: "POST" }); if (!r.ok) alert("failed: HTTP " + r.status); location.reload(); }
+document.querySelectorAll("[data-ack]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.ack + "/ack")));
+document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.close + "/close")));
+document.querySelectorAll("[data-unsub]").forEach((b) => b.addEventListener("click", async () => {
+  await fetch("/api/push/subscriptions", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint: b.dataset.unsub }) });
+  location.reload();
+}));
+const status = document.getElementById("push-status");
+const DENIED_TEXT = "Notifications are blocked for this site on this device. On iPhone: Settings → Notifications → this app — allow notifications; or delete the home-screen app, re-add it, and tap Allow when asked. On a computer: the lock icon in the address bar → site settings → Notifications → Allow.";
+const PLAIN_ERRORS = {
+  denied: DENIED_TEXT,
+  dismissed: "The notification prompt was closed without a choice — nothing was turned on. Tap Enable push again and choose Allow.",
+  unsupported: "Push isn't available in this browser — follow the steps below to get it working.",
+  "subscribe-failed": "The browser couldn't register for push — check the connection and try again.",
+  "save-failed": "Your choice couldn't be saved on the server — try again.",
+  "not-subscribed": "This browser isn't subscribed yet — enable push first.",
+};
+function showError(e) {
+  status.textContent = PLAIN_ERRORS[e && e.code] || "Something went wrong — try again.";
+}
+function syncQuietInputs() {
+  const on = document.getElementById("push-quiet-enabled").checked;
+  document.getElementById("push-quiet-start").disabled = !on;
+  document.getElementById("push-quiet-end").disabled = !on;
+}
+document.getElementById("push-quiet-enabled").addEventListener("change", syncQuietInputs);
+function applyPrefs(mine) {
+  if (mine.classes && typeof mine.classes.incident === "boolean") {
+    document.getElementById("push-class-incident").checked = mine.classes.incident;
+  }
+  if (mine.quiet) {
+    document.getElementById("push-quiet-enabled").checked = mine.quiet.enabled !== false;
+    if (mine.quiet.start) document.getElementById("push-quiet-start").value = mine.quiet.start;
+    if (mine.quiet.end) document.getElementById("push-quiet-end").value = mine.quiet.end;
+    syncQuietInputs();
+  }
+}
+// Capability is checked against the window directly, NOT via
+// window.pmPush: push-client.js loads with defer, so when this
+// inline script first runs pmPush does not exist yet. The first
+// build read that absence as "this browser can't do push" and
+// painted the unsupported guide on every load in every browser —
+// and returned before applying saved prefs (Drew 2026-11-01:
+// pushes worked while the page said unsupported, and a saved
+// quiet-hours-off reloaded as on). pmPush itself is awaited below.
+function pushSupportedHere() {
+  return "PushManager" in window && "Notification" in window && "serviceWorker" in navigator;
+}
+function waitForPmPush() {
+  if (window.pmPush) return Promise.resolve(window.pmPush);
+  return new Promise((resolve) => {
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      if (window.pmPush || n > 60) { clearInterval(t); resolve(window.pmPush || null); }
+    }, 50);
+  });
+}
+async function refreshStatus() {
+  const guide = document.getElementById("push-guide");
+  if (!pushSupportedHere()) {
+    status.textContent = "Push isn't available in this browser yet — the steps below get it working.";
+    guide.hidden = false;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    document.getElementById("push-guide-ios").hidden = !ios;
+    document.getElementById("push-guide-other").hidden = ios;
+    return;
+  }
+  guide.hidden = true;
+  const pm = await waitForPmPush();
+  if (!pm) { status.textContent = "The push controls are still loading — reload the page if this sticks."; return; }
+  const sub = await pm.current().catch(() => null);
+  if (sub) {
+    status.textContent = "This browser is subscribed — pushes will land here.";
+    // Endpoint match first; with a single stored subscription it is
+    // this browser's in practice (push endpoints rotate) — fall back
+    // to it so saved prefs still reach the form.
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint) || (SUBS.length === 1 ? SUBS[0] : null);
+    if (mine) applyPrefs(mine);
+  } else if (pm.permission() === "denied") {
+    status.textContent = DENIED_TEXT;
+  } else {
+    status.textContent = "This browser is not subscribed yet — tap Enable push below.";
+  }
+}
+refreshStatus();
+syncQuietInputs();
+function prefs() {
+  return {
+    classes: { incident: document.getElementById("push-class-incident").checked },
+    quiet: {
+      enabled: document.getElementById("push-quiet-enabled").checked,
+      start: document.getElementById("push-quiet-start").value || "23:00",
+      end: document.getElementById("push-quiet-end").value || "07:00",
+      tz: "America/Chicago",
+    },
+  };
+}
+document.getElementById("push-enable").addEventListener("click", async () => {
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("push-save-prefs").addEventListener("click", async () => {
+  try {
+    const p = prefs();
+    await window.pmPush.updatePrefs(p);
+    // Confirm in place, no reload: state the saved values in words
+    // so the result is checkable without trusting the form.
+    status.textContent = p.quiet.enabled
+      ? "Saved — quiet hours on, " + p.quiet.start + "–" + p.quiet.end + "."
+      : "Saved — quiet hours off, no time-of-day limit.";
+  } catch (e) { showError(e); }
+});
+document.getElementById("push-disable").addEventListener("click", async () => {
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("push-test").addEventListener("click", async () => {
+  const out = document.getElementById("push-test-result");
+  out.textContent = "sending…";
+  try {
+    const r = await fetch("/api/push/test", { method: "POST" });
+    if (!r.ok) { out.textContent = "The test couldn't be sent — the server answered HTTP " + r.status + "."; return; }
+    const s = await r.json();
+    if (!s.subscriptions) {
+      out.textContent = "No subscriptions yet — enable push first, then try the test.";
+    } else if (s.sent > 0) {
+      out.textContent = "Test sent to " + s.sent + " subscription" + (s.sent === 1 ? "" : "s") + " — look for a notification titled 'Test alert'.";
+    } else {
+      out.textContent = "The test reached no device (" + s.errors + " failed, " + s.gone + " no longer there) — the subscriptions may be stale; disable push and enable it again.";
+    }
+  } catch (e) {
+    out.textContent = "The test couldn't be sent — network or server error.";
+  }
+});
+</script>`;
+  return layout("Alerts", body, provenance, "/alerts", script);
 }

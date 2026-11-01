@@ -710,14 +710,14 @@ export interface DnsSection {
 }
 
 // ---------------------------------------------------------------------------
-// AA cost explorer: the Artificial Analysis workbook data (Supabase
+// AA cost explorer: the Artificial Analysis import data (Supabase
 // `ainventory`, latest import batch) as the collector embeds it in the
-// fleet feed. The figures are the workbook snapshot's — AA Intelligence
+// fleet feed. The figures are the import snapshot's — AA Intelligence
 // Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
 // the section's provenance says exactly which batch and files they are.
 // ---------------------------------------------------------------------------
 
-/** One workbook source file behind the AA section (freshness evidence). */
+/** One import source file behind the AA section (freshness evidence). */
 export interface AaSourceInfo {
   name: string;
   kind: string;
@@ -776,7 +776,7 @@ export interface AaThreshold {
 export interface AaConfig {
   modelName: string;
   benchmark: string;
-  /** The workbook's effort label, verbatim (e.g. "Adaptive Reasoning,
+  /** The import's effort label, verbatim (e.g. "Adaptive Reasoning,
    * High Effort, Default Fallback") — never shortened or invented. */
   effort: string | null;
   intelligence: number | null;
@@ -785,7 +785,7 @@ export interface AaConfig {
 }
 
 /** One Test_Runs row, mapped by the sheet's own header row: per-config
- * timing. Null timing = the workbook never measured it — the page says
+ * timing. Null timing = the import never measured it — the page says
  * "not measured", it does not estimate. */
 export interface AaTestRun {
   testRunKey: string;
@@ -802,7 +802,7 @@ export interface AaTestRun {
 
 /**
  * One Coding Agent Index row of ainventory.benchmark_results (the
- * workbook's Coding_Agent_Results import): a model + effort + agent
+ * import's Coding_Agent_Results rows): a model + effort + agent
  * harness observation, kept strictly separate from the AA Intelligence
  * Index — no score conversion between the indexes (the ChatGPT
  * explorers' cross-benchmark rule). Component scores are the published
@@ -899,15 +899,15 @@ export interface AaPoint {
   ttft: number | null;
   pointsPerDollar: number | null;
   pointsPerSecond: number | null;
-  /** score / cost, computed when the workbook's own column is absent. */
+  /** score / cost, computed when the import's own column is absent. */
   scorePerDollar: number | null;
-  /** score / time, computed when the workbook's own column is absent. */
+  /** score / time, computed when the import's own column is absent. */
   scorePerSecond: number | null;
   eligible: boolean;
   qualStatus: string | null;
   /** Agent harness (CAI points only; null on AA points). */
   harness: string | null;
-  /** Total tokens per task (CAI points only; the workbook's AA rows
+  /** Total tokens per task (CAI points only; the import's AA rows
    * do not carry a per-task token count). */
   tokensPerTask: number | null;
   /** CAI component scores as published fractions (CAI points only). */
@@ -928,7 +928,7 @@ export interface AaPoint {
  * (route ids whose expanded leaves include it), the plan the provider
  * door belongs to (collector-carried registry facts — see
  * AA_PLAN_FACTS in src/aa.ts), and its best AA measurement when the
- * workbook measured a model of the same normalized name. Assembled by
+ * import measured a model of the same normalized name. Assembled by
  * aaCatalogFromConfig() in src/aa.ts.
  */
 export interface AaCatalogEntry {
@@ -996,7 +996,7 @@ export interface AaSection {
   status: "ok";
   /** ISO timestamp of the collector run that built the section. */
   generatedAt: string;
-  /** ainventory import batch (v_latest_workbook_batch) the rows came from. */
+  /** ainventory import batch (v_latest_import_batch) the rows came from. */
   batch: string;
   sources: AaSourceInfo[];
   rankings: AaRanking[];
@@ -1015,11 +1015,18 @@ export interface AaSection {
   /** Current token prices from the ainventory price event log
    * (v_current_prices); absent on the same condition as cai. */
   prices?: AaPrice[];
+  /** Set by the collector when this section is the last good payload
+   * re-served after a failed collection (code#3332); absent on a fresh
+   * build. generatedAt stays the good build's time. */
+  stale?: boolean;
+  /** Why the latest collection failed, when stale. */
+  staleReason?: string;
 }
 
 /** The section's degraded form: the collector could not reach Supabase
- * (or the payload failed its check) — the page renders the reason
- * instead of stale numbers, and the feed never fails over it. */
+ * (or the payload failed its check) and no last good payload exists
+ * to fall back to (code#3332) — the page renders the reason, and the
+ * feed never fails over it. */
 export interface AaAbsentSection {
   status: "absent";
   reason: string;
@@ -1181,6 +1188,15 @@ export interface DatedRead {
 }
 
 /** One family-2 service: a card on the hub, a page at /quota/service/<id>. */
+export interface ServiceSources {
+  /** The quota-view.md Part (b) section this card was built from, e.g. "### Turso". */
+  quotaViewSection: string;
+  /** The Summary (b) tracker row's first cell, or null when the service has no row. */
+  trackerRow: string | null;
+  /** The evidence-baseline research record behind the card's interpretation. */
+  baselineDoc: string;
+}
+
 export interface SaasService {
   id: string;
   name: string;
@@ -1200,6 +1216,8 @@ export interface SaasService {
   sourceClass: UsageSourceClass;
   /** Where the card's facts came from, human-readable. */
   sourceNote: string;
+  /** Research provenance behind the card (#1058): tracker row, baseline, quota-view section. */
+  sources?: ServiceSources;
   /** Renewal/reset as recorded (may be prose, e.g. "cycle ends 2026-10-31"). */
   nextDate?: string | null;
   /** Expected re-measure cadence in days; older reads render stale. */

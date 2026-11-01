@@ -149,11 +149,23 @@ impl DirectoryAuth {
     /// Make a six-digit code for an address and remember its digest. Returns
     /// the code, which is sent by mail and never stored.
     ///
+    /// Issuing first sweeps every expired pending code, for any address, so
+    /// a code whose address never comes back does not sit in the map forever
+    /// (#1732). The sweep is opportunistic: it runs only when a code is
+    /// issued, so nothing is reclaimed while the world is idle and the map
+    /// has no hard size bound. `HashMap::retain` scans the whole map, so an
+    /// issuance costs O(pending codes) on top of its own work — accepted
+    /// here because issuance is already rate-limited per address and the
+    /// scan is the same shape as the session sweep in `open_session`.
+    /// Unexpired codes are all kept, including ones that have run out of
+    /// attempts, so resend throttling and the attempt limit are unchanged.
+    ///
     /// # Errors
     ///
     /// Fails with [`Refusal::RateLimited`] if a code for this address was sent
     /// less than a minute ago.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
+        self.codes.retain(|_, pending| pending.expires_at > now);
         if let Some(pending) = self.codes.get(address)
             && pending.sent_at + CODE_RESEND_MS > now
         {
@@ -354,7 +366,12 @@ pub fn verify_signed(
 }
 
 fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') — and the replay guard,
+    // keyed on the key string, would treat the '+' spelling of a
+    // captured request as a fresh id.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -443,6 +460,54 @@ mod tests {
             error.downcast_ref::<Refusal>(),
             Some(Refusal::RateLimited(_))
         ));
+    }
+
+    #[test]
+    fn issuing_for_another_address_evicts_expired_codes_at_the_ttl_boundary() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::SignIn {
+            account: "ab".repeat(32),
+        };
+        auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        // One millisecond before expiry the first code is still pending:
+        // issuing for a second address must keep it.
+        auth.issue_code(purpose.clone(), "c@d.co", now() + CODE_TTL_MS - 1)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        // At exactly expires_at the code is expired (check_code refuses at
+        // expires_at <= now), so the same issuance sweep evicts it without
+        // the first address ever checking.
+        auth.issue_code(purpose, "e@f.co", now() + CODE_TTL_MS)
+            .unwrap();
+        assert!(!auth.codes.contains_key("a@b.co"));
+        assert!(auth.codes.contains_key("c@d.co"));
+        assert!(auth.codes.contains_key("e@f.co"));
+    }
+
+    #[test]
+    fn the_sweep_keeps_unexpired_codes_even_after_their_attempts_run_out() {
+        let mut auth = DirectoryAuth::default();
+        let purpose = Purpose::Confirm {
+            account: "ab".repeat(32),
+        };
+        let code = auth.issue_code(purpose.clone(), "a@b.co", now()).unwrap();
+        let wrong = if code == "999999" { "000000" } else { "999999" };
+        for _ in 0..CODE_ATTEMPTS {
+            assert!(auth.check_code("a@b.co", wrong, now()).is_err());
+        }
+        // Issuing for another address inside the TTL sweeps expired codes
+        // only: the exhausted code stays, so the attempt limit still refuses
+        // even the right answer, and the new code verifies normally.
+        let other = auth
+            .issue_code(purpose.clone(), "c@d.co", now() + CODE_RESEND_MS)
+            .unwrap();
+        assert!(auth.codes.contains_key("a@b.co"));
+        assert!(auth.check_code("a@b.co", &code, now() + CODE_RESEND_MS).is_err());
+        assert_eq!(
+            auth.check_code("c@d.co", &other, now() + CODE_RESEND_MS)
+                .unwrap(),
+            purpose
+        );
     }
 
     #[test]
@@ -543,6 +608,60 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
         let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn hex_bytes_refuses_plus_encoded_pairs() {
+        // #2517: '+' pairs must not decode at either auth shape.
+        assert!(hex_bytes::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_bytes::<64>(&"+a".repeat(64)).is_none());
+        let mut mixed = "0a".repeat(64);
+        mixed.replace_range(0..2, "+a");
+        assert!(hex_bytes::<64>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_bytes::<64>(&"0a".repeat(64)),
+            hex_bytes::<64>(&"0A".repeat(64))
+        );
+    }
+
+    #[test]
+    fn a_signed_request_replayed_in_plus_encoding_is_refused() {
+        // #2517: a byte below 0x10 has a canonical pair with a leading
+        // '0' ("07") and a '+' spelling ("+7") that decodes identically.
+        // Before the hexdigit gate, re-encoding a captured request's
+        // key that way verified again under a fresh replay-guard id
+        // (the guard keys on the key string); now it is refused.
+        // Find a signing key whose verifying-key hex has at least one
+        // pair with a leading '0' — each such pair has a '+' spelling.
+        let plus_encode = |hex: &str| -> String {
+            hex.as_bytes()
+                .chunks(2)
+                .map(|pair| {
+                    if pair[0] == b'0' {
+                        format!("+{}", pair[1] as char)
+                    } else {
+                        String::from_utf8(pair.to_vec()).unwrap()
+                    }
+                })
+                .collect()
+        };
+        let mut signed = None;
+        for seed in 0_u8..=255 {
+            let key = SigningKey::from_bytes(&[seed; 32]);
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1");
+            if plus_encode(&candidate.key) != candidate.key {
+                signed = Some(candidate);
+                break;
+            }
+        }
+        let signed = signed.expect("some seed's key has a '+'-spellable pair");
+        let mut replays = ReplayGuard::default();
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+        let mut replayed = signed.clone();
+        replayed.key = plus_encode(&signed.key);
+        assert_ne!(replayed.key, signed.key);
+        assert!(verify_signed(&mut replays, &replayed, "GET", "/x", b"", now()).is_err());
     }
 
     #[test]

@@ -107,6 +107,14 @@ function optString(body: Record<string, unknown>, field: string): string | undef
   return v;
 }
 
+/** Like optString, but an empty or whitespace-only string counts as omitted
+ * (issue #2664): a blank title must fall back to the prompt-derived title and
+ * a blank directory to the repo default, not defeat them with "". */
+function optNonBlankString(body: Record<string, unknown>, field: string): string | undefined {
+  const v = optString(body, field);
+  return v !== undefined && v.trim() !== "" ? v : undefined;
+}
+
 function optBool(body: Record<string, unknown>, field: string, dflt: boolean): boolean {
   const v = body[field];
   if (v === undefined || v === null) return dflt;
@@ -131,22 +139,23 @@ export function parseSessionRequest(body: unknown): SessionRequest {
   return {
     repo: reqString(b, "repo"),
     prompt: reqString(b, "prompt"),
-    title: optString(b, "title"),
+    title: optNonBlankString(b, "title"),
     model: parseModel(b.model),
-    directory: optString(b, "directory"),
+    directory: optNonBlankString(b, "directory"),
     priority: resolvePriority(b.priority),
     issue: optBool(b, "issue", true),
     wait: optBool(b, "wait", true),
   };
 }
 
-/** Session-directory scoping for POST /v1/sessions (issue #2903).
- * OIDC callers (workflows in allowlisted repos) may only run inside the
- * target repo's laptop primary clone: directory omitted (default) or
- * exactly the repo's scoped directory. Anything else is rejected BEFORE
- * any issue/task/session is created. Bearer callers hold the laptop
- * secret, so they keep the free-form directory — a deliberate choice,
- * documented in the README. */
+/** Session-directory scoping for POST /v1/sessions (issues #2903, #2664).
+ * One rule for every caller type (OIDC and bearer alike): a missing, empty,
+ * or whitespace-only directory resolves to the target repo's clone, and an
+ * explicit directory must be an absolute, normalized path equal to or inside
+ * that clone. Relative paths, other repos' clones, and arbitrary absolute
+ * paths are rejected BEFORE any issue/task/session is created. (This
+ * supersedes the #2903-era bearer free-form directory; extra roots and
+ * allowlists stay out of scope per design issue #2668.) */
 export function resolveSessionDirectory(
   callerType: "oidc" | "bearer",
   repo: string,
@@ -154,15 +163,34 @@ export function resolveSessionDirectory(
   repoDirs: Record<string, string>,
 ): string {
   const scoped = repoDirs[repo];
-  if (directory === undefined) return scoped!;
-  if (callerType === "bearer") return directory;
-  const norm = (d: string) => (d.length > 1 ? d.replace(/\/+$/, "") : d);
-  if (scoped === undefined || norm(directory) !== norm(scoped)) {
-    throw new ValidationError(
-      `directory: OIDC callers may only omit directory or use the repo clone (${scoped ?? "unknown"})`,
-    );
+  if (scoped === undefined) {
+    throw new ValidationError(`directory: no repo directory is configured for ${repo}`);
   }
-  return scoped;
+  const root = normalizeDirectory(scoped);
+  if (directory === undefined || directory.trim() === "") return root;
+  const norm = normalizeDirectory(directory);
+  if (norm === root || norm.startsWith(`${root}/`)) return norm;
+  throw new ValidationError(
+    `directory: ${callerType} callers may only run inside the target repo clone (${root}) or a directory within it`,
+  );
+}
+
+/** Lexical absolute-path normalization: collapses duplicate slashes, "."
+ * and ".." segments and trailing slashes. Relative paths are rejected. */
+function normalizeDirectory(d: string): string {
+  if (!d.startsWith("/")) {
+    throw new ValidationError(`directory: must be an absolute path, got "${d}"`);
+  }
+  const parts: string[] = [];
+  for (const seg of d.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return `/${parts.join("/")}`;
 }
 
 export interface TaskRequest {

@@ -43,6 +43,9 @@ import (
 // socket is not portable across Deno, Bun and Node).
 type Server struct {
 	reg *Registry
+	// completeLimiter holds the completion/complete admission windows
+	// (#2387). The zero value is ready; every Server gets its own.
+	completeLimiter rateLimiter
 	// augment is Options.Augment, kept for reloads.
 	augment func(*config.Config) error
 	paths   Paths
@@ -810,7 +813,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			SessionID string            `json:"sessionId"`
 			CallID    string            `json:"callId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
@@ -1084,7 +1087,7 @@ func callContext(r *http.Request, body config.CallContext, session string) confi
 
 func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	var req callReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.callBodyLimit"))).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -1112,7 +1115,12 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		if cc.SessionID == "" {
 			requestor = tasks.Caller(r.Header.Get("X-Mcpx-Run"))
 		}
-		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args)
+		// The task outlives this request, so capture its call settings
+		// by value now: startCallTask attaches them inside the task
+		// callback, where Registry.Call reads the caller's requested
+		// pool.callTimeout (#1864 item 4 -- the explicit-task branch
+		// must not drop what the sync and reporting paths honour).
+		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args, s.callSettings(r))
 		if terr != nil {
 			// The store's per-requestor cap (protoTasks.maxPerRequestor).
 			writeErr(w, http.StatusTooManyRequests, terr)
@@ -1181,6 +1189,18 @@ type batchReq struct {
 	Parallel    bool               `json:"parallel"`
 	Context     config.CallContext `json:"context"`
 	Session     string             `json:"session"`
+}
+
+// bodyBytes is the configured request-body limit for key, falling back
+// to the built-in default when the server carries no settings set —
+// the shape handleBatch already used for its limit, shared by every
+// MaxBytesReader wrap so a bare &Server{} in a test cannot nil-panic
+// in Set.Bytes (#2082).
+func (s *Server) bodyBytes(key string, fallback int64) int64 {
+	if s.set == nil {
+		return fallback
+	}
+	return s.set.Bytes(key)
 }
 
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
@@ -1313,7 +1333,7 @@ type resourceReq struct {
 
 func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
 	var req resourceReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.bodyLimit"))).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -1330,7 +1350,7 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Session string `json:"session"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.controlBodyLimit"))).Decode(&req)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
 	if req.Session == "" {
 		req.Session = r.Header.Get("X-Mcpx-Session")
 	}
@@ -1382,7 +1402,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		Server string `json:"server"`
 		Lazy   bool   `json:"lazy"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.controlBodyLimit"))).Decode(&req)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
 	res, err := s.reg.Restart(r.Context(), req.Server, req.Lazy)
 	if err != nil {
 		writeErr(w, 400, err)

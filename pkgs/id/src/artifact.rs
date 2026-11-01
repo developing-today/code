@@ -565,7 +565,8 @@ impl ArtifactLog {
 
     /// Load the log at `path`, which is empty if the file does not exist. A
     /// final line cut short by a crash was never synced, so it is dropped and
-    /// the file is truncated to the last complete line.
+    /// the file is truncated to the last complete line, with a warning. Blank
+    /// lines are skipped, as `Directory::replay` skips them (#2128).
     ///
     /// # Errors
     ///
@@ -578,6 +579,12 @@ impl ArtifactLog {
         };
         let kept = text.rfind('\n').map_or(0, |index| index + 1);
         if kept < text.len() {
+            // #2128: mirror Directory::replay / FileJournal::open - a torn
+            // final entry is dropped loudly, not silently.
+            tracing::warn!(
+                "artifact journal {}: dropping torn final entry at byte {kept}",
+                path.display()
+            );
             OpenOptions::new()
                 .write(true)
                 .open(path)?
@@ -585,6 +592,13 @@ impl ArtifactLog {
         }
         let mut log = Self::default();
         for (number, line) in text[..kept].lines().enumerate() {
+            // #2128: blank lines are cosmetic (Directory::replay skips them
+            // in its own journal); enumerate() keeps the physical line
+            // number, so a corrupt non-blank line still reports its true
+            // position below.
+            if line.trim().is_empty() {
+                continue;
+            }
             let artifact: SignedArtifact = serde_json::from_str(line)
                 .with_context(|| format!("artifact line {} is corrupt", number + 1))?;
             log.store(artifact, false)
@@ -1209,6 +1223,58 @@ mod tests {
         assert_eq!(reopened, log);
         assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
         assert_eq!(reopened.head_seq(&public(1)), 2);
+    }
+
+    #[test]
+    fn blank_lines_in_the_journal_are_skipped() {
+        // #2128: a blank line must not brick the open - Directory::replay
+        // skips them in its own journal. Middle (incl. whitespace-only),
+        // trailing, and blank-only states all open with artifacts intact.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let second = log.sign(&key(1), &declared(1, 7)).unwrap();
+        log.insert(second.clone()).unwrap();
+        append(&path, &second).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        let first_nl = text.find('\n').unwrap();
+        let mut mangled = text.clone();
+        mangled.insert_str(first_nl + 1, "\n  \n");
+        mangled.push('\n');
+        fs::write(&path, mangled).unwrap();
+        assert_eq!(ArtifactLog::open(&path).unwrap(), log);
+
+        let blank_only = dir.path().join("blank.artifacts");
+        fs::write(&blank_only, "\n\n").unwrap();
+        assert_eq!(
+            ArtifactLog::open(&blank_only).unwrap(),
+            ArtifactLog::default()
+        );
+    }
+
+    #[test]
+    fn a_corrupt_line_after_a_blank_line_reports_its_physical_line() {
+        // #2128: skipping blanks must not renumber - the corrupt line is
+        // physically line 3 and the refusal must say so.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(FILE);
+        let mut log = ArtifactLog::default();
+        let first = log.sign(&key(1), &removal(1, 2, &["r1"])).unwrap();
+        log.insert(first.clone()).unwrap();
+        append(&path, &first).unwrap();
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("\nnot json\n");
+        fs::write(&path, text).unwrap();
+
+        let refused = ArtifactLog::open(&path).unwrap_err();
+        assert!(
+            format!("{refused:#}").contains("artifact line 3 is corrupt"),
+            "{refused:#}"
+        );
     }
 
     /// The bytes a page takes on the wire, as the server sends it.

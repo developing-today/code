@@ -39,11 +39,11 @@
 //     Any failure (no token, bws missing, GraphQL error) omits the
 //     section and logs only that it was omitted.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
-//     workbook import: v_rankings, v_threshold_metrics,
+//     import: v_rankings, v_threshold_metrics,
 //     benchmark_results — both the AA Intelligence Index rows and the
 //     Coding Agent Index rows, kept as separate benchmark families —
-//     the Test_Runs sheet, and the price event log's v_current_prices),
-//     read through v_latest_workbook_batch via the Management API SQL endpoint.
+//     the Test_Runs data, and the price event log's v_current_prices),
+//     read through v_latest_import_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
 //     named `supabase.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
@@ -73,11 +73,18 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
-import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
+import {
+  disabledProvidersFromConfig,
+  aaAbsent,
+  aaSectionFromSupabase,
+  isAaSection,
+  type AaRawPayload,
+} from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
 import { computeCheckoutDrift } from "../src/checkout-drift.ts";
 import type {
   AaFeedSection,
+  AaSection,
   DnsSection,
   JulesSummary,
   OrchestrationSection,
@@ -97,6 +104,8 @@ import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from ".
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { fetchProjectPool } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
+import { REPOS } from "../src/model.ts";
+import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -265,18 +274,18 @@ async function resolveProjectToken(): Promise<string | null> {
 // --- AA cost explorer (Supabase ainventory) ---------------------------------
 // One SQL statement returns the whole section payload as a single
 // jsonb object (keys pre-renamed to the section's camelCase). The
-// Test_Runs sheet rides as raw rows; src/aa.ts maps them by the
-// sheet's own header row and computes pool/catalog coverage.
+// Test_Runs data rides as raw rows; src/aa.ts maps them by
+// their own header row and computes pool/catalog coverage.
 
 const AA_SQL = `
 select jsonb_build_object(
-  'batch', (select import_batch::text from ainventory.v_latest_workbook_batch),
+  'batch', (select import_batch::text from ainventory.v_latest_import_batch),
   'sources', coalesce((
     select jsonb_agg(jsonb_build_object(
       'name', name, 'kind', kind, 'importedAt', imported_at, 'driveModifiedAt', drive_modified_at
     ) order by id)
     from ainventory.sources
-    where import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+    where import_batch = (select import_batch from ainventory.v_latest_import_batch)
   ), '[]'::jsonb),
   'rankings', coalesce((
     select jsonb_agg(jsonb_build_object(
@@ -308,14 +317,14 @@ select jsonb_build_object(
       'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', speed_tps
     ) order by model_name, effort)
     from ainventory.benchmark_results br
-    where br.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+    where br.import_batch = (select import_batch from ainventory.v_latest_import_batch)
       and br.benchmark like 'AA Intelligence Index%'
       and br.metric = 'intelligence_index'
   ), '[]'::jsonb),
   'testRunRows', coalesce((
     select jsonb_agg(jsonb_build_object('rowIndex', row_index, 'cells', data->'cells') order by row_index)
     from ainventory.sheet_rows sr
-    where sr.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+    where sr.import_batch = (select import_batch from ainventory.v_latest_import_batch)
       and sr.sheet_name = 'Test_Runs'
   ), '[]'::jsonb),
   'cai', coalesce((
@@ -332,7 +341,7 @@ select jsonb_build_object(
       'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
     ) order by value_num desc nulls last, model_name)
     from ainventory.benchmark_results br
-    where br.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+    where br.import_batch = (select import_batch from ainventory.v_latest_import_batch)
       and br.benchmark like 'Artificial Analysis Coding Agent Index%'
       and br.metric = 'cai_index_score'
   ), '[]'::jsonb),
@@ -347,37 +356,110 @@ select jsonb_build_object(
   ), '[]'::jsonb)
 ) as aa`;
 
+const AA_BATCH_SQL = `select import_batch::text as batch from ainventory.v_latest_import_batch`;
+
 /**
- * Build the AA feed section. Fail-soft like every other section, but
- * with the failure stated in the section itself (the absent form), so
- * the dashboard explains the gap instead of silently going stale.
- * The management token is only ever sent to api.supabase.com and is
- * never logged or written to the feed.
+ * The last-good AA section store (code#3332): kept beside the feed so a
+ * transient Supabase failure degrades to the previous good payload
+ * instead of blanking the explorer. Keyed by the import batch and the
+ * opencode config fingerprint — the section is rebuilt when either
+ * changes and reused untouched while neither does.
+ */
+const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
+
+interface AaLastGood {
+  batch: string;
+  configFingerprint: string;
+  section: AaSection;
+}
+
+async function readAaLastGood(): Promise<AaLastGood | null> {
+  try {
+    const parsed = JSON.parse(await readFile(aaLastGoodPath, "utf8")) as Partial<AaLastGood>;
+    if (typeof parsed.batch !== "string" || typeof parsed.configFingerprint !== "string") return null;
+    if (!isAaSection(parsed.section) || parsed.section.status !== "ok") return null;
+    return { batch: parsed.batch, configFingerprint: parsed.configFingerprint, section: parsed.section };
+  } catch {
+    return null;
+  }
+}
+
+async function writeAaLastGood(entry: AaLastGood): Promise<void> {
+  try {
+    const tmp = `${aaLastGoodPath}.tmp`;
+    await writeFile(tmp, JSON.stringify(entry));
+    await rename(tmp, aaLastGoodPath);
+  } catch (err) {
+    console.error(`collector: AA last-good store write failed (${err instanceof Error ? err.message : "error"})`);
+  }
+}
+
+/** The coverage half of the AA section is computed from the opencode
+ * config, so the reuse key includes the config's fingerprint. */
+async function opencodeConfigFingerprint(): Promise<string> {
+  try {
+    const st = await stat(opencodeConfigPath);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return "unreadable";
+  }
+}
+
+async function supabaseQuery(token: string, ref: string, sql: string): Promise<unknown> {
+  const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: sql }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`Supabase query failed (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * Build the AA feed section. Fail-soft like every other section: a
+ * failed build degrades to the last good payload with a stale marker
+ * (code#3332), or to the absent form when no good payload exists yet,
+ * so the dashboard explains the gap. The management token is only ever
+ * sent to api.supabase.com and is never logged or written to the feed.
  */
 async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
+  const lastGood = await readAaLastGood();
+  const degrade = (reason: string): AaFeedSection =>
+    lastGood ? { ...lastGood.section, stale: true, staleReason: reason } : aaAbsent(reason, generatedAt);
   const token = await resolveBwsSecret("supabase.access-token-muse-cli");
-  if (!token) return aaAbsent("no Supabase management token available (bws)", generatedAt);
+  if (!token) return degrade("no Supabase management token available (bws)");
   // Project ref: env override, else the Bitwarden supabase.project-ref
   // secret (the same resolve-by-name discipline as the token), else the
   // muse-dev2 project — never the retired muse-dev project.
   const ref =
     process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
+  const fingerprint = await opencodeConfigFingerprint();
+  // Cheap batch probe first (code#3332): the payload only changes on a
+  // new import or a config change, so most ticks reuse the last good
+  // section instead of re-running the full payload query — the query
+  // pressure was itself causing intermittent Management API 403s.
+  try {
+    const rows = (await supabaseQuery(token, ref, AA_BATCH_SQL)) as { batch?: unknown }[];
+    const batchNow = Array.isArray(rows) && typeof rows[0]?.batch === "string" ? rows[0].batch : null;
+    if (batchNow && lastGood && batchNow === lastGood.batch && fingerprint === lastGood.configFingerprint) {
+      console.error("collector: AA section reused (import batch + config unchanged)");
+      return lastGood.section;
+    }
+  } catch {
+    // Probe failed — fall through to the full query, which produces
+    // the authoritative result or the degrade reason.
+  }
   let raw: AaRawPayload;
   try {
-    const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: AA_SQL }),
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!res.ok) return aaAbsent(`Supabase query failed (HTTP ${res.status})`, generatedAt);
-    const rows = (await res.json()) as { aa?: unknown }[];
+    const rows = (await supabaseQuery(token, ref, AA_SQL)) as { aa?: unknown }[];
     if (!Array.isArray(rows) || typeof rows[0]?.aa !== "object" || rows[0].aa === null) {
-      return aaAbsent("Supabase returned no AA payload", generatedAt);
+      return degrade("Supabase returned no AA payload");
     }
     raw = rows[0].aa as AaRawPayload;
   } catch (err) {
-    return aaAbsent(`Supabase unreachable (${err instanceof Error ? err.message : "error"})`, generatedAt);
+    const msg = err instanceof Error ? err.message : "error";
+    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
   }
   let configText: string | null = null;
   try {
@@ -385,10 +467,10 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  return (
-    aaSectionFromSupabase(raw, configText, generatedAt) ??
-    aaAbsent("Supabase payload failed its structural check", generatedAt)
-  );
+  const section = aaSectionFromSupabase(raw, configText, generatedAt);
+  if (!section) return degrade("Supabase payload failed its structural check");
+  await writeAaLastGood({ batch: section.batch, configFingerprint: fingerprint, section });
+  return section;
 }
 
 async function main(): Promise<void> {
@@ -411,7 +493,9 @@ async function main(): Promise<void> {
       console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
     }
     pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
-      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
+      console.error(
+        `collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`,
+      ),
     );
   } catch (err) {
     console.error(`collector: quota view unreadable (${err}); emitting no pools`);
@@ -445,10 +529,7 @@ async function main(): Promise<void> {
   try {
     const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
     if (candidates.length) {
-      const auto = matchCharges(
-        candidates,
-        chargeServiceCatalog(saas ?? [], pools),
-      );
+      const auto = matchCharges(candidates, chargeServiceCatalog(saas ?? [], pools));
       charges = mergeChargeRows(auto.rows, charges ?? []);
       let surfaced = new Set<string>();
       try {
@@ -589,6 +670,55 @@ async function main(): Promise<void> {
     projects = undefined;
   }
 
+  // --- Coverage census (#1220) -------------------------------------------
+  // Per-repo open-issue + gate-label counts via the Search API, using
+  // the same token as the Project read. Fail-soft: a repo whose counts
+  // fail is omitted, and a total failure omits the section — the
+  // aggregator panel then renders backlog counts as unavailable.
+  let coverage: RepoCensus[] | undefined;
+  try {
+    const token = await resolveProjectToken();
+    if (!token) {
+      console.error("collector: no GitHub token available; coverage census omitted");
+    } else {
+      const count = async (q: string): Promise<number> => {
+        const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: "application/vnd.github+json",
+            "user-agent": "pm-aggregator-collector",
+          },
+        });
+        if (!res.ok) throw new Error(`search ${res.status}`);
+        const body = (await res.json()) as { total_count?: number };
+        if (!Number.isInteger(body.total_count)) throw new Error("search: no total_count");
+        return body.total_count as number;
+      };
+      const rows: RepoCensus[] = [];
+      for (const repo of REPOS) {
+        try {
+          const base = `repo:${repo} is:issue is:open`;
+          rows.push({
+            repo,
+            openIssues: await count(base),
+            gateNow: await count(`${base} label:now`),
+            gateNext: await count(`${base} label:next`),
+          });
+        } catch (err) {
+          console.error(
+            `collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`,
+          );
+        }
+      }
+      if (rows.length) coverage = rows;
+    }
+  } catch (err) {
+    console.error(
+      `collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`,
+    );
+    coverage = undefined;
+  }
+
   // --- AA cost explorer (Supabase ainventory) ------------------------------
   // Always attempted; the section carries its own failure (absent
   // form) so the dashboard can say why instead of showing stale data.
@@ -650,6 +780,7 @@ async function main(): Promise<void> {
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
+    ...(coverage ? { coverage } : {}),
     aa,
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
@@ -663,6 +794,7 @@ async function main(): Promise<void> {
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
       (projects ? `, projects ${projects.length} items` : ", no projects section") +
+      (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`
         : ", aa absent") +

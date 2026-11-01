@@ -552,6 +552,46 @@ mod list_tests {
             }
         }
     }
+
+    #[test]
+    fn test_list_quotes_control_characters_in_names() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-control.txt");
+        fs::write(&test_file, b"Control character list test").unwrap();
+
+        let name = "unsafe\nforged\tcolumn";
+        let put_spec = format!("{}:{name}", test_file.display());
+        // A second plain file takes cmd_put past its single-item
+        // stdin auto-detect (a lone `path:name` spec does not exist
+        // as a file, so it would be read as a stdin blob name and
+        // parse_put_spec would never run).
+        run_cmd_success(
+            &["put", &put_spec, test_file.to_str().unwrap()],
+            tmp.path(),
+        );
+
+        let output = run_cmd_success_stdout(&["list"], tmp.path());
+        let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the stored name must not forge another row: {output:?}"
+        );
+        let mut quoted_names = 0;
+        for row in &rows {
+            let fields: Vec<_> = row.split('\t').collect();
+            assert_eq!(
+                fields.len(),
+                2,
+                "the stored name must not forge a column: {output:?}"
+            );
+            assert_eq!(fields[0].len(), 64);
+            if fields[1] == r#""unsafe\nforged\tcolumn""# {
+                quoted_names += 1;
+            }
+        }
+        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
+    }
 }
 
 mod find_search_tests {

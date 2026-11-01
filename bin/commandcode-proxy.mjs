@@ -913,6 +913,12 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
+        return;
+      }
+
       const stream = Boolean(body.stream);
       const model = resolveModel(body.model);
       const chatId = `chatcmpl-commandcode-${crypto.randomUUID()}`;

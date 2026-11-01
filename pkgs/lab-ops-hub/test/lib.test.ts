@@ -4,13 +4,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   computeBudget,
+  crawlArchiveKey,
   CRAWL_FETCH_TIMEOUT_MS,
   crawlFetcher,
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
   readResponseTextCapped,
+  uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
@@ -831,12 +834,22 @@ test("validateNoteBody requires title, then body", () => {
   const both = validateNoteBody({});
   assert.equal(both.ok, false);
   if (!both.ok) assert.equal(both.error, "title required");
-  for (const b of [{ title: null, body: "x" }, { title: " ", body: "x" }, { title: 7, body: "x" }]) {
+  for (const b of [
+    { title: null, body: "x" },
+    { title: " ", body: "x" },
+    { title: 7, body: "x" },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "title required");
   }
-  for (const b of [{ title: "t" }, { title: "t", body: null }, { title: "t", body: "" }, { title: "t", body: "  " }, { title: "t", body: 9 }]) {
+  for (const b of [
+    { title: "t" },
+    { title: "t", body: null },
+    { title: "t", body: "" },
+    { title: "t", body: "  " },
+    { title: "t", body: 9 },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "body required");
@@ -855,4 +868,63 @@ test("validateTaskBody requires a nonblank string title", () => {
   const ok = validateTaskBody({ title: "do it" });
   assert.equal(ok.ok, true);
   if (ok.ok) assert.equal(ok.values.title, "do it");
+});
+
+test("uploadKey uniquifies same-millisecond uploads of the same name (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now, "rand-a");
+  const b = uploadKey("report.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+});
+
+test("uploadKey separates filenames that sanitize to the same string (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("my file.pdf", now, "rand-a");
+  const b = uploadKey("my:file.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+  // The sanitized tails really are identical — only the rand segment differs.
+  assert.ok(a.endsWith("-my_file.pdf"));
+  assert.ok(b.endsWith("-my_file.pdf"));
+});
+
+test("uploadKey is deterministic for identical inputs and keeps the uploads/ shape (#2478)", () => {
+  const now = 1793100000000;
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), uploadKey("report.pdf", now, "rand-a"));
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-report.pdf");
+  assert.equal(uploadKey("my file.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-my_file.pdf");
+});
+
+test("uploadKey defaults rand to a UUID so bare calls never repeat a key (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now);
+  const b = uploadKey("report.pdf", now);
+  assert.notEqual(a, b);
+  assert.match(a, /^uploads\/1793100000000-[0-9a-f-]{36}-report\.pdf$/);
+});
+
+test("crawlArchiveKey: same-millisecond derivations with distinct uniques never collide (#2503)", () => {
+  const ms = 1730000000000;
+  const a = crawlArchiveKey(ms, "11111111-1111-4111-8111-111111111111");
+  const b = crawlArchiveKey(ms, "22222222-2222-4222-8222-222222222222");
+  assert.equal(a, "crawls/1730000000000-11111111-1111-4111-8111-111111111111.json");
+  assert.equal(b, "crawls/1730000000000-22222222-2222-4222-8222-222222222222.json");
+  assert.notEqual(a, b);
+  const seen = new Set<string>();
+  for (let i = 0; i < 1000; i++) {
+    const k = crawlArchiveKey(ms, `unique-${i}`);
+    assert.match(k, /^crawls\/1730000000000-.+\.json$/);
+    assert.ok(!seen.has(k), k);
+    seen.add(k);
+  }
+});
+
+test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
+  assert.equal(isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")), true);
+  // Other constraints and other failures stay on the 500 path.
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: files.r2_key")), false);
+  assert.equal(isMachineNameConflict(new Error("no such table: machines")), false);
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed")), false);
+  assert.equal(isMachineNameConflict("UNIQUE constraint failed: machines.name"), true);
+  assert.equal(isMachineNameConflict(null), false);
 });

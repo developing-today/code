@@ -62,6 +62,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
+import { isRecord } from "./validate.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -441,8 +442,33 @@ export class ActionsStore {
     let raw: string;
     try {
       raw = await readFile(this.file, "utf8");
-    } catch {
-      this.actions = []; // no store yet — the first write creates it
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") {
+        this.actions = []; // no store yet — the first write creates it
+        return;
+      }
+      // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
+      // a directory in place of the file, ...) is NOT "no store yet":
+      // the on-disk audit history may be intact but unread. Handle it
+      // like the corrupt case below — quarantine the original bytes
+      // before starting empty, and log loudly — so the next persist
+      // cannot silently overwrite history the read never saw.
+      this.actions = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[actions] WARNING: actions store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
       return;
     }
     try {
@@ -451,7 +477,7 @@ export class ActionsStore {
         throw new Error("store file does not have the expected { actions: [...] } shape");
       }
       this.actions = (parsed as ActionsFile).actions.filter(
-        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
+        (a) => isRecord(a) && typeof a.id === "string" && isRecord(a.payload),
       );
     } catch (err) {
       this.actions = [];

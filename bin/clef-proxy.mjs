@@ -96,6 +96,17 @@ const getCredentials = (authHeader) => {
   return { accountId, gatewayId, token };
 };
 
+// The resolved model is interpolated raw into the gateway run URL, so it
+// must be confined to the Clef family in the cloudflare namespace with
+// plain name characters only (#2410): no '/', no dot segments, no '?',
+// '#', whitespace, or control characters are representable in this
+// grammar, so a hostile model cannot rewrite the upstream path/query or
+// spend the proxy's token on a non-Clef model. This is a deterministic
+// grammar check, deliberately NOT a gate on the live model list (that
+// list is async/TTL'd display machinery for /v1/models and must not
+// become a data-path dependency).
+const CLEF_MODEL_GRAMMAR = /^@cf\/cloudflare\/clef[A-Za-z0-9._-]*$/;
+
 const resolveModel = (model) => {
   if (!model || typeof model !== 'string') return '@cf/cloudflare/clef-flash';
   if (model.startsWith('@cf/')) return model;
@@ -228,6 +239,11 @@ const server = http.createServer(async (req, res) => {
         }
 
         const model = resolveModel(body.model);
+        if (!CLEF_MODEL_GRAMMAR.test(model)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Refused model '${model}': only Clef-family models (@cf/cloudflare/clef*) are served by this proxy` }));
+          return;
+        }
         const cfUrl = `${GATEWAY_BASE}/${accountId}/${gatewayId}/workers-ai/run/${model}`;
 
         const payload = {

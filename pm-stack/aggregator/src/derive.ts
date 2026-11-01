@@ -192,7 +192,8 @@ export const RETRY_LOOP_THRESHOLD = 3;
 
 /**
  * Classify one session feed entry. Ordering matters: the first rule that
- * matches wins, so a walled-spin with a question still surfaces the question.
+ * matches wins. Questions stay first; a retry loop outranks its last-turn
+ * error once the repeated-error threshold is reached.
  */
 export function classifyAttention(e: SessionFeedEntry, now = Date.now()): AttentionEntry {
   let state: AttentionState = "in-motion";
@@ -201,12 +202,12 @@ export function classifyAttention(e: SessionFeedEntry, now = Date.now()): Attent
   if (e.awaitingQuestion) {
     state = "stopped-for-question";
     evidence = `Waiting on: ${e.awaitingQuestion}`;
-  } else if (e.lastTurnError) {
-    state = "errored";
-    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if ((e.repeatedErrorCount ?? 0) >= RETRY_LOOP_THRESHOLD) {
     state = "stuck-retrying";
     evidence = `${e.repeatedErrorCount} consecutive identical errors, no progress.`;
+  } else if (e.lastTurnError) {
+    state = "errored";
+    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if (e.longRunningCall && Date.parse(e.longRunningCall.startedAt) + CLI_STALL_MS < now) {
     state = "stalled-on-cli";
     evidence = `CLI running long: ${e.longRunningCall.command ?? "unknown"} (since ${e.longRunningCall.startedAt}).`;
@@ -974,8 +975,18 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
   const slope = ((last.value as number) - (first.value as number)) / days;
   if (slope <= 0.05) return null;
   const lastVal = last.value as number;
-  const projectedExhaustionAt =
-    lastVal >= 100 ? last.ts : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
+  // Out-of-domain pct (#2346): a negative percent-of-limit can never
+  // support a projection, and an unbounded extrapolation can land
+  // outside Date's range, where toISOString() throws RangeError. The
+  // contract is null when history cannot support a projection --
+  // slope and points are still reported.
+  let projectedExhaustionAt: string | null = null;
+  if (lastVal >= 100) {
+    projectedExhaustionAt = last.ts;
+  } else if (lastVal >= 0) {
+    const candidate = new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000);
+    if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
+  }
   let projectedPercentAtReset: number | null = null;
   if (last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;

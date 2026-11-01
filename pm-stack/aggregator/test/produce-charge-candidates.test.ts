@@ -2,7 +2,7 @@
 // inside "Subtotal" as the charged total, and an explicit paid amount
 // wins over an earlier bare total.
 import { describe, expect, test } from "bun:test";
-import { amountFromBody, isNotChargeSubject } from "../scripts/produce-charge-candidates.ts";
+import { amountFromBody, gmailMessageDay, isNotChargeSubject } from "../scripts/produce-charge-candidates.ts";
 
 describe("amountFromBody", () => {
   test("records the paid total, not the subtotal", () => {
@@ -72,5 +72,34 @@ describe("amountFromBody (#3120)", () => {
 
   test("a genuine receipt body still yields its amount", () => {
     expect(amountFromBody("Receipt\nYou were charged $20.00 for OpenAI")).toBe("20.00");
+  });
+});
+
+// #2448: a Gmail message with a missing or garbled date must be
+// skippable by the caller (empty day -> format check -> skipped),
+// never throw RangeError and discard the whole candidate batch.
+describe("gmailMessageDay (#2448)", () => {
+  test("the triage local day wins when present", () => {
+    expect(gmailMessageDay({ message_sent_at: { user_local: "2026-10-25T09:30:00" }, date: "garbage" })).toBe(
+      "2026-10-25",
+    );
+  });
+
+  test("a parseable message date is used when no local day exists", () => {
+    expect(gmailMessageDay({ date: "Sat, 25 Oct 2026 09:30:00 -0500" })).toBe("2026-10-25");
+  });
+
+  test("a missing date yields an empty day instead of throwing", () => {
+    expect(gmailMessageDay({})).toBe("");
+  });
+
+  test("a garbled date yields an empty day instead of throwing", () => {
+    expect(gmailMessageDay({ date: "not a date" })).toBe("");
+    expect(gmailMessageDay({ date: "" })).toBe("");
+  });
+
+  test("one bad message does not stop the batch: later messages still resolve", () => {
+    const days = [{ date: "garbage" }, { date: "Sat, 25 Oct 2026 09:30:00 -0500" }, {}].map(gmailMessageDay);
+    expect(days).toEqual(["", "2026-10-25", ""]);
   });
 });

@@ -178,10 +178,32 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         return jsonResponse(400, { error: "invalid_json" });
       }
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
-      if (typeof subject !== "string" || typeof ref !== "string" || !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)) {
-        return jsonResponse(400, { error: "subject (string) and ref (owner/repo#N) required" });
+      if (
+        typeof subject !== "string" ||
+        subject.length === 0 ||
+        typeof ref !== "string" ||
+        !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)
+      ) {
+        return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
-      await store.upsertLink(db, { subject, ref, relation: String(relation), note, createdBy });
+      // Validate the whole body before any store call (#2974): relation is
+      // never String()-coerced (an array stored as 'a,b', an object as
+      // '[object Object]'), and note/createdBy are bound by the store, so a
+      // non-string there threw the SQLite bind error out of the handler.
+      if (typeof relation !== "string") {
+        return jsonResponse(400, { error: "relation (string) required" });
+      }
+      if (note !== undefined && note !== null && typeof note !== "string") {
+        return jsonResponse(400, { error: "note (string or null) required" });
+      }
+      if (createdBy !== undefined && createdBy !== null && typeof createdBy !== "string") {
+        return jsonResponse(400, { error: "createdBy (string or null) required" });
+      }
+      try {
+        await store.upsertLink(db, { subject, ref, relation, note, createdBy });
+      } catch (err) {
+        return jsonResponse(500, { error: `link_store_failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
       return jsonResponse(201, { ok: true, subject, ref, relation });
     }
     if (method === "DELETE" && bearerAuthorized(req, env)) {

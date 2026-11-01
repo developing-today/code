@@ -2,7 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
-import { buildHealth, createProbeCache, recordRender, resolveBuildVersion, type HealthInputs, type ProbeFetch } from "../src/health.ts";
+import {
+  buildHealth,
+  createProbeCache,
+  recordRender,
+  resolveBuildVersion,
+  type HealthInputs,
+  type ProbeFetch,
+} from "../src/health.ts";
 import { pendingCommentCounts } from "../src/comments.ts";
 import type { DashComment } from "../src/model.ts";
 import { renderHealth } from "../src/render.ts";
@@ -193,7 +200,14 @@ describe("buildHealth probes", () => {
     const { fetcher } = fakeFetcher(allUp);
     const feed = feedAt(5 * 60_000);
     (feed.dns as { generatedAt: string }).generatedAt = "not-a-date";
-    (feed as unknown as { aa: unknown }).aa = { status: "ok", generatedAt: "garbage!!", batch: "b", rankings: [], configs: [], testRuns: [] };
+    (feed as unknown as { aa: unknown }).aa = {
+      status: "ok",
+      generatedAt: "garbage!!",
+      batch: "b",
+      rankings: [],
+      configs: [],
+      testRuns: [],
+    };
     const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
     const dns = view.feed.sections.find((x) => x.key === "dns");
     expect(dns?.present).toBe(false);
@@ -214,7 +228,14 @@ describe("buildHealth probes", () => {
     const feed = feedAt(5 * 60_000);
     const future = new Date(NOW + 3_600_000).toISOString();
     (feed.dns as { generatedAt: string }).generatedAt = future;
-    (feed as unknown as { aa: unknown }).aa = { status: "ok", generatedAt: future, batch: "b", rankings: [], configs: [], testRuns: [] };
+    (feed as unknown as { aa: unknown }).aa = {
+      status: "ok",
+      generatedAt: future,
+      batch: "b",
+      rankings: [],
+      configs: [],
+      testRuns: [],
+    };
     const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
     const dns = view.feed.sections.find((x) => x.key === "dns");
     expect(dns?.present).toBe(false);
@@ -419,7 +440,9 @@ describe("pending comment counts (#1145)", () => {
     expect(html).toContain("3 messages awaiting triage");
     expect(html).toContain("2 GitHub comments awaiting posting");
     expect(html).toContain("9 comments in the store");
-    expect(html).toContain("a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting");
+    expect(html).toContain(
+      "a pending count that does not drain means work arrives faster than it is cleared, or the triage/poster loop has stopped; check the loop's last run before acting",
+    );
     expect(html).not.toContain("a pending count that never drains means the triage/poster loop is not running");
   });
 });

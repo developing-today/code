@@ -203,7 +203,12 @@ pub fn is_process_alive(pid: u32) -> bool {
         // SAFETY: libc::kill with signal 0 only checks process existence without
         // sending any signal. The pid cast from u32 to i32 is safe because valid
         // PIDs on Unix are always positive and fit in i32.
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        // #2384: a failed probe is not proof of death — EPERM means the
+        // process exists but is owned by another user, so it is alive;
+        // only ESRCH (no such process) and other errnos mean dead. This
+        // mirrors mcpx's ProcessAlive (pkgs/mcpx/internal/daemon/paths.go).
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
     #[cfg(not(unix))]
     {
@@ -1927,12 +1932,14 @@ mod tests {
 
     #[test]
     fn test_is_process_alive_pid_1() {
-        // PID 1 (init) should exist on Unix systems, but may not be visible
-        // in containerized environments where the container has its own PID namespace
+        // PID 1 exists in every Unix PID namespace (as init, or as the
+        // namespace's init in a container). #2384: when the test runs
+        // unprivileged, pid 1 is foreign-owned and kill(1, 0) fails with
+        // EPERM — that must still answer alive; as root the probe succeeds
+        // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            // Just check that the function doesn't panic - the result depends on environment
-            let _ = is_process_alive(1);
+            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
         }
     }
 

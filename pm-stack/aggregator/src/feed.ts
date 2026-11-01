@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
 import type {
   AaFeedSection,
@@ -40,6 +41,17 @@ export interface FleetFeed {
   /** Element drops loadFeed's quota sanitization made (#2429), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
   quotaDropped?: { pools: number; windows: number; burn: number };
+  /** Element drops loadFeed's chargesAttention sanitization made
+   * (#2439), set only when at least one entry dropped; absent on raw
+   * parsed feeds and on feeds whose entries all survived. */
+  chargesAttentionDropped?: number;
+  /** Subscription rows loadFeed's sanitization dropped (#2446), set
+   * only when at least one row (or a non-array section) was dropped;
+   * absent on raw parsed feeds and on clean loads. */
+  subscriptionsDropped?: number;
+  /** Rows loadFeed's charges sanitization dropped (#2445), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  chargesDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -76,7 +88,12 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** AA cost explorer section: the ainventory (AA workbook) data read
+  /** Project #4 coverage census (#1220): per-repo open-issue and
+   * gate-label counts from the collector's Search API reads, embedded
+   * beside the projects section. Absent when the collector had no
+   * GitHub token or the census failed. */
+  coverage?: RepoCensus[];
+  /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
    * ({status:"absent", reason}) when Supabase was unreachable — the
@@ -253,6 +270,27 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   return raw.filter(isProjectPoolItem);
 }
 
+/** Whether the feed actually carries a projects section. The collector
+ * omits the section entirely when its Project read fails, so presence
+ * is the availability signal: an absent (or malformed) section means
+ * the pool is unavailable, which coverage must not render as zero
+ * items (#1220, PR #3309). A present array is available even when
+ * individual malformed items drop in poolFromFeed. */
+export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
+  return Array.isArray(feed?.projects);
+}
+
+/** Fail-soft read of the coverage census from a parsed feed: absent
+ * or malformed sections yield null (the panel then renders backlog
+ * counts as unavailable), malformed rows drop individually. */
+export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): RepoCensus[] | null {
+  const raw = feed?.coverage;
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return null;
+  const rows = raw.filter(isRepoCensus);
+  return rows.length ? rows : null;
+}
+
 /** One quota window as the renderers dereference it (#2429): `limit`
  * is read arithmetically by windowPercent, `used` is rendered, and a
  * non-object element crashes both renderQuota and buildAttentionFlags. */
@@ -300,6 +338,32 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
     typeof v.from === "string" &&
     typeof v.to === "string" &&
     isFiniteNumber(v.tokens)
+  );
+}
+
+/** One unmatched-charge entry as the live source dereferences it
+ * (#2439): merchant and at are interpolated, amountUsd is formatted
+ * with toFixed and used as a severity, so those three must be a
+ * string, a finite number, and a string. normalized/source are not
+ * gate-required: the consumer tolerates any source value and never
+ * dereferences normalized. */
+export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
+  if (!isRecord(v)) return false;
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+}
+
+/** One charges-evidence row as the /quota charges strip renders it
+ * (#2445): a record with string at/label/method/source and a
+ * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
+ * validate.ts primitives, like the quota element validators above. */
+export function isChargeRow(v: unknown): v is ChargeRow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.at === "string" &&
+    typeof v.label === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    typeof v.method === "string" &&
+    typeof v.source === "string"
   );
 }
 
@@ -385,8 +449,44 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // feeds, rather than crashing /quota.
     Array.isArray(q.burn) &&
     isQuotaChoices(q.choices) &&
-    Array.isArray(f.attention)
+    Array.isArray(f.attention) &&
+    // chargesAttention is optional, but a present non-array value is
+    // a shape failure, not data (#2439): the live source maps it
+    // unguarded, so — like burn/choices above — the feed is rejected
+    // whole. Malformed ELEMENTS inside an array are loadFeed's
+    // drop-and-count concern, not the gate's.
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
   );
+}
+
+export interface SubscriptionSanitization {
+  /** Sanitized rows, or undefined when the section is absent (or was
+   * dropped whole) — consumers already treat absence as an empty strip. */
+  rows?: { name: string; plan: string; renewsAt: string | null }[];
+  dropped: number;
+}
+
+/** One subscription row safe to hand to the renderers (#2446): the
+ * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
+ * a null row or a non-string field 500s /quota and is served verbatim
+ * by /api/quota.json. */
+export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+  );
+}
+
+/** Drop malformed subscription rows at the loadFeed boundary (#2446,
+ * the #2429 pattern): the section is optional and unvalidated by
+ * isFleetFeed, so element-level damage is dropped here rather than
+ * rejecting the whole feed for one bad row. A non-array section is
+ * dropped whole (treated as absent, counted as one drop). */
+export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
 }
 
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
@@ -398,10 +498,37 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // sees only renderer-safe pools/windows (#2429). Drop counts are
     // attached to the feed so they are visible, not swallowed.
     const san = sanitizeQuotaView(parsed.quota);
+    // Same drop-and-count treatment for chargesAttention elements
+    // (#2439): the gate has already pinned the section to array-or-
+    // absent, so arrayOf cannot return null here; malformed entries
+    // drop individually and well-formed siblings still surface.
+    const charges =
+      parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
+    const subs = sanitizeSubscriptions(parsed.subscriptions);
+    // Charges rows get the same drop-and-count treatment at this same
+    // shared gate (#2445): the section is optional, so absence stays
+    // absent; a non-array section drops whole (counted as one dropped
+    // section) instead of silently emptying the charges strip or
+    // crashing a consumer; malformed rows drop individually. The
+    // count rides out on the feed when drops occur, never swallowed.
+    let chargesPart: { charges?: ChargeRow[]; chargesDropped?: number } = {};
+    if (parsed.charges !== undefined) {
+      const rows = arrayOf(isChargeRow)(parsed.charges);
+      if (rows === null) {
+        chargesPart = { charges: [], chargesDropped: 1 };
+      } else {
+        chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
+      }
+    }
     return {
       ...parsed,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      ...(charges ? { chargesAttention: charges.values } : {}),
+      ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
+      subscriptions: subs.rows,
+      ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...chargesPart,
     };
   } catch {
     return null;

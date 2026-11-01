@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
@@ -30,7 +31,7 @@ func (s *Server) handleFeedbackSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req feedbackSubmitReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid json request: %w", err))
 		return
 	}

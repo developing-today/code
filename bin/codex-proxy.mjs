@@ -1090,6 +1090,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
+        return;
+      }
+
       const stream = Boolean(body.stream);
       const reqReasoningEffort = body.reasoning_effort || (body.options && body.options.reasoning_effort);
       const resolvedModel = resolveModelAndEffort(body.model, reqReasoningEffort, await getModelCatalog());

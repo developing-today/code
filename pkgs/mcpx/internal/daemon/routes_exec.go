@@ -260,7 +260,7 @@ type execReq struct {
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	var req execReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -300,7 +300,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// requestor, which Start maps there), capped like any other.
 		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
 		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
-			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 			if err != nil && res == nil {
 				return nil, &tasks.Fault{Code: -32603, Message: err.Error()}
 			}
@@ -321,7 +321,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case execsvc.OutputStream:
 		s.execStream(w, r, svc, req)
 	case "", execsvc.OutputStructured, execsvc.OutputText:
-		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 		if err != nil && res == nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -400,7 +400,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 		}
 		return nil
 	}
-	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, enc)
+	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, enc)
 }
 
 // ---- artifacts ----
@@ -408,10 +408,10 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 // handleArtifactPut is how artifact() in a script registers a file.
 //
 // The body is the bytes, or -- when the script is on this machine and said so
-// with X-Mcpx-Path -- nothing, and the named file is hardlinked instead.
-// Reading, hashing into memory and writing again to hand somebody a file they
-// can already see would be the wrong shape for the local case, which is most
-// cases.
+// with X-Mcpx-Path -- the daemon reads and copies the named file into the
+// content-addressed store. The path hint avoids uploading the body over the
+// client transport, but the source is still read and hashed so the stored blob
+// is independent of the file outside the store (#1660).
 func (s *Server) handleArtifactPut(w http.ResponseWriter, r *http.Request) {
 	store, err := s.Artifacts()
 	if err != nil {

@@ -82,8 +82,9 @@ type ArtifactOptions struct {
 	// MaxBytes is the per-artifact ceiling the caller accepts for inline or
 	// streamed delivery. Anything larger stays a reference.
 	MaxBytes int64 `json:"maxBytes,omitempty"`
-	// SharedFs is a directory the caller can read. Artifacts are placed
-	// there -- hardlinked, not copied -- instead of being transferred.
+	// SharedFs is a directory the caller can read. Artifacts are copied there
+	// from the store so the caller can read them directly without a later
+	// transfer over the MCP connection.
 	SharedFs string `json:"sharedFs,omitempty"`
 	// Dir is where the CLI writes artifacts for the person who ran it. It is
 	// SharedFs by another name for a local caller, kept separate because one
@@ -566,11 +567,45 @@ type Request struct {
 	// RunID, when set, is used instead of a fresh one: the daemon registers
 	// a script's run for question correlation before the script starts.
 	RunID string
+	// CallSettings, when set, is the caller's call-settings header JSON
+	// (X-Mcpx-Settings) for the request that asked for this run. It is
+	// handed to the script as MCPX_SETTINGS so the generated client's
+	// own calls carry it back to the daemon -- a per-call value the
+	// caller set for the run (e.g. a shorter pool.callTimeout, #1864
+	// item 4) governs the calls the run makes, not just the run's own
+	// request.
+	CallSettings string
 }
 
 // Sink receives frames in order. Returning an error stops the run, which is
 // how a disconnected HTTP client kills the script it was watching.
 type Sink func(Frame) error
+
+// resolveExecTimeout applies the per-request timeout override rule
+// (#2398): a caller may lower the operator's bound, never remove or
+// raise it. A non-positive override is refused outright — the runner
+// treats 0 as "no limit", so accepting one would silently delete the
+// operator's exec.timeout. A positive override above the operator
+// limit clamps to it (the ClampedBy principle, #1864). An operator
+// limit of 0 is the operator's own no-limit choice: a positive
+// override then applies unclamped, and no override leaves the run
+// unbounded, exactly as the operator configured.
+func resolveExecTimeout(limit time.Duration, requested string) (time.Duration, error) {
+	if requested == "" {
+		return limit, nil
+	}
+	d, err := time.ParseDuration(requested)
+	if err != nil {
+		return 0, fmt.Errorf("exec: timeout %q: %w", requested, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("exec: timeout %q: must be positive", requested)
+	}
+	if limit > 0 && d > limit {
+		return limit, nil
+	}
+	return d, nil
+}
 
 // Run executes the script, building the runner options itself.
 //
@@ -586,13 +621,9 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	}
 	opts := req.Opts
 
-	timeout := s.Limits.Timeout
-	if opts.Timeout != "" {
-		d, err := time.ParseDuration(opts.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("exec: timeout %q: %w", opts.Timeout, err)
-		}
-		timeout = d
+	timeout, err := resolveExecTimeout(s.Limits.Timeout, opts.Timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	clientSrc, err := s.Src.ClientModule(ctx, opts.NS)
@@ -634,8 +665,14 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		// whatever started the daemon.
 		Stdin: strings.NewReader(opts.Stdin),
 	}
-	if req.RunID != "" {
-		ropts.Env = map[string]string{"MCPX_RUN": req.RunID}
+	if req.RunID != "" || req.CallSettings != "" {
+		ropts.Env = map[string]string{}
+		if req.RunID != "" {
+			ropts.Env["MCPX_RUN"] = req.RunID
+		}
+		if req.CallSettings != "" {
+			ropts.Env["MCPX_SETTINGS"] = req.CallSettings
+		}
 	}
 	if ph := opts.Phases; ph != nil {
 		ropts.Phases = runner.Phases{Before: ph.Before, Prefix: ph.Prefix,
@@ -1187,9 +1224,9 @@ func (s *Service) deliver(res *Result, opts Options) error {
 	for i := range res.Artifacts {
 		a := &res.Artifacts[i]
 		if dir != "" {
-			// A shared filesystem beats every transfer mode: the caller can
-			// already read the bytes, so hardlinking them into its directory
-			// costs an inode and no I/O.
+			// A shared filesystem lets the caller read the destination directly.
+			// Export still copies bytes from the store into that directory; this
+			// avoids a later transfer, not filesystem I/O.
 			p, err := s.Store.Export(a.Meta, dir)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", a.Name, err))

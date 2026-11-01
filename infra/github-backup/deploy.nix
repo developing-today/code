@@ -2,6 +2,7 @@
   writeShellApplication,
   bws,
   git,
+  jq,
   nodejs,
   sops,
   wrangler,
@@ -11,6 +12,7 @@ writeShellApplication {
   runtimeInputs = [
     bws
     git
+    jq
     nodejs
     sops
     wrangler

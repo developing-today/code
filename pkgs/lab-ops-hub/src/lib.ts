@@ -1,6 +1,7 @@
-// Pure helpers for Lab Ops Hub: crawl-target validation (#441) and the
-// /api/budget computation (#442). Kept free of Worker bindings so they can
-// be unit-tested with plain Node (test/lib.test.ts).
+// Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
+// /api/budget computation (#442), and upload R2 key derivation (#2478).
+// Kept free of Worker bindings so they can be unit-tested with plain
+// Node (test/lib.test.ts).
 
 // --- Crawl URL validation ---------------------------------------------------
 // The crawler fetches a caller-supplied URL from inside the Worker's /
@@ -202,6 +203,15 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
 // fetcher is injected (it must use redirect:"manual") so this is testable
 // with plain Node.
 
+/** The R2 archive key for one crawl's full text (#2503). Date.now()
+ * alone collides for same-millisecond crawls — the second PUT silently
+ * overwrites the first crawl's archive while both D1 rows point at it —
+ * so the key carries a caller-supplied unique suffix (the route passes
+ * crypto.randomUUID()). Pure and injectable for tests. */
+export function crawlArchiveKey(nowMs: number, unique: string): string {
+  return `crawls/${nowMs}-${unique}.json`;
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 export async function fetchFollowingValidatedRedirects(
@@ -367,9 +377,7 @@ export function computeBudget(by: Record<string, number>): {
 // so successful requests are unchanged; genuine operational failures
 // still fall through to the 500 path in index.ts.
 
-export type JsonObjectBody =
-  | { ok: true; body: Record<string, unknown> }
-  | { ok: false; error: string };
+export type JsonObjectBody = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
 
 export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody> {
   let parsed: unknown;
@@ -403,6 +411,18 @@ export function validateMachineBody(body: Record<string, unknown>): Validated<{ 
   return { ok: true, values: { name: name.value } };
 }
 
+// True only for the machines.name UNIQUE violation (#2631). D1 surfaces
+// constraint failures in the error message (possibly wrapped, e.g.
+// "D1_ERROR: UNIQUE constraint failed: machines.name"); any other error —
+// including a UNIQUE violation on a different column — is not a machine
+// name conflict and must keep flowing to the 500 handler. Matching the
+// thrown constraint (rather than pre-checking the name) keeps concurrent
+// duplicate registrations from racing past validation.
+export function isMachineNameConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UNIQUE constraint failed: machines.name");
+}
+
 // Notes check title before body, matching the order the fields are named
 // in the route's contract (and the triage note for #2480).
 export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
@@ -417,4 +437,18 @@ export function validateTaskBody(body: Record<string, unknown>): Validated<{ tit
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
   return { ok: true, values: { title: title.value } };
+}
+
+// --- Upload R2 keys ---------------------------------------------------------
+// The key used to be `uploads/${Date.now()}-${sanitized}`: two uploads in
+// the same millisecond with the same (or sanitize-equivalent) filename
+// derived the SAME key, so the second FILES.put overwrote the first
+// object and its D1 INSERT then failed on the UNIQUE r2_key — leaving
+// the first row pointing at the second upload's bytes (#2478). The
+// random segment makes collisions practically impossible while the
+// timestamp + sanitized name keep keys sortable and recognisable. The
+// rand input is injectable so derivation stays a pure, testable
+// function; callers pass crypto.randomUUID().
+export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
+  return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }

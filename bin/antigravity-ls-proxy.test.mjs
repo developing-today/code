@@ -236,3 +236,18 @@ test('streaming emits a tool_calls delta and a tool_calls finish', async () => {
   const finish = chunks[chunks.length - 1];
   assert.equal(finish.choices[0].finish_reason, 'tool_calls');
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async () => {
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
