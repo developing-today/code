@@ -21,8 +21,12 @@
 #   check-id-source-snapshot.sh snapshot <repo-root> <manifest-file>
 #   check-id-source-snapshot.sh verify   <repo-root> <manifest-file> <flake-source-dir>/pkgs/id
 #
-# nix metadata .path is the store root of the repository; verify takes its pkgs/id subtree:
-#   nix flake metadata --json ./pkgs/id | jq -r .path   # append /pkgs/id for verify
+# The verify step's <flake-source-dir> is the pkgs/id subtree of the
+# flake source copy. Derive it with getFlake's outPath — the workflow
+# previously used `nix flake metadata --json ./pkgs/id | jq -r .path`,
+# whose .path is null under Determinate Nix in CI (#1569 wiring fix):
+#   nix eval --impure --raw --expr \
+#     "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id\").outPath"
 set -euo pipefail
 
 cmd="${1:-}"
