@@ -182,6 +182,44 @@ describe("buildHealth probes", () => {
     expect(saas?.present).toBe(false);
   });
 
+  test("collector section errors and skips are explicit and degrade health", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const feed = feedAt(5 * 60_000);
+    delete feed.dns;
+    delete feed.projects;
+    feed.meta = {
+      sections: {
+        dns: { status: "error", at: new Date(NOW - 2 * 60_000).toISOString(), error: "register parse failed" },
+        projects: { status: "skipped", at: new Date(NOW - 2 * 60_000).toISOString() },
+      },
+    };
+    const view = await buildHealth(inputs({ feed }), { fetcher, cache: createProbeCache(), now: NOW });
+    const dns = view.feed.sections.find((section) => section.key === "dns");
+    const projects = view.feed.sections.find((section) => section.key === "projects");
+    expect(dns?.status).toBe("error");
+    expect(dns?.note).toContain("register parse failed");
+    expect(dns?.ageMs).toBe(2 * 60_000);
+    expect(projects?.status).toBe("skipped");
+    expect(view.degraded).toBe(true);
+
+    const html = renderHealth(view, {
+      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "", attention: "",
+      orchestration: "", dns: "error", registry: "", aa: "",
+    });
+    expect(html).toContain("error");
+    expect(html).toContain("register parse failed");
+    expect(html).toContain("skipped");
+  });
+
+  test("legacy feeds keep presence reporting without inventing collection status", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs({ feed: feedAt(5 * 60_000) }), {
+      fetcher, cache: createProbeCache(), now: NOW,
+    });
+    expect(view.feed.sections.find((section) => section.key === "dns")?.present).toBe(true);
+    expect(view.feed.sections.find((section) => section.key === "dns")?.status).toBe("unknown");
+  });
+
   test("a feed stamped far in the future is stale, never up/fresh (#1564)", async () => {
     const { fetcher } = fakeFetcher(allUp);
     const view = await buildHealth(inputs({ feed: feedAt(-30 * 86_400_000) }), {
@@ -343,7 +381,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
       status: string;
       source: { board: string };
       services: { id: string; state: string }[];
-      feed: { generatedAt: unknown };
+      feed: { generatedAt: unknown; sections: unknown[] };
       pages: { route: string; lastRenderedAt: unknown }[];
       jobs: { orchestration: { state: string } };
     };
@@ -352,6 +390,7 @@ describe("health page + extended /api/health (fixtures boot)", () => {
     expect(Array.isArray(body.services)).toBe(true);
     expect(body.services.find((s) => s.id === "projector")?.state).toBe("fixtures");
     expect("generatedAt" in body.feed).toBe(true);
+    expect(Array.isArray(body.feed.sections)).toBe(true);
     expect(body.pages.some((p) => p.route === "/health")).toBe(true);
     expect(body.jobs.orchestration.state).toBeDefined();
   });

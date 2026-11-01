@@ -16,28 +16,10 @@ use wasmtime::{
 };
 
 /// Resource bounds applied to each guest invocation.
-#[derive(Clone, Copy, Debug)]
-pub struct SandboxLimits {
-    /// Maximum compiled Wasm module size, in bytes.
-    pub module_bytes: usize,
-    /// Maximum Wasm fuel for an invocation.
-    pub fuel: u64,
-    /// Maximum linear memory, in bytes.
-    pub memory_bytes: usize,
-    /// Maximum input or output payload, in bytes.
-    pub message_bytes: usize,
-}
-
-impl Default for SandboxLimits {
-    fn default() -> Self {
-        Self {
-            module_bytes: 16 * 1024 * 1024,
-            fuel: 10_000_000,
-            memory_bytes: 16 * 1024 * 1024,
-            message_bytes: 1024 * 1024,
-        }
-    }
-}
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::SandboxLimits;
 
 /// One kind of guest invocation, as counted by [`CallMetrics`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -838,6 +820,13 @@ impl crate::world::WorldProgram for WorldInstance {
             crate::world::WorldEventKind::Input(bytes) => {
                 std::str::from_utf8(bytes).context("Roc world input must be valid UTF-8")?;
                 Self::update(self, event.participant_id, bytes)
+            }
+            // Entity-addressed input (#3870) delivers its opaque bytes to
+            // the program exactly like unscoped input; the entity scoping
+            // is a host-side fencing concern, not a program concern.
+            crate::world::WorldEventKind::EntityInput { input, .. } => {
+                std::str::from_utf8(input).context("Roc world input must be valid UTF-8")?;
+                Self::update(self, event.participant_id, input)
             }
             // Host events (capability results, ticks, presence) are JSON
             // text delivered as participant 0; the program updates on them

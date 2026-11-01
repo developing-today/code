@@ -1,8 +1,11 @@
-// The fleet feed: a JSON file produced on the sandbox host by
-// scripts/collect-fleet-feed.ts and pushed to the laptop (the sandbox
-// OpenCode server binds its own loopback, and the quota sources of
-// record live on the sandbox). The aggregator renders the feed as-is;
-// a stale feed keeps rendering with its age stated in provenance.
+// The fleet feed: a JSON file produced on the laptop by
+// scripts/collect-fleet-feed.ts, run by the laptop's fleet-feed-collector
+// user timer (declared in the pm-stack NixOS module, #3363/#3368) and
+// written straight to the aggregator's state dir. (The collector
+// originally ran on the sandbox and pushed the feed here; that sandbox
+// timer is retired — a stale sandbox copy overwriting this file was
+// code#3362.) The aggregator renders the feed as-is; a stale feed keeps
+// rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
@@ -99,6 +102,71 @@ export interface FleetFeed {
    * ({status:"absent", reason}) when Supabase was unreachable — the
    * section degrades, the feed never fails over it. */
   aa?: AaFeedSection;
+  /** Optional collector outcomes. Older feeds have no metadata and keep
+   *  their historical presence-only health/provenance behavior. */
+  meta?: FeedMetadata;
+}
+
+export type FeedSectionStatus = "ok" | "error" | "skipped";
+
+export interface FeedSectionCollectionStatus {
+  status: FeedSectionStatus;
+  /** When this collection attempt finished (ISO timestamp). */
+  at: string;
+  /** Sanitized diagnostic for an error outcome only. */
+  error?: string;
+}
+
+export interface FeedMetadata {
+  sections: Record<string, FeedSectionCollectionStatus>;
+}
+
+/** Keep collector diagnostics useful without allowing credentials or
+ *  response payloads to leak into the shared feed. */
+export function sanitizeCollectionError(value: unknown): string {
+  let message = value instanceof Error ? value.message : typeof value === "string" ? value : "collection failed";
+  message = message
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+    .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, "Basic [redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+|xox[baprs]-[A-Za-z0-9-]+)/gi, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(/\b((?:access[_-]?token|refresh[_-]?token|token|api[_-]?key|password|secret|authorization)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(/(https?:\/\/)[^/@\s:]+(?::[^/@\s]*)?@/gi, "$1[redacted]@")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 240);
+  return message || "collection failed";
+}
+
+export function feedSectionStatus(
+  status: FeedSectionStatus,
+  at: string,
+  error?: unknown,
+): FeedSectionCollectionStatus {
+  return status === "error"
+    ? { status, at, error: sanitizeCollectionError(error) }
+    : { status, at };
+}
+
+/** Tolerate malformed optional metadata without rejecting an otherwise
+ *  usable feed. The same boundary also sanitizes error text from older
+ *  or externally-written collectors. */
+export function sanitizeFeedMetadata(value: unknown): FeedMetadata | undefined {
+  if (!isRecord(value) || !isRecord(value.sections)) return undefined;
+  const sections: FeedMetadata["sections"] = {};
+  for (const [key, raw] of Object.entries(value.sections)) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(key) || !isRecord(raw)) continue;
+    const at = raw.at;
+    if (
+      (raw.status !== "ok" && raw.status !== "error" && raw.status !== "skipped") ||
+      typeof at !== "string" ||
+      !isTimestampNotFuture(at)
+    ) {
+      continue;
+    }
+    sections[key] = feedSectionStatus(raw.status, at, raw.error);
+  }
+  return Object.keys(sections).length ? { sections } : undefined;
 }
 
 /**
@@ -498,6 +566,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // sees only renderer-safe pools/windows (#2429). Drop counts are
     // attached to the feed so they are visible, not swallowed.
     const san = sanitizeQuotaView(parsed.quota);
+    const meta = sanitizeFeedMetadata(parsed.meta);
     // Same drop-and-count treatment for chargesAttention elements
     // (#2439): the gate has already pinned the section to array-or-
     // absent, so arrayOf cannot return null here; malformed entries
@@ -522,6 +591,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     }
     return {
       ...parsed,
+      meta,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
       ...(charges ? { chargesAttention: charges.values } : {}),

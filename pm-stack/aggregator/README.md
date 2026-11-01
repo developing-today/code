@@ -580,14 +580,17 @@ tick visible on /quota.
   `scripts/record-claude-launch.ts`). The aggregator merges them with
   live laptop records into its durable registry.
 
-`scripts/push-fleet-feed.sh` pushes the feed to the laptop over the
-tailnet proxy route; a systemd timer on the sandbox runs it every
-~5 minutes (`systemd/fleet-feed-collector.{service,timer}`). The
-aggregator states the feed's age in the page provenance; a stale
-feed keeps rendering. `/etc/systemd/system` does not survive
-sandbox recycles, so `~/tools/init.sh` restores the units on boot
-via `scripts/install-collector-units.sh` whenever the timer is not
-active (#903).
+The collector runs on the laptop: the `fleet-feed-collector` user
+timer (declared in the pm-stack NixOS module, #3363/#3368) runs
+`scripts/collect-fleet-feed.ts` every ~5 minutes and writes the feed
+straight to the aggregator's state dir. The aggregator states the
+feed's age in the page provenance; a stale feed keeps rendering.
+The collector originally ran on the sandbox and pushed the feed
+over the tailnet proxy route (`scripts/push-fleet-feed.sh`); that
+sandbox timer is retired (#3362) — a stale sandbox copy kept
+overwriting the laptop feed (its AA section 403'd against the
+retired muse-dev project). The push script remains for manual use
+only.
 
 **Deployment (laptop):** `install.sh` copies the package to
 `~/pm-stack/aggregator`, renders `.env` from
@@ -706,12 +709,11 @@ src/
 opencode-tools/
   session-identity.ts  OpenCode tool: a session reports its own id (#906)
 scripts/
-  collect-fleet-feed.ts  sandbox collector: quota + sandbox attention
-                         + dns + registry records -> feed
-  push-fleet-feed.sh     collect + push the feed to the laptop (~5 min timer)
+  collect-fleet-feed.ts  collector: quota + attention + dns + registry
+                         records -> feed (runs on the laptop, ~5 min timer)
+  push-fleet-feed.sh     RETIRED sandbox producer: collect + push the feed
+                         to the laptop (manual use only, #3362)
   record-claude-launch.ts append a Muse launch record to the JSONL (#906)
-systemd/
-  fleet-feed-collector.{service,timer}  sandbox-side collector units
 test/
   render.test.ts    unit derivations + render smoke
   boot.test.ts      boots the server, serves all views from fixtures
