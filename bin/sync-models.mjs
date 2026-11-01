@@ -182,7 +182,7 @@ function loadPolicy() {
   const policy = JSON.parse(fs.readFileSync(POLICY_PATH, 'utf-8'));
   for (const [name, provider] of Object.entries(policy.providers || {})) {
     for (const family of provider.keep || []) {
-      if (!policy.families?.[family]) {
+      if (!Object.hasOwn(policy.families || {}, family) || !policy.families[family]) {
         throw new Error(`sync-models.policy.json: ${name} keeps unknown family "${family}"`);
       }
     }
@@ -207,6 +207,7 @@ function allowedModelIds(policy, providerPolicy, ids) {
     for (const family of providerPolicy.keep || []) {
       const match = id.match(new RegExp(policy.families[family]));
       if (!match) continue;
+      if (match[1] === undefined) continue;
       const version = match[1].replace(/-/g, '.').split('.').map(Number);
       const current = newest.get(family);
       if (!current || compareVersions(version, current.version) > 0) {
