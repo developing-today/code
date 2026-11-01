@@ -1896,7 +1896,7 @@ mod tests {
     }
 
     #[test]
-    fn cleaners_reject_format_characters_and_accept_plain_text() {
+    fn test_cleaners_reject_format_characters_and_accept_plain_text() {
         assert!(clean_name("Al\u{200B}ice").is_err());
         assert!(clean_name("Alice\u{202E}Admin").is_err());
         assert!(clean_description("Group\u{202E} description").is_err());
