@@ -38,6 +38,9 @@ use crate::world_compile::Compiler;
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldLease};
 
+/// Bound the extra presentation latency while coalescing view-only redraws.
+const VIEW_COALESCE_WINDOW: Duration = Duration::from_millis(5);
+
 /// Re-exported so `crate::world_session::MAX_FRAME_BYTES` keeps working: the
 /// limit now lives in [`crate::frames`] so the crate builds without the
 /// `world` feature.
@@ -1930,12 +1933,34 @@ async fn joined<I: SessionIo>(
         participant: participant_id,
     };
     let mut views = world.watch_views();
+    let mut pending_view_deadline = None;
+    let mut pending_view_sequence = cursor;
 
     loop {
+        let view_deadline = pending_view_deadline;
         tokio::select! {
+            () = async {
+                match view_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                pending_view_deadline = None;
+                if !send_view(service.frame_meter(), world, io, &token, pending_view_sequence, viewport).await {
+                    break;
+                }
+            },
             inbound = io.recv() => match inbound {
                 Inbound::Text(text) => {
-                    if !handle_client_frame(service, io, &token, &text, &mut viewport, cursor).await {
+                    if !handle_client_frame(
+                        service,
+                        io,
+                        &token,
+                        &text,
+                        &mut viewport,
+                        cursor,
+                        &mut pending_view_deadline,
+                    ).await {
                         break;
                     }
                 }
@@ -1951,6 +1976,8 @@ async fn joined<I: SessionIo>(
                 Ok(event) => {
                     if let crate::world::WorldEventKind::ProgramInstalled { ref module_hash, .. } = event.kind {
                         if event.sequence > cursor {
+                            pending_view_deadline = None;
+                            let _ = views.borrow_and_update();
                             let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
                             if !send_json(service.frame_meter(), io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
                                 break;
@@ -1982,12 +2009,13 @@ async fn joined<I: SessionIo>(
                     if !send_json(service.frame_meter(), io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
-                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
-                        break;
-                    }
+                    pending_view_sequence = cursor;
+                    pending_view_deadline.get_or_insert_with(|| tokio::time::Instant::now() + VIEW_COALESCE_WINDOW);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
+                    pending_view_deadline = None;
                     let Ok(snapshot) = world.snapshot(token.clone()).await else { break };
+                    let _ = views.borrow_and_update();
                     if !send_json(service.frame_meter(), io, &ServerFrame::Snapshot { snapshot: &snapshot }).await {
                         break;
                     }
@@ -2001,9 +2029,8 @@ async fn joined<I: SessionIo>(
             changed = views.changed() => match changed {
                 Ok(()) => {
                     let sequence = *views.borrow_and_update();
-                    if !send_view(service.frame_meter(), world, io, &token, sequence, viewport).await {
-                        break;
-                    }
+                    pending_view_sequence = sequence;
+                    pending_view_deadline.get_or_insert_with(|| tokio::time::Instant::now() + VIEW_COALESCE_WINDOW);
                 }
                 Err(_) => break,
             },
@@ -2134,6 +2161,7 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    pending_view_deadline: &mut Option<tokio::time::Instant>,
 ) -> bool {
     let world = service.world();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -2196,6 +2224,9 @@ async fn handle_client_frame<I: SessionIo>(
                 width: clamped_width,
                 height: clamped_height,
             });
+            // The immediate viewport-specific view includes the latest state,
+            // so it supersedes any coalesced redraw already pending.
+            *pending_view_deadline = None;
             return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
         }
         ClientFrame::Paste { text } => {

@@ -125,6 +125,8 @@ wasmtime = { version = "=48.0.7", default-features = false, features = [
 russh = { version = "=0.64.1", optional = true }
 
 [dev-dependencies]
+# Paused-time session-driver tests. Dev only.
+tokio = { version = "1", features = ["test-util"] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
