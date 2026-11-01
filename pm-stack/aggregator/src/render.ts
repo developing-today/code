@@ -666,7 +666,9 @@ export function commentBadge(objectRef: string, counts?: Map<string, number>): s
 
 export function authorBadge(a: DashAuthor): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
-  const link = a.sessionId ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
+  const link = a.sessionId
+    ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
+    : "";
   return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
 }
 
@@ -5038,10 +5040,16 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   if (!coverage) return "";
   const { current, baseline } = coverage;
   const delta = diffCoverage(current, baseline);
-  const cell = (repo: string, v: number | null, key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea"): string => {
+  const cell = (
+    repo: string,
+    v: number | null,
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+  ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
-    return d === undefined || d === null || d === 0 ? `${v}` : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
+    return d === undefined || d === null || d === 0
+      ? `${v}`
+      : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
     .map(
@@ -5097,8 +5105,8 @@ export function projectsBodyHtml(
   ].join("");
   if (!pool.length) {
     return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
-        .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
-        .join(" · ")}</p>`;
+      .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
+      .join(" · ")}</p>`;
   }
   const areaWeights = areas
     .map((a) => {
@@ -5504,7 +5512,11 @@ function incidentCard(i: Incident): string {
   const times = [
     `first seen ${fmtDate(i.first_seen_at)}`,
     i.occurrences > 1 ? `${i.occurrences} occurrences, last ${fmtDate(i.last_seen_at)}` : null,
-    i.delivered_at ? `pushed ${fmtDate(i.delivered_at)}` : i.severity === "critical" && i.status === "open" ? "not yet pushed" : null,
+    i.delivered_at
+      ? `pushed ${fmtDate(i.delivered_at)}`
+      : i.severity === "critical" && i.status === "open"
+        ? "not yet pushed"
+        : null,
     i.escalated_at ? `escalated ${fmtDate(i.escalated_at)}` : null,
     i.acked_at ? `acked ${fmtDate(i.acked_at)}` : null,
     i.closed_at ? `closed ${fmtDate(i.closed_at)}` : null,

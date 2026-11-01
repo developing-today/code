@@ -94,10 +94,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
-    supabaseExportFile: s(
-      env.PM_AGG_SUPABASE_EXPORT,
-      join(homedir(), "atlas/supabase-export/latest.json"),
-    ),
+    supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),

@@ -146,7 +146,9 @@ export function buildIncidentPayload(incident: Incident, origin: string, escalat
     objectRef: incidentObjectRef(incident.id),
     url: incidentUrl(origin, incident.id),
     title: escalation ? `Escalation: ${incident.title}` : incident.title,
-    body: escalation ? `Still unacknowledged: ${base} (source: ${incident.source})` : `${base} (source: ${incident.source})`,
+    body: escalation
+      ? `Still unacknowledged: ${base} (source: ${incident.source})`
+      : `${base} (source: ${incident.source})`,
     ...(escalation ? { escalation: true } : {}),
   };
 }
@@ -448,15 +450,30 @@ async function deliverToAll(
     const outcome = await sendPush(target, payload);
     if (outcome.ok) {
       summary.sent += 1;
-      await store.logSend({ class: "incident", objectRef: payload.objectRef, incidentId: incident.id, outcome: "sent" });
+      await store.logSend({
+        class: "incident",
+        objectRef: payload.objectRef,
+        incidentId: incident.id,
+        outcome: "sent",
+      });
       await store.noteSubscriptionAlive(sub.endpoint);
     } else if (outcome.gone) {
       summary.gone += 1;
-      await store.logSend({ class: "incident", objectRef: payload.objectRef, incidentId: incident.id, outcome: "gone" });
+      await store.logSend({
+        class: "incident",
+        objectRef: payload.objectRef,
+        incidentId: incident.id,
+        outcome: "gone",
+      });
       await store.noteSubscriptionGone(sub.endpoint);
     } else {
       summary.errors += 1;
-      await store.logSend({ class: "incident", objectRef: payload.objectRef, incidentId: incident.id, outcome: "error" });
+      await store.logSend({
+        class: "incident",
+        objectRef: payload.objectRef,
+        incidentId: incident.id,
+        outcome: "error",
+      });
     }
   }
   return summary;

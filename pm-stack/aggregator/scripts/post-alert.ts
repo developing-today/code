@@ -29,7 +29,9 @@ async function main(): Promise<void> {
   const title = arg("title");
   const body = arg("body");
   if (!source || !key || !title) {
-    console.error("usage: post-alert.ts --source <s> --key <k> --title <t> [--severity critical|warning|info] [--body <b>]");
+    console.error(
+      "usage: post-alert.ts --source <s> --key <k> --title <t> [--severity critical|warning|info] [--body <b>]",
+    );
     process.exit(2);
   }
   const token = await resolveBwsSecret("pm-aggregator.alerts-intake-token");

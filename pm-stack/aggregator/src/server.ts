@@ -11,15 +11,33 @@ import { decodePathSegment } from "./path-segment.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
-import { computeCoverage, CoverageSnapshotStore, nextCoverageSnapshot, type CoverageSnapshotFile, type RepoCensus } from "./coverage.ts";
+import {
+  computeCoverage,
+  CoverageSnapshotStore,
+  nextCoverageSnapshot,
+  type CoverageSnapshotFile,
+  type RepoCensus,
+} from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, pageRenderHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import {
+  buildHealth,
+  pageRenderHealth,
+  recordRender,
+  summarizeItemCoverage,
+  type HealthView,
+  type ItemsCoverage,
+} from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
-import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import {
+  reconcileRoadmap,
+  roadmapDriftReport,
+  unavailableRoadmapReconciliation,
+  type RoadmapReconciliation,
+} from "./roadmap-reconcile.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -85,7 +103,14 @@ async function coverageSnapshot(
   const stored = await coverageStore.read();
   const next = nextCoverageSnapshot(stored, computeCoverage(census, poolAvailable ? pool : null));
   const strip = (s: CoverageSnapshotFile | null): string =>
-    s ? JSON.stringify({ baseline: s.baseline, weekly: s.weekly ?? null, anchorAt: s.anchorAt ?? "", current: { ...s.current, generatedAt: "" } }) : "";
+    s
+      ? JSON.stringify({
+          baseline: s.baseline,
+          weekly: s.weekly ?? null,
+          anchorAt: s.anchorAt ?? "",
+          current: { ...s.current, generatedAt: "" },
+        })
+      : "";
   if (strip(next) !== strip(stored)) {
     await coverageStore.write(next).catch(() => {});
   }
@@ -321,8 +346,11 @@ async function roadmapContext() {
     if (poolResult.failed) reasons.push("Project pool read failed");
     const feed = await loadFeed(cfg.feedFile).catch(() => null);
     if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
-    else if (feed.projects === undefined) reasons.push("fleet feed carries no projects section — Project pool availability unknown");
-    reconciliation = reasons.length ? unavailableRoadmapReconciliation(reasons.join("; ")) : reconcileRoadmap(rows, poolResult.pool);
+    else if (feed.projects === undefined)
+      reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length
+      ? unavailableRoadmapReconciliation(reasons.join("; "))
+      : reconcileRoadmap(rows, poolResult.pool);
   } else {
     reconciliation = reconcileRoadmap(rows, poolResult.pool);
   }
@@ -349,7 +377,13 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
-      .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+      .map((s) => ({
+        id: s.def.id,
+        name: s.def.name,
+        ok: s.ok,
+        detail: s.detail,
+        ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+      })),
   });
 }
 
@@ -689,10 +723,16 @@ async function handler(req: Request): Promise<Response> {
     // #1209: window/filter/pagination, shared with the JSON twin.
     const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
     return html(
-      renderSessions(view.records, prov(), provDetail(), {
-        actionsByObject: await actionsStore.byObject(),
-        identities: identitiesFromRecords(records),
-      }, view),
+      renderSessions(
+        view.records,
+        prov(),
+        provDetail(),
+        {
+          actionsByObject: await actionsStore.byObject(),
+          identities: identitiesFromRecords(records),
+        },
+        view,
+      ),
     );
   }
   if (path === "/api/registry.json") {
@@ -728,7 +768,12 @@ async function handler(req: Request): Promise<Response> {
       source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
-    return json({ project: "developing-today#4", items: pool, coverage: coverage.current, coverageBaseline: coverage.baseline });
+    return json({
+      project: "developing-today#4",
+      items: pool,
+      coverage: coverage.current,
+      coverageBaseline: coverage.baseline,
+    });
   }
 
   if (path === "/program" || path === "/api/program.json") {

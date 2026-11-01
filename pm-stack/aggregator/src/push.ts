@@ -20,9 +20,7 @@ export interface PushTarget {
   auth: string;
 }
 
-export type PushOutcome =
-  | { ok: true; status: number }
-  | { ok: false; gone: boolean; status?: number; error: string };
+export type PushOutcome = { ok: true; status: number } | { ok: false; gone: boolean; status?: number; error: string };
 
 let configured = false;
 let configurePromise: Promise<boolean> | null = null;

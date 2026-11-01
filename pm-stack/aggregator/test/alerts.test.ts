@@ -106,7 +106,12 @@ describe("duplicate suppression rule", () => {
     expect(duplicateWouldRepeatDelivery(incident)).toBe(false);
     expect(duplicateWouldRepeatDelivery({ ...incident, delivered_at: "2026-11-01T12:01:00Z" })).toBe(true);
     expect(
-      duplicateWouldRepeatDelivery({ ...incident, delivered_at: "2026-11-01T12:01:00Z", status: "closed", closed_at: "2026-11-01T12:02:00Z" }),
+      duplicateWouldRepeatDelivery({
+        ...incident,
+        delivered_at: "2026-11-01T12:01:00Z",
+        status: "closed",
+        closed_at: "2026-11-01T12:02:00Z",
+      }),
     ).toBe(false);
   });
 });
@@ -128,7 +133,9 @@ describe("validation", () => {
       expect(ok.value.classes).toEqual({ incident: true });
       expect(ok.value.quiet.tz).toBe("America/Chicago");
     }
-    expect(validateNewSubscription({ endpoint: "http://insecure.example/x", keys: { p256dh: "p", auth: "a" } }).ok).toBe(false);
+    expect(
+      validateNewSubscription({ endpoint: "http://insecure.example/x", keys: { p256dh: "p", auth: "a" } }).ok,
+    ).toBe(false);
     expect(validateNewSubscription({ endpoint: "https://x.example/", keys: {} }).ok).toBe(false);
   });
 });
