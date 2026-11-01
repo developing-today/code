@@ -24,6 +24,7 @@ import {
 import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
@@ -206,9 +207,33 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
 
 // --- Grist --------------------------------------------------------------
 
-interface GristRecord {
+export interface GristRecord {
   id: number;
   fields: Record<string, unknown>;
+}
+
+/** Map a live Grist row without dropping or rewriting an invalid Horizon value. */
+export function mapGristRoadmapRecord(docId: string, rec: GristRecord): RoadmapRow {
+  const f = rec.fields;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const source = str(f.Source);
+  const notes = str(f.Notes);
+  const horizon = str(f.Horizon);
+  const horizonValidation = validateRoadmapHorizon(horizon);
+  const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
+  return {
+    id: rec.id,
+    subject: `grist:${docId}/Roadmap/${rec.id}`,
+    title: str(f.Title),
+    area: str(f.Area),
+    status: str(f.Status),
+    horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
+    source,
+    notes,
+    links,
+    gristUrl: gristDocUrl(docId),
+  };
 }
 
 async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
@@ -218,25 +243,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   });
   if (!r.ok) throw new Error("grist roadmap read failed");
   const records = (r.json as { records?: GristRecord[] }).records ?? [];
-  return records.map((rec) => {
-    const f = rec.fields;
-    const str = (v: unknown) => (typeof v === "string" ? v : "");
-    const source = str(f.Source);
-    const notes = str(f.Notes);
-    const links = refsInText(`${source} ${notes}`).map((ref) => ({ ref, relation: "tracks" as const }));
-    return {
-      id: rec.id,
-      subject: `grist:${cfg.grist.docId}/Roadmap/${rec.id}`,
-      title: str(f.Title),
-      area: str(f.Area),
-      status: str(f.Status),
-      horizon: str(f.Horizon),
-      source,
-      notes,
-      links,
-      gristUrl: gristDocUrl(cfg.grist.docId),
-    };
-  });
+  return records.map((rec) => mapGristRoadmapRecord(cfg.grist.docId, rec));
 }
 
 // --- Projector (J's service, pm-stack/projector) -------------------------

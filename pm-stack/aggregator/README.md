@@ -463,6 +463,23 @@ The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
 falls back to fixtures and the footer says why.
 
+## Roadmap Horizon contract (#1207)
+
+`Program roadmap.Horizon` accepts a real calendar date (`YYYY-MM-DD`), a
+quarter (`Q1`–`Q4 YYYY`), or one of `Now`, `Next`, `Later`, `Ongoing`, and
+`Unscheduled`. Dates must exist in the Gregorian calendar. Leading/trailing
+whitespace and bucket/quarter case are normalized for classification only;
+the reader never rewrites a Grist cell. `Now`/`Next`/`Later` are retained as
+legacy relative buckets, while blank and unknown values are invalid.
+
+Invalid rows are not filtered: the original value stays on the roadmap card,
+with a warning and an invalid-value banner. Correct cells in Grist explicitly;
+the seed command validates `seed/roadmap.json` before making API calls, but
+does not migrate or overwrite an existing populated table (seed is not a
+migration mechanism). Day views also show dated rows outside the selected
+window and undated/coarse rows, and every grain displays per-theme Done/total
+counts over the full roadmap set.
+
 ## The fleet feed (quota + sandbox attention, slice 1 — #890)
 
 The sandbox OpenCode server binds its own loopback and the quota

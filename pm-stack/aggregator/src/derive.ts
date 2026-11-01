@@ -2,6 +2,7 @@
 // timeline lanes, and the unified comment stream. No I/O here.
 import type { SectionDiagnosis } from "./feed.ts";
 import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
+import { validateRoadmapHorizon } from "./roadmap-horizon.ts";
 
 export interface ExecutionStrip {
   /** Draft PRs, and open issues already dispatched or in progress. */
@@ -62,7 +63,7 @@ export interface Lane {
 }
 
 const QUARTER = /^Q([1-4])\s+(\d{4})$/i;
-const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
@@ -84,15 +85,19 @@ export function isCalendarDate(year: number, month: number, day: number): boolea
  * "Ongoing", "Unscheduled" and anything else sort after every quarter.
  */
 export function laneFor(horizon: string): Lane {
-  const h = horizon.trim();
+  const validation = validateRoadmapHorizon(horizon);
+  const h = validation.valid ? validation.canonical : horizon.trim();
   const q = QUARTER.exec(h);
   if (q) return quarterLane(Number(q[2]), Number(q[1]));
   const d = DATE.exec(h);
   if (d && isCalendarDate(Number(d[1]), Number(d[2]), Number(d[3])))
     return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
-  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 };
+  if (/^now$/i.test(h)) return { key: "now", label: "Now", order: 1e6 };
+  if (/^next$/i.test(h)) return { key: "next", label: "Next", order: 1e6 + 1 };
+  if (/^later$/i.test(h)) return { key: "later", label: "Later", order: 1e6 + 2 };
+  if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 + 3 };
   if (h === "" || /^unscheduled$/i.test(h)) {
-    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 2 };
+    return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 4 };
   }
   return { key: `other:${h}`, label: h, order: 1e6 + 1 };
 }
@@ -555,7 +560,9 @@ export type RoadmapGrain = "quarter" | "month" | "week" | "3d" | "today";
 
 /** The row's calendar date when its Horizon is an ISO date, else null. */
 export function rowDate(row: RoadmapRow): string | null {
-  const m = YMD.exec(row.horizon.trim());
+  const validation = validateRoadmapHorizon(row.horizon);
+  if (!validation.valid || !/^\d{4}-\d{2}-\d{2}$/.test(validation.canonical)) return null;
+  const m = YMD.exec(validation.canonical);
   if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return null;
   return `${m[1]}-${m[2]}-${m[3]}`;
 }
@@ -570,6 +577,7 @@ export interface DayGrain {
   lanes: DayLane[];
   /** Dated rows outside the window. */
   outside: number;
+  outsideRows: RoadmapRow[];
   /** Rows with no calendar date (quarter grain, ongoing, unscheduled). */
   coarse: RoadmapRow[];
 }
@@ -585,7 +593,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
         : Array.from({ length: 7 }, (_, i) => addDaysYmd(weekStartYmd(today), i));
   const inWindow = new Set(days);
   const lanes = new Map(days.map((d) => [d, [] as RoadmapRow[]]));
-  let outside = 0;
+  const outsideRows: RoadmapRow[] = [];
   const coarse: RoadmapRow[] = [];
   for (const row of rows) {
     const d = rowDate(row);
@@ -594,7 +602,7 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
     } else if (inWindow.has(d)) {
       lanes.get(d)?.push(row);
     } else {
-      outside++;
+      outsideRows.push(row);
     }
   }
   return {
@@ -603,7 +611,8 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
       label: d === today ? `${ymdLabel(d)} · today` : ymdLabel(d),
       rows: lanes.get(d) ?? [],
     })),
-    outside,
+    outside: outsideRows.length,
+    outsideRows,
     coarse,
   };
 }

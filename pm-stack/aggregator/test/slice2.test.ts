@@ -326,9 +326,9 @@ describe("roadmap grains (#898 §3)", () => {
       links: [],
     };
     const html = renderRoadmap([...FIXTURE_ROADMAP, row], await src.items([]), src.provenance(), "today");
-    expect(html).toContain("Next 3 days");
-    expect(html).toContain("Dated today row");
-    expect(html).toContain("no calendar date");
+      expect(html).toContain("Next 3 days");
+      expect(html).toContain("Dated today row");
+      expect(html).toContain("Undated or coarse horizons");
   });
 });
 
