@@ -62,6 +62,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { isObjectRef, validateAuthor } from "./comments.ts";
 import type { DashAuthor, RefKey, SessionSource } from "./model.ts";
+import { isRecord } from "./validate.ts";
 
 export type DashActionKind = "triage" | "status-request" | "session" | "preference";
 
@@ -451,7 +452,7 @@ export class ActionsStore {
         throw new Error("store file does not have the expected { actions: [...] } shape");
       }
       this.actions = (parsed as ActionsFile).actions.filter(
-        (a) => typeof a === "object" && a !== null && typeof (a as DashAction).id === "string",
+        (a) => isRecord(a) && typeof a.id === "string" && isRecord(a.payload),
       );
     } catch (err) {
       this.actions = [];
