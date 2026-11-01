@@ -207,7 +207,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;

@@ -164,6 +164,7 @@ meter { width: 140px; height: 14px; }
 .fchip.live { border-color: #2ea04388; }
 .fchip.stale { border-color: #d29922; color: #e3b341; }
 .fchip.invalid { border-color: #f85149; color: #f85149; }
+.fchip.error { border-color: #f85149; color: #f85149; }
 .fchip.absent { border-color: #d29922; color: #e3b341; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
 .dot.up, .dot.self { background: #3fb950; }
@@ -4997,10 +4998,14 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     .join("");
   const sectionRows = view.feed.sections.length
     ? view.feed.sections
-        .map(
-          (s) =>
-            `<tr><td><code>${esc(s.key)}</code></td><td>${s.present ? "present" : '<span class="badge stale">absent</span>'}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`,
-        )
+        .map((s) => {
+          let status: string;
+          if (s.status === "unknown") status = s.present ? "present" : '<span class="badge stale">absent</span>';
+          else if (s.status === "error") status = '<span class="badge stale">error</span>';
+          else if (s.status === "skipped") status = '<span class="muted">skipped</span>';
+          else status = s.present ? "present · ok" : "empty · ok";
+          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
+        })
         .join("")
     : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
   const orch = view.jobs.orchestration;

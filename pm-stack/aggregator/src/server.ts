@@ -1100,7 +1100,11 @@ async function handler(req: Request): Promise<Response> {
       detail: s.detail,
       ...(s.probedAt ? { probedAt: s.probedAt } : {}),
     }));
-    body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
+    body.feed = {
+      generatedAt: view.feed.generatedAt,
+      fileMtime: view.feed.fileMtime,
+      sections: view.feed.sections,
+    };
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
     body.comments = view.comments;
