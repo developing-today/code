@@ -600,6 +600,7 @@ let
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
         cf = pkgs.callPackage ../pkgs/cf { };
@@ -610,6 +611,7 @@ let
       packages = {
         inherit mcpx idMailDeploy pkarrDeploy developingTodayBackupDeploy;
         mcpx-docs = mcpxDocs;
+        mcpx-real-servers = mcpxRealServers;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
