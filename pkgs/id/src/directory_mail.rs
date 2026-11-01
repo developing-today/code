@@ -436,13 +436,29 @@ mod tests {
             .parse()
             .unwrap();
         // The descendant may take a moment to be reaped after SIGKILL.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
+        let running = |pid: i32| {
             // SAFETY: signal 0 only probes for the process's existence.
-            let alive = unsafe { libc::kill(child_pid, 0) } == 0;
-            if !alive {
-                break;
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return false;
             }
+            // A zombie is terminated, not running — but it still answers
+            // signal 0, and in a container whose PID 1 does not reap
+            // orphans it would look alive forever. Linux exposes the
+            // state in /proc; other hosts' init reaps orphans promptly.
+            #[cfg(target_os = "linux")]
+            if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                && let Some(state) = stat
+                    .rsplit(')')
+                    .next()
+                    .and_then(|rest| rest.trim_start().chars().next())
+                && state == 'Z'
+            {
+                return false;
+            }
+            true
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while running(child_pid) {
             assert!(
                 Instant::now() < deadline,
                 "descendant {child_pid} survived the wrapper's timeout kill"
