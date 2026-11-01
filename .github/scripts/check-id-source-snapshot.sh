@@ -19,10 +19,10 @@
 #
 # Usage:
 #   check-id-source-snapshot.sh snapshot <repo-root> <manifest-file>
-#   check-id-source-snapshot.sh verify   <repo-root> <manifest-file> <flake-source-dir>
+#   check-id-source-snapshot.sh verify   <repo-root> <manifest-file> <flake-source-dir>/pkgs/id
 #
-# <flake-source-dir> is the store path of the pkgs/id flake source, e.g.
-#   nix flake metadata --json ./pkgs/id | jq -r .path
+# nix metadata .path is the store root of the repository; verify takes its pkgs/id subtree:
+#   nix flake metadata --json ./pkgs/id | jq -r .path   # append /pkgs/id for verify
 set -euo pipefail
 
 cmd="${1:-}"

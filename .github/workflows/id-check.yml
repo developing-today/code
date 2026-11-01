@@ -162,7 +162,7 @@ jobs:
       - name: Verify build source copy against checkout snapshot
         run: |
           src="$(nix flake metadata --json ./pkgs/id | jq -r .path)"
-          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src/pkgs/id"
 
       - name: Run PR check
         run: nix build -L --no-link "./pkgs/id#checks.x86_64-linux.${{ matrix.check }}"
@@ -223,6 +223,6 @@ jobs:
       - name: Verify build source copy against checkout snapshot
         run: |
           src="$(nix flake metadata --json ./pkgs/id | jq -r .path)"
-          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src/pkgs/id"
       - name: Run full nix flake check
         run: nix flake check ./pkgs/id/ -L --keep-going
