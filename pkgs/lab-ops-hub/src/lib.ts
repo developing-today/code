@@ -214,21 +214,32 @@ export function crawlArchiveKey(nowMs: number, unique: string): string {
 
 export type ManualFetcher = (url: string) => Promise<Response>;
 
+// Keep this policy in sync with container/app.py's _ValidatingRedirectHandler:
+// urllib max_redirections=10, max_repeats=4, and only 301/302/303/307/308.
+const FOLLOWABLE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECT_REPEATS = 4;
+
 export async function fetchFollowingValidatedRedirects(
   startUrl: string,
   fetchFn: ManualFetcher,
-  maxRedirects = 5,
+  maxRedirects = 10,
 ): Promise<Response> {
   const start = validateCrawlUrl(startUrl);
   if (!start.ok) {
     throw new Error(`refusing to crawl ${startUrl}: ${start.error}`);
   }
   let current = start.url;
+  const redirectVisits = new Map<string, number>();
   for (let hop = 0; ; hop++) {
     const res = await fetchFn(current);
     if (res.status < 300 || res.status >= 400) return res;
+    if (!FOLLOWABLE_REDIRECT_STATUSES.has(res.status)) {
+      throw new Error(`unsupported redirect status ${res.status} while crawling ${startUrl}`);
+    }
     const location = res.headers.get("location");
-    if (!location) return res;
+    if (!location) {
+      throw new Error(`redirect response ${res.status} has no Location while crawling ${startUrl}`);
+    }
     if (hop >= maxRedirects) {
       throw new Error(`too many redirects (more than ${maxRedirects}) while crawling ${startUrl}`);
     }
@@ -243,6 +254,11 @@ export async function fetchFollowingValidatedRedirects(
       throw new Error(`refusing to follow redirect from ${current}: ${target.error}`);
     }
     current = target.url;
+    const visits = redirectVisits.get(current) ?? 0;
+    if (visits >= MAX_REDIRECT_REPEATS) {
+      throw new Error(`redirect target repeated more than ${MAX_REDIRECT_REPEATS} times while crawling ${startUrl}`);
+    }
+    redirectVisits.set(current, visits + 1);
   }
 }
 
