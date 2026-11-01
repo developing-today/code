@@ -11,7 +11,9 @@
 // $HOME/.local/bin/agy (the proxy's binary resolution reaches it when
 // no system agy exists) that speaks that protocol AND answers
 // `agy models` with a TSV list including a test-only model no static
-// array could contain: it emits an `init` event at spawn, then one
+// array could contain (startProxy also pins the stub via
+// AGY_PROXY_AGY_BIN so a host-installed agy can never shadow it,
+// #3355): it emits an `init` event at spawn, then one
 // reply per stdin line, keyed on markers in the prompt — a run that
 // dies non-zero must be reported as an error, never as a successful
 // 'stop' (in stream mode always, in non-stream mode also when the run
@@ -105,6 +107,7 @@ const startProxy = async (extraEnv = {}) => {
       HOME: home,
       XDG_STATE_HOME: path.join(tmp, 'state'),
       AGY_PROXY_PORT: String(port),
+      AGY_PROXY_AGY_BIN: path.join(home, ".local", "bin", "agy"),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
