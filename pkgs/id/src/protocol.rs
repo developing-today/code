@@ -1313,8 +1313,6 @@ mod tests {
         let upload = node
             .blobs()
             .add_bytes(b"candidate".to_vec())
-            .await
-            .unwrap()
             .temp_tag()
             .await
             .unwrap();
@@ -1341,7 +1339,9 @@ mod tests {
                 })
                 .await;
             assert!(
-                put_response.error_message().is_some(),
+                put_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
                 "put accepted unsafe name {invalid:?}: {put_response:?}"
             );
 
@@ -1352,7 +1352,9 @@ mod tests {
                 })
                 .await;
             assert!(
-                rename_response.error_message().is_some(),
+                rename_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
                 "rename accepted unsafe name {invalid:?}: {rename_response:?}"
             );
 
@@ -1363,7 +1365,9 @@ mod tests {
                 })
                 .await;
             assert!(
-                copy_response.error_message().is_some(),
+                copy_response
+                    .error_message()
+                    .is_some_and(|message| message.contains("safe relative path")),
                 "copy accepted unsafe name {invalid:?}: {copy_response:?}"
             );
 
