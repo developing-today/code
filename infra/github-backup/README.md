@@ -65,3 +65,4 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 | `worker/` | Cloudflare Worker webhook receiver (wrangler) |
 | `systemd/` | laptop user units + timers + installer |
 | `docs/RUNBOOK.md` | copy-paste operations: install, add org, upgrade, DR |
+| `tests/` | regression tests (plain python3, no deps) |
