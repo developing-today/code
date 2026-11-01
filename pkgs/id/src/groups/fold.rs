@@ -881,8 +881,24 @@ impl Engine {
         if record.dissolved_by.is_some() {
             return Err(Refusal::Dissolved);
         }
-        let Some((author, author_role)) = self.effective_author(by_id, group, event) else {
-            return Err(Refusal::NotActive);
+        // A removal tangled in a concurrent removal is the membership layer's call, not this
+        // judge's (design §6.2): the layer judges authority at an operation's causal position
+        // and arbitrates concurrent removals — the other half of a mutual removal takes
+        // effect, and a removal cycle removes every member. Judged against the state built
+        // so far instead, the second half of such a tangle is refused for whoever the
+        // canonical order happened to strike first: NotActive when its author was removed,
+        // NotAMember when its target was, NotAdmin when its target is the creator. So an
+        // entangled removal is handed to the layer with no pre-checks of this judge's own.
+        // Only true concurrency entangles: a removal in the event's causal past, or one the
+        // event is in the past of, leaves the checks below in force — a manager's unilateral
+        // removal of an Admin is still refused. Friendships keep their own path: a removal
+        // there dissolves, and the dissolve machinery owns the verdict.
+        let entangled =
+            record.friendship.is_none() && self.removal_entangled(by_id, group, event, op);
+        let (author, author_role) = match self.effective_author(by_id, group, event) {
+            Some(found) => found,
+            None if entangled => (event.author, Role::Pull),
+            None => return Err(Refusal::NotActive),
         };
         let is_admin = author_role == Role::Admin;
         let is_manager = author_role >= Role::Manage;
@@ -915,6 +931,20 @@ impl Engine {
                 })
             }
             MemberOp::Remove { member, successor } => {
+                if entangled {
+                    return Ok(Decision {
+                        group,
+                        action: Some(GroupAction::Remove {
+                            member: GroupMember::Individual(AuthId::Key(member)),
+                        }),
+                        effect: Effect::Remove {
+                            member,
+                            dissolves: record.policy.on_member_removed == OnMemberRemoved::Dissolve,
+                            successor,
+                            by: event.id,
+                        },
+                    });
+                }
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
                 }
@@ -967,6 +997,30 @@ impl Engine {
                 })
             }
         }
+    }
+
+    /// Whether the removal `op` in `event` is tangled in a concurrent removal: another
+    /// removal in the same group, concurrent with `event` — neither in the other's causal
+    /// past — names the event's author or the member `op` removes. A removal the event
+    /// causally follows, and one that causally follows the event, do not entangle it.
+    fn removal_entangled(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        event: &Event,
+        op: MemberOp,
+    ) -> bool {
+        let MemberOp::Remove { member, .. } = op else {
+            return false;
+        };
+        let past = causal_past(by_id, &event.after);
+        by_id.values().any(|other| {
+            other.id != event.id
+                && other.group == Some(group)
+                && !past.contains(&other.id)
+                && !causal_past(by_id, &other.after).contains(&event.id)
+                && matches!(removed_member(other), Some(target) if target == event.author || target == member)
+        })
     }
 
     pub(super) fn record(&self, group: &Hash) -> Result<&Record, Refusal> {

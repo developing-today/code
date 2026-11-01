@@ -1,41 +1,52 @@
-# PM apps (code#1752): the remaining PM-stack servers — Kaneo, its
-# PostgreSQL, Grist, Pad, and ready-for-agent — declared in this flake
-# like everything else on this host, replacing the hand-run deployment
-# in ~/pm-stack (three docker compose projects plus one hand-written
-# user unit) that was not boot-enabled and would not have come back
-# after a reboot.
+# PM apps (code#1752): the remaining PM-stack servers — Grist, Pad,
+# and ready-for-agent — declared in this flake like everything else
+# on this host, replacing the hand-run deployment in ~/pm-stack
+# (docker compose projects plus one hand-written user unit) that was
+# not boot-enabled and would not have come back after a reboot.
+#
+# Kaneo and its PostgreSQL are NOT declared here. They stay
+# compose-managed by the pm-stack module (pm-kaneo.service +
+# pm-kaneo.timer running ~/pm-stack's deploy.sh). This module briefly
+# declared oci-containers for them too, but the migration never
+# completed: the pm-stack compose path stayed enabled and its
+# self-heal timer resurrected the compose stack (2026-11-01 00:35),
+# after which the two managers fought — docker-pm-kaneo failed at
+# every activation (port 5173 already allocated to the compose
+# container) and, worse, TWO PostgreSQL postmasters ran against the
+# one pm-stack_postgres_data volume from 2026-11-01 00:35 until the
+# oci postmaster (which had zero client connections; the compose
+# postmaster serves Kaneo) was stopped on 2026-11-01. The duplicate
+# declarations were removed the same day. Completing the #1752
+# migration for Kaneo/PostgreSQL instead would mean disabling the
+# pm-stack compose units first and planning the cutover; until that
+# decision is made, compose is the single manager for both.
 #
 # Fidelity rules — this module reproduces the compose setup exactly:
-# - Same images, pinned the same way (Kaneo by tag; Grist and Pad by
-#   tag + digest, the digest being the binding pin).
-# - Same ports: Kaneo loopback only (public access arrives through
-#   the Cloudflare Tunnel, never directly); Grist and Pad on loopback
-#   plus the host's tailnet address; ready-for-agent on 6056.
+# - Same images, pinned the same way (Grist and Pad by tag + digest,
+#   the digest being the binding pin).
+# - Same ports: Grist and Pad on loopback plus the host's tailnet
+#   address; ready-for-agent on 6056.
 # - Same data, carried IN PLACE: the containers mount the same docker
 #   named volumes the compose projects created
-#   (pm-stack_postgres_data, grist_grist_data, pad_pad_data), so no
-#   data moves and nothing is re-seeded.
+#   (grist_grist_data, pad_pad_data), so no data moves and nothing
+#   is re-seeded.
 # - Same configuration: each container reads the same on-machine
-#   .env file its compose project used (~/pm-stack/.env,
-#   ~/pm-stack/grist/.env, ~/pm-stack/pad/.env — mode 600, rendered
-#   by ~/pm-stack's deploy.sh from the pm-stack SOPS file; never
-#   hand-edited and never in this repo).
+#   .env file its compose project used (~/pm-stack/grist/.env,
+#   ~/pm-stack/pad/.env — mode 600, rendered by ~/pm-stack's
+#   deploy.sh from the pm-stack SOPS file; never hand-edited and
+#   never in this repo).
 #
 # Activation (part of the NixOS switch that lands this module):
 #   1. Stop the compose projects, WITHOUT removing volumes:
-#        docker compose -f ~/pm-stack/compose.yml down
 #        docker compose -f ~/pm-stack/grist/compose.yml down
 #        docker compose -f ~/pm-stack/pad/compose.yml down
 #   2. nixos-rebuild switch. home-manager renames the hand-written
 #      ready-for-agent unit to *.backup, as it did for pm-stack.
-#   3. Verify 5173, 8484, 7777, and 6056 all answer with the
-#      pre-switch data intact.
+#   3. Verify 8484, 7777, and 6056 all answer with the pre-switch
+#      data intact.
 #
 # Differences from compose, deliberately accepted: compose
-# healthchecks have no oci-containers equivalent, and kaneo's
-# depends_on was health-gated while dependsOn here is start-order
-# only — Kaneo's own reconnect behavior covers the PostgreSQL
-# warm-up window.
+# healthchecks have no oci-containers equivalent.
 {
   config,
   lib,
@@ -48,7 +59,7 @@ let
 in
 {
   options.services.pm-apps = {
-    enable = lib.mkEnableOption "the PM app servers (Kaneo + PostgreSQL, Grist, Pad, ready-for-agent) as NixOS-managed services";
+    enable = lib.mkEnableOption "the PM app servers (Grist, Pad, ready-for-agent) as NixOS-managed services";
 
     user = lib.mkOption {
       type = lib.types.str;
@@ -68,19 +79,8 @@ in
       backend = "docker";
 
       containers = {
-        pm-postgres = {
-          image = "postgres:16-alpine";
-          environmentFiles = [ "${pmDir}/.env" ];
-          volumes = [ "pm-stack_postgres_data:/var/lib/postgresql/data" ];
-        };
-
-        pm-kaneo = {
-          image = "ghcr.io/usekaneo/kaneo:2.47.0";
-          environmentFiles = [ "${pmDir}/.env" ];
-          ports = [ "127.0.0.1:5173:5173" ];
-          dependsOn = [ "pm-postgres" ];
-        };
-
+        # pm-postgres / pm-kaneo intentionally absent: compose-managed
+        # via the pm-stack module (see the header note, 2026-11-01).
         pm-grist = {
           # Grist OSS v1.7.21, pinned by digest as in the compose file.
           image = "gristlabs/grist-oss@sha256:d761de16871ad0022c0ff966b46a92360c23073db8414ebb356cf879f510b1c4";
