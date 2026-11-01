@@ -6,7 +6,7 @@ function fakeStore() {
   const items = new Map<string, Omit<ItemRow, "fetched_at">>();
   const comments = new Map<string, Omit<CommentRow, "fetched_at">>();
   const pushes: any[] = [];
-  const deleted: string[] = [];
+  const deleted: [string, CommentRow["kind"]][] = [];
   const store: ProjectorStore = {
     async upsertItem(i) {
       items.set(i.ref, i);
@@ -14,8 +14,8 @@ function fakeStore() {
     async upsertComment(c) {
       comments.set(c.id, c);
     },
-    async markCommentDeleted(id) {
-      deleted.push(id);
+    async markCommentDeleted(id, kind) {
+      deleted.push([id, kind]);
     },
     async recordPush(p) {
       pushes.push(p);
@@ -174,7 +174,12 @@ describe("projector: comment deletion + push", () => {
       },
       comment: { id: 700 },
     });
-    expect(deleted).toContain("700");
+    expect(deleted).toEqual([["700", "issue_comment"]]);
+    await applyEvent(store, "pull_request_review_comment", {
+      action: "deleted", repository: { full_name: "developing-today/code" },
+      pull_request: { number: 300 }, comment: { id: 700 },
+    });
+    expect(deleted[1]).toEqual(["700", "review_comment"]);
   });
 
   test("push event records head/before/pusher", async () => {
