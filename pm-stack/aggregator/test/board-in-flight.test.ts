@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { BoardItem, OrchestrationSection, Provenance } from "../src/model.ts";
+import type { BoardItem, GhItem, OrchestrationSection, Provenance } from "../src/model.ts";
 import { renderBoard } from "../src/render.ts";
 import { inFlightBoardItems, titleRefs } from "../src/sources/live.ts";
 
@@ -110,7 +110,7 @@ describe("inFlightBoardItems", () => {
     expect(out[0].links).toEqual([{ ref: "developing-today/code#958", relation: "tracks" }]);
   });
 
-  test("dedupes against Kaneo cards by ref and by title", () => {
+  test("dedupes matched refs and ref-less title matches against Kaneo cards", () => {
     const existing = [
       kaneoCard("Some finished card", ["developing-today/code#944"]),
       kaneoCard("Daily morning readout", []),
@@ -118,12 +118,38 @@ describe("inFlightBoardItems", () => {
     const out = inFlightBoardItems(
       section([
         task("code #944 fix - PR #985 opened", "in-progress"), // ref already on a Kaneo card
+        task("code #944 fully represented", "queued"), // its only ref is already on a Kaneo card
         task("Daily morning readout", "queued"), // title already on a Kaneo card
         task("code #968 - queue task 1116 revived", "queued"), // genuinely new
       ]),
       existing,
     );
-    expect(out.map((i) => i.title)).toEqual(["code #968 - queue task 1116 revived"]);
+    expect(out.map((i) => i.title)).toEqual([
+      "code #944 fix - PR #985 opened",
+      "code #968 - queue task 1116 revived",
+    ]);
+    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/code#985"]);
+  });
+
+  test("removes only refs already represented on Kaneo cards", () => {
+    const out = inFlightBoardItems(
+      section([task("code #944 and openchamber #492 implementation", "in-progress")]),
+      [kaneoCard("Some finished card", ["developing-today/code#944"])],
+    );
+
+    expect(out).toHaveLength(1);
+    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/openchamber#492"]);
+    expect(out[0].repo).toBe("developing-today/openchamber");
+  });
+
+  test("does not let a title-only collision hide a task with distinct refs", () => {
+    const out = inFlightBoardItems(
+      section([task("Shared orchestrator title", "in-progress", { ref: "developing-today/code#944" })]),
+      [kaneoCard("Shared orchestrator title", ["developing-today/code#901"])],
+    );
+
+    expect(out).toHaveLength(1);
+    expect(out[0].links.map((link) => link.ref)).toEqual(["developing-today/code#944"]);
   });
 
   test("dedupes repeats inside the section", () => {
@@ -196,5 +222,36 @@ describe("renderBoard in-flight lane", () => {
     expect(html).toContain('href="https://github.com/developing-today/code/issues/944"');
     expect(html).toContain("completion history");
     expect(html.indexOf("in flight — orchestrator")).toBeLessThan(html.indexOf("Done recently ("));
+  });
+
+  test("partially matched tasks render only their remaining GitHub links", () => {
+    const existing = [kaneoCard("Some finished card", ["developing-today/code#944"])] as const;
+    const lane = inFlightBoardItems(
+      section([
+        task("code #944 and openchamber #492 implementation", "in-progress"),
+        task("code #944 fully represented", "queued"),
+      ]),
+      [...existing],
+    );
+    const items = new Map([
+      [
+        "developing-today/code#944",
+        {
+          ref: "developing-today/code#944",
+          kind: "issue",
+          url: "https://github.com/developing-today/code/issues/944",
+          title: "Some finished card",
+          state: "closed",
+          labels: [],
+          author: "test",
+          updatedAt: GENERATED,
+        } as GhItem,
+      ],
+    ]);
+    const html = renderBoard([...lane, ...existing], items, provenance);
+
+    expect(html).toContain('href="https://github.com/developing-today/openchamber/issues/492"');
+    expect(html.match(/href="https:\/\/github.com\/developing-today\/openchamber\/issues\/492"/g)).toHaveLength(1);
+    expect(html.match(/href="https:\/\/github.com\/developing-today\/code\/issues\/944"/g)).toHaveLength(1);
   });
 });
