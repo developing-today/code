@@ -498,7 +498,9 @@ def validate_crawl_url(raw):
             # normalization, in the Worker's order (#596's U+0345
             # map included). A label the codec refuses — it judges
             # by Unicode 3.2 tables — falls back to the
-            # NFC-normalized punycode of the same original label.
+            # NFKC-normalized punycode of the same original label
+            # (NFKC, not NFC, so the fallback still applies the
+            # compatibility mappings the Worker applies).
             # (IP literals take the canonical-address return below
             # instead, and WHATWG serializes those without a root
             # dot, as here.)
@@ -520,8 +522,15 @@ def validate_crawl_url(raw):
                 try:
                     return candidate.encode("idna").decode("ascii")
                 except (UnicodeError, ValueError):
+                    # The fallback still owes the Worker the UTS-46
+                    # compatibility mappings NFC does not perform:
+                    # NFKC maps e.g. the fullwidth digit in an RTL
+                    # label the codec's Unicode 3.2 bidi rules refuse
+                    # (the alef + fullwidth-1 label returns the
+                    # Worker's xn--1-zhc, not the unmapped
+                    # xn--4db2378j) - Codex round 2 on PR #3781.
                     return "xn--" + unicodedata.normalize(
-                        "NFC", candidate
+                        "NFKC", candidate
                     ).encode("punycode").decode("ascii")
 
             return_host = (

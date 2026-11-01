@@ -1408,6 +1408,20 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
 
+    def test_returns_alabel_fallback_applies_compatibility_mappings(self):
+        # Codex review round 2 on PR #3781: an accepted RTL label
+        # containing a compatibility character can be refused by the
+        # stdlib IDNA codec's Unicode 3.2 bidi rules and reach the
+        # punycode fallback. The fallback must still apply the
+        # UTS-46 compatibility mapping (here fullwidth digit one,
+        # U+FF11, maps to ASCII 1) - NFC alone kept the fullwidth
+        # digit and returned xn--4db2378j, a different domain than
+        # the Worker's xn--1-zhc.
+        self.assertEqual(
+            validate_crawl_url("http://\u05d0\uff11.com/"),
+            "http://xn--1-zhc.com/",
+        )
+
     def test_returns_the_mapped_host_for_compatibility_spellings(self):
         # Judging NFKC-maps the host (app.py: fullwidth/compatibility
         # characters fold to their ordinary forms), but the return
