@@ -118,6 +118,16 @@ review() {
     # staged change exactly as it was. No separate `git add` — staging
     # is not needed for a pathspec commit and touching the index is
     # what this fix exists to avoid.
+    # Exception to the no-add rule above: a repo with no .gitignore
+    # at all - the appends in the loop created it, and a pathspec
+    # commit cannot name a file git has never seen ("pathspec
+    # '.gitignore' did not match"), so stage exactly that one new
+    # file first. This cannot sweep pre-existing work: a pre-existing
+    # untracked .gitignore sets gitignore_dirty and the ignore step
+    # is skipped for the whole run.
+    if ! git -C "$d" ls-files --error-unmatch -- .gitignore >/dev/null 2>&1; then
+      git -C "$d" --literal-pathspecs add -- .gitignore
+    fi
     if git -C "$d" --literal-pathspecs commit -q -m "untracked-review: ignore junk paths $DAY" -- .gitignore; then
       say "- $name: .gitignore updated"
     else
@@ -128,11 +138,19 @@ review() {
     # Commit exactly the files this run staged, by literal pathspec
     # (code#1751): pre-staged unrelated work stays staged, and the
     # report line below fires only when the commit actually happened.
-    if git -C "$d" --literal-pathspecs commit -q -m "untracked-review: track $tracked_new file(s) $DAY" -- "${tracked_files[@]}"; then
+    # The paths go through a NUL-delimited pathspec file, not the
+    # argument vector: a large batch of long paths expanded into argv
+    # exceeds ARG_MAX and the commit fails with "Argument list too
+    # long", leaving files staged that later runs no longer see as
+    # untracked - the commit would silently never retry.
+    psfile="$(mktemp)"
+    printf '%s\0' "${tracked_files[@]}" >"$psfile"
+    if git -C "$d" --literal-pathspecs commit -q -m "untracked-review: track $tracked_new file(s) $DAY" --pathspec-from-file="$psfile" --pathspec-file-nul; then
       say "- $name: committed $tracked_new newly tracked file(s)"
     else
       say "- $name: track commit FAILED — $tracked_new file(s) left staged"
     fi
+    rm -f "$psfile"
   fi
 }
 review "$HOME/.openclaw" track

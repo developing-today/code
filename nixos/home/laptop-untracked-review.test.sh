@@ -158,6 +158,45 @@ grep -Fq -- "- hatch-personal: track commit FAILED" "$TMP_ROOT/case4.log" \
 check "case4: tracked file left staged after the failed commit" \
   "ok3.md" "$(staged_names "$P4")"
 
+# --- Case 5: repo with NO .gitignore - the run creates it, and the ---
+# --- ignore commit must succeed (Codex P2 on PR #3747: a pathspec ---
+# --- commit cannot name a file git has never seen) ---
+H5="$(new_home case5)"
+P5="$H5/hatch-personal"
+git -C "$P5" rm -q .gitignore
+git -C "$P5" commit -q -m "drop .gitignore"
+printf 'junk\n' >"$P5/fresh.tmp"
+printf 'ok\n' >"$P5/ok5.md"
+run_review "$H5" "$TMP_ROOT/case5.log"
+check "case5: four commits total (initial, drop, ignore, track)" "4" "$(commit_count "$P5")"
+check "case5: ignore commit contains the newly created .gitignore only" \
+  ".gitignore" "$(commit_files "$P5" HEAD~1)"
+check "case5: created .gitignore carries the junk path" \
+  "fresh.tmp" "$(git -C "$P5" show HEAD~1:.gitignore | tail -1)"
+check "case5: .gitignore is tracked after the run" \
+  ".gitignore" "$(git -C "$P5" ls-files -- .gitignore)"
+grep -Fq -- "- hatch-personal: .gitignore updated" "$TMP_ROOT/case5.log" \
+  || fail "case5: report missing '.gitignore updated'"
+
+# --- Case 6: large tracked batch commits via the pathspec file ---
+# --- (Codex P2 on PR #3747: argv expansion hits ARG_MAX at scale; ---
+# --- the batch also carries a glob-character name, which must be ---
+# --- committed literally) ---
+H6="$(new_home case6)"
+P6="$H6/hatch-personal"
+for i in $(seq 1 400); do
+  printf 'x\n' >"$P6/batch-file-with-a-rather-long-name-$i.md"
+done
+printf 'g\n' >"$P6/weird[track].md"
+run_review "$H6" "$TMP_ROOT/case6.log"
+check "case6: one track commit on top of initial" "2" "$(commit_count "$P6")"
+check "case6: track commit holds all 401 files" \
+  "401" "$(commit_files "$P6" HEAD | wc -l)"
+check "case6: glob-character name committed literally" \
+  "weird[track].md" "$(git -C "$P6" ls-files -- 'weird[track].md')"
+grep -Fq -- "- hatch-personal: committed 401 newly tracked file(s)" "$TMP_ROOT/case6.log" \
+  || fail "case6: report missing 'committed 401 newly tracked file(s)'"
+
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
   exit 1
