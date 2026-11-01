@@ -1548,6 +1548,29 @@ mod tests {
 
     /// Two consecutive open->save round-trips of `original`, returning both
     /// saved spellings (#944 fixpoint assertions).
+    #[test]
+    fn probe_968_nested_marks() {
+        let inputs = [
+            "**bold _em_ end**\n",
+            "*em **strong** end*\n",
+            "**bold ~~strike~~ end**\n",
+            "**bold `code` end**\n",
+            "*em `code` end*\n",
+            "**_em_ rest**\n",
+            "[link *em* text](https://e.com)\n",
+            "**a *b `c` d* e**\n",
+        ];
+        for input in inputs {
+            let (first, second) = two_saves(input);
+            println!(
+                "PROBE input={input:?} first={first:?} second={second:?} identical={} fixpoint={} entity={}",
+                first == input,
+                first == second,
+                first.contains("&#32;")
+            );
+        }
+    }
+
     fn two_saves(original: &str) -> (String, String) {
         let first = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
         let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
