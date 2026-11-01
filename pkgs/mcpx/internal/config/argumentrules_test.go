@@ -1620,3 +1620,38 @@ func TestEffectiveSchemaPinnedPreservesReferencedPinnedProperty(t *testing.T) {
 		{`{"cursor":1}`, false},
 	})
 }
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): the pin
+// contribution to property counts does not depend on the rule
+// declaring the pinned property -- a count-only rule still counts
+// the merged pin at enforcement.
+func TestEffectiveSchemaPinnedAdjustsCountsWithoutDeclaration(t *testing.T) {
+	reproCheckPinned(t, `{"minProperties":1}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, true},
+	})
+	reproCheckPinned(t, `{"maxProperties":1}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+	})
+}
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): a "$ref" key
+// inside a literal payload is instance data -- the argument-rule
+// preservation rewriter must leave it alone.
+func TestEffectiveSchemaPinnedLiteralRefIsNotAReference(t *testing.T) {
+	reproCheckPinned(t, `{"properties":{"tailnet":{"type":"string"},"cursor":{"const":{"$ref":"#/properties/tailnet"}}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":{"$ref":"#/properties/tailnet"}}`, true},
+		{`{"cursor":"x"}`, false},
+	})
+}

@@ -1065,18 +1065,11 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 			m = folded
 		}
 	}
-	// pinnedDeclared counts the pinned properties this scope itself
-	// declares: enforcement counts them in every merged instance, so
-	// the scope's property-count constraints are projected by that
-	// many (Codex P2 on PR #2976).
-	pinnedDeclared := 0
-	if props, ok := m["properties"].(map[string]any); ok {
-		for name := range props {
-			if pinned[name] {
-				pinnedDeclared++
-			}
-		}
-	}
+	// Every pin merges into the instance at this scope whether or
+	// not the scope declares the property, so the scope's
+	// property-count constraints are projected by the full pin
+	// count (Codex P2 on PR #2976).
+	pinnedCount := len(pinned)
 	out := make(map[string]any, len(m))
 	var promoted []string
 	var promotedSubs []any
@@ -1229,7 +1222,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				}
 			}
 		case "minProperties", "maxProperties":
-			if pinnedDeclared == 0 {
+			if pinnedCount == 0 {
 				out[k] = val
 				continue
 			}
@@ -1238,7 +1231,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				out[k] = val
 				continue
 			}
-			n -= int64(pinnedDeclared)
+			n -= int64(pinnedCount)
 			if k == "minProperties" {
 				// A min that reaches zero is no constraint and
 				// is dropped.
@@ -1502,24 +1495,36 @@ func schemaPointerReferenced(m map[string]any, pointer string) bool {
 }
 
 func schemaPointerReferencedAt(v any, pointer string, isResourceRoot bool) bool {
+	return schemaPointerReferencedPos(v, pointer, isResourceRoot, false)
+}
+
+// schemaPointerReferencedPos adds nameMap: inside a name map every
+// key is a name and every value a schema, so the literal-payload
+// skip does not apply to its entries.
+func schemaPointerReferencedPos(v any, pointer string, isResourceRoot, nameMap bool) bool {
 	switch v := v.(type) {
 	case map[string]any:
-		if !isResourceRoot {
-			if id, ok := v["$id"].(string); ok && id != "" {
-				return false
+		if !nameMap {
+			if !isResourceRoot {
+				if id, ok := v["$id"].(string); ok && id != "" {
+					return false
+				}
+			}
+			if ref, ok := v["$ref"].(string); ok && (ref == pointer || strings.HasPrefix(ref, pointer+"/")) {
+				return true
 			}
 		}
-		if ref, ok := v["$ref"].(string); ok && (ref == pointer || strings.HasPrefix(ref, pointer+"/")) {
-			return true
-		}
-		for _, val := range v {
-			if schemaPointerReferencedAt(val, pointer, false) {
+		for k2, val := range v {
+			if !nameMap && literalValueKey(k2) {
+				continue
+			}
+			if schemaPointerReferencedPos(val, pointer, false, !nameMap && nameMapKey(k2)) {
 				return true
 			}
 		}
 	case []any:
 		for _, val := range v {
-			if schemaPointerReferencedAt(val, pointer, false) {
+			if schemaPointerReferencedPos(val, pointer, false, false) {
 				return true
 			}
 		}
@@ -1531,26 +1536,36 @@ func schemaPointerReferencedAt(v any, pointer string, isResourceRoot bool) bool 
 // resource rooted at v that points at or below oldRef so it points
 // at or below newRef instead. Nested resources are not entered.
 func rewriteArgumentRefs(v any, isResourceRoot bool, oldRef, newRef string) {
+	rewriteArgumentRefsPos(v, isResourceRoot, false, oldRef, newRef)
+}
+
+// rewriteArgumentRefsPos adds nameMap: see schemaPointerReferencedPos.
+func rewriteArgumentRefsPos(v any, isResourceRoot, nameMap bool, oldRef, newRef string) {
 	switch v := v.(type) {
 	case map[string]any:
-		if !isResourceRoot {
-			if id, ok := v["$id"].(string); ok && id != "" {
-				return
+		if !nameMap {
+			if !isResourceRoot {
+				if id, ok := v["$id"].(string); ok && id != "" {
+					return
+				}
+			}
+			if ref, ok := v["$ref"].(string); ok {
+				if ref == oldRef {
+					v["$ref"] = newRef
+				} else if strings.HasPrefix(ref, oldRef+"/") {
+					v["$ref"] = newRef + ref[len(oldRef):]
+				}
 			}
 		}
-		if ref, ok := v["$ref"].(string); ok {
-			if ref == oldRef {
-				v["$ref"] = newRef
-			} else if strings.HasPrefix(ref, oldRef+"/") {
-				v["$ref"] = newRef + ref[len(oldRef):]
+		for k2, val := range v {
+			if !nameMap && literalValueKey(k2) {
+				continue
 			}
-		}
-		for _, val := range v {
-			rewriteArgumentRefs(val, false, oldRef, newRef)
+			rewriteArgumentRefsPos(val, false, !nameMap && nameMapKey(k2), oldRef, newRef)
 		}
 	case []any:
 		for _, val := range v {
-			rewriteArgumentRefs(val, false, oldRef, newRef)
+			rewriteArgumentRefsPos(val, false, false, oldRef, newRef)
 		}
 	}
 }
@@ -1976,4 +1991,18 @@ func filterPinnedNames(names []any, pinned map[string]bool) []any {
 		kept = append(kept, n)
 	}
 	return kept
+}
+
+// PinnedBranchVerdict exposes pinnedSchemaVerdict for the daemon's
+// upstream projector, which must decide applicator branches against
+// the same pin semantics before projecting them: a branch whose
+// truth depends only on pinned properties (a oneOf discriminator on
+// a pinned property, say) is decided by the pins, and projecting its
+// assertions away would change how many branches a caller matches.
+func PinnedBranchVerdict(schema any, pinVals map[string]any, root map[string]any) (bool, bool) {
+	set := make(map[string]bool, len(pinVals))
+	for name := range pinVals {
+		set[name] = true
+	}
+	return pinnedSchemaVerdict(schema, set, pinVals, root, map[string]bool{})
 }

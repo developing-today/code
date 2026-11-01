@@ -660,3 +660,78 @@ func TestHideSchemaPropsRespectsResourceBoundaries(t *testing.T) {
 		t.Errorf("visible property must still validate: %v (%s)", err, out)
 	}
 }
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): a oneOf whose
+// branches discriminate on the pinned property's VALUE must be
+// decided by the pin before projection -- projecting both branches'
+// discriminator assertions away leaves two empty branches every
+// caller matches, so the advertised oneOf rejects every call the
+// merged pin would pass.
+func TestHideSchemaPropsOneOfDiscriminatorUsesPinValues(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"additionalProperties":false,"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet"]},{"properties":{"tailnet":{"const":"other"}},"required":["tailnet"]}]}`)
+	out := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Errorf("the prod pin matches exactly one branch, so {} must validate: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"limit":1}`)); err != nil {
+		t.Errorf("visible properties must still validate: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"other":1}`)); err == nil {
+		t.Errorf("undeclared caller properties must stay rejected: %s", out)
+	}
+}
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): preservation
+// pointers are relative to the current schema resource -- a hidden
+// property referenced from inside an $id-carrying allOf member must
+// still be preserved, in that member's resource.
+func TestHideSchemaPropsPreservesReferencedInNestedResource(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","allOf":[{"$id":"https://example.test/res","properties":{"tailnet":{"type":"string"},"cursor":{"$ref":"#/properties/tailnet"}},"required":["tailnet"]}]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("advertised schema must compile (no dangling reference): %v (%s)", err, out)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	} {
+		err := compiled.ValidateJSON(json.RawMessage(tc.input))
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: valid=%v err=%v schema=%s", tc.input, tc.valid, err, out)
+		}
+	}
+}
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): a "$ref" key
+// inside a literal payload (const/enum) is instance data, not a
+// schema reference -- the preservation machinery must neither count
+// it as a use nor rewrite it.
+func TestHideSchemaPropsLiteralRefIsNotAReference(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"cursor":{"const":{"$ref":"#/properties/tailnet"}}},"required":["tailnet"]}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	if !strings.Contains(string(out), `"const":{"$ref":"#/properties/tailnet"}`) {
+		t.Errorf("literal const payload must survive verbatim: %s", out)
+	}
+	if strings.Contains(string(out), "_mcpx_hidden") {
+		t.Errorf("a literal payload must not trigger preservation: %s", out)
+	}
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"cursor":{"$ref":"#/properties/tailnet"}}`)); err != nil {
+		t.Errorf("the literal cursor value must validate: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"cursor":"x"}`)); err == nil {
+		t.Errorf("a different cursor value must stay rejected: %s", out)
+	}
+}
