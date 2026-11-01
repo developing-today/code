@@ -853,15 +853,30 @@
       return '<label>' + label + '<input type="' + type + '" id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="' + type + '"' + dflt + '></label>' + desc;
     }
 
-    // Signature of the pending elicitation set as last rendered. When a
-    // refresh returns the same set (same ids, same field schemas), the
-    // re-render is skipped entirely so in-progress answers, focus, and
-    // scroll state survive the 15s interval and SSE-triggered refreshes
-    // (issue #3223).
+    // Signature of the pending elicitation set as last rendered: the
+    // request ids and their field schemas, in render order. When a
+    // refresh returns the same set, the re-render is skipped entirely
+    // so in-progress answers, focus, and scroll state survive the 15s
+    // interval and SSE-triggered refreshes (issue #3223).
+    //
+    // The signature is deliberately NOT a serialization of the whole
+    // /v1/elicit response: that payload carries volatile per-listing
+    // metadata -- ttlRemainingMs is recomputed from the clock on every
+    // list and lastTouched moves whenever a request is read -- so a
+    // whole-response signature changes between refreshes of an
+    // unchanged set and the skip never fires (Codex review, PR #3237).
+    // Id + requestedSchema is the stable identity of what is rendered:
+    // the card form is derived from the schema by elicitFields.
     let lastElicitSignature = null;
 
     function elicitSignature(items) {
-      try { return JSON.stringify(items); } catch (e) { return null; }
+      try {
+        return JSON.stringify(items.map(req => {
+          if (!req) return [null, null];
+          const schema = req.requestedSchema;
+          return [req.id, typeof schema === 'string' ? schema : JSON.stringify(schema || null)];
+        }));
+      } catch (e) { return null; }
     }
 
     function elicitValueKey(el) {
