@@ -974,8 +974,18 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
   const slope = ((last.value as number) - (first.value as number)) / days;
   if (slope <= 0.05) return null;
   const lastVal = last.value as number;
-  const projectedExhaustionAt =
-    lastVal >= 100 ? last.ts : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
+  // Out-of-domain pct (#2346): a negative percent-of-limit can never
+  // support a projection, and an unbounded extrapolation can land
+  // outside Date's range, where toISOString() throws RangeError. The
+  // contract is null when history cannot support a projection --
+  // slope and points are still reported.
+  let projectedExhaustionAt: string | null = null;
+  if (lastVal >= 100) {
+    projectedExhaustionAt = last.ts;
+  } else if (lastVal >= 0) {
+    const candidate = new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000);
+    if (Number.isFinite(candidate.getTime())) projectedExhaustionAt = candidate.toISOString();
+  }
   let projectedPercentAtReset: number | null = null;
   if (last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;

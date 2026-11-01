@@ -314,7 +314,13 @@ export function isSnapshotRecord(v: unknown): v is SnapshotRecord {
   // refuse the record here, at the boundary.
   if (r.limit !== undefined && r.limit !== null && !isNonNegative(r.limit)) return false;
   if (r.resetsAt !== undefined && r.resetsAt !== null && !isIsoDate(r.resetsAt)) return false;
-  if (typeof r.value === "number") return isFiniteNumber(r.value);
+  if (typeof r.value === "number") {
+    // Negative percent-of-limit is never legitimate (#2346): refuse new
+    // negative numeric pct records at the boundary. Other units and
+    // estimate pairs are unchanged.
+    if (r.unit === "pct" && r.value < 0) return false;
+    return isFiniteNumber(r.value);
+  }
   if (typeof r.value === "object" && r.value !== null) {
     const p = r.value as { low?: unknown; high?: unknown };
     // Pairs must round-trip: non-finite endpoints serialize to null

@@ -3,14 +3,14 @@
 // projections, and the hub/detail renders. The sample view below
 // carries the same dated-read phrasing quota-view.md uses, trimmed.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
 import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
-import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
+import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 
 const VIEW = `
@@ -267,6 +267,30 @@ describe("snapshot store (§4)", () => {
     expect(snapshotFileFor("2026-10-25T09:38:00-05:00")).toBe("usage-2026-10.jsonl");
     expect(snapshotFileFor("2026-09-30T12:00:00Z")).toBe("usage-2026-09.jsonl");
   });
+  test("validator refuses negative numeric pct values, other units unchanged (#2346)", () => {
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1e9))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", 0))).toBe(true);
+    expect(isSnapshotRecord({ ...rec("2026-10-25T12:00:00Z", -5), unit: "usd" })).toBe(true);
+  });
+  test("stored poisoned pct records read back through readAll never make projectPace throw (#2346)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
+    try {
+      // Written directly to the month file, bypassing append: records
+      // stored before the validator guard existed.
+      const poison = [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)];
+      await writeFile(join(dir, "usage-2026-10.jsonl"), poison.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      const all = await new SnapshotStore(dir).readAll();
+      expect(() => projectPace(all, "usage")).not.toThrow();
+      // The primary guard itself, for a poisoned set that reaches
+      // projectPace in memory: no projection, no throw.
+      const pace = projectPace(poison, "usage")!;
+      expect(pace.projectedExhaustionAt).toBeNull();
+      expect(pace.slopePerDay).toBe(0.5);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("append is idempotent and reads survive a fresh store instance", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
     try {
@@ -318,6 +342,26 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(pace.projectedExhaustionAt?.slice(0, 10)).toBe("2026-10-31");
     expect(pace.projectedPercentAtReset).toBe(80);
     expect(resetMarkers(recs, "weekly")).toHaveLength(1);
+  });
+  test("pace: out-of-domain pct yields no projection and never throws (#2346)", () => {
+    // -1e9 -> -999999999 over 2 days: slope 0.5/day passes the slope
+    // gate; the unguarded extrapolation threw RangeError.
+    const poison = projectPace(
+      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)],
+      "weekly",
+    )!;
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    // -5000 -> -4999.88 over 2 days: slope 0.06/day; previously
+    // projected exhaustion in the year 2259.
+    const far = projectPace(
+      [rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)],
+      "weekly",
+    )!;
+    expect(far.projectedExhaustionAt).toBeNull();
+    // Happy-path control: 30 -> 40 over 2 days projects as before.
+    const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
+    expect(ok.projectedExhaustionAt?.slice(0, 10)).toBe("2026-11-05");
   });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
