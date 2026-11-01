@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { CoverageSnapshotFile } from "../src/coverage.ts";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import {
   PROJECT_CONFIGS,
@@ -12,7 +13,7 @@ import {
   type ProjectConfig,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
-import { renderProgram, renderProgramProject } from "../src/render.ts";
+import { projectsBodyHtml, renderProgram, renderProgramProject } from "../src/render.ts";
 import { FIXTURE_ROADMAP, fixtureSource } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
@@ -28,6 +29,61 @@ const PROV: Provenance = {
   registry: "x",
   aa: "x",
 };
+
+describe("stale issue coverage panel", () => {
+  test("shows per-repo count, collection time, and stale/error/unavailable states honestly", () => {
+    const coverage: CoverageSnapshotFile = {
+      baseline: null,
+      current: {
+        generatedAt: "2026-11-01T12:00:00.000Z",
+        repos: [
+          {
+            repo: "org/stale",
+            openIssues: 10,
+            gateNow: 0,
+            gateNext: 0,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: 4,
+            staleIssuesCollectedAt: "2026-10-01T12:00:00.000Z",
+            staleIssuesError: null,
+          },
+          {
+            repo: "org/error",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: "2026-11-01T11:59:00.000Z",
+            staleIssuesError: "search 503 <retry>",
+          },
+          {
+            repo: "org/missing",
+            openIssues: null,
+            gateNow: null,
+            gateNext: null,
+            poolItems: null,
+            poolUnsetStatus: null,
+            poolUnsetArea: null,
+            staleOpenIssues: null,
+            staleIssuesCollectedAt: null,
+            staleIssuesError: null,
+          },
+        ],
+      },
+    };
+    const html = projectsBodyHtml([], { coverage });
+    expect(html).toContain("Open issues untouched &gt;90 days");
+    expect(html).toContain(">4</td><td><time datetime=\"2026-10-01T12:00:00.000Z\">2026-10-01T12:00:00.000Z</time></td><td>STALE — collection is over 7 days old</td>");
+    expect(html).toContain("Collection error: search 503 &lt;retry&gt;");
+    expect(html).toContain("Unavailable — collection failed or not collected");
+    expect(html).toContain(">—</td>");
+  });
+});
 
 function poolItem(partial: Partial<ProjectPoolItem>): ProjectPoolItem {
   return {

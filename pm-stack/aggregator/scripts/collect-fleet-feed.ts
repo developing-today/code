@@ -112,7 +112,7 @@ import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { fetchProjectPool } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
-import type { RepoCensus } from "../src/coverage.ts";
+import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -738,28 +738,39 @@ async function main(): Promise<void> {
         return body.total_count as number;
       };
       const rows: RepoCensus[] = [];
-      let failedRepos = 0;
+      const failedRepos = new Set<string>();
       for (const repo of REPOS) {
+        let staleOpenIssues: number | null = null;
+        let staleIssuesError: string | null = null;
+        let staleIssuesCollectedAt: string;
+        try {
+          staleOpenIssues = await count(staleIssueSearchQuery(repo, new Date()));
+          staleIssuesCollectedAt = new Date().toISOString();
+        } catch (err) {
+          failedRepos.add(repo);
+          staleIssuesCollectedAt = new Date().toISOString();
+          staleIssuesError = sanitizeCollectionError(err);
+          console.error(`collector: stale-issue census failed for ${repo} (${staleIssuesError})`);
+        }
+        let openIssues: number | null = null;
+        let gateNow: number | null = null;
+        let gateNext: number | null = null;
         try {
           const base = `repo:${repo} is:issue is:open`;
-          rows.push({
-            repo,
-            openIssues: await count(base),
-            gateNow: await count(`${base} label:now`),
-            gateNext: await count(`${base} label:next`),
-          });
+          openIssues = await count(base);
+          gateNow = await count(`${base} label:now`);
+          gateNext = await count(`${base} label:next`);
         } catch (err) {
-          failedRepos++;
-          console.error(
-            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); repo omitted`,
-          );
+          failedRepos.add(repo);
+          console.error(`collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`);
         }
+        rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
       }
       if (rows.length) coverage = rows;
-      if (failedRepos === REPOS.length && REPOS.length > 0) {
+      if (failedRepos.size === REPOS.length && REPOS.length > 0) {
         markSection("coverage", "error", "all repository census reads failed");
-      } else if (failedRepos > 0) {
-        markSection("coverage", "error", `${failedRepos} repository census reads failed`);
+      } else if (failedRepos.size > 0) {
+        markSection("coverage", "error", `${failedRepos.size} repository census reads failed`);
       } else {
         markSection("coverage", "ok");
       }
