@@ -27,6 +27,7 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   attention: "primary",
   board: "dropdown",
   roadmap: "primary",
+  search: "dropdown",
   quota: "primary",
   dns: "dropdown",
   "aa-explorer": "dropdown",
