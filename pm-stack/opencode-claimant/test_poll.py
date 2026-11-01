@@ -94,5 +94,24 @@ class TestIsActiveRoot(unittest.TestCase):
             poll.count_active_roots(sessions, NOW, {"ses_old"}), 3)
 
 
+class TestSummarizeCap(unittest.TestCase):
+    def test_unreadable_session_list_is_unknown(self):
+        self.assertEqual(poll.summarize_cap(None, set(), NOW),
+                         (None, None, None))
+
+    def test_unreadable_active_set_is_unknown_not_zero(self):
+        # Fail closed: markers alone must never become a launch
+        # decision when /api/session/active cannot be read.
+        live, active, room = poll.summarize_cap([root()], None, NOW)
+        self.assertEqual(live, 1)
+        self.assertIsNone(active)
+        self.assertIsNone(room)
+
+    def test_known_counts_give_room(self):
+        live, active, room = poll.summarize_cap(
+            [root(), root(outcome="failed")], set(), NOW)
+        self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
+
+
 if __name__ == "__main__":
     unittest.main()

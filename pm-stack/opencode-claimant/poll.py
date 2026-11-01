@@ -76,6 +76,25 @@ def count_active_roots(sessions, now_ms, active_ids=None):
                if is_active_root(s, now_ms, active_ids))
 
 
+def summarize_cap(sessions, active_ids, now_ms):
+    """(live_root_sessions, active_root_sessions, cap_room).
+
+    Either server read failing makes the active count UNKNOWN, never
+    zero: a resumed root's stored markers read as finished, so falling
+    back to markers alone when /api/session/active is unreadable could
+    report cap_room 12 over 12 running sessions. Unknown propagates as
+    None and the claimant launches nothing — the same fail-closed rule
+    the session list itself has always had.
+    """
+    if sessions is None:
+        return None, None, None
+    roots = [s for s in sessions if is_root_session(s)]
+    if active_ids is None:
+        return len(roots), None, None
+    active = count_active_roots(roots, now_ms, active_ids)
+    return len(roots), active, max(0, CAP - active)
+
+
 HELPER = os.environ.get(
     "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py"))
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
@@ -168,17 +187,13 @@ def main():
                                           c["priority"] or 0))
     sessions = fetch_sessions()
     out["cap"] = CAP
-    if sessions is None:
-        out["live_root_sessions"] = None
-        out["active_root_sessions"] = None
-        out["cap_room"] = None
-    else:
-        roots = [s for s in sessions if is_root_session(s)]
-        active = count_active_roots(roots, int(time.time() * 1000),
-                                    fetch_active_ids())
-        out["live_root_sessions"] = len(roots)
-        out["active_root_sessions"] = active
-        out["cap_room"] = max(0, CAP - active)
+    live, active, room = summarize_cap(
+        sessions,
+        fetch_active_ids() if sessions is not None else None,
+        int(time.time() * 1000))
+    out["live_root_sessions"] = live
+    out["active_root_sessions"] = active
+    out["cap_room"] = room
     print(json.dumps(out, indent=1))
     return 0
 
