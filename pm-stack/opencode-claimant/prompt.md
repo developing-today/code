@@ -34,10 +34,12 @@ Never claim, bind, launch, or mutate a task in shadow mode.
   are claimed, lane-assigned `opencode` in their progress, and carry no
   bound `session_id` yet — the unbound launches this task exists to
   close — plus the live root-session count for the cap.
-- Concurrency cap: **12** live root sessions across the fleet. Count
+- Concurrency cap: **12** active root sessions across the fleet. Count
   with poll.py (OpenCode server `GET /api/session` on
-  http://127.0.0.1:13420, root sessions only). If the count is at or
-  above the cap, launch nothing this fire.
+  http://127.0.0.1:13420, root sessions only; poll.py counts a root as
+  active only with no terminal marker — `time.idle`/`outcome` — and
+  activity in the last 30 min, and reports it as `cap_room`). If
+  `cap_room` is 0 or null, launch nothing this fire.
 - Route: the task packet's route when it names one, else the
   Workhorse default — scheduled-task execution route
   `providerID: "opencode-route"`, `modelID: "workhorse"`, agent
@@ -62,8 +64,9 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 2. GATE: run the helper `health` for the four queues. If every queue
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
-3. CAP: if poll.py reports the live root-session count >= 12, end the
-   fire; record the saturation in the fire log (step 6).
+3. CAP: if poll.py reports `cap_room` 0 (active root sessions at the
+   12 cap) or null (server unreadable), end the fire; record the
+   saturation in the fire log (step 6).
 4. For each candidate, highest queue priority first, while cap room
    remains:
    a. Re-verify the task is still claimed, still lane `opencode`,
