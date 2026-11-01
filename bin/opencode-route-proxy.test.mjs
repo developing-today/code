@@ -154,12 +154,15 @@ const startProxy = async (arg = {}) => {
     "leafA": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
-      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } } },
+      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } }, "m-g": {} },
     },
     "leafB": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1" },
-      "models": { "m-b": {} },
+      "models": { "m-b": {}, "m-g": {} },
+    },
+    "openai": {
+      "models": { "m-gpt": {} },
     },
     "leafOff": {
       "npm": "@ai-sdk/openai-compatible",
@@ -168,8 +171,14 @@ const startProxy = async (arg = {}) => {
     },
   },
   "experimental": {
+    "provider_routes": {
+      "grp-ordered": { "providers": ["leafB", "leafA"], "selection": "ordered" },
+      "grp-rr": { "providers": ["leafA", "leafB"], "selection": "round-robin" },
+      "grp-weighted": { "providers": ["leafA", "leafB"], "selection": "weighted", "weights": { "leafA": 0, "leafB": 1 } },
+    },
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
+      "overnight": { "daysOfWeek": ["fri"], "start": "22:00", "end": "02:00", "timezone": "UTC" },
     },
     "model_routes": {
       "t-ordered": { "selection": "ordered", "targets": ["leafA/m-a", "leafB/m-b"] },
@@ -179,6 +188,12 @@ const startProxy = async (arg = {}) => {
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
+      "t-window-overnight": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "overnight" }, "leafB/m-b" ] },
+      "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
+      "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
+      "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
+      "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
+      "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
     },
   },
 }`,
@@ -471,6 +486,146 @@ test("a gate naming an unknown window fails closed", async () => {
     const rows = p.attempts();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// Overnight windows (#3874): the fixture "overnight" window is
+// Fri 22:00-02:00 UTC. 2026-11-06 is a Friday, 2026-11-07 a Saturday.
+// The after-midnight leg belongs to the day the window opened.
+const FRI_2300 = Date.UTC(2026, 10, 6, 23, 0);
+const SAT_0100 = Date.UTC(2026, 10, 7, 1, 0);
+const FRI_0100 = Date.UTC(2026, 10, 6, 1, 0);
+const SAT_2300 = Date.UTC(2026, 10, 7, 23, 0);
+
+test("overnight window is active on its opening evening", async () => {
+  const p = await startProxy({ nowMs: FRI_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window stays active on the after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: SAT_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted day's after-midnight leg", async () => {
+  const p = await startProxy({ nowMs: FRI_0100 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("overnight window is inactive on an unlisted evening", async () => {
+  const p = await startProxy({ nowMs: SAT_2300 });
+  try {
+    const res = await p.post({ model: "opencode-route/t-window-overnight", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (ordered) expands to member providers in group order", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered lists leafB first; the attempt must be recorded
+    // under the concrete member, never under the group id (#3256).
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.equal(rows[0].model_id, "m-g");
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (round-robin) rotates the starting member", async () => {
+  const p = await startProxy();
+  try {
+    const first = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    const second = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    assert.equal(first.choices[0].message.content, "LEAF-A");
+    assert.equal(second.choices[0].message.content, "LEAF-B");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA", "leafB"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (weighted) honors weights keyed by member provider id", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-weighted", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // leafA carries weight 0 in grp-weighted, leafB weight 1.
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    assert.equal(p.attempts()[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route skips a member whose catalog lacks the model", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-skip", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered is [leafB, leafA], but only leafA offers m-a.
+    assert.equal(json.choices[0].message.content, "LEAF-A");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("empty-shell openai block resolves the built-in endpoint default", async () => {
+  const p = await startProxy();
+  try {
+    // The fixture openai block is an empty shell (models only, no
+    // npm/options/baseURL) and no credential is stored for it, so a
+    // resolved endpoint surfaces as a credential failure — while an
+    // unresolved one would surface as UnknownProvider (#3256). The
+    // check order in callLeaf (endpoint first, credential second)
+    // makes this a network-free proof the default resolved.
+    const res = await p.post({ model: "opencode-route/t-openai-default", messages: MSGS });
+    assert.equal(res.status, 502);
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "openai");
+    assert.equal(rows[0].error_tag, "Authentication");
+    assert.notEqual(rows[0].error_tag, "UnknownProvider");
   } finally {
     await p.cleanup();
   }
