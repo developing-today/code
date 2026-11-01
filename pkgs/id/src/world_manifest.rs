@@ -157,44 +157,48 @@ pub fn parse(text: &str) -> Result<WorldManifest> {
     Ok(manifest)
 }
 
-/// The `[profile]` table's known keys: the fields of
-/// [`WorldExecutionProfile`]. The list lives here, next to [`parse`],
-/// because the profile struct itself must stay lenient: it is also
-/// deserialized from host-returned JSON (see `current_world_state` in
-/// `commands::world`), where a newer host may send fields this build
-/// does not know.
-const PROFILE_KEYS: [&str; 6] = [
-    "wasm_fuel",
-    "wasm_memory_bytes",
-    "wasm_message_bytes",
-    "native_memory_bytes",
-    "native_cpu_seconds",
-    "native_call_deadline_ms",
-];
-
 /// Reject unknown keys in a manifest's `[profile]` table, naming the key.
 ///
 /// `WorldManifest` denies unknown top-level keys via serde, but the
-/// nested profile cannot use `deny_unknown_fields` (see
-/// [`PROFILE_KEYS`]), so [`parse`] checks the table itself: a typo'd
-/// limit key (`wasm_fuell = 1`) must fail loudly instead of silently
-/// leaving the live profile alone (#2876).
+/// nested profile cannot use `deny_unknown_fields` on
+/// [`WorldExecutionProfile`] itself: that struct must stay lenient
+/// because it is also deserialized from host-returned JSON (see
+/// `current_world_state` in `commands::world`), where a newer host may
+/// send fields this build does not know. So [`parse`] runs this probe
+/// instead: a typo'd limit key (`wasm_fuell = 1`) must fail loudly
+/// instead of silently leaving the live profile alone (#2876).
+///
+/// The probe deserializes through the typed TOML deserializer, never
+/// `toml::Value` — whose integers are `i64`-capped — so full-width
+/// `u64` values the real types accept (a `seed` or `wasm_fuel` above
+/// `i64::MAX`) pass through untouched. The known fields' values are
+/// irrelevant here (the real parse validates them), so they are read
+/// as [`serde::de::IgnoredAny`].
 fn reject_unknown_profile_keys(text: &str) -> Result<()> {
-    let document: toml::Table = toml::from_str(text).map_err(anyhow::Error::new)?;
-    let Some(profile) = document.get("profile") else {
-        return Ok(());
-    };
-    let Some(profile) = profile.as_table() else {
-        // Not a table: the manifest deserialization in `parse` reports it.
-        return Ok(());
-    };
-    for key in profile.keys() {
-        ensure!(
-            PROFILE_KEYS.contains(&key.as_str()),
-            "unknown key {key:?} in [profile] of world manifest (known keys: {})",
-            PROFILE_KEYS.join(", ")
-        );
+    #[derive(Deserialize)]
+    struct ProfileProbe {
+        #[serde(default)]
+        profile: Option<ProfileKeysProbe>,
     }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProfileKeysProbe {
+        #[serde(default)]
+        wasm_fuel: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        wasm_message_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_memory_bytes: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_cpu_seconds: Option<serde::de::IgnoredAny>,
+        #[serde(default)]
+        native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+    }
+
+    let _: ProfileProbe = toml::from_str(text).map_err(anyhow::Error::new)?;
     Ok(())
 }
 
@@ -531,6 +535,18 @@ wasm_fuel = 5_000_000
         // itself because the profile struct stays lenient for host JSON.
         let err = parse("[profile]\nwasm_fuell = 1").unwrap_err();
         assert!(format!("{err}").contains("wasm_fuell"), "{err}");
+    }
+
+    #[test]
+    fn full_width_u64_values_still_parse() {
+        // Regression (Codex review of the fix for this issue): the
+        // [profile] key check must not route the document through
+        // toml::Value, whose i64 integers would reject u64 values the
+        // typed manifest accepts.
+        let manifest = parse("seed = 18446744073709551615").unwrap();
+        assert_eq!(manifest.seed, Some(u64::MAX));
+        let manifest = parse("[profile]\nwasm_fuel = 18446744073709551615").unwrap();
+        assert_eq!(manifest.profile.wasm_fuel, Some(u64::MAX));
     }
 
     #[test]
