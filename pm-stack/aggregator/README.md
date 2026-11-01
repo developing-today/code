@@ -507,10 +507,8 @@ runs on the **laptop** (nothing executes on the sandbox), as the
 `quota-gatherer` systemd **user** timer (units in this package's
 `systemd/`, installed by `install.sh`; linger keeps it
 boot-persistent). The unit runs the script from the laptop's repo
-clone (`~/git/code`) — package re-deploys replace the deployed
-`scripts/` wholesale and must not be able to vanish the gatherer —
-with its outputs pinned by env to the deployed aggregator dir
-`~/pm-stack/aggregator`.
+clone (`~/git/code`) and writes its outputs under
+`~/.local/state/pm-aggregator`, outside the checkout.
 
 Each tick:
 
@@ -530,7 +528,7 @@ Each tick:
   windows carrying value, % of limit, reset, measured-at, source,
   state) — and `quota-gatherer-heartbeat.json` (tick time,
   per-provider state/duration; the heartbeat also rides inside
-  quota-current.json), both in the deployed aggregator dir beside
+  quota-current.json), both in the aggregator state directory beside
   `fleet-feed.json`.
 - appends §4 snapshot records for windows whose value **moved**
   since the last appended record, directly to the snapshot store
@@ -583,7 +581,7 @@ tick visible on /quota.
 The collector runs on the laptop: the `fleet-feed-collector` user
 timer (declared in the pm-stack NixOS module, #3363/#3368) runs
 `scripts/collect-fleet-feed.ts` every ~5 minutes and writes the feed
-straight to the aggregator's state dir. The aggregator states the
+straight to `~/.local/state/pm-aggregator`. The aggregator states the
 feed's age in the page provenance; a stale feed keeps rendering.
 The collector originally ran on the sandbox and pushed the feed
 over the tailnet proxy route (`scripts/push-fleet-feed.sh`); that
@@ -592,12 +590,17 @@ overwriting the laptop feed (its AA section 403'd against the
 retired muse-dev project). The push script remains for manual use
 only.
 
-**Deployment (laptop):** `install.sh` copies the package to
-`~/pm-stack/aggregator`, renders `.env` from
-`~/secrets/pm-stack.sops.yaml` (keys by name), installs
-`../systemd/pm-aggregator.service` as a user unit, and health-checks
-loopback + tailnet. Slice 2 (per #890) replaces the feed with
-projector-ized live per-source feeds.
+**Deployment (laptop):** run `install.sh` from the `~/git/code`
+checkout. The service runs directly from
+`~/git/code/pm-stack/aggregator`; `install.sh` renders the mode-600
+environment file and runtime paths under `~/.local/state/pm-aggregator`
+from `~/secrets/pm-stack.sops.yaml` (keys by name), installs the
+repository-owned systemd units, and health-checks loopback + tailnet.
+The legacy `~/pm-stack/aggregator` symlink to that state directory is a
+compatibility bridge for sandbox feed pushes and must remain until the
+sandbox has pulled the updated push script and delivery is verified.
+Slice 2 (per #890) replaces the feed with projector-ized live
+per-source feeds.
 
 ## What is fixture-backed vs live
 

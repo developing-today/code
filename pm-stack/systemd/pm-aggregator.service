@@ -3,14 +3,15 @@ Description=PM aggregator — board / roadmap / quota / needs-you (pm-stack)
 
 [Service]
 Type=simple
-WorkingDirectory=%h/pm-stack/aggregator
+WorkingDirectory=%h/git/code/pm-stack/aggregator
 # Binds loopback + the tailnet address only (PM_AGG_HOSTS in the env
 # file) — no public route; a public hostname needs auth first
 # (Drew, 2026-10-25). Listens on port 4870.
 ExecStart=/run/current-system/sw/bin/bun run src/server.ts
 # Kaneo/Grist credentials + source selection, decrypted from
 # ~/secrets/pm-stack.sops.yaml by install.sh (mode 600, never committed).
-EnvironmentFile=%h/pm-stack/aggregator/.env
+# Runtime files live outside the checkout so deploys cannot overwrite them.
+EnvironmentFile=%h/.local/state/pm-aggregator/.env
 Restart=on-failure
 RestartSec=5
 
