@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 // Publish snapshots the subscribers, drops the bus lock, then sends. A Close

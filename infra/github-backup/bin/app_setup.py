@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""app_setup.py — GitHub App (hatch-repo-backup) lifecycle helper.
+"""app_setup.py — GitHub App (developing-today-backup) lifecycle helper.
 
 Subcommands:
   manifest   Print the App Manifest JSON + the exact click-path to create

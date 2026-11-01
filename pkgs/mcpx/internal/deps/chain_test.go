@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/deps"
-	"github.com/dezren39/mcpx/internal/searchpath"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // write puts a file in dir, creating parents, and returns its path.

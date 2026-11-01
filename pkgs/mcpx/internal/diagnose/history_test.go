@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 )
 
 func tool(required ...string) diagnose.Tool {

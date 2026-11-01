@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/progspec"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/progspec"
 )
 
 // DefaultURL is the official registry.

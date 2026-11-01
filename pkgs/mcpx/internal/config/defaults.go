@@ -1,6 +1,6 @@
 package config
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // Typed views of the embedded default layer. The values live in
 // internal/defaults/defaults.json; these only attach this package's types.

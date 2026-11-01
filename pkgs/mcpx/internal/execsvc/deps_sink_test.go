@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/execsvc"
-	"github.com/dezren39/mcpx/internal/runner"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
 
 // TestDepsSurviveANonNilSink is the P1 Codex finding on PR #2589:

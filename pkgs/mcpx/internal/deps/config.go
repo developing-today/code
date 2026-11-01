@@ -21,8 +21,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/searchpath"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Source names where a script's packages may be found. It is the resolved

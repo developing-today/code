@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/searchpath"
+	"github.com/developing-today/code/pkgs/mcpx/internal/searchpath"
 )
 
 // Manifest is a project's declaration of the packages its scripts may import.

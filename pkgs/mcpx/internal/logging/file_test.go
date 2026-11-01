@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 )
 
 func jsonlFiles(t *testing.T, dir string) []string {

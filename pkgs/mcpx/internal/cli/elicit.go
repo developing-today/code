@@ -18,7 +18,7 @@ import (
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // ExitInputRequired is returned when a call stopped to ask something.

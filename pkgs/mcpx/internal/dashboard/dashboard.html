@@ -853,6 +853,76 @@
       return '<label>' + label + '<input type="' + type + '" id="' + id + '" data-field="' + escapeHTML(field.name) + '" data-type="' + type + '"' + dflt + '></label>' + desc;
     }
 
+    // Signature of the pending elicitation set as last rendered: the
+    // request ids and their field schemas, in render order. When a
+    // refresh returns the same set, the re-render is skipped entirely
+    // so in-progress answers, focus, and scroll state survive the 15s
+    // interval and SSE-triggered refreshes (issue #3223).
+    //
+    // The signature is deliberately NOT a serialization of the whole
+    // /v1/elicit response: that payload carries volatile per-listing
+    // metadata -- ttlRemainingMs is recomputed from the clock on every
+    // list and lastTouched moves whenever a request is read -- so a
+    // whole-response signature changes between refreshes of an
+    // unchanged set and the skip never fires (Codex review, PR #3237).
+    // Id + requestedSchema is the stable identity of what is rendered:
+    // the card form is derived from the schema by elicitFields.
+    let lastElicitSignature = null;
+
+    function elicitSignature(items) {
+      try {
+        return JSON.stringify(items.map(req => {
+          if (!req) return [null, null];
+          const schema = req.requestedSchema;
+          return [req.id, typeof schema === 'string' ? schema : JSON.stringify(schema || null)];
+        }));
+      } catch (e) { return null; }
+    }
+
+    function elicitValueKey(el) {
+      const card = el.closest ? el.closest('.elicit-card') : null;
+      const reqId = card && card.id ? card.id.replace(/^elicit-card-/, '') : '';
+      return reqId + '\n' + (el.getAttribute('data-field') || '');
+    }
+
+    // Capture in-progress field values (and focus) keyed by
+    // (request id, field name) so a re-render forced by a changed
+    // pending set does not lose answers for still-pending requests.
+    function captureElicitState(list) {
+      const values = {};
+      list.querySelectorAll('[data-field]').forEach(el => {
+        values[elicitValueKey(el)] = el.value;
+      });
+      let focus = null;
+      const active = document.activeElement;
+      if (active && list.contains(active) && active.getAttribute && active.getAttribute('data-field')) {
+        focus = { key: elicitValueKey(active),
+          start: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+          end: typeof active.selectionEnd === 'number' ? active.selectionEnd : null };
+      }
+      return { values: values, focus: focus };
+    }
+
+    function restoreElicitState(list, state) {
+      if (!state) return;
+      list.querySelectorAll('[data-field]').forEach(el => {
+        const key = elicitValueKey(el);
+        if (Object.prototype.hasOwnProperty.call(state.values, key)) el.value = state.values[key];
+      });
+      if (state.focus) {
+        const els = list.querySelectorAll('[data-field]');
+        for (const el of els) {
+          if (elicitValueKey(el) === state.focus.key) {
+            el.focus();
+            if (state.focus.start !== null && el.setSelectionRange) {
+              try { el.setSelectionRange(state.focus.start, state.focus.end); } catch (e) {}
+            }
+            break;
+          }
+        }
+      }
+    }
+
     async function loadElicitations() {
       const list = document.getElementById('elicit-list');
       const count = document.getElementById('elicit-count');
@@ -860,8 +930,16 @@
         const pending = await fetchJSON('/v1/elicit');
         const items = Array.isArray(pending) ? pending : [];
         count.innerText = items.length;
+        const signature = elicitSignature(items);
+        if (signature !== null && signature === lastElicitSignature) {
+          // Pending set unchanged: skip the re-render so typed answers
+          // and focus are not destroyed by the refresh.
+          return;
+        }
+        const saved = captureElicitState(list);
         if (items.length === 0) {
           list.innerHTML = '<div class="view-note">No pending elicitations.</div>';
+          lastElicitSignature = signature;
           return;
         }
         list.innerHTML = items.map(req => {
@@ -883,7 +961,10 @@
             + '<button class="btn-cancel" onclick="answerElicit(\'' + escapeHTML(req.id) + '\', \'cancel\')">Cancel</button>'
             + '</div><div class="elicit-status" id="elicit-status-' + escapeHTML(req.id) + '"></div></div>';
         }).join('');
+        lastElicitSignature = signature;
+        restoreElicitState(list, saved);
       } catch (e) {
+        lastElicitSignature = null;
         list.innerHTML = '<div class="view-note">Could not load elicitations: ' + escapeHTML(String(e)) + '</div>';
       }
     }

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
 )
 
 // The second instance of the defect above, found by reviewing the first.

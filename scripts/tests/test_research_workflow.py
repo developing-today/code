@@ -462,6 +462,112 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertTrue((package / "receipts" / note.name).is_file())
         self.check(package, True, "--require-resolved")
 
+    def add_note(self, package, body_text):
+        content = self.scratch / f"note-input-{len(body_text)}-{abs(hash(body_text))}.txt"
+        content.write_text(body_text, encoding="utf-8")
+        before = set(package.rglob("*.md"))
+        self.cli(
+            "note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--from",
+            "C001",
+            "--to",
+            "C002",
+            "--input",
+            content,
+        )
+        created = set(package.rglob("*.md")) - before
+        self.assertEqual(len(created), 1)
+        return created.pop()
+
+    def resolve_note(self, package, note, disposition, reason, ok=True):
+        return self.cli(
+            "resolve-note",
+            "--package",
+            package,
+            "--note",
+            note.relative_to(package),
+            "--disposition",
+            disposition,
+            "--target",
+            self.state(package)["concepts"][1]["path"],
+            "--reason",
+            reason,
+            ok=ok,
+        )
+
+    def test_every_disposition_passes_require_resolved_via_resolve_note(self):
+        # The skill names five dispositions (#492): each one, recorded
+        # through resolve-note, must satisfy check --require-resolved.
+        package = self.init()
+        reasons = {
+            "incorporated": "Brought into the concept text.",
+            "acknowledged": "Recorded as an explicit constraint.",
+            "declined": "Out of scope for this package, with reasons.",
+            "deferred": "Valid but premature. Revisit when: the storage decision lands.",
+            "superseded": "Replaced by the newer note on the same question.",
+        }
+        for disposition, reason in reasons.items():
+            note = self.add_note(package, f"Please consider {disposition}.\n")
+            self.resolve_note(package, note, disposition, reason)
+        self.check(package, True, "--require-resolved")
+
+    def test_deferred_resolve_note_without_trigger_is_refused(self):
+        package = self.init()
+        note = self.add_note(package, "Please hold this for later.\n")
+        self.resolve_note(
+            package,
+            note,
+            "deferred",
+            "Valid, but not for now.",
+            ok=False,
+        )
+        self.assertFalse((package / "receipts" / note.name).is_file())
+        self.check(package, False, "--require-resolved")
+
+    def test_deferred_resolution_block_with_trigger_passes_require_resolved(self):
+        # The concept-file resolution path (check_package) rejected every
+        # deferred entry before #492, whatever its reason said.
+        package = self.init()
+        note = self.add_note(package, "Please account for the ownership constraint.\n")
+        target = self.state(package)["concepts"][1]["path"]
+        entry = {
+            "note": note.relative_to(package).as_posix(),
+            "at": TIMESTAMP,
+            "disposition": "deferred",
+            "target": target,
+            "reason": "Waits on the ownership decision. Revisit when: C001 is confirmed.",
+        }
+        with (package / target).open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n<!-- workflow:resolution -->\n"
+                + json.dumps(entry)
+                + "\n<!-- /workflow:resolution -->\n"
+            )
+        self.check(package, True, "--require-resolved")
+
+    def test_deferred_resolution_block_without_trigger_fails_check(self):
+        package = self.init()
+        note = self.add_note(package, "Please account for the ownership constraint.\n")
+        target = self.state(package)["concepts"][1]["path"]
+        entry = {
+            "note": note.relative_to(package).as_posix(),
+            "at": TIMESTAMP,
+            "disposition": "deferred",
+            "target": target,
+            "reason": "Waits on the ownership decision.",
+        }
+        with (package / target).open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n<!-- workflow:resolution -->\n"
+                + json.dumps(entry)
+                + "\n<!-- /workflow:resolution -->\n"
+            )
+        self.check(package, False, "--require-resolved")
+
     def test_completed_concept_cannot_still_be_an_unfilled_generated_stub(self):
         package = self.init()
         state = self.state(package)

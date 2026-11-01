@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/deps"
-	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 )
 
 // depsOptions is the dependency set to send with a script, or nil when the

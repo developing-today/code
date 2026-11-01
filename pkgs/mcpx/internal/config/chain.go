@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // Two-pass resolution of the config chain (issue #1842, Approach C).

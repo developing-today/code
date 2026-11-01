@@ -51,7 +51,7 @@ after is scripted.
 ```sh
 source ~/tools/bws-env.sh
 # 1. deploy the Worker first (§5) and set GHB_WORKER_URL to its URL.
-export GHB_WORKER_URL="https://hatch-repo-backup-webhook.<your-subdomain>.workers.dev"
+export GHB_WORKER_URL="https://developing-today-backup.<your-subdomain>.workers.dev"
 # 2. store the Worker's URL + a drain bearer in Bitwarden (drainer reads them):
 bws secret create github-app.backup-worker-url "$GHB_WORKER_URL" "$(bws project list | jq -r '.[0].id')"
 python3 -c "import secrets;print(secrets.token_hex(32))"  # <- put this value in BOTH:
@@ -63,14 +63,15 @@ python3 $GB/bin/app_setup.py manifest
 #    (manifest flow). GitHub redirects with ?code=XXXX. Then:
 python3 $GB/bin/app_setup.py convert XXXX     # credentials -> Bitwarden by name
 python3 $GB/bin/app_setup.py webhook-secret   # webhook secret -> Bitwarden by name
-# 5. set the SAME webhook secret on the App (GitHub UI) and the Worker:
-cd $GB/worker && wrangler secret put GITHUB_WEBHOOK_SECRET
+# 5. set the SAME webhook secret on the App (GitHub UI). The Worker
+#    side is set from Bitwarden by name during deploy (§5); to redo it
+#    by hand: cd $GB/worker && wrangler secret put GITHUB_WEBHOOK_SECRET
 ```
 
 ### Installing the App on an owner (do per owner)
 
-1. Open `https://github.com/settings/apps/hatch-repo-backup/installations`
-   (for an org: `https://github.com/organizations/<ORG>/settings/apps/hatch-repo-backup/installations`).
+1. Open `https://github.com/settings/apps/developing-today-backup/installations`
+   (for an org: `https://github.com/organizations/<ORG>/settings/apps/developing-today-backup/installations`).
 2. Install on the account/org, repository access = **All repositories**
    (so next week's new repos are covered without a revisit).
 3. Verify:
@@ -99,12 +100,38 @@ it to `force_include` (with a reason) in config.json and re-run reconcile.
 
 ## 5. Worker deploy / upgrade
 
+Deploys follow the shape of the repo's Cloudflare Worker deployment
+standard (`doc/2026-10-31T23-00-00Z_design_cloudflare_worker_deployment_standard.md`):
+a just recipe calls the nix flake app, secrets are gathered at deploy
+time (Bitwarden by name + SOPS account id), a version is uploaded
+first (tagged `git-<sha12>`), and going live is a separate deployment
+at 100% — so rollback is `--deploy-version <id>` at an old version.
+
+```sh
+just deploy-developing-today-backup     # from the repo root
+# equivalently: nix run .#developing-today-backup-deploy
+curl https://developing-today-backup.developing-today.workers.dev/health
+```
+
+The deploy script drives wrangler's versions commands rather than
+the standard's cf CLI: this Worker is a dependency-free plain-JS
+worker configured by `wrangler.toml`, while the cf flow is built
+around a TypeScript `cf/config` project (tool gap recorded on #3215).
+The deploy also (re)sets the Worker secrets `DRAIN_BEARER` and
+`GITHUB_WEBHOOK_SECRET` from Bitwarden by name; no secret is written
+to disk or printed.
+
+First time only — the KV namespace the Worker binds:
+
 ```sh
 cd $GB/worker
-wrangler kv namespace create GHB_EVENTS   # first time only; paste id into wrangler.toml
-wrangler deploy                           # Worker versions track repo commits
-curl https://hatch-repo-backup-webhook.<your-subdomain>.workers.dev/health
+wrangler kv namespace create GHB_EVENTS   # paste the id into wrangler.toml
 ```
+
+History: the Worker was first deployed 2026-10-31 as
+`hatch-repo-backup-webhook` (bare wrangler) and renamed the same day
+to `developing-today-backup` through this flow; the old Worker was
+deleted after the rename was verified live.
 
 ## 6. Upgrade (machines)
 

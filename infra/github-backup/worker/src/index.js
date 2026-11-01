@@ -1,4 +1,4 @@
-// hatch-repo-backup-webhook — GitHub App webhook receiver + laptop queue.
+// developing-today-backup — GitHub App webhook receiver + laptop queue.
 //
 // POST /github        GitHub webhook. Verifies X-Hub-Signature-256 (HMAC
 //                     SHA-256 with GITHUB_WEBHOOK_SECRET), stores

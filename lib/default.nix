@@ -604,10 +604,11 @@ let
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
         cf = pkgs.callPackage ../pkgs/cf { };
       };
+      developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
     in
     {
       packages = {
-        inherit mcpx idMailDeploy pkarrDeploy;
+        inherit mcpx idMailDeploy pkarrDeploy developingTodayBackupDeploy;
         mcpx-docs = mcpxDocs;
       };
       checks = {
@@ -634,6 +635,7 @@ let
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
+        developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";

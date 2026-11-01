@@ -19,6 +19,10 @@
 #                     this script's repo checkout)
 #   SOPS_AGE_KEY_FILE age key for decryption
 #                     (default: ~/.config/sops/age/keys.txt)
+#   PM_STACK_TAILNET_IP  optional override for the tailnet bind address
+#                     (default: auto-detected via `tailscale ip -4` at
+#                     render time; when no address is available the
+#                     stack binds loopback only)
 # The stack binds 127.0.0.1:8484 and the host tailnet address :8484
 # (see compose.yml) and stores data in the Docker named volume
 # grist_grist_data on this host.
@@ -41,10 +45,32 @@ render() {
   local get
   get() { printf '%s\n' "$plain" | sed -n "s/^$1: //p" | tr -d "\"'"; }
 
+  # The host's tailnet address is host-specific but not secret: an
+  # explicit PM_STACK_TAILNET_IP wins, else this host's own Tailscale
+  # IPv4, else the line is omitted and compose binds loopback only.
+  local tailnet_ip="${PM_STACK_TAILNET_IP:-}"
+  if [[ -z $tailnet_ip ]] && command -v tailscale >/dev/null 2>&1; then
+    tailnet_ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+  fi
+
+  # GRIST_DEFAULT_EMAIL is configuration, not code: the SOPS key
+  # grist_default_email wins; the fallback is the operator's current
+  # address, documented here so a secrets file without the key renders
+  # the value the stack has always run with (#781).
+  local grist_email
+  grist_email="$(get grist_default_email)"
+  if [[ -z $grist_email ]]; then
+    grist_email="drewrypope@gmail.com"
+  fi
+
   umask 077
   {
     echo "# Rendered by deploy.sh from secrets/pm-stack.sops.yaml — do not edit, do not commit."
     echo "GRIST_SESSION_SECRET=$(get grist_session_secret)"
+    echo "GRIST_DEFAULT_EMAIL=$grist_email"
+    if [[ -n $tailnet_ip ]]; then
+      echo "PM_STACK_TAILNET_IP=$tailnet_ip"
+    fi
   } >.env
   chmod 600 .env
   echo "rendered .env from $SECRETS_FILE"

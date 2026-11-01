@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // #2080 (Phase 3 of #2077): server-side -32042 production. A 2025-11-25

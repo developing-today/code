@@ -77,9 +77,31 @@ def inventory_owner(owner):
         if r.returncode != 0:
             raise RuntimeError(f"gh api graphql failed for {owner}: {r.stderr[:300]}")
         data = json.loads(r.stdout)
-        conn = (data.get("data", {}).get("repositoryOwner") or {}).get("repositories")
+        # A successful gh exit can still carry a failed inventory: a
+        # top-level GraphQL errors field, or a null repositoryOwner when
+        # the owner is renamed / not visible to the token (e.g. SAML
+        # enforcement). Neither may be read as "owner has no repos" —
+        # that would silently un-plan the owner's mirrors in reconcile
+        # (#3229). Raise so inventory() records an owner-level error.
+        if data.get("errors"):
+            raise RuntimeError(
+                f"gh api graphql errors for {owner}: "
+                f"{json.dumps(data['errors'])[:300]}")
+        owner_obj = (data.get("data") or {}).get("repositoryOwner")
+        if owner_obj is None:
+            raise RuntimeError(
+                f"gh api graphql for {owner}: repositoryOwner is null — "
+                f"owner not visible to the token (renamed, SAML-blocked, "
+                f"or no access); refusing to read as an empty owner")
+        conn = owner_obj.get("repositories")
         if conn is None:
-            return repos
+            raise RuntimeError(
+                f"gh api graphql for {owner}: repositories connection is "
+                f"null; refusing to read as an empty owner")
+        if conn.get("nodes") is None or conn.get("pageInfo") is None:
+            raise RuntimeError(
+                f"gh api graphql for {owner}: malformed repositories "
+                f"connection (nodes/pageInfo missing)")
         for n in conn["nodes"]:
             repos.append({
                 "repo": n["nameWithOwner"],

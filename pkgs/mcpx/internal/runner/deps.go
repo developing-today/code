@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dezren39/mcpx/internal/deps"
+	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
 )
 
 // Deps is a script's resolved dependency set, as the runner consumes it

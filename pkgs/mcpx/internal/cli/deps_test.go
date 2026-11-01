@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 )
 
 // TestDepsOptionsAreNilWithoutARequest is the default that keeps #1913 from

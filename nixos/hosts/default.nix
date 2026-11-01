@@ -26,6 +26,7 @@ in
       "services/pm-stack"
       "services/pm-apps"
       "services/power-guard"
+      "services/openai-cred-watchdog"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -70,6 +71,12 @@ in
         # Power guard (code#1687): confirm critical battery readings
         # before UPower can hybrid-sleep the machine.
         services.power-guard.enable = true;
+      }
+      {
+        # OpenAI credential watchdog (code#3216): hourly user timer
+        # asserting the OpenCode credential store never regains an
+        # active token-sharing credential for the GPT providers.
+        services.openai-cred-watchdog.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
