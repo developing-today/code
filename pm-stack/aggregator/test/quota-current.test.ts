@@ -596,3 +596,30 @@ describe("stale-path newest pick is finite-gated (#2253)", () => {
     expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
   });
 });
+
+describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+  test("gatherer windows land on the alternate pool, never on the main pool", () => {
+    const view = baseView();
+    view.pools.push(pool("openai.alternate", []));
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "openai.alternate",
+          serviceId: "openai.alternate",
+          credentialLabel: "OpenAI Alternate (Student - popesdrew)",
+          windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 100],
+      ["weekly", 42],
+    ]);
+    // The main account's pool keeps its own read, untouched.
+    const main = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(main.windows[0].percent).toBe(11);
+  });
+});
