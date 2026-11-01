@@ -53,6 +53,12 @@ in
     # Run tests during build
     doCheck = true;
 
+    # Compile and run the test phase under the ci-check profile (#3195)
+    # instead of release: same opt-level, no LTO / codegen-units=1 /
+    # strip costs for test binaries. The release binary build
+    # (cargoBuildType) is unchanged.
+    checkType = "ci-check";
+
     # Additional check commands (run after cargoTest)
     postCheck = ''
       echo "Running additional checks..."
