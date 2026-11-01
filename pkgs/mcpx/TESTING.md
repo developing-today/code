@@ -20,6 +20,7 @@ must read the PR's check result before declaring done or merging.
 | T2 targeted e2e | when behaviour visible through the binary changed                                                                    | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'`    | budget below                                       |
 | T3 guards       | when a registry was touched (flag, `/v1` op, setting, default)                                                       | the guard tests for that registry (the selector's guard map) | seconds                                            |
 | T4 build        | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed                                                | `nix build .#mcpx`                                           | ~70 s                                              |
+| T5 real-software subset | nightly (), or by hand with the pinned servers built | , then ok  	github.com/developing-today/code/pkgs/mcpx/internal/e2e	0.032s [no tests to run] | the  build tag keeps these out of every other tier (#1990) |
 | Full suite      | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | —                                                            | ~110 s of serial e2e plus compilation, and growing |
 
 **T2 budget (decided #1966):** both numbers, serving different readers —
