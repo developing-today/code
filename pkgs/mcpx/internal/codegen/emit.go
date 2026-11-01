@@ -1007,11 +1007,19 @@ export function captureConsole(): void {
   // to substitute, leftover specifiers stay as written, and surplus arguments
   // are appended.
   const FORMAT = /%[sdifjoOc%]/g;
-  const applyFormat = (template: string, rest: unknown[]): [string, unknown[]] => {
+  const applyFormat = (template: string, rest: unknown[]): [string, unknown[], boolean] => {
     let i = 0;
+    let didSubstitute = false;
     const text = template.replace(FORMAT, (spec) => {
-      if (spec === "%%") return "%";
+      if (spec === "%%") {
+        if (env("MCPX_RUNTIME") === "bun") {
+          return spec;
+        }
+        didSubstitute = true;
+        return "%";
+      }
       if (i >= rest.length) return spec;
+      didSubstitute = true;
       const v = rest[i++];
       switch (spec) {
         case "%s":
@@ -1025,7 +1033,11 @@ export function captureConsole(): void {
         case "%f":
           return String(Number(v));
         case "%j":
-          return safeInspect(v);
+          if (env("MCPX_RUNTIME") === "node") {
+            return safeInspect(v);
+          }
+          i--; // Treat as literal, so the argument is still printed at the end
+          return spec;
         case "%o":
         case "%O":
           return one(v);
@@ -1037,15 +1049,17 @@ export function captureConsole(): void {
       }
       return spec;
     });
-    return [text, rest.slice(i)];
+    return [didSubstitute ? text : template, rest.slice(i), didSubstitute];
   };
 
   const render = (args: unknown[]) => {
     const pad = "  ".repeat(depth);
     if (args.length > 1 && typeof args[0] === "string" && FORMAT.test(args[0] as string)) {
       FORMAT.lastIndex = 0;
-      const [text, rest] = applyFormat(args[0] as string, args.slice(1));
-      return pad + [text, ...rest.map(one)].join(" ");
+      const [text, rest, didSubstitute] = applyFormat(args[0] as string, args.slice(1));
+      if (didSubstitute || (text !== args[0] as string && args.length > 1)) {
+          return pad + [text as string, ...(rest as unknown[]).map(one)].join(" ");
+      }
     }
     FORMAT.lastIndex = 0;
     return pad + args.map(one).join(" ");
