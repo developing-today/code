@@ -1604,8 +1604,9 @@ fn list_kind(node: &Value) -> Option<&str> {
 /// the output is returned untouched.
 fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     // Recompute with kinds: the drop decision needs them, so collect
-    // (prev_kind, kind, tight_pair, merge_safe) tuples alongside.
-    let mut kinds: Vec<(String, String, bool, bool)> = Vec::new();
+    // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
+    // alongside.
+    let mut kinds: Vec<(String, String, bool, bool, bool)> = Vec::new();
     collect_boundary_kinds(doc, &mut kinds);
     if kinds.is_empty() {
         return output.to_string();
@@ -1656,16 +1657,21 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
         let line = lines[idx];
         if is_separator[idx] {
             match boundary.next() {
-                Some((a, b, tight_pair, merge_safe)) if a != b && *merge_safe => {
+                Some((a, b, tight_pair, merge_safe, needs_blank)) if a != b && *merge_safe => {
                     // Drop the separator. The renderer also puts a blank
                     // line on each side of it; with the comment gone,
                     // blanks between the lists would fuse them into ONE
                     // loose list on reparse. A tight pair keeps no blank
-                    // line at all; a loose pair keeps exactly one.
+                    // line at all; a loose pair keeps exactly one. A
+                    // needs_blank pair also keeps exactly one: an ordered
+                    // list starting above 1 cannot interrupt the previous
+                    // item's paragraph, so with no blank line at all its
+                    // first line reparses as a lazy continuation and the
+                    // list is lost (Codex review, PR #3258).
                     let prev_blank = kept.last().is_some_and(|l| is_blank_line(l));
                     let next_blank = lines.get(idx + 1).is_some_and(|l| is_blank_line(l));
                     if prev_blank && next_blank {
-                        if *tight_pair {
+                        if *tight_pair && !*needs_blank {
                             kept.pop();
                         }
                         idx += 1; // skip the following blank line too
@@ -1685,14 +1691,14 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     out
 }
 
-/// (prev PM kind, PM kind, both tight, merge-safe) for every list
+/// (prev PM kind, PM kind, both tight, merge-safe, needs-blank) for every list
 /// adjacency in the doc, in render order, interleaved with authored
-/// htmlBlocks (recorded as ("", "", false, false) so they consume a
+/// htmlBlocks (recorded as ("", "", false, false, false) so they consume a
 /// separator-line slot but are never dropped - see
 /// strip_end_list_separators' caller contract). Merge-safe is false
 /// only when dropping the separator would merge two ordered-rendering
 /// lists whose numbering does not continue across the boundary.
-fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool)>) {
+fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool, bool)>) {
     let Some(content) = node["content"].as_array() else {
         return;
     };
@@ -1732,11 +1738,19 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             let tight_merge_safe =
                 !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
             let merge_safe = ordered_merge_safe && tight_merge_safe;
+            // Codex review, PR #3258: an ordered-rendering list that
+            // starts above 1 cannot interrupt a paragraph, so when the
+            // previous list does not itself render ordered, the boundary
+            // must keep a blank line or the second list's first line
+            // reparses as a lazy continuation of the previous item.
+            let needs_blank = matches!(ordered_start(child), Some(start) if start != 1)
+                && ordered_start(prev).is_none();
             out.push((
                 list_kind(prev).unwrap_or_default().to_string(),
                 kind.to_string(),
                 tight_pair,
                 merge_safe,
+                needs_blank,
             ));
         }
         if child["type"].as_str() == Some("code_block")
@@ -1750,7 +1764,7 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
                     == "<!-- end list -->"
             })
         {
-            out.push((String::new(), String::new(), false, false));
+            out.push((String::new(), String::new(), false, false, false));
         }
         // Codex review, PR #3258: lists inside a table cell are
         // flattened to text by append_table_cell_child and emit no
@@ -3449,6 +3463,34 @@ mod tests {
         assert_eq!(kinds.len(), 1, "only the top-level boundary is collected: {kinds:?}");
         let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
         assert!(!out.contains("end list"), "real separator dropped: {out:?}");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_to_ordered_starting_above_one_keeps_blank() {
+        // Codex review on PR #3258 (P2): a tight bullet list followed by
+        // a tight ordered list starting above 1 saved as `- a\n2. b` -
+        // an ordered marker above 1 cannot interrupt a paragraph, so on
+        // reparse `2. b` became a lazy continuation of the bullet item
+        // and the ordered list (and its start) was lost. The boundary
+        // keeps exactly one blank line instead of none.
+        for original in ["- a\n\n2. b\n", "- [ ] a\n\n3. b\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "blank kept, start preserved: {first:?}");
+            assert!(
+                !first.contains("end list"),
+                "no end-list artefact for {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse yields the same two lists for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(content[1]["type"], "ordered_list", "second list stays ordered for {original:?}");
+        }
     }
 
     #[test]
