@@ -123,6 +123,13 @@
   // retry-looping on "insufficient credits". Per the switchboard
   // rule the definition and every seat stay in place; deleting
   // this line re-enables Command Code if it is ever refilled.
+  // 2026-11-01 (Drew, direct order): "muse-direct" joins the list.
+  // The Meta pool is quota-exhausted until 2026-11-02T00:00:00Z and
+  // sessions dealt its muse-spark leg die on the 429 with no local
+  // fall (code#3325; 46 dead by 06:03 CST, incl. two full waves).
+  // Drew: disable the provider, do NOT change the routes - every
+  // seat and definition stays in place per the switchboard rule.
+  // To re-enable after the pool resets: delete this one line.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -147,7 +154,8 @@
     "muse",
     "antigravity-ls",
     "antigravity-agy",
-    "commandcode"
+    "commandcode",
+    "muse-direct"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and

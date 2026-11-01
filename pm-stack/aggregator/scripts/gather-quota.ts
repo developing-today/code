@@ -11,11 +11,15 @@
 //      opencode.db, opened read-only) instead of the OpenCode server
 //      API, so a stopped server cannot zero the tick (the CLI's
 //      wholesale "Transport: fetch failed" failure mode, #1251).
-//      The projection replicates the server's: rows ordered
-//      (active, time_created, id), the last row per integration is
-//      the selected one. Environment-variable keys are not store
-//      rows and never appear here — stored credentials win, which
-//      is the order OpenCode itself uses.
+//      The read is the OpenChamber module's own
+//      openCodeLocalCredentialSource — the same shared implementation
+//      the quota CLI falls back to (#2490 phase 3) — so its
+//      projection (rows ordered (active, time_created, id), the last
+//      row per integration selected, unreadable rows surfaced rather
+//      than silently dropped) is the one every surface gets.
+//      Environment-variable keys are not store rows and never appear
+//      here — stored credentials win, which is the order OpenCode
+//      itself uses.
 //   3. The Turso org usage API (#1049): usage + subscription over
 //      the verified route, token from Bitwarden by name.
 //   2. File exports (the Meta Phase-1 convention, #1301): producers
@@ -57,7 +61,6 @@
 //      BWS_ACCESS_TOKEN_FILE override its plumbing),
 //      TURSO_ORG_SLUG (dezren39), TURSO_API_BASE
 //      (https://api.turso.tech).
-import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
@@ -118,45 +121,15 @@ interface QuotaModule {
 }
 interface AuthModule {
   configureOpenCodeCredentials: (source: unknown) => void;
-}
-
-/**
- * A credential source ({ list }) backed by OpenCode's SQLite store,
- * read-only. Answers the entry shape the server's credential.list
- * returns: { id, integrationID, label, active, value }.
- */
-function directCredentialSource(path: string) {
-  return {
-    list: async () => {
-      const db = new Database(path, { readonly: true });
-      try {
-        const rows = db
-          .query(
-            "SELECT id, integration_id, label, value FROM credential ORDER BY active ASC, time_created ASC, id ASC",
-          )
-          .all() as { id: string; integration_id: string | null; label: string; value: string }[];
-        const selected = new Map<string, string>();
-        const parsed: { id: string; integrationID: string; label: string; value: unknown }[] = [];
-        for (const row of rows) {
-          if (!row.integration_id) continue;
-          let value: unknown;
-          try {
-            value = JSON.parse(row.value);
-          } catch {
-            continue; // the server drops undecodable rows the same way
-          }
-          parsed.push({ id: row.id, integrationID: row.integration_id, label: row.label, value });
-          selected.set(row.integration_id, row.id);
-        }
-        return parsed.map((p) => ({ ...p, active: selected.get(p.integrationID) === p.id }));
-      } finally {
-        db.close();
-      }
-    },
-    // No managed-launch environment to project keys from; stored
-    // credentials are the whole story for this reader.
-    listEnvironmentKeys: async () => ({}),
-  };
+  // The shared direct credential-store read from lib/opencode/auth.js
+  // (#2490 phase 3): same projection and failure semantics as the CLI
+  // fallback — it throws when the store is missing or holds rows but
+  // none are readable, and that throw reaches main()'s failTick via
+  // listConfiguredQuotaProviders, so a bad store fails the tick loudly
+  // instead of producing an empty "not configured" tick. It has no
+  // listEnvironmentKeys: stored credentials are the whole story for
+  // this reader, as before.
+  openCodeLocalCredentialSource: (opts: { dbPath: string }) => unknown;
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {
@@ -390,7 +363,7 @@ async function main(): Promise<number> {
   let quota: QuotaModule;
   try {
     const auth = (await import(join(libDir, "opencode/auth.js"))) as unknown as AuthModule;
-    auth.configureOpenCodeCredentials(directCredentialSource(dbPath));
+    auth.configureOpenCodeCredentials(auth.openCodeLocalCredentialSource({ dbPath }));
     quota = (await import(join(libDir, "quota/index.js"))) as unknown as QuotaModule;
   } catch (err) {
     return failTick(tickAt, started, `quota module import failed: ${err instanceof Error ? err.message : String(err)}`);

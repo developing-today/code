@@ -55,6 +55,8 @@ export class ExportError extends Error {
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+const MIN_EPOCH_SECONDS = 1_577_836_800; // 2020-01-01T00:00:00Z
+const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01T00:00:00Z
 
 /** Parse a subscription-quota payload into export windows. Throws on
  * any shape drift — fail-closed, never partial zeros. The one tolerated
@@ -89,6 +91,19 @@ export function parseSubscriptionQuota(payload) {
       throw new ExportError("unparseable", 6, `subscription-quota: field ${k} not a finite number`);
     }
   }
+  const epochSecondsField = (v, label) => {
+    if (!Number.isFinite(v) || v < 0) {
+      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
+    }
+    if (v < MIN_EPOCH_SECONDS || v > MAX_EPOCH_SECONDS) {
+      throw new ExportError(
+        "unparseable",
+        6,
+        `subscription-quota: field ${label} outside the supported epoch-seconds range`,
+      );
+    }
+    return v;
+  };
   // A window the console has not started yet (no usage recorded in it)
   // has no reset: window_resets_at / weekly_resets_at comes back null
   // or the field is omitted entirely (observed live 2026-10-29, #1301:
@@ -109,11 +124,7 @@ export function parseSubscriptionQuota(payload) {
         `subscription-quota: field ${label} absent but the window has recorded usage`,
       );
     }
-    const v = num(raw);
-    if (!Number.isFinite(v) || v < 0) {
-      throw new ExportError("unparseable", 6, `subscription-quota: field ${label} not a finite number`);
-    }
-    return v;
+    return epochSecondsField(num(raw), label);
   };
   const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
   const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
@@ -132,11 +143,7 @@ export function parseSubscriptionQuota(payload) {
   const asOfRaw = q.as_of;
   let consoleAsOf = null;
   if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
-    const asOf = num(asOfRaw);
-    if (!Number.isFinite(asOf) || asOf < 0) {
-      throw new ExportError("unparseable", 6, "subscription-quota: field as_of not a finite number");
-    }
-    consoleAsOf = iso(asOf);
+    consoleAsOf = iso(epochSecondsField(num(asOfRaw), "as_of"));
   }
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
@@ -165,7 +172,7 @@ export function parseBillingBanner(payload) {
  * an absent read must stay absent, never become a fake $0. */
 export function parsePaygBalance(iframeText) {
   if (typeof iframeText !== "string") return null;
-  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)/);
+  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)(?![\d.,])/);
   if (!m) return null;
   const v = Number(m[1].replace(/,/g, ""));
   return Number.isFinite(v) ? v : null;

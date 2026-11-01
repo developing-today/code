@@ -7,10 +7,12 @@ import {
   classifyR2,
   cycleStartUtc,
   API_REQUEST_TIMEOUT_MS,
+  ExportError,
   failureDocument,
   foldKv,
   parseGraphqlUsage,
   R2_STORAGE_GROUP_LIMIT,
+  run,
   successDocument,
 } from "./cloudflare-quota-export.mjs";
 
@@ -232,4 +234,125 @@ test("documents: success carries the spec fields; failure carries no values", ()
   assert.equal(bad.measuredAt, null);
   assert.equal("metrics" in bad, false);
   assert.deepEqual(bad.missingScopes, ["Account Analytics Read"]);
+});
+
+// #2608: GraphQL errors shape handling in run(). The stub answers the
+// billing probes and R2 enumeration with benign bodies and returns the
+// given body for /graphql; ACCOUNT is a valid parsed account node.
+function stubFetchFor(gqlBody) {
+  return async (url) => {
+    const u = String(url);
+    let body;
+    if (u.includes("/graphql")) body = gqlBody;
+    else if (u.includes("/r2/buckets")) body = { result: { buckets: [{ name: "b1" }] } };
+    else body = {};
+    return { status: 200, json: async () => body };
+  };
+}
+
+async function runWithErrors(errors) {
+  const prev = globalThis.fetch;
+  globalThis.fetch = stubFetchFor({
+    data: { viewer: { accounts: [ACCOUNT] } },
+    ...(errors !== undefined ? { errors } : {}),
+  });
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+async function expectExportError(errors, status, exitCode) {
+  await assert.rejects(runWithErrors(errors), (e) => {
+    assert.ok(e instanceof ExportError, `expected ExportError, got ${e}`);
+    assert.equal(e.status, status);
+    assert.equal(e.exitCode, exitCode);
+    return true;
+  });
+}
+
+test("run: GraphQL errors malformed shapes fail closed as unparseable (#2608)", async () => {
+  await expectExportError("boom", "unparseable", 6);
+  await expectExportError([null], "unparseable", 6);
+  await expectExportError([{ message: 12345 }], "unparseable", 6);
+  await expectExportError({ message: 12345 }, "unparseable", 6);
+});
+
+test("run: a single-object GraphQL errors classifies like the array form (#2608)", async () => {
+  await expectExportError({ message: "auth: permission denied" }, "token-scope", 3);
+  await expectExportError({ message: "some query error" }, "unparseable", 6);
+});
+
+test("run: GraphQL errors controls unchanged (#2608)", async () => {
+  await expectExportError([{ message: "auth: permission denied" }], "token-scope", 3);
+  const doc = await runWithErrors(undefined);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.metrics.length, 11);
+});
+
+test("measurement strings use plain decimals; request counts remain integers (#2791)", () => {
+  const invalid = ["", "   ", " 12 ", "0x10", "1e2", "1.5"];
+  for (const value of invalid) {
+    assert.throws(
+      () => classifyR2([{ dimensions: { actionType: "GetObject" }, sum: { requests: value } }]),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("r2.GetObject.requests"),
+    );
+    assert.throws(
+      () => foldKv([{ dimensions: { actionType: "read" }, sum: { requests: value } }]),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("kv.read.requests"),
+    );
+    const bad = structuredClone(ACCOUNT);
+    bad.workersInvocationsAdaptive[0].sum.requests = value;
+    assert.throws(
+      () => parseGraphqlUsage(bad, { now: NOW, cycleStart: START }),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("workers.requests"),
+    );
+  }
+
+  for (const value of ["", "   ", " 25139205306 ", "0x10", "1e2"]) {
+    const bad = structuredClone(ACCOUNT);
+    bad.r2StorageAdaptiveGroups[0].max.payloadSize = value;
+    assert.throws(
+      () => parseGraphqlUsage(bad, { now: NOW, cycleStart: START }),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("r2storage.payloadSize"),
+    );
+  }
+
+  const decimalPayload = structuredClone(ACCOUNT);
+  decimalPayload.r2StorageAdaptiveGroups[0].max.payloadSize = "25139205306.5";
+  assert.equal(
+    Object.fromEntries(parseGraphqlUsage(decimalPayload, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]))[
+      "r2-storage"
+    ].used,
+    25.14,
+  );
+  assert.equal(classifyR2([{ dimensions: { actionType: "GetObject" }, sum: { requests: "12" } }]).classB, 12);
+  assert.equal(foldKv([{ dimensions: { actionType: "read" }, sum: { requests: "12" } }]).reads, 12);
+  assert.equal(classifyR2([{ dimensions: { actionType: "GetObject" }, sum: { requests: 1.5 } }]).classB, 1.5);
+
+  // Neurons are a fractional measurement, not a count (Codex P2 on PR #3488):
+  // a plain-decimal string total parses exactly like the numeric fixture.
+  const decimalNeurons = structuredClone(ACCOUNT);
+  decimalNeurons.aiInferenceAdaptiveGroups[0].sum.totalNeurons = "4114515.31";
+  assert.equal(
+    Object.fromEntries(parseGraphqlUsage(decimalNeurons, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]))[
+      "workers-ai-neurons"
+    ].used,
+    144792,
+  );
+  // Drifted spellings still fail closed for neurons, naming the ai field.
+  for (const value of ["", "   ", " 4114515.31 ", "0x10", "1e2"]) {
+    const bad = structuredClone(ACCOUNT);
+    bad.aiInferenceAdaptiveGroups[0].sum.totalNeurons = value;
+    assert.throws(
+      () => parseGraphqlUsage(bad, { now: NOW, cycleStart: START }),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("ai.totalNeurons"),
+    );
+  }
 });

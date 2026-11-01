@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -744,6 +745,13 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 	if err != nil || len(queryVec) == 0 {
 		queryVec = catalog.Embed(query)
 	}
+	if len(queryVec) != catalog.VectorDim {
+		// The configured embedder's dimension does not match the index
+		// dimension: CosineSimilarity would silently score every stored
+		// vector 0. Log the mismatch and fall back to the local embedder.
+		log.Printf("mcpx: semantic search: embedder returned a %d-dimensional query vector, index dimension is %d; falling back to local embedder", len(queryVec), catalog.VectorDim)
+		queryVec = catalog.Embed(query)
+	}
 
 	keywordScores := make(map[string]int)
 	for _, t := range rank(all, terms, false) {
@@ -763,8 +771,16 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 			if err != nil || len(tVec) == 0 {
 				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
 			}
+			if len(tVec) != 0 && len(tVec) != catalog.VectorDim {
+				// Dimension mismatch: do not cache or score this vector
+				// silently; fall back to the local embedder.
+				log.Printf("mcpx: semantic search: embedder returned a %d-dimensional vector for %s, index dimension is %d; falling back to local embedder", len(tVec), t.Function, catalog.VectorDim)
+				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
+			}
 			if vIdx != nil && len(tVec) > 0 {
-				_ = vIdx.Put(t.Function, tVec)
+				if err := vIdx.Put(t.Function, tVec); err != nil {
+					log.Printf("mcpx: semantic search: cache vector for %s: %v", t.Function, err)
+				}
 			}
 		}
 		sim := queryVec.CosineSimilarity(tVec)

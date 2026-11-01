@@ -887,7 +887,7 @@ pub enum Command {
         /// - `tag`: each match with its query
         /// - `group`: matches grouped by query
         /// - `union`: deduplicated by hash
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
         #[arg(long, num_args = 0..=1, default_missing_value = "1")]
@@ -954,7 +954,7 @@ pub enum Command {
         #[arg(long)]
         dir: Option<String>,
         /// Output format: tag, group, or union.
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
         #[arg(long, num_args = 0..=1, default_missing_value = "1")]
@@ -2650,6 +2650,38 @@ mod tests {
                 assert_eq!(format, "group");
             }
             _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", bad, "query"]).is_err(),
+                "find --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", good, "query"]).is_ok(),
+                "find --format {good:?} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", bad, "query"]).is_err(),
+                "search --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", good, "query"]).is_ok(),
+                "search --format {good:?} must parse"
+            );
         }
     }
 

@@ -514,6 +514,32 @@ type Request struct {
 // how a disconnected HTTP client kills the script it was watching.
 type Sink func(Frame) error
 
+// resolveExecTimeout applies the per-request timeout override rule
+// (#2398): a caller may lower the operator's bound, never remove or
+// raise it. A non-positive override is refused outright — the runner
+// treats 0 as "no limit", so accepting one would silently delete the
+// operator's exec.timeout. A positive override above the operator
+// limit clamps to it (the ClampedBy principle, #1864). An operator
+// limit of 0 is the operator's own no-limit choice: a positive
+// override then applies unclamped, and no override leaves the run
+// unbounded, exactly as the operator configured.
+func resolveExecTimeout(limit time.Duration, requested string) (time.Duration, error) {
+	if requested == "" {
+		return limit, nil
+	}
+	d, err := time.ParseDuration(requested)
+	if err != nil {
+		return 0, fmt.Errorf("exec: timeout %q: %w", requested, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("exec: timeout %q: must be positive", requested)
+	}
+	if limit > 0 && d > limit {
+		return limit, nil
+	}
+	return d, nil
+}
+
 // Run executes the script, building the runner options itself.
 //
 // This is the /v1 and MCP entry point: everything the caller can ask for
@@ -528,13 +554,9 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 	}
 	opts := req.Opts
 
-	timeout := s.Limits.Timeout
-	if opts.Timeout != "" {
-		d, err := time.ParseDuration(opts.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("exec: timeout %q: %w", opts.Timeout, err)
-		}
-		timeout = d
+	timeout, err := resolveExecTimeout(s.Limits.Timeout, opts.Timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	clientSrc, err := s.Src.ClientModule(ctx, opts.NS)

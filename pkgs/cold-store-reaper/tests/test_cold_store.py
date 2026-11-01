@@ -43,6 +43,7 @@ class FakeDrive:
         self.trashed_calls = []  # [{id, body}] from files.update PATCHes
         self.counter = 0
         self.clock = 0
+        self.page_cap = None  # optional maximum files per Drive list response
 
     def next_id(self, prefix):
         self.counter += 1
@@ -119,7 +120,8 @@ def make_handler(fake: FakeDrive):
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/drive/v3/files":
-                q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+                qs = urllib.parse.parse_qs(parsed.query)
+                q = qs.get("q", [""])[0]
                 name_m = re.search(r"name = '([^']+)'", q)
                 parent_m = re.search(r"'([^']+)' in parents", q)
                 out = []
@@ -148,7 +150,19 @@ def make_handler(fake: FakeDrive):
                                 "createdTime": meta.get("createdTime", ""),
                             }
                         )
-                self._send(200, {"files": out})
+                response = {"files": out}
+                if parent_m and "pageSize" in qs:
+                    page_size = int(qs["pageSize"][0])
+                    if fake.page_cap is not None:
+                        page_size = min(page_size, fake.page_cap)
+                    page_token = qs.get("pageToken", ["offset:0"])[0]
+                    offset = int(page_token.removeprefix("offset:"))
+                    response["files"] = out[offset : offset + page_size]
+                    next_offset = offset + page_size
+                    fields = qs.get("fields", [""])[0]
+                    if next_offset < len(out) and "nextPageToken" in fields:
+                        response["nextPageToken"] = f"offset:{next_offset}"
+                self._send(200, response)
                 return
             m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
             if m:
@@ -987,6 +1001,25 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual(len(only), 1)
         self.assertEqual(only[0]["db"], "supabase")
 
+    def test_list_backups_follows_drive_pages(self):
+        folder = self.store.ensure_folders()["db-backups/supabase"]
+        self.fake.page_cap = 2
+        names = [
+            "supabase-20260301T020000Z-export.sql",
+            "supabase-20260302T020000Z-export.sql",
+            "supabase-20260303T020000Z-export.sql",
+        ]
+        for day, name in enumerate(names, start=1):
+            self.seed_drive_file(
+                name,
+                folder,
+                created=f"2026-03-0{day}T02:00:00.000Z",
+            )
+
+        rows = self.store.list_backups("supabase")
+
+        self.assertEqual([row["name"] for row in rows], list(reversed(names)))
+
 
 class TestSyncManifest(ColdStoreTestBase):
     def setUp(self):
@@ -1167,6 +1200,7 @@ class TestPruneBackups(ColdStoreTestBase):
 
     def test_prune_dry_run_plan(self):
         ids = self._seed_series()
+        self.fake.page_cap = 2
         self.seed_drive_file("d1-random.sql", self.d1_folder, data=b"?")
         self.seed_drive_file("notes.txt", self.d1_folder, data=b"?")
         trashed_id = self.seed_drive_file(
@@ -1225,6 +1259,59 @@ class TestPruneBackups(ColdStoreTestBase):
             self.assertEqual(r["direction"], "trash")
         # after applying, the folder's visible set is exactly the keepers
         self.assertEqual(len(self.store.list_backups("d1")), 32)
+
+    def test_prune_apply_mid_run_failure_keeps_completed_rows(self):
+        """#2550: a failing PATCH mid-series must not roll back the
+        ledger rows of files already trashed — Drive and ledger stay
+        consistent for completed work, and a retry sees the rest."""
+        ids = self._seed_series()
+        real_http = cold_store.http_request
+        patch_count = {"n": 0}
+
+        def flaky_http(method, url, headers=None, data=None, timeout=120):
+            if method == "PATCH":
+                patch_count["n"] += 1
+                if patch_count["n"] == 2:
+                    return 500, {}, b"boom"
+            return real_http(method, url, headers=headers, data=data, timeout=timeout)
+
+        with mock.patch.object(cold_store, "http_request", flaky_http):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.prune_backups("d1", apply=True)
+
+        # exactly one file was trashed in Drive, and exactly that
+        # file's ledger row survived the failure (committed per-file)
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+        trashed_id = self.fake.trashed_calls[0]["id"]
+        trashed_name = {v: k for k, v in ids.items()}[trashed_id]
+        self.assertIn(trashed_name, self.EXPECTED_PRUNE)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual([r["ref"] for r in rows], [trashed_name])
+
+        # the unattempted candidates are still visible to a retry plan
+        plan = self.store.prune_backups("d1")[0]
+        self.assertEqual(
+            {f["name"] for f in plan["prune"]},
+            self.EXPECTED_PRUNE - {trashed_name},
+        )
+
+        # retry with a healthy Drive completes the set, no duplicates
+        self.store.prune_backups("d1", apply=True)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), len(self.EXPECTED_PRUNE))
+        self.assertEqual({r["ref"] for r in rows}, self.EXPECTED_PRUNE)
+        self.assertEqual(
+            {c["id"] for c in self.fake.trashed_calls},
+            {ids[name] for name in self.EXPECTED_PRUNE},
+        )
 
     def test_prune_long_history_oldest_pruned(self):
         end = date(2026, 3, 31)
@@ -2816,5 +2903,151 @@ class TestWorkerDecoder(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
+
+class TestD1ResponseShapes(ColdStoreTestBase):
+    """Regression (#2618): D1 response handling must not assume object
+    shapes — malformed bodies raise ColdStoreError (or fall back to raw
+    text in d1_error_message), never AttributeError."""
+
+    def _select_with_body(self, body: bytes):
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.object(
+            cold_store, "http_request", return_value=(200, {}, body)
+        ):
+            return self.store._d1_select("SELECT 1")
+
+    def test_d1_error_message_malformed_shapes_fall_back_to_raw_text(self):
+        for body in (
+            b'["not", "an", "object"]',
+            b'"just a string"',
+            b"42",
+            b'{"errors": [null]}',
+            b'{"errors": ["boom"]}',
+            b'{"errors": [{"code": 1}]}',
+        ):
+            with self.subTest(body=body):
+                message = cold_store.d1_error_message(body)
+                self.assertEqual(message, body.decode()[:200])
+
+    def test_d1_error_message_controls_unchanged(self):
+        self.assertEqual(
+            cold_store.d1_error_message(
+                b'{"success": false, "errors": [{"message": "api says no"}]}'
+            ),
+            "api says no",
+        )
+        self.assertEqual(
+            cold_store.d1_error_message(b"gateway exploded"), "gateway exploded"
+        )
+
+    def test_d1_select_non_object_payloads_raise_cold_store_error(self):
+        for body in (b'["x"]', b'"x"', b"42"):
+            with self.subTest(body=body):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self._select_with_body(body)
+
+    def test_d1_select_rejected_with_malformed_errors_is_unknown_error(self):
+        for errors in ('["nope"]', "[null]", "[]"):
+            body = ('{"success": false, "errors": ' + errors + "}").encode()
+            with self.subTest(errors=errors):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self._select_with_body(body)
+                self.assertIn("unknown error", str(ctx.exception))
+
+    def test_d1_select_non_object_result_entry_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self._select_with_body(
+                b'{"success": true, "result": ["x"]}'
+            )
+
+    def test_d1_select_controls_unchanged(self):
+        rows = self._select_with_body(
+            b'{"success": true, "result": [{"results": [{"a": 1}]}]}'
+        )
+        self.assertEqual(rows, [{"a": 1}])
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self._select_with_body(
+                b'{"success": false, "errors": [{"message": "bad sql"}]}'
+            )
+        self.assertIn("bad sql", str(ctx.exception))
+
+    def test_sync_loop_non_object_body_raises_cold_store_error(self):
+        self.store.build_sync_statements = lambda: (
+            [{"sql": "INSERT INTO meta VALUES (?)", "params": ["x"], "table": "meta"}],
+            {"meta": {"rows": 1, "statements": 1}},
+        )
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake"}):
+            with mock.patch.object(
+                cold_store, "http_request", return_value=(200, {}, b'["x"]')
+            ):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.sync_manifest()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestResumableUploadStalls(ColdStoreTestBase):
+    """#2797: a 308 whose Range stops advancing must not loop forever,
+    and a Range-less 308 must not count unacknowledged bytes as sent."""
+
+    def _upload_with_puts(self, put_behavior, data=b"x" * 1000):
+        blob = Path(self.tmp.name) / "blob.bin"
+        blob.write_bytes(data)
+        puts = []
+
+        def fake_http(method, url, headers=None, data=None, timeout=120):
+            if method == "POST" and "uploadType=resumable" in url:
+                return 200, {"Location": "https://upload.example/session"}, b""
+            if method == "POST":
+                # the OAuth token refresh _auth_headers performs first
+                body = json.dumps({"access_token": "tok", "expires_in": 3600})
+                return 200, {}, body.encode()
+            puts.append(headers.get("Content-Range", ""))
+            return put_behavior(len(puts), headers, data)
+
+        with mock.patch.object(cold_store, "http_request", fake_http):
+            try:
+                return puts, self.store._resumable_upload(blob, "blob.bin", "parent")
+            except cold_store.ColdStoreError as e:
+                return puts, e
+
+    def test_fixed_range_308_raises_after_bounded_puts(self):
+        puts, result = self._upload_with_puts(
+            lambda n, h, d: (308, {"Range": "bytes=0-0"}, b"")
+        )
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        # 1 advancing PUT (0 -> 1) + 3 consecutive non-advancing 308s.
+        self.assertEqual(len(puts), 4)
+
+    def test_missing_range_308_never_advances_sent(self):
+        puts, result = self._upload_with_puts(lambda n, h, d: (308, {}, b""))
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        self.assertEqual(len(puts), 3)
+        # Every PUT resends from the acknowledged offset 0: nothing the
+        # server did not acknowledge is ever skipped.
+        self.assertTrue(all(p.startswith("bytes 0-") for p in puts))
+
+    def test_advancing_range_308s_complete_upload(self):
+        received = {"acked": 0}
+
+        def advancing(n, h, d):
+            start = int(h["Content-Range"].split(" ")[1].split("-")[0])
+            end = start + len(d)
+            if end >= 1000:
+                return 201, {}, json.dumps({"id": "file-x"}).encode()
+            received["acked"] = min(end, received["acked"] + 100)
+            return 308, {"Range": f"bytes=0-{received['acked'] - 1}"}, b""
+
+        old_chunk = cold_store.UPLOAD_CHUNK_BYTES
+        cold_store.UPLOAD_CHUNK_BYTES = 100
+        try:
+            puts, result = self._upload_with_puts(advancing)
+        finally:
+            cold_store.UPLOAD_CHUNK_BYTES = old_chunk
+        self.assertEqual(result, "file-x")
+        starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
+        self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])

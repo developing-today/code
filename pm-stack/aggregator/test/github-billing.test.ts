@@ -54,6 +54,45 @@ describe("aggregateBillingUsage", () => {
   });
 });
 
+describe("aggregateBillingUsage validation (#2493)", () => {
+  test("impossible dates never create a day bucket", () => {
+    const days = aggregateBillingUsage([
+      { date: "2026-13-01", product: "actions", unitType: "Minutes", quantity: 10, grossAmount: 1, netAmount: 1 },
+      { date: "2026-02-30", product: "actions", unitType: "Minutes", quantity: 10, grossAmount: 1, netAmount: 1 },
+      { date: "2026-10-03", product: "actions", unitType: "Minutes", quantity: 7, grossAmount: 0.1, netAmount: 0.1 },
+    ]);
+    expect(days.length).toBe(1);
+    expect(days[0].date).toBe("2026-10-03");
+    expect(days[0].actionsMinutes).toBe(7);
+  });
+
+  test("negative or non-finite numbers contribute 0, never usage", () => {
+    const days = aggregateBillingUsage([
+      { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: -50, grossAmount: -2, netAmount: -2 },
+      { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: Number.NaN, grossAmount: Number.POSITIVE_INFINITY, netAmount: 0.5 },
+      { date: "2026-10-04", product: "actions", unitType: "Minutes", quantity: 30, grossAmount: 0.25, netAmount: 0 },
+    ]);
+    expect(days.length).toBe(1);
+    expect(days[0].actionsMinutes).toBe(30);
+    expect(days[0].grossUsd).toBe(0.25);
+    expect(days[0].netUsd).toBe(0.5);
+  });
+
+  test("records derived from hostile items all pass isSnapshotRecord", () => {
+    const records = recordsFromBillingUsage(
+      [
+        { date: "2026-13-40", product: "actions", unitType: "Minutes", quantity: 10, grossAmount: 1, netAmount: 1 },
+        { date: "2026-10-05", product: "actions", unitType: "Minutes", quantity: -10, grossAmount: -1, netAmount: -1 },
+        { date: "2026-10-05", product: "codespaces", sku: "Codespaces 4-core", unitType: "Hours", quantity: 1.5, grossAmount: 0.4, netAmount: 0.4 },
+      ],
+      "test",
+    );
+    expect(records.length).toBeGreaterThan(0);
+    for (const r of records) expect(isSnapshotRecord(r)).toBe(true);
+    expect(records.every((r) => r.value > 0)).toBe(true);
+  });
+});
+
 describe("recordsFromBillingUsage", () => {
   const records = recordsFromBillingUsage(ITEMS, "test");
 

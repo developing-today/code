@@ -810,7 +810,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			SessionID string            `json:"sessionId"`
 			CallID    string            `json:"callId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
@@ -1084,7 +1084,7 @@ func callContext(r *http.Request, body config.CallContext, session string) confi
 
 func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 	var req callReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.callBodyLimit"))).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -1186,6 +1186,18 @@ type batchReq struct {
 	Parallel    bool               `json:"parallel"`
 	Context     config.CallContext `json:"context"`
 	Session     string             `json:"session"`
+}
+
+// bodyBytes is the configured request-body limit for key, falling back
+// to the built-in default when the server carries no settings set —
+// the shape handleBatch already used for its limit, shared by every
+// MaxBytesReader wrap so a bare &Server{} in a test cannot nil-panic
+// in Set.Bytes (#2082).
+func (s *Server) bodyBytes(key string, fallback int64) int64 {
+	if s.set == nil {
+		return fallback
+	}
+	return s.set.Bytes(key)
 }
 
 func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
@@ -1318,7 +1330,7 @@ type resourceReq struct {
 
 func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
 	var req resourceReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.bodyLimit"))).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -1335,7 +1347,7 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Session string `json:"session"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.controlBodyLimit"))).Decode(&req)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
 	if req.Session == "" {
 		req.Session = r.Header.Get("X-Mcpx-Session")
 	}
@@ -1387,7 +1399,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		Server string `json:"server"`
 		Lazy   bool   `json:"lazy"`
 	}
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.set.Bytes("http.controlBodyLimit"))).Decode(&req)
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
 	res, err := s.reg.Restart(r.Context(), req.Server, req.Lazy)
 	if err != nil {
 		writeErr(w, 400, err)

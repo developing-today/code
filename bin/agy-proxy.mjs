@@ -96,6 +96,10 @@ const FALLBACK_MODELS = [
 ];
 
 const findAgyBinary = () => {
+  // Explicit override first: the test suite points this at its stub so
+  // a host-installed agy can never shadow it (#3355, mirroring
+  // CODEX_PROXY_CODEX_BIN in codex-proxy.mjs, #694).
+  if (process.env.AGY_PROXY_AGY_BIN) return process.env.AGY_PROXY_AGY_BIN;
   const candidates = [
     '/run/current-system/sw/bin/agy',
     `${process.env.HOME}/.gemini/bin/agy`,
@@ -857,6 +861,12 @@ const server = http.createServer((req, res) => {
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON request body' }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON request body: expected an object' }));
         return;
       }
 

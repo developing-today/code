@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { isFleetFeed, isProjectPoolSection, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView } from "../src/feed.ts";
+import { isChargeRow, isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import { renderQuota } from "../src/render.ts";
+import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -235,5 +237,202 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     const file = join(dir, "feed.json");
     writeFileSync(file, JSON.stringify(feedWith({ pools: [POOL] })));
     expect(await loadFeed(file)).toBeNull();
+  });
+});
+
+describe("feed subscriptions sanitization (#2446)", () => {
+  const SUB = { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" };
+  const SUB_NULL_RENEW = { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null };
+  const feedWithSubs = (subscriptions: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    subscriptions,
+  });
+  const loadWithSubs = async (subscriptions: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-subs-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithSubs(subscriptions)));
+    return loadFeed(file);
+  };
+
+  test("subscriptions: [null] drops the row, keeps the feed, counts the drop", async () => {
+    const loaded = await loadWithSubs([null]);
+    expect(loaded).not.toBeNull();
+    expect(loaded?.subscriptions).toEqual([]);
+    expect(loaded?.subscriptionsDropped).toBe(1);
+  });
+
+  test("a non-array subscriptions section is dropped whole, treated as absent", async () => {
+    expect(sanitizeSubscriptions("nope")).toEqual({ dropped: 1 });
+    const loaded = await loadWithSubs("nope");
+    expect(loaded?.subscriptions).toBeUndefined();
+    expect(loaded?.subscriptionsDropped).toBe(1);
+  });
+
+  test("a row with a numeric name drops; valid rows survive verbatim", async () => {
+    const out = sanitizeSubscriptions([SUB, { name: 42, plan: "x", renewsAt: null }, SUB_NULL_RENEW]);
+    expect(out.rows).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(out.dropped).toBe(1);
+  });
+
+  test("a mixed valid/invalid array through loadFeed keeps only renderer-safe rows", async () => {
+    const loaded = await loadWithSubs([SUB, null, "junk", { name: "Ok", plan: 7, renewsAt: null }, SUB_NULL_RENEW]);
+    expect(loaded?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(loaded?.subscriptionsDropped).toBe(3);
+  });
+
+  test("renderQuota over the sanitized usage view does not throw", async () => {
+    const loaded = await loadWithSubs([null, SUB]);
+    expect(loaded).not.toBeNull();
+    const usage = {
+      services: [],
+      payg: [],
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: loaded?.subscriptions ?? [],
+      history: {},
+    } as never;
+    expect(() => renderQuota(loaded!.quota, {} as never, usage)).not.toThrow();
+  });
+
+  test("absent and well-formed subscriptions are unchanged, no drop count attached", async () => {
+    expect(sanitizeSubscriptions(undefined)).toEqual({ dropped: 0 });
+    const absent = await loadWithSubs(undefined);
+    expect(absent?.subscriptions).toBeUndefined();
+    expect(absent?.subscriptionsDropped).toBeUndefined();
+    const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
+    expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
+  const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
+  const ROW = { at: "2026-10-30", label: "Mystery AI Inc", amountUsd: 42.5, method: "Visa \u20227535", source: "plaid" };
+  const feedWithCharges = (charges: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: CHOICES },
+    attention: [],
+    ...(charges === undefined ? {} : { charges }),
+  });
+  const load = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-charges-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("isChargeRow accepts a well-formed row and rejects malformed ones", () => {
+    expect(isChargeRow(ROW)).toBe(true);
+    expect(isChargeRow(null)).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: undefined })).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: "42.50" })).toBe(false);
+    expect(isChargeRow({ at: ROW.at, label: ROW.label, amountUsd: 1, source: "plaid" })).toBe(false);
+  });
+
+  test("charges [null] drops the row, keeps the feed, surfaces the count", async () => {
+    const loaded = await load(feedWithCharges([null]));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toEqual([]);
+    expect(loaded?.chargesDropped).toBe(1);
+  });
+
+  test("[valid, null] keeps the valid row", async () => {
+    const loaded = await load(feedWithCharges([ROW, null]));
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(1);
+  });
+
+  test("entries missing amountUsd or with a string amountUsd drop individually", async () => {
+    const noAmount = { at: ROW.at, label: ROW.label, method: ROW.method, source: ROW.source };
+    const loaded = await load(feedWithCharges([noAmount, { ...ROW, amountUsd: "42.50" }, ROW]));
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(2);
+  });
+
+  test("a non-array charges section yields [] with the drop surfaced", async () => {
+    for (const bad of ["oops", { at: ROW.at }]) {
+      const loaded = await load(feedWithCharges(bad));
+      expect(loaded).not.toBeNull();
+      expect(loaded?.charges).toEqual([]);
+      expect(loaded?.chargesDropped).toBe(1);
+    }
+  });
+
+  test("an absent charges section stays absent", async () => {
+    const loaded = await load(feedWithCharges(undefined));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toBeUndefined();
+    expect(loaded?.chargesDropped).toBeUndefined();
+  });
+
+  test("a well-formed feed is unchanged through the gate + loadFeed (collector self-acceptance)", async () => {
+    const feed = feedWithCharges([ROW]);
+    expect(isFleetFeed(feed)).toBe(true);
+    const loaded = await load(feed);
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBeUndefined();
+  });
+});
+
+describe("feed chargesAttention gate + sanitization (#2439)", () => {
+  const UNMATCHED = { merchant: "Mystery AI Inc", normalized: "mystery ai", amountUsd: 42.5, at: "2026-10-30", source: "plaid" };
+  const feedWithCa = (chargesAttention: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    chargesAttention,
+  });
+  const loadFrom = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-ca-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("the gate accepts absent and array chargesAttention, rejects a present non-array", () => {
+    const absent = feedWithCa(undefined) as Record<string, unknown>;
+    delete absent.chargesAttention;
+    expect(isFleetFeed(absent)).toBe(true);
+    expect(isFleetFeed(feedWithCa([]))).toBe(true);
+    expect(isFleetFeed(feedWithCa([UNMATCHED]))).toBe(true);
+    expect(isFleetFeed(feedWithCa("nope"))).toBe(false);
+    expect(isFleetFeed(feedWithCa(42))).toBe(false);
+    expect(isFleetFeed(feedWithCa(null))).toBe(false);
+  });
+
+  test("isUnmatchedCharge pins exactly the fields the live source dereferences", () => {
+    expect(isUnmatchedCharge(UNMATCHED)).toBe(true);
+    expect(isUnmatchedCharge(null)).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, merchant: 42 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: "42.50" })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: Number.NaN })).toBe(false);
+    const noAmount = { ...UNMATCHED } as Record<string, unknown>;
+    delete noAmount.amountUsd;
+    expect(isUnmatchedCharge(noAmount)).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: 20261030 })).toBe(false);
+    // source/normalized are tolerated in any form (consumer never dereferences them unsafely)
+    expect(isUnmatchedCharge({ merchant: "X", amountUsd: 1, at: "2026-10-30" })).toBe(true);
+  });
+
+  test("loadFeed drops malformed entries individually and surfaces the count", async () => {
+    const loaded = await loadFrom(feedWithCa([null, UNMATCHED, { ...UNMATCHED, amountUsd: "42.50" }, { merchant: "No Amount Co", at: "2026-10-30" }]));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBe(3);
+  });
+
+  test("loadFeed returns null for a non-array chargesAttention (fixture-fallback path)", async () => {
+    expect(await loadFrom(feedWithCa("nope"))).toBeNull();
+  });
+
+  test("a well-formed chargesAttention passes loadFeed unchanged, with no dropped field", async () => {
+    const loaded = await loadFrom(feedWithCa([UNMATCHED]));
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBeUndefined();
   });
 });

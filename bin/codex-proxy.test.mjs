@@ -681,3 +681,20 @@ test('token sync failure is logged, not swallowed (#2533)', async (t) => {
   t.after(started.stop);
   assert.match(started.log(), /codex-token-sync FAILED:/);
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});

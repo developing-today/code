@@ -587,6 +587,10 @@ struct FindArgs<'a> {
     to_file: bool,
     /// Output format: "tag", "group", or "union"
     format: &'a str,
+    /// Set when `--format` named an unknown value: the handlers surface
+    /// this error instead of letting the value reach the printers, whose
+    /// fallthrough arm would silently render it as the tag format.
+    format_error: Option<&'a str>,
     /// Return only first N matches
     first: Option<usize>,
     /// Return only last N matches
@@ -633,6 +637,7 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         dir: None,
         to_file: false,
         format: default_format,
+        format_error: None,
         first: None,
         last: None,
         count: false,
@@ -663,7 +668,12 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
             }
         } else if arg == "--format" {
             if i + 1 < rest.len() {
-                args.format = rest[i + 1];
+                let value = rest[i + 1];
+                if matches!(value, "tag" | "group" | "union") {
+                    args.format = value;
+                } else {
+                    args.format_error = Some(value);
+                }
                 i += 1;
             }
         } else if arg == "--tag" {
@@ -732,6 +742,11 @@ async fn handle_find_command(
 ) -> Result<()> {
     let args = parse_find_args(rest, "union");
 
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
     if args.queries.is_empty() {
         println!(
             "usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
@@ -793,6 +808,11 @@ async fn handle_find_command(
 async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
     let args = parse_find_args(rest, "union");
 
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
     if args.queries.is_empty() {
         println!(
             "usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
@@ -844,6 +864,11 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
 /// to stdout (or file with -o).
 async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
     let args = parse_find_args(rest, "union");
+
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
 
     if args.queries.is_empty() {
         println!(
@@ -1049,6 +1074,31 @@ async fn output_all_matches_filtered(
     Ok(())
 }
 
+/// Parse a find selection prompt answer (#1999), strictly and
+/// all-or-nothing: every non-empty token must be a valid in-range
+/// 1-based match number, otherwise the whole selection is invalid
+/// (`None`) and the caller acts on nothing. Silently dropping a bad
+/// token would change which blobs the user confirmed. Duplicate
+/// numbers are deduplicated, first-occurrence order preserved, so a
+/// blob is never fetched or written twice for one answer.
+fn parse_selection(sel: &str, match_count: usize) -> Option<Vec<usize>> {
+    let mut selections: Vec<usize> = Vec::new();
+    for token in sel.split([',', ' ']).filter(|s| !s.is_empty()) {
+        let n: usize = token.trim().parse().ok()?;
+        if n < 1 || n > match_count {
+            return None;
+        }
+        if !selections.contains(&n) {
+            selections.push(n);
+        }
+    }
+    if selections.is_empty() {
+        None
+    } else {
+        Some(selections)
+    }
+}
+
 /// Interactive selection and output of filtered matches.
 #[allow(clippy::if_same_then_else)] // Both branches return Ok(()), but have different side effects
 async fn select_and_output_matches_filtered(
@@ -1107,18 +1157,16 @@ async fn select_and_output_matches_filtered(
             return Ok(());
         }
 
-        // Parse selection
-        let selections: Vec<usize> = sel
-            .split([',', ' '])
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.trim().parse::<usize>().ok())
-            .filter(|&n| n >= 1 && n <= filtered_matches.len())
-            .collect();
-
-        if selections.is_empty() {
-            println!("invalid selection");
-            return Ok(());
-        }
+        // Parse selection — strict and all-or-nothing (#1999): any
+        // bad token invalidates the whole answer instead of silently
+        // dropping it and acting on the surviving numbers.
+        let selections = match parse_selection(sel, filtered_matches.len()) {
+            Some(selections) => selections,
+            None => {
+                println!("invalid selection");
+                return Ok(());
+            }
+        };
 
         // Output based on mode
         if let Some(dir_path) = dir {
@@ -1168,6 +1216,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
         dir: None,
         to_file: false,
         format: "union",
+        format_error: None,
         first: None,
         last: None,
         count: false,
@@ -1299,7 +1348,7 @@ fn print_peek_lines(
     }
 
     // If small enough, show all
-    if total_lines <= n * 2 {
+    if total_lines <= n.saturating_mul(2) {
         for line in &lines {
             writeln!(out, "{line}")?;
         }
@@ -1328,7 +1377,7 @@ fn print_peek_lines(
         writeln!(
             out,
             "... ({} lines omitted)",
-            total_lines.saturating_sub(n * 2)
+            total_lines.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "...")?;
         for line in lines.iter().skip(total_lines.saturating_sub(n)) {
@@ -1361,7 +1410,7 @@ fn print_peek_chars(
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_chars <= n * 2 {
+    if total_chars <= n.saturating_mul(2) {
         write!(out, "{content}")?;
     } else if opts.head_only {
         let head: String = content.chars().take(n).collect();
@@ -1388,7 +1437,7 @@ fn print_peek_chars(
         writeln!(
             out,
             "\n... ({} chars omitted)",
-            total_chars.saturating_sub(n * 2)
+            total_chars.saturating_sub(n.saturating_mul(2))
         )?;
         write!(out, "{tail}")?;
     }
@@ -1420,7 +1469,7 @@ fn print_peek_words(
         writeln!(out, "───────────────────────────────────────")?;
     }
 
-    if total_words <= n * 2 {
+    if total_words <= n.saturating_mul(2) {
         writeln!(out, "{}", words.join(" "))?;
     } else if opts.head_only {
         let head: Vec<&str> = words.iter().take(n).copied().collect();
@@ -1449,7 +1498,7 @@ fn print_peek_words(
         writeln!(
             out,
             "... ({} words omitted)",
-            total_words.saturating_sub(n * 2)
+            total_words.saturating_sub(n.saturating_mul(2))
         )?;
         writeln!(out, "{}", tail.join(" "))?;
     }
@@ -1542,6 +1591,28 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_find_args_invalid_format_is_error() {
+        let rest = ["--format", "gorup", "hello"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.format_error, Some("gorup"));
+        assert_eq!(args.format, "union");
+
+        let rest = ["--format", "yaml", "hello"];
+        let args = parse_find_args(&rest, "tag");
+        assert_eq!(args.format_error, Some("yaml"));
+    }
+
+    #[test]
+    fn test_parse_find_args_valid_format_is_stored() {
+        for good in ["tag", "group", "union"] {
+            let rest = ["--format", good, "hello"];
+            let args = parse_find_args(&rest, "union");
+            assert_eq!(args.format_error, None);
+            assert_eq!(args.format, good);
+        }
+    }
+
+    #[test]
     fn test_parse_find_args_first_with_number() {
         let rest = vec!["query", "--first", "5"];
         let args = parse_find_args(&rest, "union");
@@ -1585,6 +1656,66 @@ mod tests {
         assert_eq!(args.first, Some(10));
         assert_eq!(args.exclude, vec![".bak"]);
         assert!(args.prefer_name);
+    }
+
+
+    // Regression (#1787): lines = usize::MAX/2 + 1 must not overflow the
+    // printers' doubling — saturating arithmetic prints short content once,
+    // with no omitted-count line and no panic.
+    #[test]
+    fn test_print_peek_lines_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "line1\nline2\nline3";
+        print_peek_lines(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("line1").count(), 1);
+        assert_eq!(result.matches("line3").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_chars_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: true,
+            words: false,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "Hello world";
+        print_peek_chars(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("Hello world").count(), 1);
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn test_print_peek_words_huge_n_no_overflow() {
+        let opts = PeekOptions {
+            lines: usize::MAX / 2 + 1,
+            head_only: false,
+            tail_only: false,
+            chars: false,
+            words: true,
+            quiet: true,
+        };
+        let mut output = Vec::new();
+        let content = "alpha beta gamma";
+        print_peek_words(&mut output, "test.txt", "abcdef123456", content, &opts, 1).unwrap();
+        let result = String::from_utf8(output).unwrap();
+        assert_eq!(result.matches("alpha").count(), 1);
+        assert_eq!(result.matches("gamma").count(), 1);
+        assert!(!result.contains("omitted"));
     }
 
     #[test]
@@ -1658,5 +1789,39 @@ mod tests {
         assert_eq!(opts.first, Some(5));
         assert_eq!(opts.exclude, vec![".bak".to_owned()]);
         assert!(!opts.count);
+    }
+
+    #[test]
+    fn test_parse_selection_control() {
+        assert_eq!(parse_selection("1 3 5", 5), Some(vec![1, 3, 5]));
+        assert_eq!(parse_selection("1,2,3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("1, 2 3", 5), Some(vec![1, 2, 3]));
+        assert_eq!(parse_selection("  2 , 1 ", 5), Some(vec![2, 1]));
+    }
+
+    #[test]
+    fn test_parse_selection_bad_token_invalidates_all() {
+        assert_eq!(parse_selection("1 x 3", 5), None);
+        assert_eq!(parse_selection("1 6", 5), None);
+        assert_eq!(parse_selection("0", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_fractional_and_overflow() {
+        assert_eq!(parse_selection("2.9 4", 5), None);
+        assert_eq!(parse_selection("99999999999999999999999 2", 5), None);
+    }
+
+    #[test]
+    fn test_parse_selection_duplicates_deduped() {
+        assert_eq!(parse_selection("1 1", 5), Some(vec![1]));
+        assert_eq!(parse_selection("2 1 2 3 1", 5), Some(vec![2, 1, 3]));
+    }
+
+    #[test]
+    fn test_parse_selection_all_invalid() {
+        assert_eq!(parse_selection("x y", 5), None);
+        assert_eq!(parse_selection("", 5), None);
+        assert_eq!(parse_selection(" , ", 5), None);
     }
 }

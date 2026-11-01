@@ -115,6 +115,21 @@ interface TriageMessage {
   date?: string;
 }
 
+/**
+ * The day a Gmail message counts as a charge on (#2448): the triage
+ * record's local day when present, else the parsed message date.
+ * A missing or garbled date yields "" (the caller's format check then
+ * counts the message as skipped) — never a throw: isoDay on an
+ * invalid Date raises RangeError, and letting that escape here would
+ * discard the whole Gmail candidate batch for one bad message.
+ */
+export function gmailMessageDay(m: Pick<TriageMessage, "message_sent_at" | "date">): string {
+  const local = (m.message_sent_at?.user_local ?? "").slice(0, 10);
+  if (local) return local;
+  const parsed = new Date(m.date ?? "");
+  return Number.isNaN(parsed.getTime()) ? "" : isoDay(parsed);
+}
+
 const AMOUNT_RE = /\$([\d,]+\.\d{2})/;
 
 /** "Oct 25, 2026" / "2026-10-25" as a merchant is a parse failure, not a merchant. */
@@ -218,7 +233,7 @@ async function gmailCandidates(
       skipped++;
       continue;
     }
-    const at = (m.message_sent_at?.user_local ?? "").slice(0, 10) || isoDay(new Date(m.date ?? ""));
+    const at = gmailMessageDay(m);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
       skipped++;
       continue;
