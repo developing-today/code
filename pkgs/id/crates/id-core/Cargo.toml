@@ -36,6 +36,10 @@ unicode-width = "0.2"
 [dev-dependencies]
 # Decodes the QR images rendered by the extracted module's round-trip tests.
 rqrr = { version = "0.11.0", default-features = false }
+# Replays the extracted world-presentation module's ANSI output in its tests
+# (same pin as the root package's dev-dependencies, where these tests lived
+# before the crate split).
+vt100 = "=0.16.2"
 
 [lints.rust]
 # Rust compiler lints
