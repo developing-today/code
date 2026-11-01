@@ -203,6 +203,15 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
 // fetcher is injected (it must use redirect:"manual") so this is testable
 // with plain Node.
 
+/** The R2 archive key for one crawl's full text (#2503). Date.now()
+ * alone collides for same-millisecond crawls — the second PUT silently
+ * overwrites the first crawl's archive while both D1 rows point at it —
+ * so the key carries a caller-supplied unique suffix (the route passes
+ * crypto.randomUUID()). Pure and injectable for tests. */
+export function crawlArchiveKey(nowMs: number, unique: string): string {
+  return `crawls/${nowMs}-${unique}.json`;
+}
+
 export type ManualFetcher = (url: string) => Promise<Response>;
 
 export async function fetchFollowingValidatedRedirects(

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   computeBudget,
+  crawlArchiveKey,
   CRAWL_FETCH_TIMEOUT_MS,
   crawlFetcher,
   fetchFollowingValidatedRedirects,
@@ -888,4 +889,20 @@ test("uploadKey defaults rand to a UUID so bare calls never repeat a key (#2478)
   const b = uploadKey("report.pdf", now);
   assert.notEqual(a, b);
   assert.match(a, /^uploads\/1793100000000-[0-9a-f-]{36}-report\.pdf$/);
+});
+
+test("crawlArchiveKey: same-millisecond derivations with distinct uniques never collide (#2503)", () => {
+  const ms = 1730000000000;
+  const a = crawlArchiveKey(ms, "11111111-1111-4111-8111-111111111111");
+  const b = crawlArchiveKey(ms, "22222222-2222-4222-8222-222222222222");
+  assert.equal(a, "crawls/1730000000000-11111111-1111-4111-8111-111111111111.json");
+  assert.equal(b, "crawls/1730000000000-22222222-2222-4222-8222-222222222222.json");
+  assert.notEqual(a, b);
+  const seen = new Set<string>();
+  for (let i = 0; i < 1000; i++) {
+    const k = crawlArchiveKey(ms, `unique-${i}`);
+    assert.match(k, /^crawls\/1730000000000-.+\.json$/);
+    assert.ok(!seen.has(k), k);
+    seen.add(k);
+  }
 });
