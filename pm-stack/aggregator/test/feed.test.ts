@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView } from "../src/feed.ts";
+import { isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -235,6 +236,75 @@ describe("feed quota section gate + sanitization (#2429)", () => {
     const file = join(dir, "feed.json");
     writeFileSync(file, JSON.stringify(feedWith({ pools: [POOL] })));
     expect(await loadFeed(file)).toBeNull();
+  });
+});
+
+describe("feed subscriptions sanitization (#2446)", () => {
+  const SUB = { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" };
+  const SUB_NULL_RENEW = { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null };
+  const feedWithSubs = (subscriptions: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    subscriptions,
+  });
+  const loadWithSubs = async (subscriptions: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-subs-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feedWithSubs(subscriptions)));
+    return loadFeed(file);
+  };
+
+  test("subscriptions: [null] drops the row, keeps the feed, counts the drop", async () => {
+    const loaded = await loadWithSubs([null]);
+    expect(loaded).not.toBeNull();
+    expect(loaded?.subscriptions).toEqual([]);
+    expect(loaded?.subscriptionsDropped).toBe(1);
+  });
+
+  test("a non-array subscriptions section is dropped whole, treated as absent", async () => {
+    expect(sanitizeSubscriptions("nope")).toEqual({ dropped: 1 });
+    const loaded = await loadWithSubs("nope");
+    expect(loaded?.subscriptions).toBeUndefined();
+    expect(loaded?.subscriptionsDropped).toBe(1);
+  });
+
+  test("a row with a numeric name drops; valid rows survive verbatim", async () => {
+    const out = sanitizeSubscriptions([SUB, { name: 42, plan: "x", renewsAt: null }, SUB_NULL_RENEW]);
+    expect(out.rows).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(out.dropped).toBe(1);
+  });
+
+  test("a mixed valid/invalid array through loadFeed keeps only renderer-safe rows", async () => {
+    const loaded = await loadWithSubs([SUB, null, "junk", { name: "Ok", plan: 7, renewsAt: null }, SUB_NULL_RENEW]);
+    expect(loaded?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(loaded?.subscriptionsDropped).toBe(3);
+  });
+
+  test("renderQuota over the sanitized usage view does not throw", async () => {
+    const loaded = await loadWithSubs([null, SUB]);
+    expect(loaded).not.toBeNull();
+    const usage = {
+      services: [],
+      payg: [],
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: loaded?.subscriptions ?? [],
+      history: {},
+    } as never;
+    expect(() => renderQuota(loaded!.quota, {} as never, usage)).not.toThrow();
+  });
+
+  test("absent and well-formed subscriptions are unchanged, no drop count attached", async () => {
+    expect(sanitizeSubscriptions(undefined)).toEqual({ dropped: 0 });
+    const absent = await loadWithSubs(undefined);
+    expect(absent?.subscriptions).toBeUndefined();
+    expect(absent?.subscriptionsDropped).toBeUndefined();
+    const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
+    expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
+    expect(clean?.subscriptionsDropped).toBeUndefined();
   });
 });
 
