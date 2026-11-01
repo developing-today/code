@@ -183,6 +183,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// made isExprPositionStart treat the declaration as an
 	// expression).
 	prevIdentPrev := rune(0)
+	// prevPrevIdent is the completed identifier before prevIdent,
+	// with prevPrevIdentPrev the significant character before it:
+	// two levels of history are needed to spot a heritage operand
+	// behind a modifier — in 'extends async function(){}' the
+	// 'function' keyword's prevIdent is 'async', and only
+	// prevPrevIdent still names the 'extends' that puts the async
+	// function in heritage-expression position (Codex P2 on
+	// #3354).
+	prevPrevIdent := ""
+	prevPrevIdentPrev := rune(0)
 	// identDotRun / lastIdentDotRun / prevIdentDotRun mirror
 	// identPrev / lastIdentPrev / prevIdentPrev for dotRun: how
 	// many consecutive '.' characters immediately preceded the
@@ -195,6 +205,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	identDotRun := 0
 	lastIdentDotRun := 0
 	prevIdentDotRun := 0
+	prevPrevIdentDotRun := 0
 	// funcClassFrames holds one frame per function or class
 	// EXPRESSION whose body '{' has not been seen yet: that
 	// brace closes an operand, not a statement block, so a '/'
@@ -383,6 +394,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					identPrev = prevChar
 					identPrevSig = prevSig
 					identDotRun = dotRun
+					prevPrevIdent = prevIdent
+					prevPrevIdentPrev = prevIdentPrev
+					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
@@ -413,6 +427,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					identPrev = prevChar
 					identPrevSig = prevSig
 					identDotRun = dotRun
+					prevPrevIdent = prevIdent
+					prevPrevIdentPrev = prevIdentPrev
+					prevPrevIdentDotRun = prevIdentDotRun
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
@@ -473,6 +490,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 						inClassHeritage = true
 					}
 					// A class/function keyword right after 'extends'
+					// — or a 'function' keyword right after the
+					// 'async' modifier that itself follows 'extends'
+					// (class extends async function(){} {}: the
+					// intervening 'async' must not hide the heritage
+					// position, Codex P2 on #3354) —
 					// heads a heritage operand: always an expression,
 					// never a declaration, so it takes a pending
 					// frame even though 'extends' is not an
@@ -481,7 +503,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// expression's frame (Codex P2 on #3354:
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -1435,11 +1457,13 @@ func isIdentExceptionRune(ch rune) bool {
 
 func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool {
 	end := lt
-	// Skip trailing trivia — whitespace and block comments — the
-	// way the scanner's prevChar already does: in "1 < x" the
-	// character before '<' is a space, but the token is "1".
+	// Skip trailing trivia — whitespace, line terminators and
+	// block comments — the way the scanner's prevChar already
+	// does: in "1 < x" the character before '<' is a space, but
+	// the token is "1", and a newline before '<' does not change
+	// the token either ("1\n< x").
 	for end > 0 {
-		for end > 0 && isJSWhitespace(chars[end-1]) {
+		for end > 0 && (isJSWhitespace(chars[end-1]) || chars[end-1] == '\n') {
 			end--
 		}
 		skippedComment := false
@@ -1468,6 +1492,14 @@ func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool
 		break
 	}
 	start := end
+	// A numeric literal may end in a decimal point (1. < x): the
+	// trailing '.' belongs to the number token when a digit
+	// precedes it, so step over it before walking the token —
+	// otherwise the walk stops at the '.' and the number is
+	// missed (CodeRabbit finding on #3354).
+	if start > 1 && chars[start-1] == '.' && unicode.IsDigit(chars[start-2]) {
+		start--
+	}
 	for start > 0 {
 		if isIdentChar(chars[start-1]) || isIdentExceptionRune(chars[start-1]) {
 			start--

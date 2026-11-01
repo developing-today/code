@@ -217,6 +217,8 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after object with import-named property", "const obj = { import: \"foo\"\n / 2 };\n"},
 		{"comparison chain with capitalised operand stays relational", "const ok = a < Foo > b;\nconst q = 4 / 2;\n"},
 		{"regex after relational chain with capitalised middle operand", "const yes = 1 < Number > /[)]/.source.length;\n"},
+		{"regex after relational chain with trailing-dot numeric operand", "const yes = 1. < Number > /[)]/.source.length;\n"},
+		{"regex after relational chain with newline before comparison", "const yes = 1\n< Number > /[)]/.source.length;\n"},
 		{"statement block inside function in heritage object", "class C extends {C: function(){ {} /[}]/.test('}'); }}.C {}\n"},
 		{"division after class expression with nested object heritage", "const C = class extends {x:{C:Object}}.x.C {} / 2;\n"},
 		{"division after class expression with arrow body in heritage object", "const C = class extends {C:()=>{}, Base:Object}.Base {} / 2;\n"},
@@ -229,6 +231,10 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after nested class expression in heritage array", "class C extends {x:[class extends {C:Object}.C {} / 2],Base:Object}.Base {}\n"},
 		{"division after nested class with new-operand heritage in heritage array", "class C extends {x:[class extends new {C:Object}.C {} / 2]}.x {}\n"},
 		{"division after nested class with comment-separated new-operand heritage", "class C extends {x:[class extends new /*c*/ {C:Object}.C {} / 2]}.x {}\n"},
+		{"division after nested class with async function heritage operand", "class C extends {x:[class extends async function(){} {} / 2]}.x {}\n"},
+		{"division after nested class with named async function heritage operand", "class C extends {x:[class extends async function foo(){} {} / 2]}.x {}\n"},
+		{"division after nested class with async generator heritage operand", "class C extends {x:[class extends async function*(){} {} / 2]}.x {}\n"},
+		{"division after class expression with direct async function heritage", "const q = class extends async function(){} {} / 2;\n"},
 		{"division after nested class with nested object in new-operand heritage", "class C extends {x:[class extends new {C:{D:Object}}.C {} / 2]}.x {}\n"},
 		{"division after class expression with new-operand heritage", "const q = class extends new {C:Object}.C {} / 2;\n"},
 		{"division after nested class body after member-named new heritage", "class C extends {x:[class extends obj.new {} / 2]}.x {}\n"},
@@ -279,6 +285,7 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"unclosed regex at EOF", "const re = /abc", "unclosed regex literal"},
 		{"unclosed paren after division", "const q = a / b;\nconst x = (1;\n", "unclosed delimiter '('"},
 		{"unclosed string after division", "const q = a / b;\nconst s = \"oops\n", "unclosed string literal"},
+		{"unclosed class body after nested heritage object", "const C = class extends {x:{C:Object}}.x.C {\n", "unclosed delimiter '{'"},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
