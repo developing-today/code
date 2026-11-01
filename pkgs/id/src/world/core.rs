@@ -134,6 +134,22 @@ pub(super) fn check_journal_version(version: u32, max_supported: u32) -> Result<
     Ok(())
 }
 
+pub(super) fn validate_entity_ref(entity_ref: &str) -> Result<()> {
+    ensure!(
+        !entity_ref.trim().is_empty(),
+        "entity reference must not be empty"
+    );
+    ensure!(
+        entity_ref.len() <= 256,
+        "entity reference exceeds 256 bytes"
+    );
+    ensure!(
+        !entity_ref.chars().any(char::is_control),
+        "entity reference contains a control character"
+    );
+    Ok(())
+}
+
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]
 pub struct WorldCore {
@@ -771,6 +787,31 @@ impl WorldCore {
                     payload,
                     payload_digest,
                 } => {
+                    ensure!(
+                        source_event.sequence == 0 && source_event.participant_id == 0,
+                        "journal export event claims a sequence"
+                    );
+                    ensure!(
+                        matches!(&source_event.kind, WorldEventKind::System { .. }),
+                        "journal export event is not a host system event"
+                    );
+                    validate_entity_ref(&entity_ref)?;
+                    ensure!(
+                        payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
+                        "journal export payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+                    );
+                    ensure!(
+                        payload_digest == hex_encode(blake3::hash(&payload).as_bytes()),
+                        "journal export payload digest does not match"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            (t.handoff_id == handoff_id && t.direction == HandoffDirection::Export)
+                                || (t.entity_ref == entity_ref
+                                    && t.direction == HandoffDirection::Export)
+                        }),
+                        "journal exports handoff {handoff_id:?} or entity {entity_ref:?} twice"
+                    );
                     let transfer = HandoffTransferState {
                         handoff_id,
                         entity_ref,
@@ -962,8 +1003,13 @@ impl WorldCore {
                             });
                             replay.clear();
                         }
-                        WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
-                            replay.push(event.clone())
+                        WorldEventKind::Input(_) => replay.push(event.clone()),
+                        WorldEventKind::EntityInput { entity_ref, .. } => {
+                            ensure!(
+                                !core.entity_is_fenced(entity_ref),
+                                "journal accepts input for fenced entity {entity_ref:?}"
+                            );
+                            replay.push(event.clone());
                         }
                         WorldEventKind::System { .. } => anyhow::bail!(
                             "host system events must use the unsequenced system journal entry"
@@ -2121,6 +2167,10 @@ impl WorldCore {
             !self.author_keys.contains_key(&participant_id),
             "participant {participant_id} has a bound author key; inputs must be player-signed (#2814)"
         );
+        ensure!(
+            !self.limits.region_sharded,
+            "region-sharded worlds require entity-addressed input"
+        );
         self.ensure_uses_left(participant_id)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
@@ -2137,6 +2187,87 @@ impl WorldCore {
             participant_id,
             kind: WorldEventKind::Input(input.to_vec()),
         })
+    }
+
+    pub(crate) fn prepare_entity_input(
+        &self,
+        token: &JoinCapability,
+        entity_ref: &str,
+        input: &[u8],
+    ) -> Result<WorldEvent> {
+        validate_entity_ref(entity_ref)?;
+        let participant_id = self.authorize(token, WorldScopes::INPUT)?;
+        self.ensure_uses_left(participant_id)?;
+        ensure!(
+            input.len() <= self.limits.input_bytes,
+            "world input exceeds {} bytes",
+            self.limits.input_bytes
+        );
+        ensure!(!input.is_empty(), "world input must not be empty");
+        ensure!(
+            !self.entity_is_fenced(entity_ref),
+            "entity {entity_ref:?} is fenced after export"
+        );
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        Ok(WorldEvent {
+            sequence,
+            participant_id,
+            kind: WorldEventKind::EntityInput {
+                entity_ref: entity_ref.to_owned(),
+                input: input.to_vec(),
+            },
+        })
+    }
+
+    pub(crate) fn entity_is_fenced(&self, entity_ref: &str) -> bool {
+        self.handoff_transfers.iter().any(|transfer| {
+            transfer.direction == HandoffDirection::Export && transfer.entity_ref == entity_ref
+        })
+    }
+
+    /// Install a durable source export in the in-memory transfer ledger. The
+    /// caller must append the matching journal entry first.
+    pub(crate) fn validate_entity_export(&self, transfer: &HandoffTransferState) -> Result<()> {
+        ensure!(
+            self.limits.region_sharded,
+            "entity export requires a region-sharded world"
+        );
+        ensure!(
+            transfer.direction == HandoffDirection::Export,
+            "source export has the wrong transfer direction"
+        );
+        validate_entity_ref(&transfer.entity_ref)?;
+        ensure!(
+            transfer
+                .payload
+                .as_ref()
+                .is_some_and(|payload| payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES),
+            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
+        );
+        let payload = transfer.payload.as_deref().unwrap_or_default();
+        ensure!(
+            transfer.payload_digest == hex_encode(blake3::hash(payload).as_bytes()),
+            "entity transfer payload digest does not match"
+        );
+        ensure!(
+            !self.handoff_transfers.iter().any(|existing| {
+                existing.handoff_id == transfer.handoff_id
+                    || (existing.direction == HandoffDirection::Export
+                        && existing.entity_ref == transfer.entity_ref)
+            }),
+            "entity already has an active export or handoff ID is duplicated"
+        );
+        Ok(())
+    }
+
+    /// Install a source fence after its matching journal record is durable.
+    pub(crate) fn record_entity_export(&mut self, transfer: HandoffTransferState) {
+        debug_assert!(self.validate_entity_export(&transfer).is_ok());
+        self.handoff_transfers.push(transfer);
+        self.since_checkpoint = self.since_checkpoint.saturating_add(1);
     }
 
     pub(crate) fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
