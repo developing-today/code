@@ -1085,10 +1085,10 @@ async fn apply_steps(
 /// `main.roc`), then any sibling `.roc` files when the source is a
 /// directory. Size bounds mirror `id world compile`.
 fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)>> {
-    let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut paths: Vec<(String, PathBuf)> = Vec::new();
     if source.is_dir() {
         paths.push(("main.roc".to_owned(), source.join("main.roc")));
-        let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+        let mut siblings: Vec<PathBuf> = std::fs::read_dir(source)
             .with_context(|| format!("read source directory {}", source.display()))?
             .filter_map(std::result::Result::ok)
             .map(|entry| entry.path())
@@ -1767,7 +1767,7 @@ mod tests {
             },
             ApplyStep::InstallModule {
                 hash: None,
-                source: Some(std::path::PathBuf::from("main.roc")),
+                source: Some(std::path::std::path::PathBuf::from("main.roc")),
                 seed: 0,
             },
             ApplyStep::SetCeiling { ceiling: None },

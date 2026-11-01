@@ -51,7 +51,7 @@ mod tests;
 mod types;
 
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{
@@ -688,7 +688,7 @@ impl WorldService {
     /// unavailable: the bytes of a module it does not hold cannot be
     /// conjured, and the error says so by kind.
     pub async fn stored_module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
-        let hash: iroh_blobs::Hash = expected_hash
+        let hash: Hash = expected_hash
             .parse()
             .map_err(|_| InstallError::InvalidUpload)?;
         // Wasm installs are pinned in the blob store; native installs are

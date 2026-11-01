@@ -95,7 +95,7 @@ use crate::commands::tag::{self as tag, TagDisplayOptions};
 use crate::local::LocalNode;
 use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
 use crate::{
-    CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
+    CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, StoreType,
     export_blob, is_node_id, load_or_create_keypair, open_store,
 };
 
