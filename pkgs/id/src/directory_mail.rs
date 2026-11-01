@@ -241,11 +241,13 @@ fn expect(reader: &mut impl BufRead, code: u16) -> Result<()> {
             "the mail relay closed the connection"
         );
         let line = line.trim_end();
+        let code_match = line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code);
+        let fourth = line.as_bytes().get(3);
         ensure!(
-            line.get(..3).and_then(|c| c.parse::<u16>().ok()) == Some(code),
+            code_match && matches!(fourth, None | Some(&b' ') | Some(&b'-')),
             "the mail relay replied: {line}"
         );
-        if line.as_bytes().get(3) != Some(&b'-') {
+        if fourth != Some(&b'-') {
             return Ok(());
         }
     }
@@ -453,5 +455,41 @@ mod tests {
         smuggled.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
         let error = sink.send(&smuggled).unwrap_err();
         assert!(error.to_string().contains("recipient"));
+    }
+
+    #[test]
+    fn expect_enforces_exact_terminator_shape() {
+        let mut good = std::io::Cursor::new(b"250 OK\r\n");
+        assert!(expect(&mut good, 250).is_ok());
+
+        let mut bare = std::io::Cursor::new(b"250\r\n");
+        assert!(expect(&mut bare, 250).is_ok());
+
+        let mut multiline = std::io::Cursor::new(b"250-first\r\n250 OK\r\n");
+        assert!(expect(&mut multiline, 250).is_ok());
+
+        let mut bad_code = std::io::Cursor::new(b"251 OK\r\n");
+        assert_eq!(
+            expect(&mut bad_code, 250).unwrap_err().to_string(),
+            "the mail relay replied: 251 OK"
+        );
+
+        let mut bad_term_digit = std::io::Cursor::new(b"2500 bogus\r\n");
+        assert_eq!(
+            expect(&mut bad_term_digit, 250).unwrap_err().to_string(),
+            "the mail relay replied: 2500 bogus"
+        );
+
+        let mut bad_term_alpha = std::io::Cursor::new(b"250OK\r\n");
+        assert_eq!(
+            expect(&mut bad_term_alpha, 250).unwrap_err().to_string(),
+            "the mail relay replied: 250OK"
+        );
+
+        let mut multiline_bad_term = std::io::Cursor::new(b"250-first\r\n2500 bogus\r\n");
+        assert_eq!(
+            expect(&mut multiline_bad_term, 250).unwrap_err().to_string(),
+            "the mail relay replied: 2500 bogus"
+        );
     }
 }
