@@ -8,7 +8,6 @@ This repo is the only source for `mcpx`. The macOS flake in `dezren39/nix` delet
 
 | Title                                           | Status      | Intent                                                                                                                                                                                     | Links      |
 | ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
-| How downstream flakes consume mcpx              | in-progress | This repo is the single source (the `dezren39/nix` copy was deleted on 2026-10-19). What remains is the consumption decision and re-homing the backlog that still lives in `dezren39/nix`. | #308, #309 |
 | Takeover tests on darwin                        | proposed    | The package builds and tests on aarch64-darwin without a skip list kept in another repo.                                                                                                   | #237       |
 | Unreliable orphan-session test in the Nix build | proposed    | `TestTerminateOrphanedSessionEndsTheUpstreamSession` sees 0 DELETEs in the Nix build and hides why.                                                                                        | #290       |
 
