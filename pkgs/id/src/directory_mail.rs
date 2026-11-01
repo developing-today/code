@@ -77,6 +77,24 @@ impl MailSink for OutboxSink {
     }
 }
 
+/// Terminate a timed-out mail command. On Unix the child was spawned as a
+/// process-group leader, so SIGKILL the whole group to take any wrapper
+/// script's descendants with it; fall back to killing just the child when
+/// the group signal fails (e.g. the group is already gone).
+fn kill_child_tree(child: &mut std::process::Child) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        #[allow(clippy::cast_possible_wrap)]
+        let pgid = child.id() as libc::pid_t;
+        // SAFETY: killpg only delivers a signal; the pgid is our own child's
+        // pid, and no memory is accessed.
+        if unsafe { libc::killpg(pgid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+    }
+    child.kill()
+}
+
 /// Runs a program once per message, with the message in environment
 /// variables. No shell is involved, so an address cannot inject a command.
 #[derive(Clone, Debug)]
@@ -93,28 +111,38 @@ impl CommandSink {
     }
 
     fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
-        let mut child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(&self.args)
             .env("ID_MAIL_TO", &mail.to)
             .env("ID_MAIL_SUBJECT", &mail.subject)
             .env("ID_MAIL_BODY", &mail.body)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        // The child leads its own process group so a timeout can terminate
+        // the whole tree: a wrapper script's descendants (e.g. a stalled
+        // curl in the shipped cloudflare-mail.sh) must not outlive the
+        // failure this function reports.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .with_context(|| format!("run {}", self.program.display()))?;
         let started = Instant::now();
         let status = loop {
+            // An observed exit always wins: a command that finished before
+            // the deadline is a success even if the finish is only seen on
+            // the first poll after the deadline has passed.
             if let Some(status) = child.try_wait().context("wait for mail program")? {
-                if started.elapsed() >= timeout {
-                    bail!("mail program timed out after {timeout:?}");
-                }
                 break status;
             }
 
-            let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                if let Err(kill_error) = child.kill() {
+            if started.elapsed() >= timeout {
+                if let Err(kill_error) = kill_child_tree(&mut child) {
                     let reaper = thread::Builder::new()
                         .name("id-mail-reaper".to_owned())
                         .spawn(move || {
@@ -133,6 +161,7 @@ impl CommandSink {
                 bail!("mail program timed out after {timeout:?}");
             }
 
+            let remaining = timeout.saturating_sub(started.elapsed());
             thread::sleep(Duration::from_millis(10).min(remaining));
         };
         if !status.success() {
@@ -377,6 +406,50 @@ mod tests {
             "timed-out command took {:?}",
             started.elapsed()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_wrapper_script_takes_its_descendants_with_it() {
+        // The shipped mail program is a wrapper script (cloudflare-mail.sh)
+        // that waits on descendants such as curl. Killing only the wrapper
+        // on timeout would leave them running after the failure is reported,
+        // so the sink spawns the command as a process-group leader and
+        // SIGKILLs the whole group.
+        let dir = scratch("wrapper");
+        let pid_file = dir.join("child.pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let sink = CommandSink::new(PathBuf::from("/bin/sh"), vec!["-c".to_owned(), script]);
+        let started = Instant::now();
+        let error = sink
+            .send_with_timeout(&sample(), Duration::from_millis(500))
+            .unwrap_err();
+        assert!(error.to_string().contains("mail program timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed-out wrapper took {:?}",
+            started.elapsed()
+        );
+        let child_pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The descendant may take a moment to be reaped after SIGKILL.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            // SAFETY: signal 0 only probes for the process's existence.
+            let alive = unsafe { libc::kill(child_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "descendant {child_pid} survived the wrapper's timeout kill"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
