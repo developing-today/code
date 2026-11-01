@@ -452,6 +452,15 @@ skipped launcher phases).
 | `daemon.warmTimeout` | duration | `3m0s` | daemon | no | `--daemon-warm-timeout` | `MCPX_DAEMON_WARM_TIMEOUT` | *(plumbing)* how long the background schema fetch may take |
 | `daemon.watchConfig` | bool | `true` | daemon | yes | `--daemon-watch-config` | `MCPX_DAEMON_WATCH_CONFIG` | re-read the configuration files when they change on disk |
 
+### deps
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `deps.autoInstall` | enum | `off` | client | no | `--deps-auto-install` | `MCPX_DEPS_AUTO_INSTALL` | whether the runtime may fetch a missing package on its own |
+| `deps.manifest` | source | *(empty)* | client | no | `--deps-manifest` | `MCPX_DEPS_MANIFEST` | the package.json or package.jsonc naming a script's packages |
+| `deps.packages` | list | *(empty)* | client | no | `--deps-packages`, `--package` | `MCPX_DEPS_PACKAGES` | packages a script may import, as name or name@version |
+| `deps.source` | enum | `host` | client | no | `--deps-source` | `MCPX_DEPS_SOURCE` | where a script's packages come from when nothing more specific says |
+
 ### diagnose
 
 | setting | kind | default | scope | hot | flag | variable | governs |
@@ -586,6 +595,7 @@ skipped launcher phases).
 | `paths.cache` | string | *(empty)* | client | no | `--paths-cache` | `MCPX_PATHS_CACHE`, `MCPX_CACHE_DIR` | where generated clients and schemas are kept |
 | `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for |
 | `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching |
+| `paths.deps` | paths | *(empty)* | client | no | `--paths-deps` | `MCPX_PATHS_DEPS` | where a script's package.json / package.jsonc is looked for |
 | `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders |
 | `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins |
 | `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for |

@@ -56,6 +56,10 @@ var EffectProbes = map[string]string{
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
+	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
+	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
 }
@@ -91,6 +95,7 @@ var EffectExemptions = map[string]string{
 	"exec.maxOutputBytes":                "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.output":                        "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
 	"exec.where":                         "call-scoped exec behaviour with no dedicated with/without probe yet; the exec e2e tests exercise the surface only at its defaults",
+	"deps.autoInstall":                   "a runtime fetch policy: its effect is which --install flag a bun run carries, observable only when a runtime actually fetches a missing package -- a network install the harness does not perform deterministically",
 	"artifacts.enabled":                  "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.dir":                      "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
 	"artifacts.delivery":                 "artifact store behaviour: its effect needs artifact-producing calls plus volume or time (ttl, quota, gc) that the fake server's fixtures do not drive",
@@ -259,7 +264,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 190 // raised by two for completion.perMinute + completion.serverPerMinute (#2387): completion rate limits whose effects are covered by internal/daemon handler tests (429 before the pool; per-server window across callers), not settings probes; previously raised by three for protoTasks.maxTTL / maxPerRequestor / perMinute (#2498): task-store limits whose effects are covered by internal/tasks store tests, not settings probes; raised by two for artifacts.idleTtl + artifacts.maxAge (#2548), in the artifact-store exemption style of artifacts.ttl; raised by one for exec.maxOutputBytes (CODE-16, #1937), in the call-scoped exec exemption style of exec.timeout; previously raised by one for policy.write (#1979)
+const EffectExemptionPin = 191 // merged count at the PR #2589 merge of origin/main (2026-11-01, queue task 3191): main at 190 (completion.perMinute and completion.serverPerMinute #2387 on top of the #2498/#2548/#1937/#1979 raises) plus the one branch-side exemption, deps.autoInstall (a runtime fetch policy)
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

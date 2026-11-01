@@ -1,0 +1,1827 @@
+package runner
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/deps"
+)
+
+// Deps is a script's resolved dependency set, as the runner consumes it
+// (#1913). It mirrors execsvc.DepsOptions; the runner cannot import
+// execsvc (execsvc imports the runner), so execsvc converts at the
+// RunWith boundary.
+//
+// Everything here is data, never paths: Manifest and Lockfile are the
+// files' contents, because the daemon materialising them may be on
+// another machine from the caller who resolved them.
+type Deps struct {
+	// Packages are explicit specifiers: name or name@version.
+	Packages []string
+	// Manifest is the manifest's text, comment-stripped when it came
+	// from a package.jsonc.
+	Manifest string
+	// ManifestName is the filename to write it as: package.json by
+	// default.
+	ManifestName string
+	// ManifestDir is the directory the selected manifest was read
+	// from, on the resolver's filesystem: the resolution base for
+	// its local file:/link: artifacts. The manifest may sit above
+	// the script (discovery walks up) or outside it entirely (an
+	// explicit deps.manifest), and npm resolves file: against the
+	// MANIFEST's directory -- resolving against the script's
+	// directory instead looked for artifacts that were never
+	// there and failed with ENOENT (Codex review, PR #2589). It
+	// is meaningful only to a runner sharing the resolver's
+	// filesystem, which is the only case the local-artifact
+	// transport already serves; a set that arrived as data only
+	// leaves it empty and falls back to the project directory.
+	ManifestDir string
+	// PackageDirs records, per package name, the directory that
+	// package's relative local specifier resolves against when it
+	// differs from ManifestDir: a package contributed by the
+	// configuration layer keeps the configuration directory as its
+	// origin even when a project manifest also contributes packages
+	// (Codex review, PR #2589).
+	PackageDirs map[string]string
+	// Lockfile is the lockfile's content, honoured frozen and never
+	// rewritten.
+	Lockfile []byte
+	// LockfileName is the filename to write it as, such as bun.lock.
+	LockfileName string
+	// Lockfiles carries every lockfile found beside the manifest. The
+	// one that governs is selected per runtime at materialisation
+	// time (see selectedLockfile); the singular fields above stay the
+	// transport's first entry for callers that predate the list.
+	Lockfiles []Lockfile
+	// NPMRC is the selected project's own .npmrc content, when one
+	// sits beside the manifest. npm ci in the isolated workdir must
+	// run under the same project settings the lockfile was generated
+	// with (legacy-peer-deps and friends): transporting the manifest
+	// and lockfile without it makes a valid frozen install attempt
+	// peer resolution the project explicitly disabled (Codex
+	// review, PR #2589).
+	NPMRC []byte
+	// Source is the resolved deps.source.
+	Source string
+	// AutoInstall is the resolved deps.autoInstall: off, fallback or
+	// always.
+	AutoInstall string
+}
+
+// Lockfile is one lockfile's name and content, as transported.
+type Lockfile struct {
+	Name    string
+	Content []byte
+}
+
+// isBinaryLockfile reports whether a lockfile's content is binary:
+// bun.lockb by name, or any content carrying a NUL byte, which no
+// text lockfile (bun.lock, package-lock.json, yarn.lock) contains.
+func isBinaryLockfile(name string, content []byte) bool {
+	if strings.HasSuffix(name, ".lockb") {
+		return true
+	}
+	return bytes.IndexByte(content, 0) >= 0
+}
+
+// lockfilePreference names, per runtime kind, the lockfiles that
+// runtime honours frozen, most specific first.
+var lockfilePreference = map[string][]string{
+	KindBun:  {"bun.lock", "bun.lockb"},
+	KindNode: {"npm-shrinkwrap.json", "package-lock.json"},
+	KindDeno: {"deno.lock"},
+}
+
+// selectedLockfile returns the lockfile that governs a run of kind.
+// A project may carry several (bun.lock beside package-lock.json);
+// picking the first transported regardless of runtime froze bun runs
+// correctly and node runs not at all (Codex review, PR #2589). With
+// no kind-preferred candidate the first transported file wins, which
+// is the behaviour sets transported before the list existed had.
+func (d *Deps) selectedLockfile(kind string) (string, []byte, bool) {
+	type cand struct {
+		name    string
+		content []byte
+	}
+	var cands []cand
+	seen := map[string]bool{}
+	for _, l := range d.Lockfiles {
+		if l.Name == "" || len(l.Content) == 0 || seen[l.Name] {
+			continue
+		}
+		seen[l.Name] = true
+		cands = append(cands, cand{l.Name, l.Content})
+	}
+	if len(d.Lockfile) > 0 && d.LockfileName != "" && !seen[d.LockfileName] {
+		cands = append(cands, cand{d.LockfileName, d.Lockfile})
+	}
+	if len(cands) == 0 {
+		return "", nil, false
+	}
+	for _, want := range lockfilePreference[kind] {
+		for _, c := range cands {
+			if c.name == want {
+				return c.name, c.content, true
+			}
+		}
+	}
+	return cands[0].name, cands[0].content, true
+}
+
+// fingerprint identifies the set's content for the execution-directory
+// key: two runs sharing a generated client but resolving different
+// packages must not share a materialised environment (Codex review,
+// PR #2589). Nil and empty sets fingerprint alike ("").
+func (d *Deps) fingerprint() string {
+	if d == nil {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "packages:%q\nmanifest:%q:%s\nsource:%s auto:%s\n",
+		d.Packages, d.ManifestName, d.Manifest, d.Source, d.AutoInstall)
+	pkgDirNames := make([]string, 0, len(d.PackageDirs))
+	for name := range d.PackageDirs {
+		pkgDirNames = append(pkgDirNames, name)
+	}
+	sort.Strings(pkgDirNames)
+	for _, name := range pkgDirNames {
+		fmt.Fprintf(h, "pkgdir:%s:%s\n", name, d.PackageDirs[name])
+	}
+	writeLock := func(name string, content []byte) {
+		sum := sha256.Sum256(content)
+		fmt.Fprintf(h, "lock:%s:%s\n", name, hex.EncodeToString(sum[:]))
+	}
+	if len(d.Lockfile) > 0 {
+		writeLock(d.LockfileName, d.Lockfile)
+	}
+	if len(d.NPMRC) > 0 {
+		sum := sha256.Sum256(d.NPMRC)
+		fmt.Fprintf(h, "npmrc:%s\n", hex.EncodeToString(sum[:]))
+	}
+	for _, l := range d.Lockfiles {
+		writeLock(l.Name, l.Content)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// splitSpecifier splits "name@version" (or "@scope/name@version") into
+// name and version; the version is "" for a bare name.
+//
+// The split is at the first non-leading "@", the same rule deps.Parse
+// applies at the resolution boundary: an npm alias specifier such as
+// "alias@npm:@scope/pkg@2.0.0" has version "npm:@scope/pkg@2.0.0",
+// and splitting at the LAST "@" corrupted it into a package literally
+// named "alias@npm:@scope/pkg" (Codex review, PR #2589).
+func splitSpecifier(spec string) (name, version string) {
+	for i := 1; i < len(spec); i++ {
+		if spec[i] == '@' {
+			return spec[:i], spec[i+1:]
+		}
+	}
+	return spec, ""
+}
+
+// effectiveDeps merges the explicit packages into the manifest's
+// dependencies. A contradiction was already reported as a conflict by
+// the caller (internal/deps), so a name seen twice here is agreement,
+// not a second opinion -- but agreement has a seniority: a compatible
+// exact pin from the caller governs over the manifest's range, because
+// the pin is the resolved version and the range is only its envelope.
+func (d *Deps) effectiveDeps(manifest map[string]any) map[string]string {
+	out := map[string]string{}
+	if manifest != nil {
+		if deps, ok := manifest["dependencies"].(map[string]any); ok {
+			for name, v := range deps {
+				if s, ok := v.(string); ok {
+					out[name] = s
+				}
+			}
+		}
+		// Optional dependencies override dependencies of the same name:
+		if optDeps, ok := manifest["optionalDependencies"].(map[string]any); ok {
+			for name, v := range optDeps {
+				if s, ok := v.(string); ok {
+					out[name] = s
+				}
+			}
+		}
+	}
+	for _, spec := range d.Packages {
+		name, version := splitSpecifier(spec)
+		if manifestVersion, taken := out[name]; taken {
+			// Agreement is not identity: a compatible exact pin is
+			// the version the caller resolved and asked for, so it
+			// governs over the manifest's range (Codex review,
+			// PR #2589). A contradicting pin was already reported
+			// as a conflict by internal/deps and never reaches
+			// here as agreement; the manifest keeps governing it.
+			if version != "" && deps.CompatiblePin(manifestVersion, version) {
+				out[name] = version
+			}
+			continue
+		}
+		if version == "" {
+			version = "*"
+		}
+		out[name] = version
+	}
+	return out
+}
+
+// materialiseDeps writes the dependency set into the exec workdir and
+// returns the extra runtime flags the set implies for kind.
+//
+// The workdir is the only place written: it is mcpx's own directory, so
+// materialising there never rewrites a user's project. A file script
+// keeps resolving against its own project's manifest, exactly as the
+// chain resolved it; the materialised copy governs inline scripts,
+// whose only home is the workdir.
+//
+// Per runtime:
+//   - bun/node: a package.json (the resolved manifest with the explicit
+//     packages merged in, or a synthesised one naming only them).
+//   - deno: the same package.json, plus a deno.json imports map pinning
+//     each bare specifier to its npm: equivalent, so a script's imports
+//     resolve to the resolved set rather than whatever deno would pick.
+//   - a lockfile is written byte-for-byte and never rewritten by mcpx.
+func materialiseDeps(dir, kind string, d *Deps, fileRun bool, projectDir string) ([]string, error) {
+	var manifest map[string]any
+	if strings.TrimSpace(d.Manifest) != "" {
+		if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
+			return nil, fmt.Errorf("deps: manifest is not valid JSON: %w", err)
+		}
+	}
+	deps := d.effectiveDeps(manifest)
+
+	// frozenAdditions names the packages the set adds on top of the
+	// selected manifest -- explicit and configuration-layer packages
+	// the manifest does not declare. When a lockfile freezes the
+	// manifest's tree, folding an addition into the materialised
+	// manifest makes the frozen install reject the whole set: npm ci
+	// fails with "Missing: helper@1.0.0 from lock file" before the
+	// script runs (Codex review, PR #2589). The additions therefore
+	// stay out of the manifest the frozen install sees; the installer
+	// installs them separately afterwards and merges them into the
+	// workdir's node_modules, and the full manifest is restored.
+	var frozenAdditions map[string]bool
+	frozen := (kind == KindNode && d.frozenNPM(kind)) || (kind == KindBun && d.frozenBun(kind))
+	if manifest != nil && frozen {
+		declared := map[string]bool{}
+		for _, section := range []string{"dependencies", "devDependencies", "optionalDependencies"} {
+			if sec, ok := manifest[section].(map[string]any); ok {
+				for name := range sec {
+					declared[name] = true
+				}
+			}
+		}
+		for _, spec := range d.Packages {
+			pkgName, _ := splitSpecifier(spec)
+			if !declared[pkgName] {
+				if frozenAdditions == nil {
+					frozenAdditions = map[string]bool{}
+				}
+				frozenAdditions[pkgName] = true
+			}
+		}
+	}
+
+	// lockRebases records path spellings to rewrite in a transported
+	// lockfile when a local artifact had to be rebased into the
+	// workdir (see the transport loop below): pairs of
+	// (spelling in the source project, spelling in the workdir).
+	var lockRebases [][2]string
+	// lockPathRebases records, per rebased artifact, the NORMALIZED
+	// path npm writes in a package-lock's structured entries (the
+	// "packages" key and the link entry's "resolved") beside the
+	// verbatim relative spelling: for file:./pkg npm stores simply
+	// "pkg", which neither the spec pair nor the ./-spelling pair
+	// rewrites, so the rebased project requirement no longer
+	// matched its own lockfile (Codex review, PR #2589).
+	var lockPathRebases [][2]string
+
+	// Local file dependencies (file:/link: with a relative path)
+	// resolve against the manifest's own directory, and the
+	// materialised copy lives somewhere else: copied unchanged, the
+	// requirement points at an artifact that was never transported,
+	// and a frozen npm ci fails with ENOENT before the script runs
+	// (Codex review, PR #2589). When the project directory is known
+	// (a local execution), transport the referenced artifacts into
+	// the workdir at the same relative paths, so the verbatim
+	// manifest and lockfile resolve exactly as they did in place.
+	// With no project directory the set arrived as data only, and
+	// there is nothing local to copy from; the requirement is left
+	// as written.
+	transportNames := []string{}
+	defBase := projectDir
+	if d.ManifestDir != "" {
+		defBase = d.ManifestDir
+	}
+	if projectDir != "" {
+		// The resolution base is the selected manifest's own
+		// directory when the set carries it, not the script's:
+		// discovery may have found the manifest above the script,
+		// or the caller may have named one outside it (Codex
+		// review, PR #2589).
+		// Iteration is in name order and every verbatim destination
+		// is claimed as it is taken, so when two packages from
+		// different origins spell the same relative path the winner
+		// is deterministic: the first name keeps the verbatim
+		// destination and the rest are rebased below (Codex review,
+		// PR #2589).
+		transportNames = make([]string, 0, len(deps))
+		for name := range deps {
+			transportNames = append(transportNames, name)
+		}
+		sort.Strings(transportNames)
+		claimedDst := map[string]string{}
+		for _, name := range transportNames {
+			spec := deps[name]
+			rel, ok := localFileRef(spec)
+			if !ok {
+				continue
+			}
+			// A package whose origin layer differs from the selected
+			// manifest's (a config-layer package beside a project
+			// manifest) resolves its local specifier against its own
+			// layer's directory, not the project's (Codex review,
+			// PR #2589).
+			base := defBase
+			if pd := d.PackageDirs[name]; pd != "" {
+				base = pd
+			}
+			src := filepath.Join(base, rel)
+			dst := filepath.Join(dir, rel)
+			if prev, taken := claimedDst[dst]; taken && prev != src {
+				// Another origin's artifact already occupies the
+				// verbatim destination: copying this one there too
+				// would leave both requirements naming one
+				// artifact, the winner decided by map order. Fall
+				// through to the rebase below, which gives this
+				// origin its own destination.
+			} else if withinDir(dir, dst) {
+				// The verbatim spelling resolves inside the
+				// workdir at the same relative path. The
+				// source need not sit inside the manifest's
+				// own directory: a project declaring a
+				// sibling (file:../localpkg) is naming a
+				// real resolution relationship its locked
+				// installation already honours in place,
+				// and the manifest itself is the authority
+				// for reading the path it names -- exactly
+				// as the package manager would in place
+				// (Codex review, PR #2589).
+				if err := copyLocalArtifact(src, dst); err != nil {
+					return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
+				}
+				claimedDst[dst] = src
+				continue
+			}
+			// The verbatim spelling would land OUTSIDE the
+			// workdir (a sibling or parent-relative artifact):
+			// copying it there is not mcpx's to do, so the
+			// artifact is rebased into the workdir under
+			// .mcpx-local/<hash-of-source-path>/ and the
+			// requirement -- in the materialised manifest and
+			// in any transported lockfile -- is rewritten to
+			// the rebased spelling, preserving the resolution
+			// relationship in an isolated layout instead of
+			// rejecting it (Codex review, PR #2589).
+			abs, err := filepath.Abs(src)
+			if err != nil {
+				return nil, fmt.Errorf("deps: local dependency %q: %w", spec, err)
+			}
+			tail := filepath.ToSlash(rel)
+			for strings.HasPrefix(tail, "../") {
+				tail = strings.TrimPrefix(tail, "../")
+			}
+			tail = strings.TrimPrefix(tail, "./")
+			if tail == "" || tail == ".." || tail == "." {
+				return nil, fmt.Errorf("deps: local dependency %q has no transportable path", spec)
+			}
+			sum := sha256.Sum256([]byte(abs))
+			newRel := ".mcpx-local/" + hex.EncodeToString(sum[:4]) + "/" + tail
+			dst = filepath.Join(dir, filepath.FromSlash(newRel))
+			if !withinDir(dir, dst) {
+				return nil, fmt.Errorf("deps: local dependency %q escapes the exec workdir", spec)
+			}
+			if err := copyLocalArtifact(src, dst); err != nil {
+				return nil, fmt.Errorf("deps: transport local dependency %q: %w", spec, err)
+			}
+			prefix := "file:"
+			if strings.HasPrefix(spec, "link:") {
+				prefix = "link:"
+			}
+			newSpec := prefix + "./" + newRel
+			deps[name] = newSpec
+			lockRebases = append(lockRebases,
+				[2]string{spec, newSpec},
+				[2]string{filepath.ToSlash(rel), newRel})
+			if norm := strings.TrimPrefix(filepath.ToSlash(rel), "./"); norm != filepath.ToSlash(rel) {
+				lockPathRebases = append(lockPathRebases, [2]string{norm, newRel})
+			}
+		}
+	}
+
+	// Workspace members are the frozen lockfile's other local
+	// sources: a root manifest declaring workspaces: ["packages/*"]
+	// and a dependency helper: "*" makes npm link node_modules/helper
+	// to packages/helper, and the transported lockfile keeps that
+	// link -- but the member directory itself is not a file:/link:
+	// requirement, so the transport above skipped it and imports of
+	// the member failed MODULE_NOT_FOUND in the workdir (Codex
+	// review, PR #2589). Transport each member a requirement names,
+	// at the same path relative to the manifest root, so the link
+	// resolves exactly as it did in place.
+	if projectDir != "" && manifest != nil {
+		members := workspaceMembers(manifest, defBase)
+		for _, name := range transportNames {
+			spec := deps[name]
+			if _, isLocal := localFileRef(spec); isLocal {
+				continue
+			}
+			member, ok := members[name]
+			if !ok || !workspaceSpec(spec, member.version) {
+				continue
+			}
+			rel, err := filepath.Rel(defBase, member.dir)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			dst := filepath.Join(dir, rel)
+			if !withinDir(dir, dst) {
+				continue
+			}
+			if err := copyLocalArtifact(member.dir, dst); err != nil {
+				return nil, fmt.Errorf("deps: transport workspace package %q: %w", name, err)
+			}
+		}
+	}
+
+	if manifest != nil || len(deps) > 0 {
+		if manifest == nil {
+			manifest = map[string]any{
+				"name":    "mcpx-exec",
+				"version": "0.0.0",
+				"private": true,
+			}
+		}
+		if len(deps) > 0 {
+			merged := map[string]any{}
+			names := make([]string, 0, len(deps))
+			for name := range deps {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			// Dependency sections are load-bearing for a frozen
+			// install: the lockfile was generated against the
+			// manifest's own categories, so a name the manifest
+			// carries under devDependencies must stay there.
+			// Promoting resolved dev dependencies into
+			// "dependencies" rewrites the manifest the lockfile
+			// pins and bun's --frozen-lockfile refuses it
+			// (Codex review, PR #2589). The dev section itself is
+			// synced to the governed values below, like the
+			// optional one.
+			devDeps, _ := manifest["devDependencies"].(map[string]any)
+			for _, name := range names {
+				if _, isDev := devDeps[name]; isDev {
+					continue
+				}
+				merged[name] = deps[name]
+			}
+			if len(merged) > 0 {
+				manifest["dependencies"] = merged
+			}
+			for name, ver := range deps {
+				if _, has := devDeps[name]; has {
+					devDeps[name] = ver
+				}
+			}
+		}
+		// The materialised copy is always package.json, whatever
+		// name resolution read: deps.manifest may select an
+		// alt-manifest.json, but npm ci and the runtimes look for
+		// package.json beside the lockfile, so preserving the
+		// selected basename would strand the frozen install
+		// (Codex review, PR #2589). The transport already does
+		// the same for JSONC manifests.
+		name := "package.json"
+		// The materialised copy is an installation + resolution
+		// manifest for THIS runner's workdir, not the project:
+		// - its lifecycle scripts must not travel with it. Only the
+		//   manifest and lockfile were transported, so a project's
+		//   prepare/preinstall would run in the workdir against
+		//   files that are not there (and is a code-execution
+		//   surface the caller never asked mcpx to run). Dependency
+		//   packages keep their own hooks; only the root project's
+		//   scripts are dropped (Codex review, PR #2589).
+		// - a project "type": "commonjs" must not reclassify the
+		//   generated execution files, which are ESM by
+		//   construction (the launcher's imports); Node would fail
+		//   them with "Cannot use import statement outside a
+		//   module" (Codex review, PR #2589).
+		delete(manifest, "scripts")
+		if manifest["type"] == "commonjs" {
+			manifest["type"] = "module"
+		}
+		if optDeps, ok := manifest["optionalDependencies"].(map[string]any); ok {
+			for name, ver := range deps {
+				if _, has := optDeps[name]; has {
+					optDeps[name] = ver
+				}
+			}
+		}
+		text, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("deps: render manifest: %w", err)
+		}
+		writeText := string(text) + "\n"
+		if len(frozenAdditions) > 0 {
+			// The manifest the frozen install sees must be the
+			// manifest the lockfile was generated against: the
+			// full render minus the additions. The additions and
+			// the full render travel in the sidecar; the install
+			// step consumes it (installAddons) and restores the
+			// full manifest once the additions are in place.
+			var installManifest map[string]any
+			if err := json.Unmarshal(text, &installManifest); err != nil {
+				return nil, fmt.Errorf("deps: render install manifest: %w", err)
+			}
+			if sec, ok := installManifest["dependencies"].(map[string]any); ok {
+				for pkgName := range frozenAdditions {
+					delete(sec, pkgName)
+				}
+			}
+			installText, err := json.MarshalIndent(installManifest, "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("deps: render install manifest: %w", err)
+			}
+			additions := make(map[string]string, len(frozenAdditions))
+			for pkgName := range frozenAdditions {
+				additions[pkgName] = deps[pkgName]
+			}
+			sidecar, err := json.Marshal(addonsManifest{Packages: additions, Manifest: writeText})
+			if err != nil {
+				return nil, fmt.Errorf("deps: render additions manifest: %w", err)
+			}
+			if err := writeIfChanged(filepath.Join(dir, addonsManifestName), string(sidecar)+"\n"); err != nil {
+				return nil, fmt.Errorf("deps: write additions manifest: %w", err)
+			}
+			writeText = string(installText) + "\n"
+		}
+		if err := writeIfChanged(filepath.Join(dir, name), writeText); err != nil {
+			return nil, fmt.Errorf("deps: write manifest: %w", err)
+		}
+	}
+
+	if len(d.NPMRC) > 0 {
+		// The project's .npmrc travels with the manifest and the
+		// lockfile: the isolated install in this workdir is npm's
+		// --prefix target, so a .npmrc written here is exactly the
+		// project config npm reads for it.
+		if err := writeBytesIfChanged(filepath.Join(dir, ".npmrc"), d.NPMRC); err != nil {
+			return nil, fmt.Errorf("deps: write project .npmrc: %w", err)
+		}
+	} else {
+		// A set with no .npmrc must not inherit one an earlier set
+		// left in a reused workdir: the next install there would
+		// read the earlier project's registry and auth settings
+		// (CodeRabbit review, PR #2589).
+		_ = os.Remove(filepath.Join(dir, ".npmrc"))
+	}
+
+	if lockName, lockContent, ok := d.selectedLockfile(kind); ok {
+		if len(lockRebases) > 0 && isBinaryLockfile(lockName, lockContent) {
+			// A binary lockfile (bun.lockb) cannot be rebased by
+			// string replacement: variable-length substitutions
+			// corrupt its internal layout and the frozen install
+			// then fails on a file mcpx itself mangled. Refuse
+			// loudly instead of writing a corrupted lockfile
+			// (Codex review, PR #2589). With no rebased local
+			// dependency the same lockfile is written verbatim
+			// below, exactly as before.
+			return nil, fmt.Errorf("deps: lockfile %s is binary and cannot be rebased for a local dependency moved into the workdir; refusing to rewrite it as text (that corrupts it) -- use a text lockfile (bun.lock) or drop the sibling local dependency", lockName)
+		}
+		if len(lockRebases) > 0 {
+			// A rebased local artifact's spellings inside the
+			// lockfile (its spec and its path keys) must name
+			// the rebased layout too, or the frozen install
+			// resolves the original path -- outside the
+			// workdir -- and fails (Codex review, PR #2589).
+			text := string(lockContent)
+			for _, pair := range lockRebases {
+				text = strings.ReplaceAll(text, pair[0], pair[1])
+			}
+			lockContent = []byte(text)
+			if len(lockPathRebases) > 0 {
+				if rewritten, rerr := rebaseLockfilePaths(lockContent, lockPathRebases); rerr == nil {
+					lockContent = rewritten
+				}
+			}
+		}
+		name := filepath.Base(lockName)
+		if name == "" || name == "." || name == ".." {
+			return nil, fmt.Errorf("deps: lockfile name %q is not a file name", lockName)
+		}
+		if err := writeBytesIfChanged(filepath.Join(dir, name), lockContent); err != nil {
+			return nil, fmt.Errorf("deps: write lockfile: %w", err)
+		}
+	} else {
+		// No lockfile in this set: a Bun lockfile an earlier set left
+		// in a reused workdir must not survive, or a fallback/always
+		// autoInstall run installs against its pins for packages this
+		// set resolved differently (CodeRabbit review, PR #2589).
+		_ = os.Remove(filepath.Join(dir, "bun.lock"))
+		_ = os.Remove(filepath.Join(dir, "bun.lockb"))
+	}
+
+	if kind == KindDeno && len(deps) == 0 {
+		// An imports map is written only by this function, so one
+		// sitting in a shared workdir belongs to an earlier, different
+		// set; leaving it would keep that set's pins in force for a
+		// run that resolved none.
+		_ = os.Remove(filepath.Join(dir, "deno.json"))
+	}
+	if kind == KindDeno && len(deps) > 0 {
+		imports := map[string]string{}
+		var scopes map[string]map[string]string
+		// The generated config replaces the project's own deno.json
+		// for this run (--config selects ONE file; deno does not
+		// merge configs), so the project's import mappings must be
+		// carried into it or a script using project aliases or JSR
+		// mappings loses them the moment dependency pins are added
+		// (Codex review, PR #2589). The resolved pins are senior:
+		// they overwrite a project mapping for the same specifier.
+		var projectCompilerOptions json.RawMessage
+		if projectDir != "" {
+			if pImports, pScopes, pCompilerOptions, cfgDir, ok := loadProjectDenoConfig(projectDir); ok {
+				projectCompilerOptions = pCompilerOptions
+				for k, v := range pImports {
+					imports[k] = rebaseDenoMapping(v, cfgDir)
+				}
+				if len(pScopes) > 0 {
+					scopes = map[string]map[string]string{}
+					for scope, m := range pScopes {
+						rm := map[string]string{}
+						for k, v := range m {
+							rm[k] = rebaseDenoMapping(v, cfgDir)
+						}
+						// The scope KEY is a path prefix too: left
+						// unrebased it would point into the workdir
+						// instead of the project's directory, and the
+						// scoped mappings under it would never match
+						// an import from the project (Codex review,
+						// PR #2589).
+						scopes[rebaseDenoMapping(scope, cfgDir)] = rm
+					}
+				}
+			}
+		}
+		for name, version := range deps {
+			switch {
+			case strings.HasPrefix(version, "npm:"):
+				// An npm alias (alias@npm:@scope/pkg@2.0.0, or the
+				// same spelling as a manifest value): the version IS
+				// the target, spelled in full. Concatenating it
+				// behind the alias name produced
+				// "npm:alias@npm:@scope/pkg@2.0.0", which resolves
+				// nothing (Codex review, PR #2589).
+				imports[name] = version
+			case version == "*" || version == "":
+				imports[name] = "npm:" + name
+			default:
+				imports[name] = "npm:" + name + "@" + version
+			}
+		}
+		rendered := map[string]any{"imports": imports}
+		if len(scopes) > 0 {
+			rendered["scopes"] = scopes
+		}
+		if len(projectCompilerOptions) > 0 {
+			// The generated config replaces the project's own, so
+			// its compilerOptions (JSX mode and import source
+			// above all) must be carried into it or the run
+			// silently compiles under different settings than
+			// the project declares (Codex review, PR #2589).
+			rendered["compilerOptions"] = projectCompilerOptions
+		}
+		text, err := json.MarshalIndent(rendered, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("deps: render deno.json: %w", err)
+		}
+		if err := writeIfChanged(filepath.Join(dir, "deno.json"), string(text)+"\n"); err != nil {
+			return nil, fmt.Errorf("deps: write deno.json: %w", err)
+		}
+	}
+
+	flags := depsFlags(kind, d)
+	if fileRun && kind == KindDeno && len(deps) > 0 {
+		// A file script runs from its own directory, and deno
+		// discovers configuration from the working directory and
+		// its ancestors \u2014 never from this workdir. Without an
+		// explicit --config the imports map above governs
+		// nothing for file runs: their imports resolve against
+		// the project (or fail), not the resolved set (Codex
+		// review, PR #2589). Inline scripts live in the workdir,
+		// so discovery already finds the map for them.
+		flags = append(flags, "--config", filepath.Join(dir, "deno.json"))
+	}
+	return flags, nil
+}
+
+// depsFlags maps the resolved set onto runtime flags.
+//
+// bun: --install= is bun run's own auto-install control, so the
+// deps.autoInstall enum maps onto it directly; off is --no-install, so
+// a missing package fails the run instead of being fetched. A lockfile
+// has no --frozen-lockfile spelling under `bun run` (that flag belongs
+// to `bun install`), and --install=fallback does not enforce one
+// either (it resolves missing packages against the manifest, not the
+// lock); frozen is honoured by the bun install --frozen-lockfile step
+// in Run, after which the run goes --no-install so the runtime uses
+// exactly the installed set.
+//
+// deno: --frozen is deno run's lockfile mode, spelled when the set
+// carries deno.lock; deno otherwise caches npm packages from the
+// materialised package.json/imports map itself.
+//
+// node never installs from the runner; a frozen npm set is installed by
+// the npm-ci step in Run, not by a flag.
+func depsFlags(kind string, d *Deps) []string {
+	_, _, frozen := d.selectedLockfile(kind)
+	switch kind {
+	case KindBun:
+		if frozen {
+			return []string{"--no-install"}
+		}
+		switch d.AutoInstall {
+		case "fallback":
+			return []string{"--install=fallback"}
+		case "always":
+			return []string{"--install=auto"}
+		default: // off, and anything unrecognised: the loud default
+			return []string{"--no-install"}
+		}
+	case KindDeno:
+		var flags []string
+		if name, _, ok := d.selectedLockfile(kind); ok && name == "deno.lock" {
+			flags = append(flags, "--frozen")
+		}
+		// deps.autoInstall=off must hold for deno too: without a
+		// flag deno downloads an uncached npm: import on first
+		// run, which is exactly the fetch off forbids (CodeRabbit
+		// review, PR #2589). --cached-only makes a missing package
+		// fail instead, the same contract bun's --no-install gives.
+		if d.AutoInstall == "off" {
+			flags = append(flags, "--cached-only")
+		}
+		return flags
+	}
+	return nil
+}
+
+// frozenNPM reports whether this run must install a frozen npm set
+// before executing: a node run carrying a package-lock.json or an
+// npm-shrinkwrap.json -- npm ci accepts either name for a frozen
+// installation, and a project carrying only the shrinkwrap is frozen
+// too (Codex review, PR #2589). npm ci installs exactly the lockfile
+// into the workdir's node_modules and fails when the lockfile and
+// manifest disagree, which is what frozen means; it runs in the exec
+// workdir, never a user's project.
+func (d *Deps) frozenNPM(kind string) bool {
+	if kind != KindNode {
+		return false
+	}
+	name, _, ok := d.selectedLockfile(kind)
+	return ok && (name == "package-lock.json" || name == "npm-shrinkwrap.json")
+}
+
+// frozenInstallLocks serialises first installation per workdir:
+// concurrent runs sharing a content-addressed workdir (same client,
+// same dep fingerprint) must not install underneath each other --
+// npm ci removes the existing node_modules before installing, so a
+// second run's install can delete the set a live first run is still
+// resolving imports from (Codex review, PR #2589).
+var frozenInstallLocks sync.Map // map[string]chan struct{}, keyed by workdir
+
+// lockInstallDir acquires the workdir's install semaphore, observing
+// ctx while it waits: a queued run whose request was cancelled must
+// return promptly instead of blocking behind another run's install
+// until that install finishes, however long it takes (Codex review,
+// PR #2589) -- the same shape as lockScriptDir, for the same reason.
+func lockInstallDir(ctx context.Context, dir string) (func(), error) {
+	c, _ := frozenInstallLocks.LoadOrStore(dir, make(chan struct{}, 1))
+	ch := c.(chan struct{})
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("deps: waiting for the workdir install lock: %w", ctx.Err())
+	}
+}
+
+// installFrozenNPM runs npm ci in dir exactly once per dep set: the
+// first run for a fingerprint installs and records a marker; later
+// runs with the same fingerprint and an intact node_modules skip the
+// install entirely. A changed set (different fingerprint), a missing
+// marker, or a pruned node_modules installs again.
+// installEnv is the environment an installation subprocess runs
+// with: the process environment plus the run's configured
+// execution environment, appended last so it wins -- the same
+// construction the runtime command itself gets in Run. Private-
+// registry configuration (NPM_CONFIG_USERCONFIG and friends)
+// reaches the installer exactly as it reaches the runtime
+// (Codex review, PR #2589).
+func installEnv(env map[string]string) []string {
+	out := append([]string{}, os.Environ()...)
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+func installFrozenNPM(ctx context.Context, dir string, d *Deps, env map[string]string) error {
+	unlock, err := lockInstallDir(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	marker := filepath.Join(dir, ".mcpx-deps-installed")
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env, d.NPMRC)
+	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
+		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
+			return finaliseAddonsIfPresent(dir)
+		}
+	}
+	ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", dir, "--no-audit", "--no-fund")
+	ci.Env = installEnv(env)
+	out, cerr := ci.CombinedOutput()
+	if cerr != nil {
+		return fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
+			cerr, strings.TrimSpace(string(out)))
+	}
+	if err := installAddons(ctx, dir, KindNode, "", env); err != nil {
+		return err
+	}
+	_ = os.WriteFile(marker, []byte(want), 0o600)
+	return nil
+}
+
+// addonsManifestName is the sidecar materialiseDeps writes when a
+// frozen set carries additions the selected manifest does not declare
+// (see frozenAdditions there): the additions and the full manifest
+// render, consumed by installAddons once the frozen tree is in place.
+const addonsManifestName = ".mcpx-addons.json"
+
+// addonsDirName is the scratch directory the additions are installed
+// into before their packages are merged into the workdir's
+// node_modules.
+const addonsDirName = ".mcpx-addons"
+
+// addonsManifest is the sidecar's content.
+type addonsManifest struct {
+	Packages map[string]string `json:"packages"`
+	Manifest string            `json:"manifest"`
+}
+
+// readAddons loads the additions sidecar, reporting whether one is
+// present at all.
+func readAddons(dir string) (addonsManifest, bool, error) {
+	var am addonsManifest
+	raw, err := os.ReadFile(filepath.Join(dir, addonsManifestName))
+	if os.IsNotExist(err) {
+		return am, false, nil
+	}
+	if err != nil {
+		return am, false, err
+	}
+	if err := json.Unmarshal(raw, &am); err != nil {
+		return am, false, fmt.Errorf("deps: parse additions manifest: %w", err)
+	}
+	return am, true, nil
+}
+
+// finaliseAddons restores the full manifest render and removes the
+// sidecar: the workdir's recorded state once the additions are
+// installed (or were installed by the run that wrote the marker).
+func finaliseAddons(dir string, am addonsManifest) error {
+	if am.Manifest != "" {
+		if err := writeIfChanged(filepath.Join(dir, "package.json"), am.Manifest); err != nil {
+			return fmt.Errorf("deps: restore full manifest: %w", err)
+		}
+	}
+	if err := os.Remove(filepath.Join(dir, addonsManifestName)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// finaliseAddonsIfPresent finalises a pending sidecar without
+// installing anything, for the marker-hit path: the additions were
+// installed by the run that wrote the marker, but materialiseDeps
+// has re-split the manifest for this run, so the full render must be
+// restored before the run proceeds.
+func finaliseAddonsIfPresent(dir string) error {
+	am, ok, err := readAddons(dir)
+	if err != nil || !ok {
+		return err
+	}
+	return finaliseAddons(dir, am)
+}
+
+// rebaseLockfilePaths rewrites the structured path references of a
+// JSON lockfile (package-lock / npm-shrinkwrap "packages" entries):
+// a rebased local artifact's normalized path appears as a packages
+// KEY and as the "resolved" of its node_modules link entry, and both
+// must name the rebased layout. This is deliberately structural,
+// not a text substitution: the normalized path is a bare word
+// ("pkg") that a ReplaceAll would also hit inside unrelated package
+// names and specs (Codex review, PR #2589). A lockfile that does not
+// parse as JSON with a packages object is returned unchanged.
+func rebaseLockfilePaths(content []byte, pairs [][2]string) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(content, &doc); err != nil {
+		return content, err
+	}
+	pkgs, ok := doc["packages"].(map[string]any)
+	if !ok {
+		return content, nil
+	}
+	for _, pair := range pairs {
+		from, to := pair[0], pair[1]
+		if entry, ok := pkgs[from]; ok {
+			delete(pkgs, from)
+			pkgs[to] = entry
+		}
+		for _, raw := range pkgs {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if resolved, ok := entry["resolved"].(string); ok && resolved == from {
+				entry["resolved"] = to
+			}
+		}
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return content, err
+	}
+	return append(out, '\n'), nil
+}
+
+// rebaseAddonSpec rewrites a local file:/link: addition specifier for
+// the additions manifest, which lives one directory below the
+// workdir: the artifact was transported into the workdir, so a
+// workdir-relative spelling gains one "../".
+func rebaseAddonSpec(spec string) string {
+	rel, ok := localFileRef(spec)
+	if !ok || filepath.IsAbs(rel) {
+		return spec
+	}
+	prefix := "file:"
+	if strings.HasPrefix(spec, "link:") {
+		prefix = "link:"
+	}
+	return prefix + "../" + strings.TrimPrefix(rel, "./")
+}
+
+// mergeNodeModules moves the packages installed under src into dst,
+// skipping any the destination already carries: the frozen project
+// tree wins a name both trees provide, matching the chain's
+// precedence (project over configuration layer). Two shapes npm
+// actually produces must survive the merge (Codex review,
+// PR #2589):
+//   - a local (file:) package is a SYMLINK in the scratch tree, and
+//     DirEntry.IsDir is false for symlinks, so a plain directory
+//     walk dropped it while the install still reported success;
+//     symlinks are recreated at the destination with their target
+//     rebased to the destination's depth.
+//   - a package whose name the destination already carries may be
+//     an addition's own transitive dependency at an incompatible
+//     version; dropping it silently downgrades the addition. Such
+//     packages are nested under every package this merge placed
+//     (node_modules/<placed>/node_modules/<name>), where Node's
+//     resolution finds them first for that dependent.
+func mergeNodeModules(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	move := func(from, to string) (bool, error) {
+		if _, err := os.Lstat(to); err == nil {
+			return false, nil
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return false, err
+		}
+		if fi, err := os.Lstat(from); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(from)
+			if err != nil {
+				return false, err
+			}
+			abs := target
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(filepath.Dir(from), target)
+			}
+			rel, err := filepath.Rel(filepath.Dir(to), filepath.Clean(abs))
+			if err != nil {
+				return false, err
+			}
+			if err := os.Symlink(rel, to); err != nil {
+				if err := copyLocalArtifact(abs, to); err != nil {
+					return false, err
+				}
+			}
+			return true, nil
+		}
+		if err := os.Rename(from, to); err != nil {
+			if err := copyLocalArtifact(from, to); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+	var placed, conflicts []string
+	place := func(rel string) error {
+		ok, err := move(filepath.Join(src, rel), filepath.Join(dst, rel))
+		if err != nil {
+			return err
+		}
+		if ok {
+			placed = append(placed, rel)
+		} else {
+			conflicts = append(conflicts, rel)
+		}
+		return nil
+	}
+	for _, e := range entries {
+		isDir := e.IsDir()
+		if !isDir && e.Type()&os.ModeSymlink != 0 {
+			if st, err := os.Stat(filepath.Join(src, e.Name())); err == nil && st.IsDir() {
+				isDir = true
+			}
+		}
+		if !isDir {
+			continue
+		}
+		if e.Name() == ".bin" {
+			// .bin is not a package: its entries are executable
+			// links into the packages beside it. Treating it as a
+			// conflicting package copied it after its packages had
+			// been moved out, leaving the links dangling into the
+			// scratch tree (Codex review, PR #2589). It is merged
+			// link-by-link below, after the packages are placed.
+			continue
+		}
+		if strings.HasPrefix(e.Name(), "@") {
+			inner, err := os.ReadDir(filepath.Join(src, e.Name()))
+			if err != nil {
+				return err
+			}
+			for _, ie := range inner {
+				if err := place(filepath.Join(e.Name(), ie.Name())); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := place(e.Name()); err != nil {
+			return err
+		}
+	}
+	if err := mergeBinDir(filepath.Join(src, ".bin"), filepath.Join(dst, ".bin"), src, dst); err != nil {
+		return err
+	}
+	for _, rel := range conflicts {
+		for _, host := range placed {
+			// A placed host that is a symlink to a local package
+			// directory points OUTSIDE the merged tree, back at the
+			// caller's source: nesting through it would create
+			// node_modules inside the caller's project (CodeRabbit
+			// review, PR #2589). Such a host gets no nested copy.
+			if fi, err := os.Lstat(filepath.Join(dst, host)); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			nested := filepath.Join(dst, host, "node_modules", rel)
+			if _, err := os.Lstat(nested); err == nil {
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+				return err
+			}
+			if err := copyLocalArtifact(filepath.Join(src, rel), nested); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// mergeBinDir merges the executable links of a scratch
+// node_modules/.bin into the destination's .bin, recreating each
+// link against the merged tree: a link that pointed at a package in
+// the scratch tree points at the same package in the destination
+// tree, where the merge just placed it. Links whose name the
+// destination already provides are left alone -- the frozen tree's
+// own executables win, as its packages do in the merge above.
+// Non-link entries (platform shim files) are copied as files.
+func mergeBinDir(srcBin, dstBin, srcNM, dstNM string) error {
+	entries, err := os.ReadDir(srcBin)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(dstBin, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		from := filepath.Join(srcBin, e.Name())
+		to := filepath.Join(dstBin, e.Name())
+		if _, err := os.Lstat(to); err == nil {
+			continue
+		}
+		if e.Type()&os.ModeSymlink == 0 {
+			if err := copyLocalArtifact(from, to); err != nil {
+				return err
+			}
+			continue
+		}
+		target, err := os.Readlink(from)
+		if err != nil {
+			return err
+		}
+		abs := target
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(srcBin, target)
+		}
+		abs = filepath.Clean(abs)
+		if rel, rerr := filepath.Rel(srcNM, abs); rerr == nil && !strings.HasPrefix(rel, "..") {
+			abs = filepath.Join(dstNM, rel)
+		}
+		relTarget, err := filepath.Rel(dstBin, abs)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(relTarget, to); err != nil {
+			if err := copyLocalArtifact(abs, to); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// installAddons installs a frozen set's additions (see
+// frozenAdditions) separately from the frozen tree: the additions
+// manifest lives in a scratch subdirectory, the installer resolves
+// exactly the additions there, and the resulting packages are merged
+// into the workdir's node_modules without disturbing the locked
+// resolutions the frozen install just laid down (Codex review,
+// PR #2589). The user's project is never touched: the scratch
+// directory and every install live inside mcpx's own workdir.
+func installAddons(ctx context.Context, dir, kind, bunBin string, env map[string]string) error {
+	am, ok, err := readAddons(dir)
+	if err != nil || !ok {
+		return err
+	}
+	if len(am.Packages) == 0 {
+		return finaliseAddons(dir, am)
+	}
+	addonsDir := filepath.Join(dir, addonsDirName)
+	if err := os.MkdirAll(addonsDir, 0o700); err != nil {
+		return err
+	}
+	defer os.RemoveAll(addonsDir)
+	addDeps := make(map[string]string, len(am.Packages))
+	for name, spec := range am.Packages {
+		addDeps[name] = rebaseAddonSpec(spec)
+	}
+	manifest := map[string]any{
+		"name":         "mcpx-addons",
+		"version":      "0.0.0",
+		"private":      true,
+		"dependencies": addDeps,
+	}
+	text, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("deps: render additions manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(addonsDir, "package.json"), append(text, '\n'), 0o600); err != nil {
+		return fmt.Errorf("deps: write additions manifest: %w", err)
+	}
+	if npmrc, err := os.ReadFile(filepath.Join(dir, ".npmrc")); err == nil {
+		if err := os.WriteFile(filepath.Join(addonsDir, ".npmrc"), npmrc, 0o600); err != nil {
+			return fmt.Errorf("deps: write additions .npmrc: %w", err)
+		}
+	}
+	var cmd *exec.Cmd
+	switch kind {
+	case KindBun:
+		if bunBin == "" {
+			bunBin = "bun"
+		}
+		cmd = exec.CommandContext(ctx, bunBin, "install", "--cwd", addonsDir)
+	default:
+		cmd = exec.CommandContext(ctx, "npm", "install", "--prefix", addonsDir, "--no-audit", "--no-fund")
+	}
+	cmd.Env = installEnv(env)
+	out, cerr := cmd.CombinedOutput()
+	if cerr != nil {
+		return fmt.Errorf("deps: install dependency additions: %w: %s",
+			cerr, strings.TrimSpace(string(out)))
+	}
+	if err := mergeNodeModules(filepath.Join(addonsDir, "node_modules"), filepath.Join(dir, "node_modules")); err != nil {
+		return fmt.Errorf("deps: merge dependency additions: %w", err)
+	}
+	return finaliseAddons(dir, am)
+}
+
+// frozenBun reports whether this run must install a frozen Bun set
+// before executing: a bun run carrying a bun.lock or bun.lockb.
+// `bun run --install=fallback` does NOT enforce it -- fallback
+// installs only what is missing and resolves that against the
+// manifest, so a newer in-range version is fetched over the
+// lockfile's pin (reproduced against a localhost registry in Codex
+// review, PR #2589). Frozen for Bun means a real install step:
+// `bun install --frozen-lockfile` into the workdir, after which the
+// run itself goes --no-install so the runtime cannot re-resolve.
+func (d *Deps) frozenBun(kind string) bool {
+	if kind != KindBun {
+		return false
+	}
+	name, _, ok := d.selectedLockfile(kind)
+	return ok && (name == "bun.lock" || name == "bun.lockb")
+}
+
+// installFrozenBun runs bun install --frozen-lockfile in dir exactly
+// once per dep set, under the same once-per-fingerprint discipline
+// as installFrozenNPM. It uses the resolved bun executable (bunBin / rt.Bin)
+// so custom runtime paths work even when bun is not on PATH (Codex
+// review, PR #2589).
+func installFrozenBun(ctx context.Context, bunBin, dir string, d *Deps, env map[string]string) error {
+	return runBunInstall(ctx, bunBin, dir, d, true, env)
+}
+
+// installBun runs bun install in dir when explicit packages or a manifest are
+// present without a lockfile, ensuring Bun resolves against the transported
+// requirements in package.json rather than runtime auto-install fetching
+// unpinned latest (Codex review, PR #2589).
+func installBun(ctx context.Context, bunBin, dir string, d *Deps, env map[string]string) error {
+	return runBunInstall(ctx, bunBin, dir, d, false, env)
+}
+
+func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool, env map[string]string) error {
+	unlock, err := lockInstallDir(ctx, dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	marker := filepath.Join(dir, ".mcpx-deps-installed-bun")
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env, d.NPMRC)
+	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
+		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
+			if frozen {
+				return finaliseAddonsIfPresent(dir)
+			}
+			return nil
+		}
+	}
+	if bunBin == "" {
+		bunBin = "bun"
+	}
+	args := []string{"install", "--cwd", dir}
+	if frozen {
+		args = []string{"install", "--frozen-lockfile", "--cwd", dir}
+	}
+	ci := exec.CommandContext(ctx, bunBin, args...)
+	ci.Env = installEnv(env)
+	out, cerr := ci.CombinedOutput()
+	if cerr != nil {
+		op := "bun install"
+		if frozen {
+			op = "bun install --frozen-lockfile"
+		}
+		return fmt.Errorf("deps: %s: %w: %s", op, cerr, strings.TrimSpace(string(out)))
+	}
+	if frozen {
+		if err := installAddons(ctx, dir, KindBun, bunBin, env); err != nil {
+			return err
+		}
+	}
+	_ = os.WriteFile(marker, []byte(want), 0o600)
+	return nil
+}
+
+// writeBytesIfChanged is writeIfChanged for byte content (a lockfile
+// may be binary: bun.lockb).
+func writeBytesIfChanged(path string, content []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, content) {
+		return nil
+	}
+	return os.WriteFile(path, content, 0o600)
+}
+
+// loadProjectDenoConfig finds the deno configuration a script's
+// project already lives under: deno discovers it from the script's
+// directory upward, nearest first, deno.json before deno.jsonc in
+// each directory. It returns the config's import mappings and
+// scopes, plus the directory the config was found in (relative
+// mappings are relative to THAT directory). A config that names an
+// external import map ("importMap": "./import_map.json") has that
+// map loaded and merged under its inline mappings -- the generated
+// config replaces the project's, so dropping the external map would
+// silently drop every alias only it defines (Codex review,
+// PR #2589). ok is false when no project config exists or it cannot
+// be parsed -- including a named external map that cannot be read --
+// a config mcpx cannot read must not fail a run it was only
+// enriching.
+func loadProjectDenoConfig(dir string) (imports map[string]string, scopes map[string]map[string]string, compilerOptions json.RawMessage, cfgDir string, ok bool) {
+	for d := dir; ; d = filepath.Dir(d) {
+		for _, name := range []string{"deno.json", "deno.jsonc"} {
+			raw, err := os.ReadFile(filepath.Join(d, name))
+			if err != nil {
+				continue
+			}
+			var parsed struct {
+				Imports map[string]string            `json:"imports"`
+				Scopes  map[string]map[string]string `json:"scopes"`
+				// ImportMap names an external import map file
+				// whose mappings this config carries; see the
+				// merge below.
+				ImportMap string `json:"importMap"`
+				// CompilerOptions travels raw: the generated
+				// config replaces the project's, and dropping
+				// jsx/jsxImportSource silently reverts a
+				// project to the classic JSX transform
+				// (Codex review, PR #2589).
+				CompilerOptions json.RawMessage `json:"compilerOptions"`
+			}
+			if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
+				return nil, nil, nil, "", false
+			}
+			imports, scopes = parsed.Imports, parsed.Scopes
+			if parsed.ImportMap != "" && !strings.HasPrefix(parsed.ImportMap, "http://") && !strings.HasPrefix(parsed.ImportMap, "https://") {
+				extImports, extScopes, extOK := loadExternalDenoImportMap(d, parsed.ImportMap)
+				if !extOK {
+					return nil, nil, nil, "", false
+				}
+				imports, scopes = mergeDenoImportMaps(extImports, extScopes, imports, scopes)
+			}
+			// A remote (http/https) importMap cannot be read from
+			// disk; Deno resolves those only when it loads the
+			// project config itself, which the generated config
+			// replaces -- such a project's external aliases are
+			// not carried (documented limitation, unchanged from
+			// before external maps were handled at all).
+			return imports, scopes, parsed.CompilerOptions, d, true
+		}
+		if filepath.Dir(d) == d {
+			return nil, nil, nil, "", false
+		}
+	}
+}
+
+// loadExternalDenoImportMap reads the external import map a project
+// deno config names ("importMap" field, resolved relative to the
+// config's directory) and returns its mappings re-expressed relative
+// to that same directory: external entries resolve against the map
+// file's own directory, while loadProjectDenoConfig's contract (and
+// its callers' rebasing) is mappings relative to the config
+// directory. ok is false when the file cannot be read or parsed.
+func loadExternalDenoImportMap(cfgDir, ref string) (imports map[string]string, scopes map[string]map[string]string, ok bool) {
+	mapPath := ref
+	if !filepath.IsAbs(mapPath) {
+		mapPath = filepath.Join(cfgDir, ref)
+	}
+	raw, err := os.ReadFile(mapPath)
+	if err != nil {
+		return nil, nil, false
+	}
+	var parsed struct {
+		Imports map[string]string            `json:"imports"`
+		Scopes  map[string]map[string]string `json:"scopes"`
+	}
+	if err := json.Unmarshal(deps.StripJSONC(raw), &parsed); err != nil {
+		return nil, nil, false
+	}
+	mapDir := filepath.Dir(mapPath)
+	if mapDir == cfgDir {
+		return parsed.Imports, parsed.Scopes, true
+	}
+	imports = make(map[string]string, len(parsed.Imports))
+	for k, v := range parsed.Imports {
+		imports[k] = relocateDenoMapping(v, mapDir, cfgDir)
+	}
+	scopes = make(map[string]map[string]string, len(parsed.Scopes))
+	for scope, inner := range parsed.Scopes {
+		relocated := make(map[string]string, len(inner))
+		for k, v := range inner {
+			relocated[k] = relocateDenoMapping(v, mapDir, cfgDir)
+		}
+		scopes[relocateDenoMapping(scope, mapDir, cfgDir)] = relocated
+	}
+	return imports, scopes, true
+}
+
+// relocateDenoMapping re-expresses a relative mapping written
+// against one directory as the equivalent mapping relative to
+// another, in the ./ or ../ spelling rebaseDenoMapping recognises.
+// Non-relative values (npm:, jsr:, http(s):, bare specifiers,
+// absolute paths) travel unchanged, as does a trailing slash — it is
+// what makes a mapping a prefix mapping.
+func relocateDenoMapping(v, fromDir, toDir string) string {
+	if !strings.HasPrefix(v, "./") && !strings.HasPrefix(v, "../") {
+		return v
+	}
+	abs := filepath.Join(fromDir, v)
+	rel, err := filepath.Rel(toDir, abs)
+	if err != nil {
+		return v
+	}
+	rel = filepath.ToSlash(rel)
+	if !strings.HasPrefix(rel, ".") {
+		rel = "./" + rel
+	}
+	if strings.HasSuffix(v, "/") && !strings.HasSuffix(rel, "/") {
+		// filepath.Rel cleans the trailing slash away; restore it —
+		// it is what makes the mapping a prefix mapping.
+		rel += "/"
+	}
+	return rel
+}
+
+// mergeDenoImportMaps layers a config's inline mappings over an
+// external import map's: per Deno's semantics the config file's own
+// entries win key-for-key, and scopes merge per scope (a scope the
+// inline config names inherits the external scope's entries it does
+// not override).
+func mergeDenoImportMaps(extImports map[string]string, extScopes map[string]map[string]string, inlineImports map[string]string, inlineScopes map[string]map[string]string) (map[string]string, map[string]map[string]string) {
+	imports := make(map[string]string, len(extImports)+len(inlineImports))
+	for k, v := range extImports {
+		imports[k] = v
+	}
+	for k, v := range inlineImports {
+		imports[k] = v
+	}
+	if len(imports) == 0 {
+		imports = nil
+	}
+	var scopes map[string]map[string]string
+	if len(extScopes)+len(inlineScopes) > 0 {
+		scopes = make(map[string]map[string]string, len(extScopes)+len(inlineScopes))
+		for scope, inner := range extScopes {
+			merged := make(map[string]string, len(inner))
+			for k, v := range inner {
+				merged[k] = v
+			}
+			scopes[scope] = merged
+		}
+		for scope, inner := range inlineScopes {
+			merged, exists := scopes[scope]
+			if !exists {
+				merged = make(map[string]string, len(inner))
+				scopes[scope] = merged
+			}
+			for k, v := range inner {
+				merged[k] = v
+			}
+		}
+	}
+	return imports, scopes
+}
+
+// projectDenoConfigIdentity identifies the project Deno configuration
+// a run's generated deno.json will carry -- the config's content plus
+// the directory its relative mappings resolve against. Two runs whose
+// dependency payloads are identical but whose projects contribute
+// different configurations must not share a materialised workdir:
+// the generated config is project-specific (aliases, absolute rebased
+// paths), and Deno runs take no script-directory lock, so a shared
+// directory would let one execution overwrite the config another is
+// about to read (Codex review, PR #2589). "" when the project carries
+// no readable config, matching the generated config carrying none.
+func projectDenoConfigIdentity(dir string) string {
+	imports, scopes, compilerOptions, cfgDir, ok := loadProjectDenoConfig(dir)
+	if !ok {
+		return ""
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "cfgdir:%s\n", cfgDir)
+	if b, err := json.Marshal(struct {
+		Imports         map[string]string            `json:"imports"`
+		Scopes          map[string]map[string]string `json:"scopes"`
+		CompilerOptions json.RawMessage              `json:"compilerOptions"`
+	}{imports, scopes, compilerOptions}); err == nil {
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// localDepsIdentity identifies a set's local file:/link: artifacts
+// by content and resolution base, for the workdir key. The dep
+// fingerprint covers only the transported DATA (packages, manifest
+// text, lockfiles): two projects whose payloads are identical but
+// whose file:./localpkg directories hold different code fingerprinted
+// alike, shared one cached workdir, and the second project's
+// transport overwrote the first's installed package while its
+// install marker still claimed the set was installed (Codex review,
+// PR #2589). Hashing the artifacts' content -- the same discipline
+// projectDenoConfigIdentity applies to project configuration --
+// gives differing content differing workdirs. "" when the set names
+// no local artifacts, so sets without them keep their existing
+// workdir identity.
+func localDepsIdentity(d *Deps, base string) string {
+	if d == nil || base == "" {
+		return ""
+	}
+	var manifest map[string]any
+	if strings.TrimSpace(d.Manifest) != "" {
+		if err := json.Unmarshal([]byte(d.Manifest), &manifest); err != nil {
+			return ""
+		}
+	}
+	deps := d.effectiveDeps(manifest)
+	type localRef struct{ base, rel string }
+	refs := make([]localRef, 0, len(deps))
+	for name, spec := range deps {
+		if rel, ok := localFileRef(spec); ok {
+			// Per-package origin, as in materialiseDeps: a
+			// config-layer artifact hashes from its own
+			// directory, not the project's (Codex review,
+			// PR #2589).
+			b := base
+			if pd := d.PackageDirs[name]; pd != "" {
+				b = pd
+			}
+			refs = append(refs, localRef{b, rel})
+		}
+	}
+	// Workspace members required by the set are transported by
+	// content too (see materialiseDeps), so their content joins the
+	// identity on the same terms: identical payloads whose member
+	// directories differ must not share a cached workdir (Codex
+	// review, PR #2589).
+	if manifest != nil {
+		for name, member := range workspaceMembers(manifest, base) {
+			spec, ok := deps[name]
+			if !ok || !workspaceSpec(spec, member.version) {
+				continue
+			}
+			if rel, err := filepath.Rel(base, member.dir); err == nil {
+				refs = append(refs, localRef{base, rel})
+			}
+		}
+	}
+	if len(refs) == 0 {
+		return ""
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].base != refs[j].base {
+			return refs[i].base < refs[j].base
+		}
+		return refs[i].rel < refs[j].rel
+	})
+	h := sha256.New()
+	for _, ref := range refs {
+		rel := ref.rel
+		src := filepath.Join(ref.base, rel)
+		fmt.Fprintf(h, "base:%s\n", ref.base)
+		fmt.Fprintf(h, "ref:%s:", rel)
+		info, err := os.Stat(src)
+		if err != nil {
+			h.Write([]byte("missing\n"))
+			continue
+		}
+		if !info.IsDir() {
+			content, err := os.ReadFile(src)
+			if err != nil {
+				h.Write([]byte("unreadable\n"))
+				continue
+			}
+			sum := sha256.Sum256(content)
+			fmt.Fprintf(h, "file:%s\n", hex.EncodeToString(sum[:]))
+			continue
+		}
+		// A directory artifact (link: or a file: directory): hash
+		// every file's relative path and content, in walk order.
+		_ = filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			r, rerr := filepath.Rel(src, path)
+			if rerr != nil {
+				return nil
+			}
+			content, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return nil
+			}
+			sum := sha256.Sum256(content)
+			fmt.Fprintf(h, "entry:%s:%s\n", r, hex.EncodeToString(sum[:]))
+			return nil
+		})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// depsProjectDir is the directory whose project a run's dependency
+// set resolves against: a file script's own directory, or the
+// execution directory for an inline script. It is the directory
+// materialiseDeps loads the project Deno config from, so the workdir
+// identity and the materialisation must agree on it.
+func depsProjectDir(opts Options) string {
+	if opts.File != "" {
+		if abs, err := filepath.Abs(opts.File); err == nil {
+			return filepath.Dir(abs)
+		}
+		return filepath.Dir(opts.File)
+	}
+	return opts.Dir
+}
+
+type workspaceMember struct {
+	dir     string
+	version string
+}
+
+// workspaceMembers resolves a manifest's workspaces declaration
+// (a list of globs, or the object form's "packages" list) against
+// base and returns the member packages by name. A member is a
+// directory matching a glob whose package.json names it; unreadable
+// or unnamed directories are not members.
+func workspaceMembers(manifest map[string]any, base string) map[string]workspaceMember {
+	var patterns []string
+	switch ws := manifest["workspaces"].(type) {
+	case []any:
+		for _, p := range ws {
+			if str, ok := p.(string); ok {
+				patterns = append(patterns, str)
+			}
+		}
+	case map[string]any:
+		if pkgs, ok := ws["packages"].([]any); ok {
+			for _, p := range pkgs {
+				if str, ok := p.(string); ok {
+					patterns = append(patterns, str)
+				}
+			}
+		}
+	}
+	out := map[string]workspaceMember{}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(base, pattern))
+		if err != nil {
+			continue
+		}
+		for _, dir := range matches {
+			content, err := os.ReadFile(filepath.Join(dir, "package.json"))
+			if err != nil {
+				continue
+			}
+			var pkg map[string]any
+			if err := json.Unmarshal(deps.StripJSONC(content), &pkg); err != nil {
+				continue
+			}
+			name, _ := pkg["name"].(string)
+			if name == "" {
+				continue
+			}
+			version, _ := pkg["version"].(string)
+			out[name] = workspaceMember{dir: dir, version: version}
+		}
+	}
+	return out
+}
+
+// workspaceSpec reports whether a requirement spelling binds a
+// workspace member of that name: the catch-all "*", the workspace:
+// protocol, or the member's exact version (npm links a workspace
+// whose version the requirement names exactly).
+func workspaceSpec(spec, version string) bool {
+	if spec == "*" || strings.HasPrefix(spec, "workspace:") {
+		return true
+	}
+	return version != "" && spec == version
+}
+
+// localFileRef extracts the relative path from a file:/link:
+// requirement ("file:./local-dep.tgz" -> "./local-dep.tgz"). Absolute
+// paths, file:// URLs and non-local requirements are not local refs:
+// they already name their own resolution base.
+func localFileRef(spec string) (string, bool) {
+	var rest string
+	switch {
+	case strings.HasPrefix(spec, "file:"):
+		rest = strings.TrimPrefix(spec, "file:")
+	case strings.HasPrefix(spec, "link:"):
+		rest = strings.TrimPrefix(spec, "link:")
+	default:
+		return "", false
+	}
+	if rest == "" || strings.HasPrefix(rest, "/") || strings.HasPrefix(rest, "//") {
+		return "", false
+	}
+	return rest, true
+}
+
+// withinDir reports whether path is dir itself or lives under it,
+// after both are cleaned by filepath.Join semantics.
+func withinDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// copyLocalArtifact copies a local dependency artifact — a tarball
+// file, or a directory for a link:/directory file: requirement —
+// from the project into the exec workdir at the same relative path.
+func copyLocalArtifact(src, dst string) error {
+	// A directory symlink as the source root defeats filepath.Walk,
+	// which does not follow the root link: the walk callback then
+	// reads the directory itself as a file and the merge fails
+	// (CodeRabbit review, PR #2589). Resolve the root first; when
+	// resolution fails the path is used as written, as before.
+	if resolved, err := filepath.EvalSymlinks(src); err == nil {
+		src = resolved
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		content, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return writeBytesIfChanged(dst, content)
+	}
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return writeBytesIfChanged(target, content)
+	})
+}
+
+// rebaseDenoMapping rewrites a project config mapping for a
+// generated config living in a different directory: relative
+// mappings are resolved against the project config's directory and
+// spelled as file URLs; everything else (npm:, jsr:, http(s):, bare
+// specifiers, absolute paths) travels unchanged. A trailing slash
+// is load-bearing -- it is what makes a mapping a prefix mapping.
+func rebaseDenoMapping(v, cfgDir string) string {
+	if !strings.HasPrefix(v, "./") && !strings.HasPrefix(v, "../") {
+		return v
+	}
+	abs := filepath.Join(cfgDir, v)
+	if strings.HasSuffix(v, "/") {
+		abs += "/"
+	}
+	// The path must be escaped into the URL, not concatenated: a
+	// project directory containing '#', '?' or a percent escape would
+	// otherwise change the mapping's target ('#' starts a fragment)
+	// (Codex review, PR #2589).
+	return (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
+}
