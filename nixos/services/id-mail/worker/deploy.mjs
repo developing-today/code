@@ -20,8 +20,10 @@ const PLACEHOLDER = "{code}";
 // check silently treated every unrecognized argument as a request for
 // the real deploy sequence (retire, deploy, secret put).
 const args = process.argv.slice(2);
-if (args.length > 1 || args.some((arg) => arg !== "--dry-run")) {
-  console.error("usage: deploy.mjs [--dry-run]");
+const unknownArgs = args.filter((arg) => arg !== "--dry-run");
+if (args.length > 1 || unknownArgs.length > 0) {
+  const offenders = unknownArgs.length > 0 ? unknownArgs : args;
+  console.error(`unrecognized argument(s): ${offenders.join(" ")}\nusage: deploy.mjs [--dry-run]`);
   process.exit(2);
 }
 const dryRun = args.includes("--dry-run");
