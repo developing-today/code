@@ -21,11 +21,13 @@
 import { poolState } from "./derive.ts";
 import { computeChoices } from "./quota-guidance.ts";
 import type {
+  GathererProviderFreshness,
   GathererSummary,
   PoolFreshness,
   QuotaCurrentEntry,
   QuotaCredentialRow,
   QuotaCurrentFile,
+  QuotaGatherHeartbeat,
   QuotaPool,
   QuotaView,
   QuotaWindow,
@@ -46,6 +48,14 @@ export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
  * long as the skew lasts.
  */
 export const QUOTA_CURRENT_FUTURE_SKEW_MS = 60_000;
+/** Matches quota-gatherer.timer's OnCalendar=*:0/15 schedule. */
+export const QUOTA_GATHER_INTERVAL_MS = 15 * 60_000;
+
+/** Next wall-clock quarter-hour timer slot (not tickAt + interval). */
+export function nextExpectedQuotaTickAt(now = new Date()): string {
+  const nextSlot = (Math.floor(now.getTime() / QUOTA_GATHER_INTERVAL_MS) + 1) * QUOTA_GATHER_INTERVAL_MS;
+  return new Date(nextSlot).toISOString();
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -60,8 +70,59 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
     if (p.state !== "ok" && p.state !== "error" && p.state !== "unconfigured") return null;
     if (typeof p.measuredAt !== "string" || typeof p.source !== "string") return null;
     if (!Array.isArray(p.windows)) return null;
+    if (p.sourceClass !== undefined && typeof p.sourceClass !== "string") return null;
+    if (
+      p.cadenceSeconds !== undefined &&
+      p.cadenceSeconds !== null &&
+      (typeof p.cadenceSeconds !== "number" || !Number.isFinite(p.cadenceSeconds) || p.cadenceSeconds < 0)
+    ) {
+      return null;
+    }
+    if (p.fallback !== undefined && p.fallback !== null && typeof p.fallback !== "boolean") return null;
+    if (p.adapterStatus !== undefined && !isAdapterFailureStatus(p.adapterStatus)) return null;
   }
-  return doc as unknown as QuotaCurrentFile;
+  const heartbeat = parseQuotaGatherHeartbeat(doc.heartbeat);
+  return { ...(doc as unknown as QuotaCurrentFile), ...(heartbeat ? { heartbeat } : { heartbeat: undefined }) };
+}
+
+const ADAPTER_FAILURE_STATUSES = ["session-expired", "unparseable", "transport-unavailable", "fetch-failed"] as const;
+
+function isAdapterFailureStatus(v: unknown): v is (typeof ADAPTER_FAILURE_STATUSES)[number] {
+  return typeof v === "string" && (ADAPTER_FAILURE_STATUSES as readonly string[]).includes(v);
+}
+
+/** Structural validation shared by the embedded and standalone heartbeat readers. */
+export function parseQuotaGatherHeartbeat(doc: unknown): QuotaGatherHeartbeat | null {
+  if (!isRecord(doc) || typeof doc.tickAt !== "string" || !Number.isFinite(Date.parse(doc.tickAt))) return null;
+  if (
+    typeof doc.ok !== "boolean" ||
+    typeof doc.durationMs !== "number" ||
+    !Number.isFinite(doc.durationMs) ||
+    doc.durationMs < 0
+  ) {
+    return null;
+  }
+  if (!isRecord(doc.perProvider)) return null;
+  for (const value of Object.values(doc.perProvider)) {
+    if (!isRecord(value)) return null;
+    if (value.state !== "ok" && value.state !== "error") return null;
+    if (typeof value.ms !== "number" || !Number.isFinite(value.ms) || value.ms < 0) return null;
+    if (typeof value.rows !== "number" || !Number.isFinite(value.rows) || value.rows < 0) return null;
+    if (value.error !== undefined && typeof value.error !== "string") return null;
+    if (value.adapterStatus !== undefined && !isAdapterFailureStatus(value.adapterStatus)) return null;
+  }
+  if (doc.error !== undefined && typeof doc.error !== "string") return null;
+  return doc as unknown as QuotaGatherHeartbeat;
+}
+
+/** Keep the newest independently-written tick; a failed standalone tick supersedes old success. */
+export function latestQuotaHeartbeat(
+  embedded: QuotaGatherHeartbeat | undefined,
+  standalone: QuotaGatherHeartbeat | null,
+): QuotaGatherHeartbeat | undefined {
+  if (!standalone) return embedded;
+  if (!embedded) return standalone;
+  return Date.parse(standalone.tickAt) > Date.parse(embedded.tickAt) ? standalone : embedded;
 }
 
 type FreshState = PoolFreshness["state"];
@@ -220,24 +281,70 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
   return rows;
 }
 
+function healthFromAdapterStatus(status: QuotaCurrentEntry["adapterStatus"]): GathererProviderFreshness["health"] | null {
+  if (status === "session-expired") return "expired";
+  if (status === "unparseable") return "unparseable";
+  if (status === "transport-unavailable" || status === "fetch-failed") return "down";
+  return null;
+}
+
 function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
+  const heartbeat = file.heartbeat;
+  const providers = file.providers.map((e) => {
+    const run = heartbeat?.perProvider[e.providerId];
+    const failureStatus = run?.state === "error" ? (run.adapterStatus ?? e.adapterStatus) : e.adapterStatus;
+    const state = entryState(e, nowMs);
+    const health =
+      healthFromAdapterStatus(failureStatus) ??
+      (e.state === "unconfigured" || state === "error" ? "unknown" : state);
+    const summary: GathererSummary["providers"][number] = {
+      providerId: e.providerId,
+      serviceId: e.serviceId,
+      state,
+      health,
+      measuredAt: e.measuredAt,
+      source: e.source,
+      sourceClass: e.sourceClass ?? null,
+      cadenceSeconds: e.cadenceSeconds ?? null,
+      fallback: e.fallback ?? null,
+    };
+    if (e.credentialLabel) summary.credentialLabel = e.credentialLabel;
+    if (run?.state === "error" && run.error) summary.error = run.error;
+    else if (e.error) summary.error = e.error;
+    else if (summary.health === "stale") {
+      summary.error = e.retainedFromFailedTick
+        ? "retained after a failed provider tick"
+        : "latest read is outside the freshness window";
+    } else if (summary.health === "unknown" && e.state !== "unconfigured") {
+      summary.error = errorText(e);
+    }
+    return summary;
+  });
+  const present = new Set(file.providers.map((e) => e.providerId));
+  for (const [providerId, run] of Object.entries(heartbeat?.perProvider ?? {})) {
+    if (present.has(providerId)) continue;
+    const health = healthFromAdapterStatus(run.adapterStatus) ?? "unknown";
+    providers.push({
+      providerId,
+      serviceId: providerId,
+      state: run.state,
+      health,
+      measuredAt: null,
+      source: "unknown",
+      sourceClass: null,
+      cadenceSeconds: null,
+      fallback: null,
+      ...(run.error ? { error: run.error } : {}),
+    });
+  }
   return {
-    generatedAt: file.generatedAt,
+    generatedAt: file.generatedAt ?? heartbeat?.tickAt ?? null,
     source: file.source,
-    tickAt: file.heartbeat?.tickAt ?? null,
-    ok: file.heartbeat?.ok ?? true,
-    providers: file.providers.map((e) => {
-      const s: GathererSummary["providers"][number] = {
-        providerId: e.providerId,
-        serviceId: e.serviceId,
-        state: entryState(e, nowMs),
-        measuredAt: e.measuredAt,
-        source: e.source,
-      };
-      if (e.credentialLabel) s.credentialLabel = e.credentialLabel;
-      if (s.state === "error") s.error = errorText(e);
-      return s;
-    }),
+    tickAt: heartbeat?.tickAt ?? null,
+    ok: heartbeat?.ok ?? null,
+    durationMs: heartbeat?.durationMs ?? null,
+    ...(heartbeat?.error ? { error: heartbeat.error } : {}),
+    providers,
   };
 }
 
@@ -274,6 +381,22 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
   const out: QuotaView = { ...view, pools, gatherer: summarize(file, nowMs) };
   if (anyFreshWindows) out.choices = computeChoices(pools, nowMs);
   return out;
+}
+
+/** Add a valid standalone heartbeat when current quota data is absent/unreadable. */
+export function overlayStandaloneQuotaHeartbeat(
+  view: QuotaView,
+  heartbeat: QuotaGatherHeartbeat,
+  now = new Date(),
+): QuotaView {
+  const file: QuotaCurrentFile = {
+    version: 1,
+    generatedAt: heartbeat.tickAt,
+    source: "standalone-heartbeat",
+    heartbeat,
+    providers: [],
+  };
+  return { ...view, gatherer: summarize(file, now.getTime()) };
 }
 
 /** Turso window name -> SaaS card metric shape (labels mirror saas-extract). */

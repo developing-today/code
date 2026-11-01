@@ -139,6 +139,8 @@ in
             Environment = [
               "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}"
               "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json"
+              "PM_AGG_QUOTA_CURRENT_FILE=${aggState}/quota-current.json"
+              "PM_AGG_QUOTA_HEARTBEAT_FILE=${aggState}/quota-gatherer-heartbeat.json"
             ];
             Restart = "on-failure";
             RestartSec = 5;

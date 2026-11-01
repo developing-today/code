@@ -89,6 +89,7 @@ import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import { nextExpectedQuotaTickAt } from "./quota-current.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -2151,6 +2152,7 @@ export function renderQuota(
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
+  const quotaPlaneStatus = quotaPlaneStatusHtml(view);
   const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
 <h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
@@ -2160,6 +2162,7 @@ export function renderQuota(
     return layout(
       "Quota + throughput",
       `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+${quotaPlaneStatus}
 <h2>Pools</h2>${pools}
 ${burnAndChoices}`,
       provenance,
@@ -2200,6 +2203,7 @@ ${burnAndChoices}`,
   return layout(
     "Usage & billing",
     `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
+${quotaPlaneStatus}
 ${attentionStripHtml(usage)}
 <h2>Token quotas</h2>${pools}
 ${paygCardHtml(usage)}
@@ -2212,6 +2216,32 @@ ${burnAndChoices}`,
     "",
     detail ? freshnessChips(detail, ["quota", "usage"]) : "",
   );
+}
+
+function quotaPlaneStatusHtml(view: QuotaView): string {
+  const summary = view.gatherer;
+  const expected = nextExpectedQuotaTickAt();
+  const overall = !summary?.tickAt
+    ? "unknown"
+    : summary.ok === false
+      ? "failed"
+      : summary.providers.some(
+            (p) => p.health === "stale" || p.health === "down" || p.health === "expired" || p.health === "unparseable",
+          )
+        ? "degraded"
+        : summary.providers.some((p) => p.health === "unknown")
+          ? "unknown"
+          : "ok";
+  const rows = (summary?.providers ?? []).map((p) => {
+    const source = p.sourceClass ? `${p.sourceClass} · ${p.source}` : `unknown · ${p.source}`;
+    const cadence = p.cadenceSeconds == null ? "not recorded" : `${Math.round(p.cadenceSeconds / 60)} min`;
+    const fallback = p.fallback === true ? "yes" : p.fallback === false ? "no" : "unknown";
+    const error = p.error ?? (p.health === "unknown" && p.state === "error" ? "failure cause not recorded" : "—");
+    return `<tr><td>${esc(p.providerId)}${p.credentialLabel ? `<div class="muted">${esc(p.credentialLabel)}</div>` : ""}</td><td><span class="badge ${esc(p.health)}">${esc(p.health)}</span></td><td>${fmtDate(p.measuredAt)}</td><td>${esc(source)}</td><td>${esc(cadence)}</td><td>${p.fallback === true ? '<span class="badge">fallback</span>' : esc(fallback)}</td><td>${esc(error)}</td></tr>`;
+  }).join("");
+  return `<h2>Quota-plane status</h2>
+<div class="card"><div>Gatherer: <span class="badge ${esc(overall)}">${esc(overall)}</span> · last tick ${fmtDate(summary?.tickAt)} · expected next tick ${summary?.tickAt ? fmtDate(expected) : "unknown"} <span class="muted">(quarter-hour timer, up to 20s jitter)</span></div>${summary?.durationMs != null ? `<div class="muted">Tick duration: ${summary.durationMs.toLocaleString()} ms</div>` : ""}${summary?.error ? `<div>Last tick error: ${esc(summary.error)}</div>` : ""}</div>
+<div class="tblwrap"><table><caption>Quota provider adapter health and freshness</caption><tr><th scope="col">Provider</th><th scope="col">Adapter health</th><th scope="col">Measured at</th><th scope="col">Source class / source</th><th scope="col">Cadence</th><th scope="col">Fallback</th><th scope="col">Last error</th></tr>${rows || '<tr><td colspan="7" class="muted">Unknown — no provider status evidence has been recorded.</td></tr>'}</table></div>`;
 }
 
 // --- Service detail view (hub v1.1, §1.5) -------------------------------------

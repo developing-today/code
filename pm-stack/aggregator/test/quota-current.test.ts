@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   overlayQuotaCurrent,
+  overlayStandaloneQuotaHeartbeat,
   overlayTursoUsage,
   parseQuotaCurrent,
+  parseQuotaGatherHeartbeat,
+  latestQuotaHeartbeat,
+  nextExpectedQuotaTickAt,
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
@@ -645,5 +649,105 @@ describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
     // The main account's pool keeps its own read, untouched.
     const main = out.pools.find((p) => p.id === "openai:codex")!;
     expect(main.windows[0].percent).toBe(11);
+  });
+});
+
+describe("quota-plane status evidence (#1175)", () => {
+  const okHeartbeat = {
+    tickAt: iso(4 * 60_000),
+    ok: true,
+    durationMs: 900,
+    perProvider: { claude: { state: "ok" as const, ms: 50, rows: 1 } },
+  };
+
+  test("newer standalone failed tick supersedes older embedded success", () => {
+    const failed = {
+      tickAt: iso(1 * 60_000),
+      ok: false,
+      durationMs: 25,
+      perProvider: {},
+      error: "credential store unavailable",
+    };
+    const latest = latestQuotaHeartbeat(okHeartbeat, failed);
+    expect(latest).toBe(failed);
+    const out = overlayQuotaCurrent(baseView(), { ...file([]), heartbeat: latest }, NOW);
+    expect(out.gatherer?.ok).toBe(false);
+    expect(out.gatherer?.error).toBe("credential store unavailable");
+  });
+
+  test("standalone status includes providers that have no current data row", () => {
+    const heartbeat = {
+      tickAt: iso(1 * 60_000),
+      ok: true,
+      durationMs: 100,
+      perProvider: {
+        codex: { state: "error" as const, ms: 80, rows: 0, adapterStatus: "session-expired" as const, error: "login expired" },
+      },
+    };
+    const parsed = parseQuotaGatherHeartbeat(JSON.parse(JSON.stringify(heartbeat)));
+    expect(parsed).not.toBeNull();
+    const out = overlayStandaloneQuotaHeartbeat(baseView(), parsed!, NOW);
+    expect(out.gatherer?.providers).toEqual([
+      {
+        providerId: "codex",
+        serviceId: "codex",
+        state: "error",
+        health: "expired",
+        measuredAt: null,
+        source: "unknown",
+        sourceClass: null,
+        cadenceSeconds: null,
+        fallback: null,
+        error: "login expired",
+      },
+    ]);
+  });
+
+  test("status page shows freshness, source metadata, fallback and safely escaped errors", async () => {
+    const { renderQuota } = await import("../src/render.ts");
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({
+          providerId: "meta",
+          serviceId: "meta:high-usage",
+          source: "file-export/meta-laptop",
+          sourceClass: "file-export",
+          cadenceSeconds: null,
+          fallback: true,
+          adapterStatus: "unparseable",
+          state: "error",
+          error: "bad <payload>",
+        }),
+      ]),
+      NOW,
+    );
+    const html = renderQuota(out, { board: "", roadmap: "", items: "", comments: "", quota: "", usage: "", attention: "", orchestration: "", dns: "", registry: "", aa: "" });
+    expect(html).toContain("Quota-plane status");
+    expect(html).toContain("unparseable");
+    expect(html).toContain("file-export · file-export/meta-laptop");
+    expect(html).toContain("not recorded");
+    expect(html).toContain("fallback");
+    expect(html).toContain("bad &lt;payload&gt;");
+    expect(html).toContain("expected next tick");
+  });
+
+  test("malformed standalone heartbeat is rejected rather than rendered as healthy", () => {
+    expect(parseQuotaGatherHeartbeat({ tickAt: "not a date", ok: true, durationMs: 1, perProvider: {} })).toBeNull();
+    expect(parseQuotaGatherHeartbeat({ tickAt: iso(1), ok: true, durationMs: 1, perProvider: { x: { state: "ok", ms: 1, rows: 1, adapterStatus: "healthy" } } })).toBeNull();
+  });
+
+  test("next tick follows the wall-clock timer slots, not lastTick + 15m", () => {
+    expect(nextExpectedQuotaTickAt(new Date("2026-10-27T07:14:59.000Z"))).toBe("2026-10-27T07:15:00.000Z");
+    expect(nextExpectedQuotaTickAt(new Date("2026-10-27T07:15:00.000Z"))).toBe("2026-10-27T07:30:00.000Z");
+  });
+
+  test("generic error text remains unknown unless a structured adapter cause exists", () => {
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ providerId: "codex", serviceId: "openai:codex", state: "error", error: "login expired" })]),
+      NOW,
+    );
+    expect(out.gatherer?.providers[0]?.health).toBe("unknown");
   });
 });
