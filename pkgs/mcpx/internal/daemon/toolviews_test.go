@@ -387,6 +387,70 @@ func TestHideSchemaPropsAdjustsPropertyCounts(t *testing.T) {
 	}
 }
 
+func TestHideSchemaPropsComposedPropertyCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name, schema string
+	}{
+		{"allOf count", `{"properties":{"secret":{}},"allOf":[{"minProperties":2,"maxProperties":2}]}`},
+		{"allOf declaration", `{"minProperties":2,"maxProperties":2,"allOf":[{"properties":{"secret":{}}}]}`},
+		{"sibling allOf", `{"allOf":[{"properties":{"secret":{}}},{"minProperties":2,"maxProperties":2}]}`},
+		{"ref count", `{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"secret":{}},"$defs":{"count":{"minProperties":2,"maxProperties":2}},"$ref":"#/$defs/count"}`},
+		{"ref declaration", `{"$schema":"https://json-schema.org/draft/2020-12/schema","minProperties":2,"maxProperties":2,"$defs":{"props":{"properties":{"secret":{}}}},"$ref":"#/$defs/props"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := hideSchemaProps(json.RawMessage(tc.schema), []string{"secret", "secret"})
+			compiled, err := schemaval.Compile(out)
+			if err != nil {
+				t.Fatalf("compile %s: %v", out, err)
+			}
+			for _, input := range []struct {
+				json  string
+				valid bool
+			}{{`{}`, false}, {`{"visible":1}`, true}, {`{"visible":1,"extra":2}`, false}} {
+				err := compiled.ValidateJSON(json.RawMessage(input.json))
+				if (err == nil) != input.valid {
+					t.Errorf("%s: valid=%v err=%v schema=%s", input.json, input.valid, err, out)
+				}
+			}
+		})
+	}
+}
+
+func TestHideSchemaPropsPropertyCountsPreserveNestedRef(t *testing.T) {
+	schema := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"secret":{},"nested":{"$ref":"#/$defs/count"}},"$ref":"#/$defs/count","$defs":{"count":{"minProperties":1,"maxProperties":2}}}`)
+	out := hideSchemaProps(schema, []string{"secret"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{{`{}`, true}, {`{"nested":{"x":1}}`, true}, {`{"nested":{}}`, false}, {`{"nested":{"x":1,"y":2,"z":3}}`, false}} {
+		err := compiled.ValidateJSON(json.RawMessage(tc.input))
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: valid=%v err=%v schema=%s", tc.input, tc.valid, err, out)
+		}
+	}
+}
+
+func TestHideSchemaPropsMaxPropertiesBelowHiddenCount(t *testing.T) {
+	for _, schema := range []string{
+		`{"properties":{"secret":{}},"maxProperties":0}`,
+		`{"properties":{"secret":{}},"allOf":[{"maxProperties":0}]}`,
+		`{"properties":{"secret":{}},"$ref":"#/$defs/count","$defs":{"count":{"maxProperties":0}}}`,
+	} {
+		out := hideSchemaProps(json.RawMessage(schema), []string{"secret", "secret"})
+		compiled, err := schemaval.Compile(out)
+		if err != nil {
+			t.Fatalf("compile %s: %v", out, err)
+		}
+		if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err == nil {
+			t.Errorf("pin exceeds maxProperties, but empty input was accepted: %s", out)
+		}
+	}
+}
+
 func TestHideSchemaPropsProjectsAllOfRequirements(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"required":["limit"],"allOf":[{"required":["tailnet","limit"]}]}`)
 	out := hideSchemaProps(schema, []string{"tailnet"})

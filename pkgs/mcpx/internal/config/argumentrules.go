@@ -1048,6 +1048,37 @@ func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, 
 	var unsatisfiable bool
 	for k, val := range m {
 		switch k {
+		case "properties":
+			props, ok := val.(map[string]any)
+			if !ok {
+				out[k] = val
+				continue
+			}
+			kept := make(map[string]any, len(props))
+			// Resolve references at the current resource boundary but
+			// evaluate using the rule document's dialect.
+			verdictRoot := make(map[string]any, len(resRoot)+1)
+			for key, value := range resRoot {
+				verdictRoot[key] = value
+			}
+			if dialect, ok := root["$schema"]; ok {
+				verdictRoot["$schema"] = dialect
+			}
+			for name, sub := range props {
+				if pinned[name] {
+					predicate := map[string]any{"properties": map[string]any{name: sub}}
+					if valid, decided := pinnedSchemaVerdict(predicate, pinned, pinVals, verdictRoot, resolving); decided {
+						if !valid {
+							unsatisfiable = true
+						}
+						continue
+					}
+				}
+				kept[name] = sub
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
 		case "required":
 			if names, ok := val.([]any); ok {
 				if kept := filterPinnedNames(names, pinned); len(kept) > 0 {

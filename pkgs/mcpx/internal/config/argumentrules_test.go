@@ -1513,3 +1513,57 @@ func reproCheckPinned(t *testing.T, rule string, cases []struct {
 		}
 	}
 }
+
+func TestProjectPinnedMixedPropertyPredicates(t *testing.T) {
+	for _, dialect := range []string{"https://json-schema.org/draft/2020-12/schema", "http://json-schema.org/draft-07/schema#"} {
+		for _, op := range []string{"not", "if"} {
+			for _, pin := range []string{"prod", "dev"} {
+				t.Run(dialect+"/"+op+"/"+pin, func(t *testing.T) {
+					predicate := `{"properties":{"tailnet":{"$ref":"#/definitions/pin"},"limit":{"type":"number"}},"required":["tailnet","limit"]}`
+					body := `"not":` + predicate
+					if op == "if" {
+						body = `"if":` + predicate + `,"then":{"required":["cursor"]},"else":{"required":["other"]}`
+					}
+					raw := json.RawMessage(`{"$schema":"` + dialect + `","definitions":{"pin":{"const":"prod"}},` + body + `}`)
+					projected := projectPinnedRule(raw, map[string]any{"tailnet": pin})
+					original, err := schemaval.Compile(raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					advertised, err := schemaval.Compile(projected)
+					if err != nil {
+						t.Fatalf("%v: %s", err, projected)
+					}
+					for _, input := range []string{`{}`, `{"limit":1}`, `{"limit":"bad"}`, `{"limit":1,"cursor":true}`, `{"other":true}`, `{"limit":"bad","other":true}`} {
+						var merged map[string]any
+						if err := json.Unmarshal([]byte(input), &merged); err != nil {
+							t.Fatal(err)
+						}
+						merged["tailnet"] = pin
+						b, _ := json.Marshal(merged)
+						actual, _ := schemaval.DecodeInstance(b)
+						caller, _ := schemaval.DecodeInstance([]byte(input))
+						if got, want := advertised.Validate(caller) == nil, original.Validate(actual) == nil; got != want {
+							t.Errorf("%s: got %v want %v; projection %s", input, got, want, projected)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestProjectPinnedPropertyUndecidableIsPreserved(t *testing.T) {
+	for _, sub := range []string{`{"$ref":"#/definitions/missing"}`, `{"$id":"https://example.com/inner","const":"prod"}`, `{"type":42}`} {
+		raw := json.RawMessage(`{"properties":{"tailnet":` + sub + `,"limit":{"type":"number"}}}`)
+		projected := projectPinnedRule(raw, map[string]any{"tailnet": "prod"})
+		var decoded map[string]any
+		if err := json.Unmarshal(projected, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		props, ok := decoded["properties"].(map[string]any)
+		if !ok || props["tailnet"] == nil || props["limit"] == nil {
+			t.Errorf("undecidable %s must preserve both properties: %s", sub, projected)
+		}
+	}
+}

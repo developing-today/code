@@ -485,7 +485,11 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 	if err := dec.Decode(&m); err != nil {
 		return schema
 	}
-	projector := schemaProjector{root: m, hide: hide, refs: map[string]string{}}
+	unique := make(map[string]bool, len(hide))
+	for _, name := range hide {
+		unique[name] = true
+	}
+	projector := schemaProjector{root: m, hide: hide, hiddenCount: len(unique), refs: map[string]string{}}
 	projector.hidePropsAtScope(m)
 	out, err := json.Marshal(m)
 	if err != nil {
@@ -509,28 +513,20 @@ func hideSchemaProps(schema json.RawMessage, hide []string) json.RawMessage {
 // pin at call time, and weakening a branch would misstate the choice
 // the schema offers.
 type schemaProjector struct {
-	root map[string]any
-	hide []string
-	refs map[string]string
+	root        map[string]any
+	hide        []string
+	hiddenCount int
+	refs        map[string]string
 }
 
 func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
-	removed := 0
 	if props, ok := m["properties"].(map[string]any); ok {
-		seen := map[string]bool{}
 		for _, h := range p.hide {
-			if seen[h] {
-				continue
-			}
-			seen[h] = true
-			if _, present := props[h]; present {
-				removed++
-			}
 			delete(props, h)
 		}
 	}
-	if removed > 0 {
-		adjustPropertyCounts(m, removed)
+	if p.hiddenCount > 0 {
+		adjustPropertyCounts(m, p.hiddenCount)
 	}
 	if req, ok := m["required"].([]any); ok {
 		kept := req[:0]
@@ -594,17 +590,17 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 }
 
 // adjustPropertyCounts projects minProperties/maxProperties at one
-// scope after removed hidden properties were deleted from it. The
-// pins supply those properties on every call -- they merge before
-// forwarding -- so the merged instance always carries removed more
+// same-instance scope. The pins supply those properties on every call,
+// even when declared in a different conjunct -- they merge before
+// forwarding -- so the merged instance always carries hiddenCount more
 // properties than the caller supplied. Counting constraints left
 // unadjusted count caller arguments instead: minProperties:1 over a
 // sole pinned property advertises a schema no caller can satisfy
 // even though {} succeeds once the pin merges (Codex P2 on
 // PR #2976). A min that reaches zero is no constraint and is
-// dropped; a max floors at zero (the pin alone already exceeds a
-// smaller upstream max, which no advertised count can express).
-func adjustPropertyCounts(m map[string]any, removed int) {
+// dropped; a max below zero makes the schema unsatisfiable because
+// the pins alone exceed the upstream maximum.
+func adjustPropertyCounts(m map[string]any, hiddenCount int) {
 	for _, key := range []string{"minProperties", "maxProperties"} {
 		num, ok := m[key].(json.Number)
 		if !ok {
@@ -614,12 +610,16 @@ func adjustPropertyCounts(m map[string]any, removed int) {
 		if err != nil {
 			continue
 		}
-		n -= int64(removed)
+		n -= int64(hiddenCount)
 		if key == "minProperties" && n <= 0 {
 			delete(m, key)
 			continue
 		}
 		if n < 0 {
+			// No caller input can satisfy this constraint after the pins
+			// merge. An empty schema matches every instance, so its
+			// negation rejects every instance without disturbing allOf.
+			m["not"] = map[string]any{}
 			n = 0
 		}
 		m[key] = json.Number(strconv.FormatInt(n, 10))
