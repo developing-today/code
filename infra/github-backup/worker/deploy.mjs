@@ -67,7 +67,21 @@ const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken };
 
 if (deployVersion !== null) {
   createDeployment(deployVersion);
+  // #3475: deploying an existing version restores that version's code
+  // only. A version uploaded by the normal flow predates the runtime
+  // configuration step below, so rolling back to it would restore a
+  // Worker whose DRAIN_BEARER / GITHUB_WEBHOOK_SECRET bindings were
+  // never provisioned on it. Re-provision the secrets against the
+  // just-deployed version: `wrangler secret put` derives a new version
+  // from the deployed code, so the rollback target's code is preserved
+  // and the final live version is the configured one reported below.
+  setWorkerSecrets();
   reportLive();
+  const rollbackLive = liveVersionIds();
+  console.log(
+    `live: ${WORKER_URL} at version ${rollbackLive.join(", ") || deployVersion} ` +
+    `(rolled back to ${deployVersion}, runtime configuration re-provisioned)`
+  );
   process.exit(0);
 }
 
@@ -112,7 +126,20 @@ if (live.includes(version.id)) {
 }
 setWorkerSecrets();
 reportLive();
-console.log(`live: ${WORKER_URL} at version ${version.id} (${tag})`);
+// #3475: `wrangler secret put` creates and deploys a NEW version that
+// carries the runtime configuration; the uploaded version.id predates
+// it and has no secret bindings. The version to advertise — and the
+// only sound rollback target — is the final configured live version,
+// re-read after provisioning, not the pre-secrets upload.
+const configuredLive = liveVersionIds();
+const liveId = configuredLive.join(", ") || version.id;
+console.log(`live: ${WORKER_URL} at version ${liveId} (${tag})`);
+if (liveId !== version.id) {
+  console.log(
+    `note: uploaded version ${version.id} was superseded by configured version ${liveId}; ` +
+    `use ${liveId} as the rollback target`
+  );
+}
 
 function workerExists() {
   try {
@@ -153,7 +180,11 @@ function createDeployment(versionId) {
 }
 
 // (Re)set the Worker secrets from Bitwarden by name, so a renamed or
-// fresh Worker is fully wired in the same run. Values pass through
+// fresh Worker is fully wired in the same run. Each `secret put`
+// creates a new Worker version carrying the binding, so after this
+// runs the live version is a configured successor of the version that
+// was deployed — callers must re-read the live version before
+// advertising a rollback target (#3475). Values pass through
 // wrangler's stdin only; nothing is printed.
 function setWorkerSecrets() {
   const wanted = [
