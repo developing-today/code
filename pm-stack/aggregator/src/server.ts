@@ -59,6 +59,12 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
+import { timingSafeEqual } from "node:crypto";
+import { getAlertsStore, startAlertEngine, validateNewIncident, validateNewSubscription } from "./alerts.ts";
+import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { resolveBwsSecret } from "./secrets.ts";
+import { SW_SOURCE } from "./sw-source.ts";
+import { renderAlerts } from "./render.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -236,27 +242,52 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
-// Self-unregistering service worker, served at /sw.js on purpose. Until
-// 2026-10-27 this origin (the laptop's tailnet-serve address) fronted the
-// opencode web app, which registered a Workbox service worker that keeps
-// serving the opencode shell from cache even though the origin now serves
-// the dashboard. Browsers holding that registration pick this script up
-// on their next update check: it installs, unregisters itself, and
-// reloads open tabs into the dashboard. Harmless for fresh browsers --
-// it removes itself immediately.
-const SW_KILL_SWITCH = `self.addEventListener('install', () => { self.skipWaiting(); });
-self.addEventListener('activate', async () => {
-  try { await self.registration.unregister(); } catch {}
-  const cs = await self.clients.matchAll({ type: 'window' });
-  for (const c of cs) { try { c.navigate(c.url); } catch {} }
-});
-`;
-
-function serviceWorkerKillSwitch(): Response {
-  return new Response(SW_KILL_SWITCH, {
+// The real service worker (#3676 — design 2026-11-01T03-54-00Z §6
+// step 2): push + notificationclick handlers, with the kill switch's
+// eviction job carried forward per the §6 fallback (cache purge on
+// activate in the worker; foreign-registration unregister in the
+// page-side probe script). Worker source + history: src/sw-source.ts.
+function serviceWorkerResponse(): Response {
+  return new Response(SW_SOURCE, {
     headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
   });
 }
+
+// --- Alert throat (#3676) -------------------------------------------------
+
+/** Bearer check for POST /api/alerts: the intake token is resolved
+ * by name from Bitwarden (pm-aggregator.alerts-intake-token) and
+ * compared in constant time; its value is never logged. */
+async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
+  const header = req.headers.get("authorization") ?? "";
+  const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+  if (!presented) return false;
+  const expected = await resolveBwsSecret("pm-aggregator.alerts-intake-token");
+  if (!expected) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The PWA manifest (#3315 slice a, landed with #3676): start_url is
+ * the attention view per the design; icons incl. maskable + iOS. */
+const PWA_MANIFEST = {
+  name: "PM Aggregator",
+  short_name: "PM Stack",
+  description: "The PM-stack aggregator: needs-you queues, quotas, health \u2014 and the alert throat.",
+  start_url: "/attention",
+  scope: "/",
+  display: "standalone",
+  background_color: "#0e1117",
+  theme_color: "#161b22",
+  icons: [
+    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ],
+};
 
 async function boardContext() {
   const board = await source.board();
@@ -858,9 +889,130 @@ async function handler(req: Request): Promise<Response> {
     );
   }
   if (path === "/sw.js") {
-    // Kill switch for the opencode service worker stranded on this
-    // origin (see SW_KILL_SWITCH above) -- never a real worker here.
-    return serviceWorkerKillSwitch();
+    // The real worker (#3676; source + §6 history in src/sw-source.ts).
+    return serviceWorkerResponse();
+  }
+  if (path === "/manifest.webmanifest") {
+    return new Response(JSON.stringify(PWA_MANIFEST, null, 2), {
+      headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" },
+    });
+  }
+  const iconMatch = /^\/icons\/(icon-192\.png|icon-512\.png|icon-maskable-512\.png|apple-touch-icon\.png)$/.exec(path);
+  if (iconMatch) {
+    const file = Bun.file(new URL(`./assets/icons/${iconMatch[1]}`, import.meta.url));
+    if (!(await file.exists())) return json({ error: "icon missing" }, 404);
+    return new Response(file, { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
+  }
+  if (path === "/assets/push-client.js") {
+    const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/api/sw-probe") {
+    // Design §6 step 2: pages report the registrations they see
+    // (counted, no content); GET exposes the running summary.
+    if (req.method === "POST") {
+      try {
+        const body = (await readJsonBody(req)) as { registrations?: unknown; evicted?: unknown };
+        return json(recordSwProbe(body));
+      } catch (err) {
+        return json({ error: `invalid probe: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json(swProbeSummary());
+  }
+
+  // --- Alert throat (#3676): subscription API -------------------------
+  if (path === "/api/push/subscriptions") {
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "POST") {
+      try {
+        const parsed = validateNewSubscription(await readJsonBody(req));
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+      } catch (err) {
+        return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    if (req.method === "DELETE") {
+      try {
+        const body = (await readJsonBody(req)) as { endpoint?: unknown };
+        if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
+        const deleted = await store.deleteSubscription(body.endpoint);
+        return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
+      } catch (err) {
+        return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  // --- Alert throat (#3676): incident intake + ack/close --------------
+  if (req.method === "POST" && path === "/api/alerts") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    try {
+      const parsed = validateNewIncident(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const { incident, created } = await store.postIncident(parsed.value);
+      return json({ incident, created }, created ? 201 : 200);
+    } catch (err) {
+      return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
+  if (req.method === "POST" && alertActionMatch) {
+    const id = alertActionMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const result = alertActionMatch[2] === "ack" ? await store.ackIncident(id) : await store.closeIncident(id);
+    if (!result.incident) return json({ error: "no such incident", id }, 404);
+    return json({ incident: result.incident, transitioned: result.transitioned });
+  }
+  if (path === "/alerts" || path === "/api/alerts.json") {
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const [incidents, events, subscriptions] = await Promise.all([
+        store.listIncidents(),
+        store.recentEvents(),
+        store.listSubscriptions(),
+      ]);
+      if (path === "/api/alerts.json") return json({ incidents, events });
+      return html(
+        renderAlerts(
+          { available: true, incidents, events, subscriptions, ackWindowMin: cfg.alerts.ackWindowMin },
+          prov(),
+          VAPID_PUBLIC_KEY,
+        ),
+      );
+    } catch {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
   }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
@@ -977,3 +1129,7 @@ const servers = cfg.hosts.map((hostname) =>
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
+
+// The alert throat's engine (#3676): the ~60s delivery/escalation
+// tick (live mode only, fail-soft — see src/alerts.ts).
+startAlertEngine(cfg);

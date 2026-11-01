@@ -61,6 +61,16 @@ export interface Config {
   readyForAgent: {
     baseUrl: string;
   };
+  /** Canonical HTTPS origin for the PWA + push deep links (#3316 §4):
+   * Tailscale Serve fronts the aggregator at this origin; the
+   * plain-HTTP tailnet listener is not a secure context and can
+   * never hold a service worker or a push subscription. */
+  publicOrigin: string;
+  /** Alert throat (#3676): escalation ack window + engine cadence. */
+  alerts: {
+    ackWindowMin: number;
+    tickMs: number;
+  };
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -124,6 +134,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     readyForAgent: {
       baseUrl: s(env.PM_AGG_RFA_URL, "http://127.0.0.1:6056"),
+    },
+    publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
+    alerts: {
+      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      tickMs: 60_000,
     },
   };
 }

@@ -283,6 +283,63 @@ the sessions that worked them. The OpenCode tool in
 `{ sessionId, parentId, agent, directory }` on demand — copy it to
 `~/.config/opencode/tool/` on each host and restart that server.
 
+### Alerts — the alert throat (#3676) + PWA/Web Push (#1254 slices a+b)
+
+Every sentinel posts incidents to ONE intake instead of inventing its
+own alert path; one engine owns dedupe, delivery, escalation, and
+ack; every transition lands in a durable ledger. Drew's amendments to
+the #3450 design: delivery is Web Push (the #1254 design, doc
+`doc/2026-11-01T03-54-00Z_design_pwa_push_notifications.md`), and the
+ledger lives in **Supabase muse-dev2**, schema `alerts` (`incidents`
+with a partial unique index on `(source, incident_key)` for
+non-closed rows, `incident_events`, `push_subscriptions`,
+`notification_sends`) — reached through the same Management-API SQL
+path as the fleet-feed collector's AA read (`src/supabase.ts`).
+
+- **PWA origin**: the aggregator is served through Tailscale Serve —
+  `https://amd-6.raptor-pumpkinseed.ts.net` (443) → `127.0.0.1:4870`.
+  That HTTPS origin is the only secure context here, so it is the
+  PWA origin: `PM_AGG_PUBLIC_ORIGIN` (default exactly that) builds
+  push deep links. `/manifest.webmanifest` + icons (incl. maskable +
+  apple-touch) make it installable; iOS Web Push needs the installed
+  PWA (16.4+).
+- **Service worker**: `/sw.js` is the REAL worker now (push +
+  notificationclick). Per design §6's fallback (no probe data
+  existed), the eviction job for the stranded opencode worker is
+  carried forward: the worker purges origin caches on activate, and
+  the page-side probe script (`/assets/push-client.js`, loaded by
+  every page) unregisters foreign registrations and reports what it
+  sees to `/api/sw-probe` (GET returns the running summary).
+- **Subscriptions**: `POST/GET/DELETE /api/push/subscriptions` over
+  `alerts.push_subscriptions` — per-class map + quiet prefs
+  (defaults: `incident` on; quiet 23:00–07:00 America/Chicago).
+  A 404/410 from a push service bumps `gone_count`; two consecutive
+  gones prune the row (design §4).
+- **Intake**: `POST /api/alerts` with `Authorization: Bearer <token>`
+  — the token is the Bitwarden secret `pm-aggregator.
+  alerts-intake-token`, resolved by name at runtime
+  (`src/secrets.ts`, the laptop bws flow). Sources post via
+  `bun run scripts/post-alert.ts --source … --key … --severity … --title …`.
+  Dedupe rides the partial unique index: a repeat post bumps
+  `occurrences`/`last_seen_at` (and writes a `duplicate_suppressed`
+  event only when a delivery would otherwise repeat).
+- **Engine**: a ~60s tick in the server (live mode only). A new open
+  critical pushes immediately to subscriptions with the `incident`
+  class on (the breakthrough class — sentinels are external, so
+  quiet hours never hold it), recording `delivered_at` + one
+  `notification_sends` row per attempt. An unacked critical older
+  than `ALERT_ACK_WINDOW_MIN` (default 15) escalates with exactly
+  one more push (`escalated_at`). Warnings never push in v1.
+- **Ack surface**: `/alerts` lists open incidents with Ack/Close.
+  Ack is exactly-once: only the open→acked transition writes an
+  event (and stamps the sends' `acted_on_at`); a repeat ack returns
+  the current state. Push payloads deep-link to
+  `/alerts#incident-<id>`.
+- **VAPID**: the public key ships in `src/push.ts`; the private key
+  is the Bitwarden secret `pm-aggregator.vapid-private-key`, fetched
+  by name at runtime, memory only. Subject
+  `mailto:drewrypope@gmail.com`.
+
 ## Ingest contract (#2576)
 
 Every document the aggregator ingests is validated **once, at its
