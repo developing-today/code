@@ -27,7 +27,7 @@ working directory, then `~/.config/mcpx/scripts/`. Nearest wins.
 
 Scripts are TypeScript on a real runtime (deno, else bun, else node). They get
 the full runtime: filesystem, network, subprocesses. Relative paths resolve
-against *your* working directory, not the script's.
+against _your_ working directory, not the script's.
 
 `log`, `emit`, `tools` and every namespace are already on `globalThis`, so a
 script needs no imports at all. `log(msg)` is `log.info(msg)`. Importing works

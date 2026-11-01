@@ -172,7 +172,10 @@ function sameQuotaRead(a: QuotaCredentialRow, b: QuotaCredentialRow): boolean {
     a.freshness.state === b.freshness.state &&
     a.windows.length === b.windows.length &&
     a.windows.every(
-      (w, i) => w.name === b.windows[i].name && w.percent === b.windows[i].percent && sameReset(w.resetsAt, b.windows[i].resetsAt),
+      (w, i) =>
+        w.name === b.windows[i].name &&
+        w.percent === b.windows[i].percent &&
+        sameReset(w.resetsAt, b.windows[i].resetsAt),
     )
   );
 }
@@ -252,9 +255,7 @@ export function overlayQuotaCurrent(view: QuotaView, file: QuotaCurrentFile, now
     const entries = byService.get(orig.id);
     if (!entries || entries.length === 0) return orig;
     const pool: QuotaPool = { ...orig, windows: [...orig.windows] };
-    const freshOk = entries
-      .filter((e) => entryState(e, nowMs) === "ok")
-      .sort(newestFirst(nowMs));
+    const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
     if (freshOk.length > 0) {
       if (applyEntry(pool, freshOk[0], "ok")) anyFreshWindows = true;
       const rows = credentialRows(entries, nowMs);
@@ -297,9 +298,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   if (idx < 0) return services;
   const nowMs = now.getTime();
   const svc = services[idx];
-  const freshOk = entries
-    .filter((e) => entryState(e, nowMs) === "ok")
-    .sort(newestFirst(nowMs));
+  const freshOk = entries.filter((e) => entryState(e, nowMs) === "ok").sort(newestFirst(nowMs));
   const out = [...services];
   if (freshOk.length > 0) {
     const entry = freshOk[0];

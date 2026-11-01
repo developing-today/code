@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
-import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
+import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
 import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
@@ -105,18 +105,34 @@ describe("saas extraction (Part b)", () => {
 
   test("fail-soft on an empty document", () => {
     const shells = extractSaasServices("nothing here");
-    expect(shells.length).toBe(8);
+    expect(shells.length).toBe(11);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
+  });
+
+  test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
+    for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
+      const s = byId.get(id)!;
+      expect(s).toBeDefined();
+      expect(s.status).toBe("candidate");
+      expect(s.metrics).toEqual([]);
+      expect(s.measuredAt).toBeNull();
+      expect(s.plan).toContain("Candidate — not held");
+    }
+  });
+
+  test("sources provenance: tracker row, baseline, quota-view section (#1058)", () => {
+    const t = byId.get("turso")!;
+    expect(t.sources?.quotaViewSection).toBe("### Turso");
+    expect(t.sources?.trackerRow).toBe("Turso");
+    expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
   });
 
   test("modal: monthly console read carries a dated used-credits value", () => {
     const view = VIEW.replace(
       "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
       "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
-    ).replace(
-      "- **Last checked:** 2026-10-22 (Tracker).",
-      "- **Last checked:** console read 2026-10-24.",
-    );
+    ).replace("- **Last checked:** 2026-10-22 (Tracker).", "- **Last checked:** console read 2026-10-24.");
     const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
     const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
     expect(credits.used).toBe(12.5);
@@ -211,7 +227,9 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
   });
 
   test("subscriptions strip is renewal-only rows from the records", () => {
-    const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
+    const subs = extractSubscriptions(
+      `${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`,
+    );
     expect(subs).toEqual([
       { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
       { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
@@ -245,7 +263,15 @@ describe("bubble rules (§1.3)", () => {
       services: [],
       payg: [
         { id: "a", label: "A", accruedUsd: null, unbilledUsd: 5, note: "", measuredAt: null, sourceClass: "estimate" },
-        { id: "b", label: "B", accruedUsd: null, unbilledUsd: 5.01, note: "", measuredAt: null, sourceClass: "estimate" },
+        {
+          id: "b",
+          label: "B",
+          accruedUsd: null,
+          unbilledUsd: 5.01,
+          note: "",
+          measuredAt: null,
+          sourceClass: "estimate",
+        },
       ],
     });
     expect(flags.filter((f) => f.kind === "payg-unbilled").map((f) => f.label)).toEqual(["B"]);
@@ -308,7 +334,15 @@ describe("snapshot store (§4)", () => {
     try {
       const store = new SnapshotStore(dir);
       await store.append([
-        { ts: "2026-10-25T12:00:00Z", serviceId: "cloudflare", metricId: "est", value: { low: 29.6, high: 45.1 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+        {
+          ts: "2026-10-25T12:00:00Z",
+          serviceId: "cloudflare",
+          metricId: "est",
+          value: { low: 29.6, high: 45.1 },
+          unit: "usd-est",
+          source: "estimate",
+          observedBy: "test",
+        },
       ]);
       const all = await store.readAll();
       expect(all[0].value).toEqual({ low: 29.6, high: 45.1 });
@@ -346,18 +380,12 @@ describe("pace + freshness (§4, §1.1)", () => {
   test("pace: out-of-domain pct yields no projection and never throws (#2346)", () => {
     // -1e9 -> -999999999 over 2 days: slope 0.5/day passes the slope
     // gate; the unguarded extrapolation threw RangeError.
-    const poison = projectPace(
-      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)],
-      "weekly",
-    )!;
+    const poison = projectPace([rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)], "weekly")!;
     expect(poison.projectedExhaustionAt).toBeNull();
     expect(poison.slopePerDay).toBe(0.5);
     // -5000 -> -4999.88 over 2 days: slope 0.06/day; previously
     // projected exhaustion in the year 2259.
-    const far = projectPace(
-      [rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)],
-      "weekly",
-    )!;
+    const far = projectPace([rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)], "weekly")!;
     expect(far.projectedExhaustionAt).toBeNull();
     // Happy-path control: 30 -> 40 over 2 days projects as before.
     const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
@@ -365,9 +393,7 @@ describe("pace + freshness (§4, §1.1)", () => {
   });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
-    expect(
-      projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly"),
-    ).toBeNull();
+    expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
   });
   test("freshness: older than cadence is stale; same-day is not", () => {
     const now = new Date("2026-10-26T12:00:00Z");
@@ -468,6 +494,45 @@ describe("hub renders", () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
+  });
+  test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
+    const src = fixtureSource();
+    const usage: UsageView = {
+      services: extractSaasServices(VIEW),
+      payg: extractPaygLines(VIEW, REGISTRY),
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: [],
+      history: {},
+    };
+    const quota: QuotaView = { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html).toContain("free-services-to-check.md");
+    expect(html).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(html).toContain("Backblaze B2");
+    expect(html).toContain("Fly.io");
+    expect(html).toContain("Baseten");
+    expect(html).toContain("candidate");
+    const turso = usage.services.find((s) => s.id === "turso")!;
+    const detail = renderServiceDetail(turso, [], src.provenance());
+    expect(detail).toContain("Sources");
+    expect(detail).toContain("Summary (b) — Turso");
+    expect(detail).toContain("### Turso");
+    expect(detail).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    const fly = usage.services.find((s) => s.id === "fly-io")!;
+    const flyDetail = renderServiceDetail(fly, [], src.provenance());
+    expect(flyDetail).toContain("candidate / not held");
+    // An active service with no Summary (b) row is not thereby a candidate:
+    // ownership is never inferred from a missing tracker row (Codex, PR #3677).
+    const rowless = {
+      ...turso,
+      sources: turso.sources ? { ...turso.sources, trackerRow: null } : turso.sources,
+    };
+    expect(rowless.status).toBe("active");
+    const rowlessDetail = renderServiceDetail(rowless, [], src.provenance());
+    expect(rowlessDetail).toContain("none — no Summary (b) row");
+    expect(rowlessDetail).not.toContain("candidate / not held");
   });
   test("service detail: full metrics, chart, reads, conflicts", async () => {
     const src = fixtureSource();

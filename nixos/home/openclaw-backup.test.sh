@@ -70,7 +70,9 @@ ok() { echo "ok: $1"; }
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -80,14 +82,18 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "$*" >>"${JOURNALCTL_ARGS_LOG:-/dev/null}"
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 # emulate: sqlite3 SRC ".backup 'DEST'" — copy SRC to DEST
 dest="${2:-}"
 dest="${dest#.backup }"
@@ -98,7 +104,9 @@ cp "$1" "$dest"
 STUB
 } >"$BIN/sqlite3"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 calls="${RCLONE_CALLS_LOG:?RCLONE_CALLS_LOG unset}"
 mkdir -p "$store"
@@ -155,7 +163,9 @@ chmod +x "$BIN/bws" "$BIN/journalctl" "$BIN/sqlite3" "$BIN/rclone"
 # other tar mode passes through to the real tar.
 TARBIN="$TMP_ROOT/tar-stub-bin"
 mkdir -p "$TARBIN"
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 real="${OPENCLAW_REAL_TAR:?OPENCLAW_REAL_TAR unset}"
 if [[ "${1:-}" == "-cf" && "${2:-}" == "-" ]]; then
   d="$(mktemp -d)"
@@ -193,7 +203,7 @@ setup_home() {
 run_backup() {
   local name="$1"
   local path_prefix="$BIN"
-  [[ -n "$TAR_OVERLAY" ]] && path_prefix="$TAR_OVERLAY:$BIN"
+  [[ -n $TAR_OVERLAY ]] && path_prefix="$TAR_OVERLAY:$BIN"
   HOME="$RUN_HOME" PATH="$path_prefix:$PATH" BWS_ACCESS_TOKEN="fake-token" \
     OPENCLAW_REAL_TAR="$REAL_TAR" \
     RCLONE_FAIL="$FAIL_MODE" RCLONE_LSF_FAIL="${LSF_FAIL:-}" \
@@ -207,9 +217,45 @@ run_backup() {
 }
 
 no_upload() { # $1 scenario name — true when no copyto was attempted
-  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] \
-    || ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
+  [[ ! -f "$TMP_ROOT/$1/rclone-calls.log" ]] ||
+    ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
 }
+
+# Missing source DB must fail without uploading or advancing the marker.
+setup_home missing-db
+rm "$RUN_HOME/.openclaw/state/openclaw.sqlite"
+run_backup missing-db
+if [[ $RC -ne 0 ]] && grep -q 'required state/openclaw.sqlite is missing' "$TMP_ROOT/missing-db.log" &&
+  no_upload missing-db && [[ $MARKER_AFTER == "$PRESET" ]]; then
+  ok "missing-db: failed before upload with marker unchanged"
+else
+  fail "missing-db: expected missing DB failure, no upload and unchanged marker; log: $(cat "$TMP_ROOT/missing-db.log")"
+fi
+
+# A successful but broken sqlite snapshot can omit the DB from the manifest;
+# archive verification must independently require it.
+SNAPBIN="$TMP_ROOT/snapshot-stub-bin"
+mkdir -p "$SNAPBIN"
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
+dest="${2#.backup }"
+dest="${dest#\'}"
+dest="${dest%\'}"
+rm -f "$dest"
+STUB
+} >"$SNAPBIN/sqlite3"
+chmod +x "$SNAPBIN/sqlite3"
+setup_home missing-snapshot
+TAR_OVERLAY="$SNAPBIN"
+run_backup missing-snapshot
+TAR_OVERLAY=""
+if [[ $RC -ne 0 ]] && grep -q 'MISSING REQUIRED state/openclaw.sqlite' "$TMP_ROOT/missing-snapshot.log" &&
+  no_upload missing-snapshot && [[ $MARKER_AFTER == "$PRESET" ]]; then
+  ok "missing-snapshot: verify failed before upload with marker unchanged"
+else
+  fail "missing-snapshot: expected required member failure, no upload and unchanged marker; log: $(cat "$TMP_ROOT/missing-snapshot.log")"
+fi
 
 # --- staging source-tar failure fails the run (#1034) ---------------------
 setup_home staging-fail
@@ -217,7 +263,7 @@ TAR_OVERLAY="$TARBIN"
 run_backup staging-fail
 TAR_OVERLAY=""
 
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   ok "staging-fail: script exited non-zero ($RC)"
 else
   fail "staging-fail: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/staging-fail.log")"
@@ -237,7 +283,7 @@ if find "$RUN_HOME/backups/openclaw" -name '*.tar.zst' | grep -q .; then
 else
   ok "staging-fail: no local archive created"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "staging-fail: journal marker unchanged at $PRESET"
 else
   fail "staging-fail: marker moved on a failed run — was $PRESET, now $MARKER_AFTER"
@@ -247,18 +293,18 @@ fi
 setup_home happy
 run_backup happy
 
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "happy: script exited 0"
 else
   fail "happy: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/happy.log")"
 fi
 ARCHIVE="$RUN_HOME/backups/openclaw/$RUN_DATE/openclaw-$RUN_DATE.tar.zst"
-if [[ -f "$ARCHIVE" ]]; then
+if [[ -f $ARCHIVE ]]; then
   ok "happy: local archive created"
   LISTING="$("$REAL_TAR" -I zstd -tf "$ARCHIVE")"
-  if grep -qx './session.log' <<<"$LISTING" \
-    && grep -qx './state/openclaw.sqlite' <<<"$LISTING" \
-    && ! grep -q '^\./tmp/' <<<"$LISTING"; then
+  if grep -qx './session.log' <<<"$LISTING" &&
+    grep -qx './state/openclaw.sqlite' <<<"$LISTING" &&
+    ! grep -q '^\./tmp/' <<<"$LISTING"; then
     ok "happy: archive holds staged files + sqlite snapshot, scratch excluded"
   else
     fail "happy: unexpected archive contents: $LISTING"
@@ -276,7 +322,7 @@ if grep -q "OK openclaw $RUN_DATE backed up to local + R2 + Drive" "$TMP_ROOT/ha
 else
   fail "happy: no success line in log: $(cat "$TMP_ROOT/happy.log")"
 fi
-if [[ "$MARKER_AFTER" =~ ^[0-9]+$ ]] && [[ "$MARKER_AFTER" -gt "$PRESET" ]]; then
+if [[ $MARKER_AFTER =~ ^[0-9]+$ ]] && [[ $MARKER_AFTER -gt $PRESET ]]; then
   ok "happy: journal marker advanced past $PRESET (now $MARKER_AFTER)"
 else
   fail "happy: marker did not advance on a fully successful run — was $PRESET, now $MARKER_AFTER"
@@ -286,20 +332,20 @@ fi
 setup_home bad-date
 DATE_ARG="2026-02-30"
 run_backup bad-date
-if [[ "$RC" -ne 0 ]] && grep -q "FAILED invalid DATE '2026-02-30'" "$TMP_ROOT/bad-date.log"; then
+if [[ $RC -ne 0 ]] && grep -q "FAILED invalid DATE '2026-02-30'" "$TMP_ROOT/bad-date.log"; then
   ok "bad-date: nonexistent calendar date rejected with the value named"
 else
   fail "bad-date: 2026-02-30 not rejected as expected (rc=$RC): $(cat "$TMP_ROOT/bad-date.log")"
 fi
 DATE_ARG="not-a-date"
 run_backup bad-date
-if [[ "$RC" -ne 0 ]] && grep -q "FAILED invalid DATE 'not-a-date'" "$TMP_ROOT/bad-date.log"; then
+if [[ $RC -ne 0 ]] && grep -q "FAILED invalid DATE 'not-a-date'" "$TMP_ROOT/bad-date.log"; then
   ok "bad-date: malformed date rejected with the value named"
 else
   fail "bad-date: not-a-date not rejected as expected (rc=$RC): $(cat "$TMP_ROOT/bad-date.log")"
 fi
 DATE_ARG="$RUN_DATE"
-if no_upload bad-date && [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if no_upload bad-date && [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "bad-date: nothing uploaded, marker unchanged"
 else
   fail "bad-date: upload attempted or marker moved on a rejected date"
@@ -307,13 +353,16 @@ fi
 
 # --- concurrent run skips on the lock -----------------------------------------
 setup_home lock-skip
-( flock -x 9; sleep 5 ) 9>"$RUN_HOME/backups/openclaw/.openclaw-backup.lock" &
+(
+  flock -x 9
+  sleep 5
+) 9>"$RUN_HOME/backups/openclaw/.openclaw-backup.lock" &
 lock_holder=$!
 sleep 1
 run_backup lock-skip
 kill "$lock_holder" 2>/dev/null
 wait "$lock_holder" 2>/dev/null
-if [[ "$RC" -eq 0 ]] && grep -q 'SKIP another openclaw-backup run holds the lock' "$TMP_ROOT/lock-skip.log"; then
+if [[ $RC -eq 0 ]] && grep -q 'SKIP another openclaw-backup run holds the lock' "$TMP_ROOT/lock-skip.log"; then
   ok "lock-skip: concurrent run printed SKIP and exited 0"
 else
   fail "lock-skip: expected SKIP + exit 0, got rc=$RC: $(cat "$TMP_ROOT/lock-skip.log")"
@@ -331,7 +380,7 @@ printf 'old\n' >"$RUN_HOME/backups/openclaw/$OLD_DATE/old.txt"
 printf 'recent\n' >"$RUN_HOME/backups/openclaw/$RECENT_DATE/recent.txt"
 printf '%s/\n%s/\n%s/\n' "$OLD_DATE" "$RECENT_DATE" "$RUN_DATE" >"$TMP_ROOT/prune/lsf.txt"
 run_backup prune
-if [[ "$RC" -eq 0 ]]; then
+if [[ $RC -eq 0 ]]; then
   ok "prune: script exited 0"
 else
   fail "prune: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/prune.log")"
@@ -347,7 +396,7 @@ else
   fail "prune: local recent dir or run date was pruned"
 fi
 purges="$(grep -c "^purge .*/$OLD_DATE\$" "$TMP_ROOT/prune/rclone-calls.log" 2>/dev/null || true)"
-if [[ "$purges" -eq 2 ]]; then
+if [[ $purges -eq 2 ]]; then
   ok "prune: remote old dir purged on both remotes"
 else
   fail "prune: expected 2 remote purges of $OLD_DATE, got $purges: $(cat "$TMP_ROOT/prune/rclone-calls.log" 2>/dev/null)"
@@ -363,7 +412,7 @@ setup_home lsf-fail
 LSF_FAIL=1
 run_backup lsf-fail
 LSF_FAIL=""
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   ok "lsf-fail: script exited non-zero ($RC)"
 else
   fail "lsf-fail: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/lsf-fail.log")"
@@ -384,12 +433,12 @@ else
   ok "lsf-fail: no full OK line printed"
 fi
 copytos="$(grep -c '^copyto' "$TMP_ROOT/lsf-fail/rclone-calls.log" 2>/dev/null || true)"
-if [[ "$copytos" -eq 1 ]]; then
+if [[ $copytos -eq 1 ]]; then
   ok "lsf-fail: only the R2 copy (before its prune) was attempted; Drive never ran"
 else
   fail "lsf-fail: expected exactly 1 copyto attempt, got $copytos"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "lsf-fail: journal marker unchanged at $PRESET"
 else
   fail "lsf-fail: marker moved on a failed run — was $PRESET, now $MARKER_AFTER"
@@ -400,7 +449,7 @@ JW_PRESET="$(date -d '3 days ago' +%s)"
 setup_home journal-window "$JW_PRESET"
 run_backup journal-window
 EXPECTED_SINCE="$(date -d "@$JW_PRESET" '+%F %T')"
-if [[ "$RC" -eq 0 ]] && grep -qF -- "--since $EXPECTED_SINCE" "$TMP_ROOT/journal-window/journalctl-args.log"; then
+if [[ $RC -eq 0 ]] && grep -qF -- "--since $EXPECTED_SINCE" "$TMP_ROOT/journal-window/journalctl-args.log"; then
   ok "journal-window: journalctl called with --since at the 3-day-old cursor"
 else
   fail "journal-window: expected --since '$EXPECTED_SINCE' (rc=$RC), args: $(cat "$TMP_ROOT/journal-window/journalctl-args.log" 2>/dev/null)"
@@ -411,18 +460,18 @@ setup_home upload-fail
 FAIL_MODE="R2"
 run_backup upload-fail
 FAIL_MODE=""
-if [[ "$RC" -ne 0 ]] && grep -q 'FAILED R2 upload failed' "$TMP_ROOT/upload-fail.log"; then
+if [[ $RC -ne 0 ]] && grep -q 'FAILED R2 upload failed' "$TMP_ROOT/upload-fail.log"; then
   ok "upload-fail: R2 failure exited non-zero with the FAILED line"
 else
   fail "upload-fail: expected non-zero + FAILED R2 line, got rc=$RC: $(cat "$TMP_ROOT/upload-fail.log")"
 fi
-if [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
   ok "upload-fail: journal marker unchanged at $PRESET"
 else
   fail "upload-fail: marker advanced on a failed run — was $PRESET, now $MARKER_AFTER"
 fi
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "openclaw-backup tests: $failures failure(s)" >&2
   exit 1
 fi

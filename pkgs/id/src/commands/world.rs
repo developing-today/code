@@ -63,6 +63,26 @@ async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoin
     Ok(endpoint)
 }
 
+/// Renders one row of the plain (non-JSON) `id world list` output.
+///
+/// World names are host-supplied and reach this printer verbatim
+/// (`WorldClient::list_worlds` copies them from the host reply with no
+/// validation), so the name goes through [`plain_field`]: a name holding
+/// LF/CR/TAB or another structure-breaking character is quoted and escaped
+/// instead of forging a row or a column (#3089, Phase 3a of #3455). The
+/// default marker is selected by comparing the RAW name to the raw
+/// default name, before any rendering. Ordinary names render
+/// byte-identically; `--json` output does not use this function and is
+/// unchanged.
+fn world_list_plain_row(name: &str, default: &str, open: bool) -> String {
+    let default_marker = if name == default { " (default)" } else { "" };
+    format!(
+        "{}{default_marker}\t{}",
+        super::text::plain_field(name),
+        if open { "open" } else { "closed" }
+    )
+}
+
 /// Run an `id world` subcommand.
 ///
 /// # Errors
@@ -678,11 +698,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 );
             } else {
                 for (name, open) in worlds {
-                    let default_marker = if name == default { " (default)" } else { "" };
-                    println!(
-                        "{name}{default_marker}\t{}",
-                        if open { "open" } else { "closed" }
-                    );
+                    println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }
             Ok(())
@@ -1871,7 +1887,62 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
+    use super::{
+        PumpLine, check_contract, pump_command, scaffold_world, step_is_applied,
+        world_list_plain_row,
+    };
+
+    /// #3089: a world name containing LF must not forge an extra row in
+    /// plain output — the rendered row is one physical line with exactly
+    /// two tab-separated fields.
+    #[test]
+    fn world_list_plain_row_quotes_newline_forged_row() {
+        let row = world_list_plain_row("alpha\nforged\topen", "other", true);
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "row must be one physical line: {row:?}"
+        );
+        assert_eq!(row.matches('\n').count(), 0);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert!(row.ends_with("\topen"), "{row:?}");
+    }
+
+    /// #3089: a tabbed world name must not forge an extra column.
+    #[test]
+    fn world_list_plain_row_quotes_tabbed_name() {
+        let row = world_list_plain_row("a\tb", "other", false);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert_eq!(row.lines().count(), 1);
+        assert!(row.ends_with("\tclosed"), "{row:?}");
+    }
+
+    /// #3089: the default marker is chosen by comparing the RAW name to
+    /// the raw default name, and ordinary names render byte-identically.
+    #[test]
+    fn world_list_plain_row_default_marker_uses_raw_name() {
+        assert_eq!(
+            world_list_plain_row("home", "home", true),
+            "home (default)\topen"
+        );
+        assert_eq!(world_list_plain_row("home", "away", true), "home\topen");
+        assert_eq!(
+            world_list_plain_row("my world", "x", false),
+            "my world\tclosed"
+        );
+        // A default name that itself needs quoting still gets its marker.
+        let row = world_list_plain_row("a\nb", "a\nb", true);
+        assert!(row.contains(" (default)\t"), "{row:?}");
+        assert_eq!(row.split('\t').count(), 2, "{row:?}");
+    }
 
     /// #818, updated for #807: every step kind is applied by `apply_steps`
     /// over the wire — module install and schedules included — so every

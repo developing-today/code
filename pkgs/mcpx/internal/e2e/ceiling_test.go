@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"io"
 	"net/http"
 	"os"
@@ -280,11 +281,7 @@ func TestRepairCannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 
 func lookBun(t *testing.T) string {
 	t.Helper()
-	bun, err := exec.LookPath("bun")
-	if err != nil {
-		t.Skip("bun is not installed")
-	}
-	return bun
+	return testsupport.RequireBinary(t, "bun")
 }
 
 func runBun(t *testing.T, bun string, e *env, file string, extra ...string) string {

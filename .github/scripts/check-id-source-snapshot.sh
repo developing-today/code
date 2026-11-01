@@ -49,7 +49,8 @@ fi
 # for every file in the given tree, sorted by path.
 digest_tree() {
   local tree="$1"
-  ( cd "$tree"
+  (
+    cd "$tree"
     find . -type l -o -type f | LC_ALL=C sort | while IFS= read -r p; do
       rel="${p#./}"
       if [ -L "$p" ]; then
@@ -57,53 +58,56 @@ digest_tree() {
       else
         sha256sum "$p" | sed "s|  \./|  |"
       fi
-    done )
+    done
+  )
 }
 
 case "$cmd" in
-  snapshot)
-    # The flake source copy contains the git-tracked files of pkgs/id;
-    # manifest exactly that set so ignored build residue in a dirty local
-    # tree cannot false-positive. In CI the checkout is clean, so this is
-    # simply every file git knows about under pkgs/id.
-    if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      ( cd "$id_tree"
-        git -C "$root" ls-files -- pkgs/id | sed 's|^pkgs/id/||' | LC_ALL=C sort \
-        | while IFS= read -r rel; do
-            if [ -L "$rel" ]; then
-              printf 'LINK %s  %s\n' "$(readlink "$rel")" "$rel"
-            else
-              sha256sum "$rel"
-            fi
-          done ) > "$manifest"
-    else
-      digest_tree "$id_tree" > "$manifest"
-    fi
-    echo "source snapshot: recorded $(wc -l < "$manifest") files from $id_tree"
-    ;;
-  verify)
-    if [ -z "$src" ] || [ ! -d "$src" ]; then
-      echo "source snapshot guard: flake source dir '${src}' not found" >&2
-      exit 2
-    fi
-    if [ ! -f "$manifest" ]; then
-      echo "source snapshot guard: manifest $manifest missing — run snapshot first" >&2
-      exit 2
-    fi
-    actual="$(mktemp)"
-    digest_tree "$src" > "$actual"
-    if ! diff -u "$manifest" "$actual" > "$actual.diff"; then
-      echo "::error::source snapshot mismatch — the nix build source copy of pkgs/id differs from the checkout snapshot:" >&2
-      # Name the differing files plainly (paths from both sides of the diff).
-      grep -E '^[+-]' "$actual.diff" | grep -vE '^(\+\+\+|---)' \
-        | sed -E 's/^[+-]([0-9a-f]{64}|LINK [^ ]*)  /  /' | LC_ALL=C sort -u >&2 || true
-      echo "source snapshot mismatch: build copy at $src does not match checkout at $id_tree (see differing files above). This is a CI source-integrity failure (#1569), not a code failure — re-run the job; if it recurs, preserve the manifest and the store path for investigation." >&2
-      exit 1
-    fi
-    echo "source snapshot: build source copy verified against checkout ($(wc -l < "$manifest") files)"
-    ;;
-  *)
-    echo "usage: $0 snapshot|verify <repo-root> <manifest-file> [flake-source-dir]" >&2
+snapshot)
+  # The flake source copy contains the git-tracked files of pkgs/id;
+  # manifest exactly that set so ignored build residue in a dirty local
+  # tree cannot false-positive. In CI the checkout is clean, so this is
+  # simply every file git knows about under pkgs/id.
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    (
+      cd "$id_tree"
+      git -C "$root" ls-files -- pkgs/id | sed 's|^pkgs/id/||' | LC_ALL=C sort |
+        while IFS= read -r rel; do
+          if [ -L "$rel" ]; then
+            printf 'LINK %s  %s\n' "$(readlink "$rel")" "$rel"
+          else
+            sha256sum "$rel"
+          fi
+        done
+    ) >"$manifest"
+  else
+    digest_tree "$id_tree" >"$manifest"
+  fi
+  echo "source snapshot: recorded $(wc -l <"$manifest") files from $id_tree"
+  ;;
+verify)
+  if [ -z "$src" ] || [ ! -d "$src" ]; then
+    echo "source snapshot guard: flake source dir '${src}' not found" >&2
     exit 2
-    ;;
+  fi
+  if [ ! -f "$manifest" ]; then
+    echo "source snapshot guard: manifest $manifest missing — run snapshot first" >&2
+    exit 2
+  fi
+  actual="$(mktemp)"
+  digest_tree "$src" >"$actual"
+  if ! diff -u "$manifest" "$actual" >"$actual.diff"; then
+    echo "::error::source snapshot mismatch — the nix build source copy of pkgs/id differs from the checkout snapshot:" >&2
+    # Name the differing files plainly (paths from both sides of the diff).
+    grep -E '^[+-]' "$actual.diff" | grep -vE '^(\+\+\+|---)' |
+      sed -E 's/^[+-]([0-9a-f]{64}|LINK [^ ]*)  /  /' | LC_ALL=C sort -u >&2 || true
+    echo "source snapshot mismatch: build copy at $src does not match checkout at $id_tree (see differing files above). This is a CI source-integrity failure (#1569), not a code failure — re-run the job; if it recurs, preserve the manifest and the store path for investigation." >&2
+    exit 1
+  fi
+  echo "source snapshot: build source copy verified against checkout ($(wc -l <"$manifest") files)"
+  ;;
+*)
+  echo "usage: $0 snapshot|verify <repo-root> <manifest-file> [flake-source-dir]" >&2
+  exit 2
+  ;;
 esac

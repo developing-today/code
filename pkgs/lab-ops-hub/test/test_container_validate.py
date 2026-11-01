@@ -886,6 +886,36 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://m\u00fcnchen.de/")
         self.assertAccepted("http://ex\u0301ample.com/")
 
+    def test_a_label_must_be_its_uts46_mapped_form_and_disallowed_free(self):
+        # #588 residual: a decoded A-label that is not its own UTS-46
+        # mapped form, or that carries an IDNA-disallowed punctuation /
+        # symbol / separator character, is refused — the punycode
+        # round-trip alone certifies all of these.
+        # Mapped-form class (the issue's headline hosts):
+        self.assertRefused("http://xn--example-yoa.com/")  # ex\u00c0ample (uppercase)
+        self.assertRefused("http://xn--example-rla.com/")  # ex\u00b2ample (compatibility digit)
+        self.assertRefused("http://xn--ab-cja0631x.com/")  # a\uff0fb\u00e9 (fullwidth solidus)
+        self.assertRefused("http://xn--mnchen-3ya5364d.com/")  # m\u00fcn\u2000chen (space class)
+        # DISALLOWED class (survive NFKC, assigned, not format chars):
+        self.assertRefused("http://xn--example-hja.com/")  # ex\u00a8ample (diaeresis, Sk)
+        self.assertRefused("http://xn--example-7la.com/")  # ex\u00b4ample (acute accent, Sk)
+        self.assertRefused("http://xn--example-f9e.com/")  # ex\u037eample (Greek question mark, Po)
+        self.assertRefused("http://xn--example-3ha.com/")  # ex\u00a2ample (cent sign, Sc)
+        self.assertRefused("http://xn--example-u17c.com/")  # ex\u20acample (euro sign, Sc)
+        # The raw spellings of the DISALLOWED class are refused too
+        # (the check sits in the shared label judge):
+        self.assertRefused("http://ex\u00a8ample.com/")
+        # (No raw U+037E case: NFKC folds it to an ASCII ";" before
+        # judging, in both validators — only the unmapped decoded
+        # A-label form above is the #588 divergence.)
+        # Controls: the PR #584 accepted A-labels and ordinary IDN
+        # stay accepted, and the CONTEXTO middle dot label is not
+        # swept up by the punctuation arm.
+        self.assertAccepted("http://xn--mnchen-3ya.de/")  # m\u00fcnchen.de
+        self.assertAccepted("http://xn--bcher-kva.de/")  # b\u00fccher.de
+        self.assertAccepted("http://xn--fsq.com/")  # \u4f8b.com
+        self.assertAccepted("http://xn--al-0ea.com/")  # a\u00b7l (Catalan middle dot)
+
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
         # judgement, so the length check must measure the mapped form
@@ -1607,8 +1637,8 @@ class TestFetchCrawl(unittest.TestCase):
                     self.end_headers()
                     self.wfile.write(body)
                     return
-                if self.path == "/choices":
-                    self.send_response(300)
+                if self.path in ("/choices", "/not-modified"):
+                    self.send_response(300 if self.path == "/choices" else 304)
                     self.send_header("Location", "/ok")
                     self.send_header("content-length", str(len(body)))
                     self.end_headers()
@@ -1660,22 +1690,19 @@ class TestFetchCrawl(unittest.TestCase):
         # non-followed 3xx). Those are crawl failures, not results —
         # they must propagate so do_POST returns 502 and the Worker
         # fallback runs, instead of recording a successful 302 crawl.
-        # The plain opener stands in for the validating one here: the
-        # validating handler refuses 127.0.0.1 targets by design, which
-        # would mask the HTTPError handling under test; the redirect
-        # mechanics are urllib's either way.
         import urllib.error
-        import urllib.request
         from unittest import mock
 
-        plain = urllib.request.build_opener()
-        with mock.patch.object(app, "_OPENER", plain):
-            for path in ("/loop", "/hop0", "/choices"):
+        # Exercise the validating handler and its explicit urllib limits,
+        # allowing this test server's loopback targets through validation.
+        with mock.patch.object(app, "validate_crawl_url", side_effect=lambda url: url):
+            for path in ("/loop", "/hop1", "/choices", "/not-modified"):
                 with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
                     self.fetch(path)
                 self.assertTrue(300 <= ctx.exception.code < 400, path)
-            # Control: a short chain under the limit still succeeds.
-            status, raw = self.fetch("/hop10")
+
+            # urllib allows exactly ten redirects and rejects the eleventh.
+            status, raw = self.fetch("/hop2")
             self.assertEqual(status, 200)
             self.assertIn(b"Missing Thing", raw)
 

@@ -638,7 +638,7 @@ function layout(
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js" defer></script>${extra}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}</body></html>`;
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -1927,7 +1927,7 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
     ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
     : "";
   const pace = paceLineHtml(svc.id, history);
-  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${svc.status !== "active" ? ` <span class="badge src">${esc(svc.status)}</span>` : ""}${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
 }
 
 /** A one-line pace projection on a card, when the history supports one (§1.5). */
@@ -2055,6 +2055,7 @@ ${attentionStripHtml(usage)}
 ${paygCardHtml(usage)}
 <h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
 ${chargesStripHtml(usage)}
+<h2>Sources</h2><div class="card"><div>Research records behind the cards on this page that carry provenance — all in <code>~/workspace/ai-subscriptions/</code>:</div><div>· evidence baseline: <code>evidence-and-interpretation-baseline-2026-10-20.md</code> (dated official pricing wording + interpretation notes)</div><div>· master tracker: the tracker behind <code>quota-view.md</code> Part (b) — each card with a tracker row cites its Summary (b) row and service section</div><div>· candidate evaluations: <code>free-services-to-check.md</code></div><div class="muted">Per-service provenance (tracker row or its absence, baseline, quota-view section) is on each service's detail page.</div></div>
 ${burnAndChoices}`,
     provenance,
     "/quota",
@@ -2143,6 +2144,7 @@ export function renderServiceDetail(
   const body = `<p class="muted"><a href="/quota">← Usage &amp; billing</a></p>
 <h1>${esc(svc.name)}</h1>
 <div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
+<h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
 <h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
 <h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
@@ -2396,7 +2398,7 @@ export function renderAttention(
   const sections = attentionSections(view, coverage, counts, act);
   return layout(
     "Needs you",
-    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
+    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
 ${sections.header}${sections.queues}${sections.sessions}`,
     provenance,
     "/attention",
@@ -5545,7 +5547,11 @@ function subscriptionRow(s: PushSubscriptionRow): string {
   const classes = Object.entries(s.classes ?? {})
     .map(([k, v]) => `${esc(k)}: ${v ? "on" : "off"}`)
     .join(", ");
-  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · quiet ${esc(s.quiet?.start ?? "?")}–${esc(s.quiet?.end ?? "?")} ${esc(s.quiet?.tz ?? "")}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
+  const quiet =
+    s.quiet?.enabled === false
+      ? "quiet hours off"
+      : `quiet hours ${s.quiet?.start ?? "?"}–${s.quiet?.end ?? "?"} ${s.quiet?.tz ?? ""}`;
+  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · ${esc(quiet)}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
 <br><span class="muted">${esc(s.user_agent ?? "")}</span>
 <br><button data-unsub="${esc(s.endpoint)}">Remove this subscription</button></div>`;
 }
@@ -5567,20 +5573,47 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
         `<tr><td>${fmtDate(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.title ?? e.incident_id)}</td><td class="muted">${esc(e.source ?? "")}${e.incident_key ? ` · ${esc(e.incident_key)}` : ""}</td></tr>`,
     )
     .join("");
+  // The push form's initial state is rendered from the newest stored
+  // subscription (Drew 2026-11-01): the page shows the saved truth on
+  // load even before — or entirely without — the client script
+  // matching this browser's own subscription. The client script
+  // still refines it per-browser via applyPrefs once it runs.
+  const formSub = [...view.subscriptions].sort((a, b) => (a.last_seen_at < b.last_seen_at ? 1 : -1))[0];
+  const formIncidentChecked = !formSub || formSub.classes?.incident !== false;
+  const formQuietOn = !formSub || formSub.quiet?.enabled !== false;
+  const formQuietStart = formSub?.quiet?.start ?? "23:00";
+  const formQuietEnd = formSub?.quiet?.end ?? "07:00";
   const body = `<h1>Alerts</h1>
 <p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
 <style>.incident:target { outline: 2px solid #1f6feb; }</style>
 <h2>Push delivery on this browser</h2>
 <div class="card" id="push-panel">
-<span id="push-status" class="muted">checking…</span><br>
+<span id="push-status" class="muted">checking…</span>
+<div id="push-guide" hidden>
+<div id="push-guide-ios" hidden>
+<p><strong>On iPhone, Apple only allows web push from the installed app:</strong></p>
+<ol>
+<li>Open this page in <strong>Safari</strong> — if you got here from inside another app, use its menu to open the page in Safari instead.</li>
+<li>Tap the <strong>Share</strong> button, then <strong>Add to Home Screen</strong>.</li>
+<li>Open the dashboard from the new home-screen icon, come back to this Alerts page, and tap <strong>Enable push on this browser</strong> — and tap <strong>Allow</strong> when it asks about notifications.</li>
+</ol>
+</div>
+<div id="push-guide-other" hidden>
+<p><strong>This browser can't receive web push</strong> — most often because the page is open inside another app (an in-app browser) or in a browser without push support. Open this page's address in your regular browser (Chrome, Safari, or Firefox) and enable push there.</p>
+</div>
+</div>
+<p><label><input type="checkbox" id="push-class-incident"${formIncidentChecked ? " checked" : ""}> <strong>Incident alerts</strong></label><br>
+<span class="muted">A watchdog reports something down. Incident alerts always come through immediately, the moment they're posted.</span></p>
+<p><label><input type="checkbox" id="push-quiet-enabled"${formQuietOn ? " checked" : ""}> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications overnight, between <input type="time" id="push-quiet-start" value="${formQuietStart}"${formQuietOn ? "" : " disabled"}> and <input type="time" id="push-quiet-end" value="${formQuietEnd}"${formQuietOn ? "" : " disabled"}> (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.</span></p>
 <button id="push-enable">Enable push on this browser</button>
-<label><input type="checkbox" id="push-class-incident" checked> incident class</label>
-<label>quiet <input type="time" id="push-quiet-start" value="23:00">–<input type="time" id="push-quiet-end" value="07:00"></label>
+<button id="push-test">Send a test alert</button>
 <button id="push-save-prefs">Save preferences</button>
 <button id="push-disable">Disable push on this browser</button>
+<br><span id="push-test-result" class="muted"></span>
 </div>
 <h2>Subscriptions (${view.subscriptions.length})</h2>
-${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above (on the phone, install the PWA first: Web Push on iOS requires the installed app).</p>`}
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above.</p>`}
 <h2>Open incidents (${open.length})</h2>
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
@@ -5588,6 +5621,7 @@ ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}`
 <table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
+const SUBS = ${JSON.stringify(view.subscriptions.map((s) => ({ endpoint: s.endpoint, classes: s.classes, quiet: s.quiet })))};
 async function post(path) { const r = await fetch(path, { method: "POST" }); if (!r.ok) alert("failed: HTTP " + r.status); location.reload(); }
 document.querySelectorAll("[data-ack]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.ack + "/ack")));
 document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.close + "/close")));
@@ -5596,26 +5630,130 @@ document.querySelectorAll("[data-unsub]").forEach((b) => b.addEventListener("cli
   location.reload();
 }));
 const status = document.getElementById("push-status");
+const DENIED_TEXT = "Notifications are blocked for this site on this device. On iPhone: Settings → Notifications → this app — allow notifications; or delete the home-screen app, re-add it, and tap Allow when asked. On a computer: the lock icon in the address bar → site settings → Notifications → Allow.";
+const PLAIN_ERRORS = {
+  denied: DENIED_TEXT,
+  dismissed: "The notification prompt was closed without a choice — nothing was turned on. Tap Enable push again and choose Allow.",
+  unsupported: "Push isn't available in this browser — follow the steps below to get it working.",
+  "subscribe-failed": "The browser couldn't register for push — check the connection and try again.",
+  "save-failed": "Your choice couldn't be saved on the server — try again.",
+  "not-subscribed": "This browser isn't subscribed yet — enable push first.",
+};
+function showError(e) {
+  status.textContent = PLAIN_ERRORS[e && e.code] || "Something went wrong — try again.";
+}
+function syncQuietInputs() {
+  const on = document.getElementById("push-quiet-enabled").checked;
+  document.getElementById("push-quiet-start").disabled = !on;
+  document.getElementById("push-quiet-end").disabled = !on;
+}
+document.getElementById("push-quiet-enabled").addEventListener("change", syncQuietInputs);
+function applyPrefs(mine) {
+  if (mine.classes && typeof mine.classes.incident === "boolean") {
+    document.getElementById("push-class-incident").checked = mine.classes.incident;
+  }
+  if (mine.quiet) {
+    document.getElementById("push-quiet-enabled").checked = mine.quiet.enabled !== false;
+    if (mine.quiet.start) document.getElementById("push-quiet-start").value = mine.quiet.start;
+    if (mine.quiet.end) document.getElementById("push-quiet-end").value = mine.quiet.end;
+    syncQuietInputs();
+  }
+}
+// Capability is checked against the window directly, NOT via
+// window.pmPush: push-client.js loads with defer, so when this
+// inline script first runs pmPush does not exist yet. The first
+// build read that absence as "this browser can't do push" and
+// painted the unsupported guide on every load in every browser —
+// and returned before applying saved prefs (Drew 2026-11-01:
+// pushes worked while the page said unsupported, and a saved
+// quiet-hours-off reloaded as on). pmPush itself is awaited below.
+function pushSupportedHere() {
+  return "PushManager" in window && "Notification" in window && "serviceWorker" in navigator;
+}
+function waitForPmPush() {
+  if (window.pmPush) return Promise.resolve(window.pmPush);
+  return new Promise((resolve) => {
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      if (window.pmPush || n > 60) { clearInterval(t); resolve(window.pmPush || null); }
+    }, 50);
+  });
+}
 async function refreshStatus() {
-  if (!window.pmPush || !window.pmPush.supported()) { status.textContent = "Web Push is not supported in this browser (on iOS, install the PWA first)."; return; }
-  const sub = await window.pmPush.current().catch(() => null);
-  status.textContent = sub ? "This browser is subscribed — pushes will land here." : "This browser is not subscribed yet.";
+  const guide = document.getElementById("push-guide");
+  if (!pushSupportedHere()) {
+    status.textContent = "Push isn't available in this browser yet — the steps below get it working.";
+    guide.hidden = false;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    document.getElementById("push-guide-ios").hidden = !ios;
+    document.getElementById("push-guide-other").hidden = ios;
+    return;
+  }
+  guide.hidden = true;
+  const pm = await waitForPmPush();
+  if (!pm) { status.textContent = "The push controls are still loading — reload the page if this sticks."; return; }
+  const sub = await pm.current().catch(() => null);
+  if (sub) {
+    status.textContent = "This browser is subscribed — pushes will land here.";
+    // Endpoint match first; with a single stored subscription it is
+    // this browser's in practice (push endpoints rotate) — fall back
+    // to it so saved prefs still reach the form.
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint) || (SUBS.length === 1 ? SUBS[0] : null);
+    if (mine) applyPrefs(mine);
+  } else if (pm.permission() === "denied") {
+    status.textContent = DENIED_TEXT;
+  } else {
+    status.textContent = "This browser is not subscribed yet — tap Enable push below.";
+  }
 }
 refreshStatus();
+syncQuietInputs();
 function prefs() {
   return {
     classes: { incident: document.getElementById("push-class-incident").checked },
-    quiet: { start: document.getElementById("push-quiet-start").value || "23:00", end: document.getElementById("push-quiet-end").value || "07:00", tz: "America/Chicago" },
+    quiet: {
+      enabled: document.getElementById("push-quiet-enabled").checked,
+      start: document.getElementById("push-quiet-start").value || "23:00",
+      end: document.getElementById("push-quiet-end").value || "07:00",
+      tz: "America/Chicago",
+    },
   };
 }
 document.getElementById("push-enable").addEventListener("click", async () => {
-  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { alert(String(e)); }
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
 });
 document.getElementById("push-save-prefs").addEventListener("click", async () => {
-  try { await window.pmPush.updatePrefs(prefs()); location.reload(); } catch (e) { alert(String(e)); }
+  try {
+    const p = prefs();
+    await window.pmPush.updatePrefs(p);
+    // Confirm in place, no reload: state the saved values in words
+    // so the result is checkable without trusting the form.
+    status.textContent = p.quiet.enabled
+      ? "Saved — quiet hours on, " + p.quiet.start + "–" + p.quiet.end + "."
+      : "Saved — quiet hours off, no time-of-day limit.";
+  } catch (e) { showError(e); }
 });
 document.getElementById("push-disable").addEventListener("click", async () => {
-  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { alert(String(e)); }
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
+});
+document.getElementById("push-test").addEventListener("click", async () => {
+  const out = document.getElementById("push-test-result");
+  out.textContent = "sending…";
+  try {
+    const r = await fetch("/api/push/test", { method: "POST" });
+    if (!r.ok) { out.textContent = "The test couldn't be sent — the server answered HTTP " + r.status + "."; return; }
+    const s = await r.json();
+    if (!s.subscriptions) {
+      out.textContent = "No subscriptions yet — enable push first, then try the test.";
+    } else if (s.sent > 0) {
+      out.textContent = "Test sent to " + s.sent + " subscription" + (s.sent === 1 ? "" : "s") + " — look for a notification titled 'Test alert'.";
+    } else {
+      out.textContent = "The test reached no device (" + s.errors + " failed, " + s.gone + " no longer there) — the subscriptions may be stale; disable push and enable it again.";
+    }
+  } catch (e) {
+    out.textContent = "The test couldn't be sent — network or server error.";
+  }
 });
 </script>`;
   return layout("Alerts", body, provenance, "/alerts", script);

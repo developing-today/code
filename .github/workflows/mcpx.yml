@@ -173,6 +173,10 @@ jobs:
       - name: Unit and end-to-end tests
         working-directory: pkgs/mcpx
         env:
+          # #1983: CI always sets MCPX_TEST_REQUIRE -- a runtime this job
+          # installs (deno, bun, node above; python3 on the runner) that is
+          # nevertheless missing must fail the suite, never skip silently.
+          MCPX_TEST_REQUIRE: deno,bun,node,python3
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
           ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

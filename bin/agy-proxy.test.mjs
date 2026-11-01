@@ -82,7 +82,7 @@ while IFS= read -r line; do
       kill -9 $$ ;;
   esac
   printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}'
 done
 `;
 
@@ -169,6 +169,19 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.match(sse, /Hello world/);
   assert.match(sse, /"finish_reason":"stop"/);
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
+});
+
+test('agy cache_read_tokens surfaces as prompt_tokens_details.cached_tokens in both shapes (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'hi' }];
+  const plain = JSON.parse(await (await post(port, { messages })).text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 77, 'non-streaming usage must surface the agy cache_read_tokens delta (opencode #394)');
+  const streamRes = await post(port, { messages, stream: true });
+  const events = parseSse(await streamRes.text());
+  const finish = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+  assert.ok(finish, 'stream must carry a finish chunk');
+  assert.equal(finish.usage.prompt_tokens_details.cached_tokens, 77, 'streaming finish chunk must surface cached_tokens');
 });
 
 test('execution failure with no output: 502 non-stream, SSE error + [DONE] stream (#678)', async (t) => {

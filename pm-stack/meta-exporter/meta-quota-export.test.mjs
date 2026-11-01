@@ -72,6 +72,13 @@ test("parseBillingBanner: minor units to USD, currency checked", () => {
 test("parsePaygBalance: reads the iframe text, absence stays null", () => {
   assert.equal(parsePaygBalance("Pay as you go\nCurrent balance\n$0.00\nYour balance won't increase"), 0);
   assert.equal(parsePaygBalance("Current balance\n$1,234.56"), 1234.56);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.5"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.567"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.560"), null);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.56 USD"), 1234.56);
+  assert.equal(parsePaygBalance("Current balance\n$5"), 5);
+  assert.equal(parsePaygBalance("Current balance\n$1,234"), 1234);
+  assert.equal(parsePaygBalance("Current balance\n$1,234.56\nYour balance won't increase"), 1234.56);
   assert.equal(parsePaygBalance("nothing relevant here"), null);
   assert.equal(parsePaygBalance(undefined), null);
 });

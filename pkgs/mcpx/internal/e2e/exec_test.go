@@ -102,9 +102,9 @@ func names(entries []os.DirEntry) []string {
 	return out
 }
 
-// The local case: the daemon shares this filesystem, so handing a file back
-// should cost an inode rather than a copy.
-func TestALocalFileIsLinkedIntoTheStoreNotCopied(t *testing.T) {
+// The local path avoids uploading the body over the client transport, but the
+// store still copies it so an outside file never shares the blob's inode.
+func TestALocalFileIsCopiedIntoTheStore(t *testing.T) {
 	e := newEnv(t, oneServer)
 	src := filepath.Join(e.dir, "source.bin")
 	if err := os.WriteFile(src, []byte("linked bytes"), 0o600); err != nil {
@@ -128,8 +128,8 @@ func TestALocalFileIsLinkedIntoTheStoreNotCopied(t *testing.T) {
 	if err := syscall.Stat(src, &st); err != nil {
 		t.Fatal(err)
 	}
-	if st.Nlink < 2 {
-		t.Error("the store should have linked the file, not read and rewritten it")
+	if st.Nlink != 1 {
+		t.Errorf("the source should not be linked into the store; link count = %d", st.Nlink)
 	}
 }
 

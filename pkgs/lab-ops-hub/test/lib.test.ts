@@ -677,6 +677,68 @@ test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () =>
   await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/loop", fetchFn, 3), /too many redirects/);
 });
 
+test("fetchFollowingValidatedRedirects matches urllib's ten-hop boundary", async () => {
+  const tenHopRoutes: Record<string, { status: number; location?: string }> = {};
+  for (let hop = 0; hop < 10; hop++) {
+    tenHopRoutes[`https://example.com/hop/${hop}`] = {
+      status: 302,
+      location: `/hop/${hop + 1}`,
+    };
+  }
+  tenHopRoutes["https://example.com/hop/10"] = { status: 200 };
+  const tenHop = stubFetcher(tenHopRoutes);
+  assert.equal((await fetchFollowingValidatedRedirects("https://example.com/hop/0", tenHop.fetchFn)).status, 200);
+  assert.equal(tenHop.seen.length, 11);
+
+  const elevenHopRoutes: Record<string, { status: number; location?: string }> = {};
+  for (let hop = 0; hop < 11; hop++) {
+    elevenHopRoutes[`https://example.com/hop/${hop}`] = {
+      status: 302,
+      location: `/hop/${hop + 1}`,
+    };
+  }
+  elevenHopRoutes["https://example.com/hop/11"] = { status: 200 };
+  const elevenHop = stubFetcher(elevenHopRoutes);
+  await assert.rejects(
+    fetchFollowingValidatedRedirects("https://example.com/hop/0", elevenHop.fetchFn),
+    /too many redirects/,
+  );
+  assert.equal(elevenHop.seen.length, 11);
+});
+
+test("fetchFollowingValidatedRedirects follows only urllib redirect statuses", async () => {
+  for (const status of [301, 302, 303, 307, 308]) {
+    const { fetchFn } = stubFetcher({
+      "https://example.com/start": { status, location: "/final" },
+      "https://example.com/final": { status: 200 },
+    });
+    assert.equal((await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn)).status, 200, `${status}`);
+  }
+
+  for (const status of [300, 304]) {
+    const { fetchFn, seen } = stubFetcher({
+      "https://example.com/start": { status, location: "/final" },
+      "https://example.com/final": { status: 200 },
+    });
+    await assert.rejects(
+      fetchFollowingValidatedRedirects("https://example.com/start", fetchFn),
+      /unsupported redirect status/,
+      `${status}`,
+    );
+    assert.deepEqual(seen, ["https://example.com/start"], `${status}`);
+  }
+});
+
+test("fetchFollowingValidatedRedirects enforces urllib's per-URL repeat limit", async () => {
+  const { fetchFn, seen } = stubFetcher({
+    "https://example.com/a": { status: 302, location: "/b" },
+    "https://example.com/b": { status: 302, location: "/a" },
+  });
+  await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/a", fetchFn), /repeated/);
+  // urllib permits four redirects to a URL and refuses the fifth.
+  assert.equal(seen.length, 9);
+});
+
 test("crawlFetcher attaches a fresh AbortSignal, manual redirect and the crawler UA to every hop (#524)", async () => {
   const seen: RequestInit[] = [];
   const fetchFn = crawlFetcher(60_000, async (_u, init) => {
@@ -834,12 +896,22 @@ test("validateNoteBody requires title, then body", () => {
   const both = validateNoteBody({});
   assert.equal(both.ok, false);
   if (!both.ok) assert.equal(both.error, "title required");
-  for (const b of [{ title: null, body: "x" }, { title: " ", body: "x" }, { title: 7, body: "x" }]) {
+  for (const b of [
+    { title: null, body: "x" },
+    { title: " ", body: "x" },
+    { title: 7, body: "x" },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "title required");
   }
-  for (const b of [{ title: "t" }, { title: "t", body: null }, { title: "t", body: "" }, { title: "t", body: "  " }, { title: "t", body: 9 }]) {
+  for (const b of [
+    { title: "t" },
+    { title: "t", body: null },
+    { title: "t", body: "" },
+    { title: "t", body: "  " },
+    { title: "t", body: 9 },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "body required");
@@ -910,10 +982,7 @@ test("crawlArchiveKey: same-millisecond derivations with distinct uniques never 
 
 test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
-  assert.equal(
-    isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")),
-    true,
-  );
+  assert.equal(isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")), true);
   // Other constraints and other failures stay on the 500 path.
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: files.r2_key")), false);
   assert.equal(isMachineNameConflict(new Error("no such table: machines")), false);

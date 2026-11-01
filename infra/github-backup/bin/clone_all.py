@@ -7,6 +7,7 @@ Repos with a `reference` wait for their anchor; if the anchor failed they
 fall back to a full clone. Status is appended to clone-status.jsonl;
 re-running skips verified mirrors.
 """
+
 import json, os, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,8 +43,12 @@ def main():
         repo = item["repo"]
         dest = mirror_path(root, repo)
         if valid_mirror(dest):
-            return {"repo": repo, "status": "ok", "note": "already-present",
-                    "disk_kb": disk_kb(dest)}
+            return {
+                "repo": repo,
+                "status": "ok",
+                "note": "already-present",
+                "disk_kb": disk_kb(dest),
+            }
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         cmd = ["git", "clone", "--mirror"]
         ref = item.get("reference")
@@ -53,31 +58,51 @@ def main():
         t0 = time.time()
         env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=TIMEOUT, env=env)
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=TIMEOUT, env=env
+            )
         except subprocess.TimeoutExpired:
-            return {"repo": repo, "status": "fail", "error": "timeout",
-                    "seconds": round(time.time() - t0)}
+            return {
+                "repo": repo,
+                "status": "fail",
+                "error": "timeout",
+                "seconds": round(time.time() - t0),
+            }
         dt = round(time.time() - t0)
         if r.returncode == 0 and valid_mirror(dest):
-            return {"repo": repo, "status": "ok", "seconds": dt,
-                    "disk_kb": disk_kb(dest),
-                    "reference_used": ref if (ref and ref_ok) else None}
-        return {"repo": repo, "status": "fail", "seconds": dt,
-                "error": (r.stderr or r.stdout)[-400:]}
+            return {
+                "repo": repo,
+                "status": "ok",
+                "seconds": dt,
+                "disk_kb": disk_kb(dest),
+                "reference_used": ref if (ref and ref_ok) else None,
+            }
+        return {
+            "repo": repo,
+            "status": "fail",
+            "seconds": dt,
+            "error": (r.stderr or r.stdout)[-400:],
+        }
 
     state = {}
     for p in plan:
         if p["repo"] in ok_prev and valid_mirror(mirror_path(root, p["repo"])):
             state[p["repo"]] = "ok"
     pending = [p for p in plan if state.get(p["repo"]) != "ok"]
-    print(f"plan={len(plan)} already-ok={len(plan)-len(pending)} pending={len(pending)}", flush=True)
+    print(
+        f"plan={len(plan)} already-ok={len(plan) - len(pending)} pending={len(pending)}",
+        flush=True,
+    )
     inflight = {}
     with ThreadPoolExecutor(max_workers=PAR) as ex:
         while pending or inflight:
             for p in list(pending):
                 ref = p.get("reference")
-                if ref and state.get(ref) is None and any(q["repo"] == ref for q in pending):
+                if (
+                    ref
+                    and state.get(ref) is None
+                    and any(q["repo"] == ref for q in pending)
+                ):
                     continue
                 if len(inflight) >= PAR:
                     break
@@ -103,7 +128,7 @@ def main():
                 log_status(rec)
                 print(rec["repo"], rec["status"], rec.get("seconds", ""), flush=True)
     ok = sum(1 for s in state.values() if s == "ok")
-    print(f"DONE ok={ok} fail={len(state)-ok} of {len(plan)}", flush=True)
+    print(f"DONE ok={ok} fail={len(state) - ok} of {len(plan)}", flush=True)
     return 0 if ok == len(plan) else 1
 
 

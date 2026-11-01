@@ -306,7 +306,7 @@
         # Uses 'ci' command (read-only, no auto-fix modifications)
         # =======================================================================
         checks = {
-          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+          # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck roc-test doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
           default = mkCheck "ci" "ci";
 
@@ -330,6 +330,11 @@
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
+          # Roc library expect() tests (#813): runs the roc-test just
+          # recipe with the pinned nightly from nix/roc.nix (already in
+          # nativeBuildInputs); fails on a missing compiler or a failing
+          # expect — the world_compile.rs skip path is not reused here.
+          roc-test = mkCheck "roc-test" "roc-test";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
           crash-gate = mkCheck "crash-gate" "crash-gate";

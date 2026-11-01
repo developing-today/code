@@ -52,7 +52,7 @@ normally take milliseconds, with the comment "correctness does not
 depend on snappy guests" — is the mitigation: make the deadline so
 generous the non-determinism almost never bites.
 
-Because execution is host-local and the journal syncs *outcomes* (the
+Because execution is host-local and the journal syncs _outcomes_ (the
 signed event layer carries trust and ordering — see the bridge
 investigation, `doc/2026-10-29T11-27-00Z_investigation_bridge_semantics_hosted_native`),
 the divergence shape is an availability wrinkle — one host's copy of a
@@ -98,18 +98,18 @@ and debuggability (real processes, real profilers), not speed.
 
 ## 5. The "accepted platforms" variant (conclusion)
 
-The shipped tier trusts at the level of the *program binary* (an admin
-installs this executable). Trusting a list of *platforms* instead —
+The shipped tier trusts at the level of the _program binary_ (an admin
+installs this executable). Trusting a list of _platforms_ instead —
 any program built on an accepted platform runs native — widens the
 blast radius in one specific way: Drew's purity argument still holds (a
 program cannot exceed its platform's capability surface, and ceilings
 plus deadlines still bound it), but a platform bug is now exploited with
 native consequences rather than a Wasm trap, and the unit of review
-becomes the platform + toolchain rather than each program. A second, quieter gap: fuel doubles as *accounting* (the `world measure` report,
+becomes the platform + toolchain rather than each program. A second, quieter gap: fuel doubles as _accounting_ (the `world measure` report,
 per-call-kind usage). Deadlines provide almost no accounting; if native
 use grows, the measure/quota story needs a replacement (getrusage per
-call is the obvious candidate, still machine-dependent as a *limit*,
-usable as a *meter*).
+call is the obvious candidate, still machine-dependent as a _limit_,
+usable as a _meter_).
 
 ## 6. Open questions
 

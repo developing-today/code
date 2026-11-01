@@ -8,6 +8,7 @@
 - Repos named on the command line are fetched unconditionally (used by the
   webhook drainer); no args = the daily full pass.
 """
+
 import json, os, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,8 +23,13 @@ def fetch_repo(root, repo, state):
     if not valid_mirror(path):
         return "missing"
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    r = subprocess.run(["git", "-C", path, "fetch", "--all", "--prune"],
-                       capture_output=True, text=True, timeout=3600, env=env)
+    r = subprocess.run(
+        ["git", "-C", path, "fetch", "--all", "--prune"],
+        capture_output=True,
+        text=True,
+        timeout=3600,
+        env=env,
+    )
     now = time.time()
     st = state.setdefault(repo, {})
     if r.returncode == 0:
@@ -64,13 +70,14 @@ def main(argv):
         if res != "ok":
             failed.append((repo, res))
             with open(log_path, "a") as f:
-                f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} {res} "
-                        f"{(state.get(repo) or {}).get('last_error', '')}\n")
+                f.write(
+                    f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} {res} "
+                    f"{(state.get(repo) or {}).get('last_error', '')}\n"
+                )
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
     manifest_mod.build(root)
-    chronic = [r for r in repos
-               if len((state.get(r) or {}).get("fail_days", [])) >= 3]
+    chronic = [r for r in repos if len((state.get(r) or {}).get("fail_days", [])) >= 3]
     print(json.dumps({"results": results, "chronic_failures": chronic}))
     return 1 if chronic else 0
 
