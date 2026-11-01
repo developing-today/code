@@ -212,6 +212,12 @@ export function initCollab(
         const doc = msg[2] as { type: string; content?: unknown[] };
         const mode = ((msg[3] as string) || "raw") as ContentMode;
         documentMode = mode;
+        // A session is only established once the server sends Init — reset
+        // the reconnect counter here, NOT on socket open. Resetting on open
+        // defeated the attempt cap against a server that accepts the
+        // handshake and then drops the connection: every cycle restarted at
+        // attempt 1 and the client reconnected forever (#1368).
+        reconnectAttempts = 0;
         console.log("[collab] Received Init, version:", version, "mode:", mode);
 
         if (!editorInstance) {
@@ -439,7 +445,11 @@ export function initCollab(
       }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
-      reconnectAttempts = 0;
+      // NOTE: reconnectAttempts is deliberately NOT reset here — a bare
+      // socket open does not prove the server can serve this document.
+      // The counter resets when the Init message arrives (see MSG.INIT),
+      // so the max-attempts cap in scheduleReconnect also covers servers
+      // that accept the handshake and then drop the connection (#1368).
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
