@@ -216,8 +216,9 @@ What actually happens underneath differs, and only in a way nobody has to
 think about. `artifact()` POSTs to `/v1/artifacts` over the transport the
 generated client already has. When the runner set `MCPX_ARTIFACTS_LOCAL=1` —
 which it does when a unix socket proves the daemon shares this filesystem —
-a `{path}` is sent as a header and the store **hardlinks** it. Otherwise the
-bytes travel once, to the daemon, and are then fetched by whoever wants them.
+a `{path}` is sent as a header and the daemon reads, hashes, and copies the
+file into the store. Otherwise the bytes travel once to the daemon and are
+then fetched by whoever wants them.
 
 Remoteness is declared, never inferred. A unix socket can be ssh-forwarded and
 loopback TCP can be a container with its own filesystem; neither transport
@@ -225,8 +226,8 @@ tells you whether the caller can see the daemon's disk. So the *caller* says
 so, with `capabilities: ["artifacts"]` and optionally `sharedFs`.
 
 An `ssh://` endpoint is the clearest case of `sharedFs: false`: the bytes
-cross a process boundary on another machine, so a `{path}` is never
-hardlinked there and an artifact is uploaded instead.
+cross a process boundary on another machine, so the caller uploads a `{path}`
+artifact's bytes rather than giving the daemon a path it can read.
 
 ### The store
 
@@ -280,8 +281,9 @@ concurrent runs of the same script would lose.
 | `inline` | base64 in the structured result, bounded by `artifacts.inlineMaxBytes` **and** the caller's `maxBytes` | a caller that cannot make a second request |
 | `stream` | frames after `end` | one response, cancellable |
 
-A `sharedFs` or `dir` beats all three: the caller can already read the bytes,
-so hardlinking them into its directory costs an inode and no I/O.
+A `sharedFs` or `dir` lets the caller read the destination directly, but the
+store still copies the bytes into that directory; this saves a later transfer,
+not filesystem I/O.
 
 Reference is the default because of the round-trip arithmetic. Over a unix
 socket a second request costs about 0.2 ms, so separate GETs are free locally
