@@ -150,6 +150,12 @@ impl Outbox {
                 // truncated to it below.
                 break;
             }
+            if line.trim().is_empty() {
+                // Blank lines carry no records, but they are complete bytes in
+                // the journal and must remain before any later torn tail.
+                kept += line.len();
+                continue;
+            }
             match serde_json::from_str::<Record>(line.trim_end()) {
                 Ok(record) => {
                     outbox.apply(record)?;
@@ -445,6 +451,16 @@ mod tests {
         dir.path().join("outbox.jsonl")
     }
 
+    fn queued_line(id: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope(id)).unwrap();
+        fs::read_to_string(path(&dir))
+            .unwrap()
+            .trim_end_matches('\n')
+            .to_owned()
+    }
+
     #[test]
     fn a_target_is_a_ticket_or_a_bare_node_id() {
         let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
@@ -529,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn blank_and_whitespace_lines_are_skipped_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{}\n\n \t\r\n{}\n\n", queued_line("e1"), queued_line("e2"));
+        fs::write(path(&dir), &contents).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert!(outbox.entry("e2").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), contents);
+    }
+
+    #[test]
+    fn blank_lines_before_a_torn_tail_are_kept_when_the_tail_is_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let kept = format!("{}\n \t\n", queued_line("e1"));
+        fs::write(path(&dir), format!("{kept}{{\"op\":\"queued\"")).unwrap();
+
+        let outbox = Outbox::open(path(&dir)).unwrap();
+        assert!(outbox.entry("e1").is_some());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), kept);
+    }
+
+    #[test]
     fn a_torn_last_line_is_dropped_and_not_mixed_into_the_next_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut outbox = Outbox::open(path(&dir)).unwrap();
@@ -586,8 +625,9 @@ mod tests {
     #[test]
     fn a_corrupt_complete_line_stops_the_load() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(path(&dir), "not json\n").unwrap();
-        assert!(Outbox::open(path(&dir)).is_err());
+        fs::write(path(&dir), "\nnot json\n").unwrap();
+        let error = Outbox::open(path(&dir)).err().unwrap();
+        assert!(format!("{error:#}").contains("envelope outbox line 2 is corrupt"));
     }
 
     #[test]
