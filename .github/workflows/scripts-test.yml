@@ -1,0 +1,47 @@
+name: scripts-test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/update-nixpkgs-inputs.py"
+      - "scripts/update-nixpkgs-inputs.sh"
+      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
+      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
+      - "scripts/tests/test_update_nixpkgs_inputs.py"
+      - ".github/workflows/scripts-test.yml"
+  pull_request:
+    paths:
+      - "scripts/update-nixpkgs-inputs.py"
+      - "scripts/update-nixpkgs-inputs.sh"
+      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
+      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
+      - "scripts/tests/test_update_nixpkgs_inputs.py"
+      - ".github/workflows/scripts-test.yml"
+
+permissions:
+  contents: read
+
+# Same concurrency contract as research-workflow.yml: push-to-main runs
+# are keyed by run_id so every merged tree gets its own completed run;
+# pull-request runs share a per-ref group so a new push supersedes the
+# stale one.
+concurrency:
+  group: scripts-test-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update-nixpkgs-inputs-contract:
+    name: "basic: scripts-test (${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run update-nixpkgs-inputs contract tests (#603)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
