@@ -104,7 +104,7 @@ jobs:
     name: "basic: test"
     # Original coverage was push-only; the pull_request/schedule
     # triggers above exist for the flake-policy jobs (#1973).
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -177,6 +177,7 @@ jobs:
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
           ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           RUN: ${{ github.run_id }}/${{ github.run_attempt }}
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |
           rc=0
           go test ./... -count=1 -json >"$RUNNER_TEMP/gotest.json" || rc=$?
@@ -229,6 +230,14 @@ jobs:
       - name: Plugin tests (bun)
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
+
+      - name: Upload runtime feature coverage ledger
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-feature-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
+          if-no-files-found: ignore
 
   docs-history:
     name: "basic: docs-history check"
@@ -446,6 +455,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RUN_IDENTITY: ${{ github.run_id }}/${{ github.run_attempt }}
+          MCPX_FEATURE_COVERAGE_LEDGER: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
         run: |
           set -euo pipefail
           seed=$(python3 -c 'import hashlib, os; print(int(hashlib.sha256(("mcpx-shuffle/v1:" + os.environ["RUN_IDENTITY"]).encode()).hexdigest()[:15], 16))')
@@ -468,6 +478,14 @@ jobs:
             echo "e2e package (-count=3): $e2e"
             go test $e2e -race -shuffle=$seed -count=3
           fi
+
+      - name: Upload runtime feature coverage ledger
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpx-feature-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mcpx-feature-coverage.jsonl
+          if-no-files-found: ignore
 
   stress-nightly:
     name: "stress: nightly full suite (race/shuffle/repeat)"
