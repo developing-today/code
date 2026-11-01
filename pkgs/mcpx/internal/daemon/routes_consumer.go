@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
 	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
 	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
@@ -42,7 +43,7 @@ func (s *Server) handleDiagnose(w http.ResponseWriter, r *http.Request) {
 		Session string `json:"session"`
 		Repair  bool   `json:"repair"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -200,7 +201,7 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 		Source    string `json:"source"`
 		Overwrite bool   `json:"overwrite"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.bodyLimit", defaults.HTTPBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -275,7 +276,7 @@ func (s *Server) handleRecipeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	// Every field here is optional, so an empty body is a legal request for
 	// a recipe that takes no placeholders.
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -366,7 +367,7 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		Provider     string         `json:"provider"`
 		Model        string         `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.callBodyLimit", defaults.HTTPCallBodyLimit))).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
