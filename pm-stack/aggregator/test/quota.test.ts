@@ -50,6 +50,17 @@ describe("quota extractors", () => {
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
 
+  test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
+    const p = byId.get("openai.alternate")!;
+    expect(p).toBeDefined();
+    expect(p.provider).toBe("OpenAI");
+    // This view has no "### ChatGPT (Alternate)" dated-read section, so
+    // the pool renders as a shell; the gatherer overlay supplies the
+    // live windows (see quota-current.test.ts).
+    expect(p.windows).toEqual([]);
+    expect(poolProviderId("openai.alternate")).toBe("openai.alternate");
+  });
+
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
     const p = byId.get("meta:high-usage")!;
     expect(p.state).toBe("walled");
