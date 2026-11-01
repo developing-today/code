@@ -34,6 +34,7 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/catalog"
 	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
@@ -2777,10 +2778,9 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 		}
 	}
 	// The setting may lower the count, not raise it past what every
-	// revision's CompleteResult allows.
-	if max > specMaxCompletions {
-		max = specMaxCompletions
-	}
+	// revision's CompleteResult allows. The cap computation is shared
+	// with the daemon surface via settings (#2878).
+	max = settings.EffectiveCompletionCap(max)
 	total := len(values)
 	if len(values) > max {
 		values = values[:max]
@@ -2806,9 +2806,9 @@ func (l lockedEncoder) Encode(v any) error {
 	return l.enc.Encode(v)
 }
 
-// specMaxCompletions is CompleteResult.values' maxItems in every revision: a
-// fact of the protocol, not a default.
-const specMaxCompletions = 100
+// The completion spec cap lives in internal/settings
+// (settings.SpecCompletionCap) so the daemon and MCP surfaces share
+// one constant and one cap computation (#2878).
 
 // hasTool reports whether tools/call can reach name.
 func (s *Server) hasTool(ctx context.Context, name string) (bool, error) {
