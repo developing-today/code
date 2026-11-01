@@ -11,7 +11,12 @@ import (
 // from the JSONL at any time, so nothing here is protecting data; it is
 // protecting someone who typed DELETE meaning SELECT from a confusing
 // afternoon. PRAGMA is allowed because that is how you ask SQLite about
-// itself, and the mutating pragmas need a value that this refuses anyway.
+// itself. A PRAGMA that carries a value is not a question, it is an
+// assignment, so CheckReadOnly refuses value-carrying PRAGMAs in both
+// forms (name = value and name(value)); the only parenthesised forms
+// allowed are the established function-form reads in
+// functionFormReadPragmas, whose argument names the object to inspect
+// rather than a value to assign.
 var readOnlyVerbs = map[string]bool{
 	"select": true, "explain": true, "pragma": true, "with": true, "values": true,
 }
@@ -32,6 +37,11 @@ func CheckReadOnly(query string) error {
 	if !readOnlyVerbs[verb] {
 		return fmt.Errorf("%q is not a read-only statement; use SELECT, WITH, VALUES, EXPLAIN or PRAGMA", verb)
 	}
+	if verb == "pragma" {
+		if err := checkReadOnlyPragma(trimmed); err != nil {
+			return err
+		}
+	}
 	// A CTE can hide a writer: WITH x AS (...) DELETE FROM records is valid
 	// SQLite, and checking only the first word would wave it through.
 	if verb == "with" {
@@ -40,6 +50,46 @@ func CheckReadOnly(query string) error {
 			if containsWord(lower, bad) {
 				return fmt.Errorf("%q appears in the query; only reads are allowed here", bad)
 			}
+		}
+	}
+	return nil
+}
+
+// functionFormReadPragmas are the PRAGMAs whose parenthesised form is a
+// read: the argument names a table, index, or check to inspect, it is not
+// a value being assigned to the pragma. Any other parenthesised PRAGMA
+// (e.g. user_version(42), journal_mode(DELETE)) is an assignment in call
+// form and is refused.
+var functionFormReadPragmas = map[string]bool{
+	"table_info": true, "table_xinfo": true,
+	"index_list": true, "index_info": true, "index_xinfo": true,
+	"foreign_key_list": true, "foreign_key_check": true,
+	"integrity_check": true, "quick_check": true,
+}
+
+// checkReadOnlyPragma refuses a PRAGMA that carries a value. Bare PRAGMAs
+// (PRAGMA journal_mode, PRAGMA user_version) are reads and pass; a value
+// in either assignment form (= value or (value)) does not, except for the
+// function-form reads above.
+func checkReadOnlyPragma(trimmed string) error {
+	rest := strings.TrimSpace(trimmed[len("pragma"):])
+	rest = strings.TrimSpace(strings.TrimSuffix(rest, ";"))
+	if rest == "" {
+		return fmt.Errorf("PRAGMA with no name is not a read-only statement")
+	}
+	if strings.Contains(rest, "=") {
+		return fmt.Errorf("PRAGMA %q carries a value; only read PRAGMAs with no assigned value are allowed here", rest)
+	}
+	if i := strings.Index(rest, "("); i >= 0 {
+		if !strings.HasSuffix(rest, ")") {
+			return fmt.Errorf("PRAGMA %q is not a well-formed read PRAGMA", rest)
+		}
+		name := rest[:i]
+		if j := strings.LastIndex(name, "."); j >= 0 {
+			name = name[j+1:]
+		}
+		if !functionFormReadPragmas[strings.ToLower(strings.TrimSpace(name))] {
+			return fmt.Errorf("PRAGMA %q carries a value; only read PRAGMAs with no assigned value are allowed here", rest)
 		}
 	}
 	return nil
