@@ -23,6 +23,231 @@ mod tests {
             .unwrap()
     }
 
+    #[derive(Clone, Default)]
+    struct TransferJournal(Arc<std::sync::Mutex<Vec<JournalEntry>>>);
+
+    impl TransferJournal {
+        fn for_world(world_id: &str) -> Self {
+            Self(Arc::new(std::sync::Mutex::new(vec![
+                JournalEntry::Created {
+                    world_id: world_id.to_owned(),
+                    version: JOURNAL_VERSION_REGION_HANDOFF,
+                },
+            ])))
+        }
+
+        fn entries(&self) -> Vec<JournalEntry> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl WorldJournal for TransferJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.0.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+    }
+
+    struct TransferProgram {
+        payload: Vec<u8>,
+        fail_apply: bool,
+        journal: TransferJournal,
+        saw_durable_export_before_apply: Arc<std::sync::Mutex<bool>>,
+        applied_events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for TransferProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let envelope: serde_json::Value = serde_json::from_str(event)?;
+                self.applied_events.lock().unwrap().push(
+                    envelope["app_event"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                );
+                let durable = self
+                    .journal
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, JournalEntry::EntityExported { .. }));
+                *self.saw_durable_export_before_apply.lock().unwrap() = durable;
+                ensure!(durable, "export event applied before it was journaled");
+                if self.fail_apply {
+                    bail!("injected export-apply failure");
+                }
+            }
+            Ok(())
+        }
+
+        fn prepare_entity_transfer(
+            &self,
+            request: &EntityTransferRequest,
+        ) -> Result<EntityTransferPlan> {
+            match request {
+                EntityTransferRequest::Export { .. } => Ok(EntityTransferPlan::Export {
+                    payload_schema: "test/v1".to_owned(),
+                    payload: self.payload.clone(),
+                    app_event: "remove-entity".to_owned(),
+                }),
+                EntityTransferRequest::Import { .. } => Ok(EntityTransferPlan::Import {
+                    app_event: "add-entity".to_owned(),
+                }),
+            }
+        }
+    }
+
+    fn transfer_actor(
+        payload: Vec<u8>,
+        fail_apply: bool,
+    ) -> (
+        WorldActor,
+        JoinCapability,
+        TransferJournal,
+        Arc<std::sync::Mutex<bool>>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let mut core = WorldCore::new(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        core.active_module_hash = Some("module-hash".to_owned());
+        let (_, token) = join(&mut core, "source-user");
+        let journal = TransferJournal::for_world("source");
+        let saw_durable_export_before_apply = Arc::new(std::sync::Mutex::new(false));
+        let applied_events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let program = TransferProgram {
+            payload,
+            fail_apply,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: saw_durable_export_before_apply.clone(),
+            applied_events: applied_events.clone(),
+        };
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (
+            actor,
+            token,
+            journal,
+            saw_durable_export_before_apply,
+            applied_events,
+        )
+    }
+
+    async fn export(actor: &mut WorldActor) -> Result<HandoffTransferState> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ExportEntity {
+                handoff_id: "ab".repeat(16),
+                entity_ref: "entity-1".to_owned(),
+                source_region: "region-a".to_owned(),
+                target_region: "region-b".to_owned(),
+                prior_owner_epoch: 7,
+                reply,
+            })
+            .await;
+        response.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn export_is_journaled_before_apply_replayed_and_fences_later_writes() {
+        let (mut actor, token, journal, saw_durable, applied) =
+            transfer_actor(b"entity".to_vec(), false);
+        let receipt = export(&mut actor).await.unwrap();
+        assert_eq!(receipt.payload.as_deref(), Some(b"entity".as_slice()));
+        assert!(*saw_durable.lock().unwrap());
+        assert!(actor.core.entity_is_fenced("entity-1"));
+
+        let entries = journal.entries();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::EntityExported { .. })
+        ));
+        let restored = WorldCore::restore(
+            "source",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+            entries,
+        )
+        .unwrap();
+        assert_eq!(restored.core.handoff_transfers(), &[receipt.clone()]);
+        assert!(restored.core.entity_is_fenced("entity-1"));
+        assert_eq!(restored.replay, vec![receipt.event.clone()]);
+        let replayed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut replay_program = TransferProgram {
+            payload: b"entity".to_vec(),
+            fail_apply: false,
+            journal: journal.clone(),
+            saw_durable_export_before_apply: Arc::new(std::sync::Mutex::new(false)),
+            applied_events: replayed.clone(),
+        };
+        replay_program.update(&restored.replay[0]).unwrap();
+        assert_eq!(*replayed.lock().unwrap(), *applied.lock().unwrap());
+
+        let before = journal.entries().len();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::EntityInput {
+                token,
+                entity_ref: "entity-1".to_owned(),
+                input: b"mutate".to_vec(),
+                reply,
+            })
+            .await;
+        assert!(response.await.unwrap().is_err());
+        assert_eq!(journal.entries().len(), before);
+    }
+
+    #[tokio::test]
+    async fn oversized_export_is_refused_before_a_durable_fence() {
+        let payload = vec![0; MAX_ENTITY_TRANSFER_PAYLOAD_BYTES + 1];
+        let (mut actor, _, journal, _, _) = transfer_actor(payload, false);
+        assert!(export(&mut actor).await.is_err());
+        assert!(actor.core.handoff_transfers().is_empty());
+        assert!(
+            !journal
+                .entries()
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::EntityExported { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_post_append_apply_withholds_receipt_and_keeps_fence() {
+        let (mut actor, _, journal, saw_durable, _) = transfer_actor(b"entity".to_vec(), true);
+        assert!(export(&mut actor).await.is_err());
+        assert!(*saw_durable.lock().unwrap());
+        assert!(actor.core.entity_is_fenced("entity-1"));
+        assert!(!actor.program_healthy);
+        assert!(matches!(
+            journal.entries().last(),
+            Some(JournalEntry::EntityExported { .. })
+        ));
+    }
+
+    #[test]
+    fn region_sharded_world_rejects_unscoped_input() {
+        let mut core = WorldCore::new(
+            "sharded",
+            WorldLimits {
+                region_sharded: true,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, token) = join(&mut core, "user");
+        assert!(core.prepare_input(&token, b"legacy").is_err());
+        assert!(
+            core.prepare_entity_input(&token, "entity-1", b"scoped")
+                .is_ok()
+        );
+    }
+
     fn sample_source_provenance() -> ModuleProvenance {
         ModuleProvenance::SourceBuild(SourceBuildProvenance {
             schema_version: 1,
@@ -161,7 +386,7 @@ mod tests {
             payload_schema: "entity/v1".to_owned(),
             program_module_hash: "module".to_owned(),
             payload: vec![1, 2, 3],
-            payload_digest: "digest".to_owned(),
+            payload_digest: hex_encode(blake3::hash(&[1, 2, 3]).as_bytes()),
         }
     }
 

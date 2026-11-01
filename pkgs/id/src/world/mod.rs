@@ -63,6 +63,9 @@ pub struct WorldLimits {
     pub chat_bytes: usize,
     /// Maximum opaque game input size in bytes.
     pub input_bytes: usize,
+    /// Require entity-addressed application inputs instead of legacy opaque
+    /// inputs. Enable for region-sharded worlds; defaults off for compatibility.
+    pub region_sharded: bool,
     /// Number of recent events kept for reconnect catch-up.
     pub retained_events: usize,
     /// Maximum presentation text returned by a world program, in bytes.
@@ -90,6 +93,7 @@ impl Default for WorldLimits {
             participants: 256,
             chat_bytes: 2048,
             input_bytes: 16 * 1024,
+            region_sharded: false,
             retained_events: 1024,
             presentation_bytes: 8192,
             snapshot_bytes: 512 * 1024,
@@ -490,6 +494,74 @@ pub enum HandoffDirection {
     /// This world imported the entity (destination side): it holds the
     /// dedupe receipt keyed by `handoff_id`.
     Import,
+}
+
+/// Maximum complete entity snapshot accepted by a v1 region-seam export.
+pub const MAX_ENTITY_TRANSFER_PAYLOAD_BYTES: usize = 16 * 1024;
+
+/// Request passed to a world program to prepare one side of an entity transfer.
+/// The hook must be pure: it validates and describes the event but must not
+/// mutate program state. The actor persists the resulting event before applying
+/// it, so replay observes the same state transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EntityTransferRequest {
+    /// Prepare the source-side removal and complete entity snapshot.
+    Export {
+        /// Coordinator-generated 128-bit handoff ID, encoded as hex.
+        handoff_id: String,
+        /// Application-defined stable identifier for the entity.
+        entity_ref: String,
+        /// Region currently owning the entity.
+        source_region: String,
+        /// Region that will receive the entity.
+        target_region: String,
+        /// Current owner epoch at the source.
+        prior_owner_epoch: u64,
+        /// Hash of the program module preparing the transfer.
+        program_module_hash: String,
+    },
+    /// Validate a destination-side envelope and prepare its import event.
+    Import {
+        /// Coordinator-generated 128-bit handoff ID, encoded as hex.
+        handoff_id: String,
+        /// Application-defined stable identifier for the entity.
+        entity_ref: String,
+        /// Region that exported the entity.
+        source_region: String,
+        /// Region currently importing the entity.
+        target_region: String,
+        /// Owner epoch at the source before this transfer.
+        prior_owner_epoch: u64,
+        /// Hash of the program module expected by the envelope.
+        program_module_hash: String,
+        /// Versioned identifier for the entity payload format.
+        payload_schema: String,
+        /// Complete source snapshot to validate and import.
+        payload: Vec<u8>,
+        /// BLAKE3 digest of `payload`, encoded as lowercase hex.
+        payload_digest: String,
+    },
+}
+
+/// Pure, validated application work returned by
+/// [`WorldProgram::prepare_entity_transfer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EntityTransferPlan {
+    /// The source's complete snapshot and deterministic removal event.
+    Export {
+        /// Versioned identifier for the entity payload format.
+        payload_schema: String,
+        /// Complete source snapshot; limited to
+        /// [`MAX_ENTITY_TRANSFER_PAYLOAD_BYTES`].
+        payload: Vec<u8>,
+        /// Deterministic program event that removes the entity at the source.
+        app_event: String,
+    },
+    /// The deterministic destination insertion event.
+    Import {
+        /// Deterministic program event that adds the entity at the destination.
+        app_event: String,
+    },
 }
 
 /// One active region-seam handoff as a world journal records it (#3870
@@ -1130,6 +1202,21 @@ pub trait WorldProgram: Send + 'static {
     /// not passed to the game program.
     fn update(&mut self, _event: &WorldEvent) -> Result<()> {
         Ok(())
+    }
+
+    /// Purely validate and prepare one side of an application-owned entity
+    /// transfer. Implementations return the complete entity snapshot and a
+    /// deterministic removal event for [`EntityTransferRequest::Export`], or
+    /// validate the supplied envelope and return a deterministic insertion
+    /// event for [`EntityTransferRequest::Import`]. This hook must not mutate
+    /// program state; the actor journals the returned event before calling
+    /// [`Self::update`]. Programs without a transfer adapter remain supported
+    /// and reject transfer requests by default.
+    fn prepare_entity_transfer(
+        &self,
+        _request: &EntityTransferRequest,
+    ) -> Result<EntityTransferPlan> {
+        bail!("world program does not support entity transfer")
     }
 
     /// Return this participant's presentation, or `None` for a chat-only
