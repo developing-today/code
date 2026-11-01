@@ -14,7 +14,10 @@ executables on PATH that log every invocation:
                                 combination, NO wrangler (and no bws)
                                 invocation at all
   --deploy-version alone     -> exit 0, wrangler versions deploy
-                                <id>@100% invoked (rollback path intact)
+                                <id>@100% invoked (rollback path intact;
+                                the stub answers versions view with a
+                                configured version, per #3475's
+                                verify-before-deploy contract)
   --dry-run alone            -> exit 0, wrangler deploy --dry-run
                                 invoked, no versions deploy
 
@@ -34,7 +37,10 @@ STUB = """#!/bin/sh
 echo "$(basename "$0") $@" >> "$STUB_LOG"
 case "$(basename "$0")" in
   bws) echo '[{"key":"cloudflare.api-token-day-to-day","value":"stub-token"}]';;
-  wrangler) echo '[]';;
+  wrangler) case "$1 $2" in
+              "versions view") echo '{"resources":{"bindings":[{"name":"DRAIN_BEARER","type":"secret_text"},{"name":"GITHUB_WEBHOOK_SECRET","type":"secret_text"}]}}';;
+              *) echo '[]';;
+            esac;;
   git) echo '0123456789abcdef0123456789abcdef01234567';;
 esac
 exit 0
