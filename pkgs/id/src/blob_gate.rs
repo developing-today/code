@@ -17,12 +17,15 @@
 //!   is one whose verdict cannot be delivered.
 //!
 //! The reference index and the membership query are behind [`WorldAccess`]. [`FoldedWorlds`]
-//! answers membership from the folded worlds. Its reference index has no producer yet, so
-//! [`blob_events`] is not wired into `id serve`.
+//! answers membership from the folded worlds. The index has a producer now:
+//! [`build_reference_index`] over the event store's document references (see
+//! `EventStore::document_references`), with [`fold_group_events`] folding the group log for
+//! membership, and [`RefreshingWorlds`] swapping fresh folds in as they change. `id serve`
+//! wires [`blob_events`] with those pieces whenever it has the node's event store open.
 
 use std::{
-    collections::{BTreeSet, HashMap},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, RwLock},
 };
 
 use iroh_base::EndpointId;
@@ -112,10 +115,11 @@ pub fn decide(
 /// Membership is the world's own authority, as [`Worlds::holds_here`] gives it: a member of its
 /// group, or a grant in its own chains. A crossing from another world does not count.
 ///
-/// The reference index maps a blob hash to the worlds that name it. Nothing in the store writes
-/// it yet. Artifacts carry SHA-256 hashes, not BLAKE3 blob hashes, and only WASM modules are
-/// pinned, without a record of their world. So the index is passed in, and a hash it does not
-/// hold is unreferenced, which refuses it to every requester.
+/// The reference index maps a blob hash to the worlds that name it. It is built by
+/// [`build_reference_index`] from the event store's document references; artifacts are not a
+/// source, because they carry SHA-256 hashes, not BLAKE3 blob hashes, and only WASM modules
+/// are pinned, without a record of their world. A hash the index does not hold is
+/// unreferenced, which refuses it to every requester.
 #[derive(Debug)]
 pub struct FoldedWorlds {
     worlds: Worlds,
@@ -139,6 +143,140 @@ impl WorldAccess for FoldedWorlds {
         self.references
             .get(hash)
             .map(|worlds| worlds.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// The world key a group is indexed under: the hex of its create event's hash, which is the
+/// group hash every later event of the group names. A document event's `group` extension is
+/// the same hash, so document references and membership folds agree on the key.
+pub fn world_key(group: &p2panda_core::Hash) -> String {
+    group.to_string()
+}
+
+/// Folds group-log events into the [`Worlds`] the gate reads membership from.
+///
+/// Events are partitioned by world: a create event opens the world keyed by its own hash
+/// (a friendship's create names its derived group instead), and every other event joins
+/// the world its `group` names. An event that names no group and creates none belongs to
+/// no world and is skipped.
+///
+/// # Errors
+///
+/// Any error [`Worlds::fold`] gives for one world.
+pub fn fold_group_events(
+    events: &[crate::groups::Event],
+) -> Result<Worlds, crate::groups::FoldError> {
+    let mut by_world: BTreeMap<String, Vec<crate::groups::Event>> = BTreeMap::new();
+    for event in events {
+        let key = match (&event.body, &event.group) {
+            (_, Some(group)) => world_key(group),
+            (crate::groups::Body::Create(_), None) => world_key(&event.id),
+            _ => continue,
+        };
+        by_world.entry(key).or_default().push(event.clone());
+    }
+    Worlds::fold(&by_world, BTreeMap::new())
+}
+
+/// The child hashes a blob's bytes name when the blob is a `HashSeq`: the sequence is the
+/// raw concatenation of 32-byte hashes, so any other length is not a sequence and names no
+/// children.
+pub fn hashseq_children(bytes: &[u8]) -> Vec<Hash> {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(32) {
+        return Vec::new();
+    }
+    bytes
+        .chunks_exact(32)
+        .map(|chunk| {
+            let mut raw = [0u8; 32];
+            raw.copy_from_slice(chunk);
+            Hash::from_bytes(raw)
+        })
+        .collect()
+}
+
+/// Builds the reference index the gate decides from: blob hash → the worlds that name it.
+///
+/// `references` pairs each referenced blob with the world that names it (a document event's
+/// blob and its group, as [`world_key`] spells it). A document with no group names no
+/// world: the caller leaves it out, and its blob stays unreferenced.
+///
+/// `expand` names the children of a blob that is a `HashSeq` collection. Children are
+/// attributed to every world that references the collection, transitively: a member of
+/// the world may fetch the collection's contents, not just its sequence blob. The caller
+/// decides what counts as a collection (serve expands only a blob whose parsed children
+/// are all present in its store, so arbitrary 32-byte-multiple content does not spray
+/// references onto hashes nobody stored).
+pub fn build_reference_index(
+    references: impl IntoIterator<Item = (Hash, String)>,
+    expand: impl Fn(&Hash) -> Vec<Hash>,
+) -> HashMap<Hash, BTreeSet<String>> {
+    let mut index: HashMap<Hash, BTreeSet<String>> = HashMap::new();
+    for (hash, world) in references {
+        index.entry(hash).or_default().insert(world);
+    }
+    // Attribute HashSeq children to the referencing worlds, transitively. The worklist
+    // holds (hash, world) pairs not yet expanded for that world, so the loop ends when
+    // every reachable pair has been expanded once.
+    let mut worklist: Vec<(Hash, String)> = index
+        .iter()
+        .flat_map(|(hash, worlds)| worlds.iter().map(move |world| (*hash, world.clone())))
+        .collect();
+    let mut expanded: BTreeSet<(Hash, String)> = BTreeSet::new();
+    while let Some((hash, world)) = worklist.pop() {
+        if !expanded.insert((hash, world.clone())) {
+            continue;
+        }
+        for child in expand(&hash) {
+            let worlds = index.entry(child).or_default();
+            if worlds.insert(world.clone()) {
+                worklist.push((child, world.clone()));
+            }
+        }
+    }
+    index
+}
+
+/// [`WorldAccess`] whose folded worlds a producer can replace as they change.
+///
+/// `blob_events` holds one `Arc` for the life of the server; the fold behind it must not
+/// be the snapshot from startup, or a removed member would keep fetching and a new
+/// document would stay unreferenced until a restart. The producer re-folds and calls
+/// [`RefreshingWorlds::refresh`]; each decision then reads the latest fold. A poisoned
+/// lock fails closed, like every other gate refusal.
+#[derive(Debug)]
+pub struct RefreshingWorlds {
+    inner: RwLock<FoldedWorlds>,
+}
+
+impl RefreshingWorlds {
+    /// Starts from an initial fold.
+    pub const fn new(initial: FoldedWorlds) -> Self {
+        Self {
+            inner: RwLock::new(initial),
+        }
+    }
+
+    /// Replaces the folded worlds every later decision reads.
+    pub fn refresh(&self, next: FoldedWorlds) {
+        if let Ok(mut current) = self.inner.write() {
+            *current = next;
+        }
+    }
+}
+
+impl WorldAccess for RefreshingWorlds {
+    fn is_current_member(&self, world: &str, requester: &EndpointId) -> bool {
+        self.inner
+            .read()
+            .is_ok_and(|folded| folded.is_current_member(world, requester))
+    }
+
+    fn worlds_referencing(&self, hash: &Hash) -> Vec<String> {
+        self.inner
+            .read()
+            .map(|folded| folded.worlds_referencing(hash))
             .unwrap_or_default()
     }
 }
@@ -510,5 +648,132 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod producer_tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use iroh_base::SecretKey;
+    use p2panda_core::Hash as PandaHash;
+
+    use super::*;
+    use crate::groups::policy::Policy;
+    use crate::groups::{Body, Create, Event, MemberOp, Template};
+
+    fn id(n: u8) -> EndpointId {
+        SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    fn blob(n: u8) -> Hash {
+        Hash::from_bytes([n; 32])
+    }
+
+    #[test]
+    fn reference_index_attributes_hashseq_children_transitively() {
+        // world "w" references the sequence blob 1; 1 names 2 and 3; 2 names 4.
+        let children: HashMap<Hash, Vec<Hash>> =
+            HashMap::from([(blob(1), vec![blob(2), blob(3)]), (blob(2), vec![blob(4)])]);
+        let index = build_reference_index([(blob(1), "w".to_owned())], |hash| {
+            children.get(hash).cloned().unwrap_or_default()
+        });
+        for hash in [blob(1), blob(2), blob(3), blob(4)] {
+            assert_eq!(
+                index.get(&hash).map(|w| w.contains("w")),
+                Some(true),
+                "{hash} must be referenced by w"
+            );
+        }
+        assert!(!index.contains_key(&blob(9)), "unrelated hash stays out");
+    }
+
+    #[test]
+    fn hashseq_children_parses_concatenated_hashes() {
+        let mut bytes = blob(5).as_bytes().to_vec();
+        bytes.extend_from_slice(blob(6).as_bytes());
+        assert_eq!(hashseq_children(&bytes), vec![blob(5), blob(6)]);
+        assert!(hashseq_children(&bytes[..33]).is_empty(), "ragged length");
+        assert!(hashseq_children(&[]).is_empty(), "empty names nothing");
+    }
+
+    /// A group log for one world: founder creates it, adds `member`, then removes them
+    /// when `removed`. Returns the events and the world key the fold gives them.
+    fn group_events(member: EndpointId, removed: bool) -> (Vec<Event>, String) {
+        let founder = *id(1).as_bytes();
+        let member_key = *member.as_bytes();
+        let create = PandaHash::digest(b"gate-create");
+        let add = PandaHash::digest(b"gate-add");
+        let mut events = vec![
+            Event {
+                id: create,
+                author: founder,
+                after: Vec::new(),
+                group: None,
+                body: Body::Create(Create {
+                    template: Template::Custom,
+                    policy: Policy::default(),
+                    members: Vec::new(),
+                    admins_on_create: false,
+                }),
+            },
+            Event {
+                id: add,
+                author: founder,
+                after: vec![create],
+                group: Some(create),
+                body: Body::Member(MemberOp::Add {
+                    member: member_key,
+                    role: crate::groups::Role::Read,
+                }),
+            },
+        ];
+        if removed {
+            events.push(Event {
+                id: PandaHash::digest(b"gate-remove"),
+                author: founder,
+                after: vec![add],
+                group: Some(create),
+                body: Body::Member(MemberOp::Remove {
+                    member: member_key,
+                    successor: None,
+                }),
+            });
+        }
+        (events, world_key(&create))
+    }
+
+    #[test]
+    fn folded_group_log_gates_fetch_and_refresh_revokes_it() {
+        let member = id(2);
+        let (events, world) = group_events(member, false);
+        let worlds = fold_group_events(&events).expect("the log folds");
+        let index = build_reference_index([(blob(7), world.clone())], |_| Vec::new());
+        let gate = RefreshingWorlds::new(FoldedWorlds::new(worlds, index));
+        let policy = BlobPolicy::default();
+        assert!(
+            decide(&gate, &policy, &member, &blob(7), Request::Fetch),
+            "a current member fetches a referenced blob"
+        );
+        assert!(
+            !decide(&gate, &policy, &id(3), &blob(7), Request::Fetch),
+            "a non-member is refused"
+        );
+        assert!(
+            !decide(&gate, &policy, &member, &blob(8), Request::Fetch),
+            "an unreferenced blob is refused even to a member"
+        );
+
+        // The member is removed; a refreshed fold must revoke the fetch at once.
+        let (events, world) = group_events(member, true);
+        let worlds = fold_group_events(&events).expect("the log folds");
+        let index = build_reference_index([(blob(7), world)], |_| Vec::new());
+        gate.refresh(FoldedWorlds::new(worlds, index));
+        assert!(
+            !decide(&gate, &policy, &member, &blob(7), Request::Fetch),
+            "a removed member loses fetch on the next request"
+        );
+        let _ = BTreeMap::<String, String>::new();
     }
 }

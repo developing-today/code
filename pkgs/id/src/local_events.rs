@@ -23,7 +23,7 @@ use p2panda_core::{Hash, SigningKey};
 
 use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
-use crate::event_store::{EventStore, Ingest};
+use crate::event_store::{EventStore, Ingest, StoreError};
 use crate::search::{Hit, ValueMatch, search_store};
 use crate::tag_claims::{CLEAR_KIND, Claim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, check_op};
 use crate::waiting::{AuthorKey, WaitingLimits};
@@ -151,6 +151,18 @@ impl LocalEvents {
     /// # Errors
     ///
     /// Fails if the store cannot be opened, for example while another process has it open.
+    /// The blob references in this node's event store, for the blob gate's index
+    /// (`EventStore::document_references`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the read fails.
+    pub fn document_references(
+        &self,
+    ) -> Result<Vec<(iroh_blobs::Hash, Option<p2panda_core::Hash>)>, StoreError> {
+        self.store.document_references()
+    }
+
     pub fn open(dir: &Path, key: SigningKey) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;
