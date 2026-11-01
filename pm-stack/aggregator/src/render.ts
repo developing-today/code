@@ -5573,6 +5573,16 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
         `<tr><td>${fmtDate(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.title ?? e.incident_id)}</td><td class="muted">${esc(e.source ?? "")}${e.incident_key ? ` · ${esc(e.incident_key)}` : ""}</td></tr>`,
     )
     .join("");
+  // The push form's initial state is rendered from the newest stored
+  // subscription (Drew 2026-11-01): the page shows the saved truth on
+  // load even before — or entirely without — the client script
+  // matching this browser's own subscription. The client script
+  // still refines it per-browser via applyPrefs once it runs.
+  const formSub = [...view.subscriptions].sort((a, b) => (a.last_seen_at < b.last_seen_at ? 1 : -1))[0];
+  const formIncidentChecked = !formSub || formSub.classes?.incident !== false;
+  const formQuietOn = !formSub || formSub.quiet?.enabled !== false;
+  const formQuietStart = formSub?.quiet?.start ?? "23:00";
+  const formQuietEnd = formSub?.quiet?.end ?? "07:00";
   const body = `<h1>Alerts</h1>
 <p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
 <style>.incident:target { outline: 2px solid #1f6feb; }</style>
@@ -5592,10 +5602,10 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
 <p><strong>This browser can't receive web push</strong> — most often because the page is open inside another app (an in-app browser) or in a browser without push support. Open this page's address in your regular browser (Chrome, Safari, or Firefox) and enable push there.</p>
 </div>
 </div>
-<p><label><input type="checkbox" id="push-class-incident" checked> <strong>Incident alerts</strong></label><br>
+<p><label><input type="checkbox" id="push-class-incident"${formIncidentChecked ? " checked" : ""}> <strong>Incident alerts</strong></label><br>
 <span class="muted">A watchdog reports something down. Incident alerts always come through immediately, the moment they're posted.</span></p>
-<p><label><input type="checkbox" id="push-quiet-enabled" checked> <strong>Quiet hours</strong></label><br>
-<span class="muted">Pause non-urgent notifications overnight, between <input type="time" id="push-quiet-start" value="23:00"> and <input type="time" id="push-quiet-end" value="07:00"> (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.</span></p>
+<p><label><input type="checkbox" id="push-quiet-enabled"${formQuietOn ? " checked" : ""}> <strong>Quiet hours</strong></label><br>
+<span class="muted">Pause non-urgent notifications overnight, between <input type="time" id="push-quiet-start" value="${formQuietStart}"${formQuietOn ? "" : " disabled"}> and <input type="time" id="push-quiet-end" value="${formQuietEnd}"${formQuietOn ? "" : " disabled"}> (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.</span></p>
 <button id="push-enable">Enable push on this browser</button>
 <button id="push-test">Send a test alert</button>
 <button id="push-save-prefs">Save preferences</button>
@@ -5649,23 +5659,49 @@ function applyPrefs(mine) {
     syncQuietInputs();
   }
 }
+// Capability is checked against the window directly, NOT via
+// window.pmPush: push-client.js loads with defer, so when this
+// inline script first runs pmPush does not exist yet. The first
+// build read that absence as "this browser can't do push" and
+// painted the unsupported guide on every load in every browser —
+// and returned before applying saved prefs (Drew 2026-11-01:
+// pushes worked while the page said unsupported, and a saved
+// quiet-hours-off reloaded as on). pmPush itself is awaited below.
+function pushSupportedHere() {
+  return "PushManager" in window && "Notification" in window && "serviceWorker" in navigator;
+}
+function waitForPmPush() {
+  if (window.pmPush) return Promise.resolve(window.pmPush);
+  return new Promise((resolve) => {
+    let n = 0;
+    const t = setInterval(() => {
+      n++;
+      if (window.pmPush || n > 60) { clearInterval(t); resolve(window.pmPush || null); }
+    }, 50);
+  });
+}
 async function refreshStatus() {
   const guide = document.getElementById("push-guide");
-  if (!window.pmPush || !window.pmPush.supported()) {
+  if (!pushSupportedHere()) {
     status.textContent = "Push isn't available in this browser yet — the steps below get it working.";
     guide.hidden = false;
-    const pf = window.pmPush && window.pmPush.platform ? window.pmPush.platform() : { ios: false };
-    document.getElementById("push-guide-ios").hidden = !pf.ios;
-    document.getElementById("push-guide-other").hidden = pf.ios;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    document.getElementById("push-guide-ios").hidden = !ios;
+    document.getElementById("push-guide-other").hidden = ios;
     return;
   }
   guide.hidden = true;
-  const sub = await window.pmPush.current().catch(() => null);
+  const pm = await waitForPmPush();
+  if (!pm) { status.textContent = "The push controls are still loading — reload the page if this sticks."; return; }
+  const sub = await pm.current().catch(() => null);
   if (sub) {
     status.textContent = "This browser is subscribed — pushes will land here.";
-    const mine = SUBS.find((s) => s.endpoint === sub.endpoint);
+    // Endpoint match first; with a single stored subscription it is
+    // this browser's in practice (push endpoints rotate) — fall back
+    // to it so saved prefs still reach the form.
+    const mine = SUBS.find((s) => s.endpoint === sub.endpoint) || (SUBS.length === 1 ? SUBS[0] : null);
     if (mine) applyPrefs(mine);
-  } else if (window.pmPush.permission() === "denied") {
+  } else if (pm.permission() === "denied") {
     status.textContent = DENIED_TEXT;
   } else {
     status.textContent = "This browser is not subscribed yet — tap Enable push below.";
@@ -5688,7 +5724,15 @@ document.getElementById("push-enable").addEventListener("click", async () => {
   try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { showError(e); }
 });
 document.getElementById("push-save-prefs").addEventListener("click", async () => {
-  try { await window.pmPush.updatePrefs(prefs()); location.reload(); } catch (e) { showError(e); }
+  try {
+    const p = prefs();
+    await window.pmPush.updatePrefs(p);
+    // Confirm in place, no reload: state the saved values in words
+    // so the result is checkable without trusting the form.
+    status.textContent = p.quiet.enabled
+      ? "Saved — quiet hours on, " + p.quiet.start + "–" + p.quiet.end + "."
+      : "Saved — quiet hours off, no time-of-day limit.";
+  } catch (e) { showError(e); }
 });
 document.getElementById("push-disable").addEventListener("click", async () => {
   try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { showError(e); }
