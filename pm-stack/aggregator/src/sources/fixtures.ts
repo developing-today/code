@@ -1252,6 +1252,7 @@ export const FIXTURE_USAGE: UsageView = {
       usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
     },
   ],
+  uninstrumentedServices: [],
   payg: [
     {
       id: "meta-payg",

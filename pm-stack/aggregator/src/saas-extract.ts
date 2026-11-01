@@ -12,7 +12,16 @@
 // renewal date, but they render as explicit candidate cards — never
 // silently absent, never presented as held.
 
-import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
+import type {
+  ChargeRow,
+  DatedRead,
+  PaygEstimate,
+  PaygLine,
+  SaasGroup,
+  SaasService,
+  UninstrumentedSaasService,
+  UsageMetric,
+} from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
 import { parseIsoDate } from "./validate.ts";
 
@@ -745,6 +754,57 @@ export function extractSaasServices(doc: string): SaasService[] {
     if (zoneDate && (!cf.measuredAt || zoneDate > cf.measuredAt)) cf.measuredAt = zoneDate;
   }
   return services;
+}
+
+/** Extract the evaluated services table from free-services-to-check.md.
+ * Names, states, dates and guardrails remain source data: this function
+ * does not maintain a second code-defined registry. */
+export function extractUninstrumentedServices(doc: string): UninstrumentedSaasService[] {
+  const rows: UninstrumentedSaasService[] = [];
+  let columns: Record<string, number> | null = null;
+
+  const cellsOf = (line: string): string[] =>
+    line
+      .split("|")
+      .slice(1, -1)
+      .map((cell) => cell.replace(/\\\|/g, "|").replace(/\*\*/g, "").trim());
+
+  for (const line of doc.split(/\r?\n/)) {
+    if (!line.trimStart().startsWith("|")) {
+      columns = null;
+      continue;
+    }
+    const cells = cellsOf(line);
+    const header = cells.map((cell) => cell.toLowerCase());
+    const required = ["service", "what for", "status", "overage behavior", "guardrail notes"];
+    if (required.every((name) => header.includes(name))) {
+      columns = Object.fromEntries(required.map((name) => [name, header.indexOf(name)]));
+      continue;
+    }
+    if (!columns || cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+
+    const name = cells[columns.service] ?? "";
+    const rawStatus = cells[columns.status] ?? "";
+    if (!name || !rawStatus) continue;
+
+    const checkedAt = [...rawStatus.matchAll(DATE_RE)]
+      .map((match) => match[0])
+      .find((date) => parseIsoDate(date) !== null) ?? null;
+    const status = (checkedAt ? rawStatus.replace(checkedAt, "") : rawStatus)
+      .replace(/^\s*[—–-]\s*/, "")
+      .replace(/\s+/g, " ")
+      .trim() || (checkedAt ? "checked" : "unknown");
+
+    rows.push({
+      name,
+      whatFor: cells[columns["what for"]] ?? "",
+      status,
+      checkedAt,
+      overageBehavior: cells[columns["overage behavior"]] ?? "",
+      guardrailNotes: cells[columns["guardrail notes"]] ?? "",
+    });
+  }
+  return rows;
 }
 
 // --- Cloudflare live export overlay (#1048) ----------------------------------

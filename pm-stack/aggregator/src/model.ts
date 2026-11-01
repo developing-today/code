@@ -1230,6 +1230,19 @@ export interface SaasService {
   usageNote?: string;
 }
 
+/** A service evaluated in free-services-to-check.md but not represented
+ * by an instrumented quota card. Values are copied from that tracker so
+ * the overview never invents provider states or pricing behavior. */
+export interface UninstrumentedSaasService {
+  name: string;
+  whatFor: string;
+  /** Tracker status text with its dated check kept in checkedAt. */
+  status: string;
+  checkedAt: string | null;
+  overageBehavior: string;
+  guardrailNotes: string;
+}
+
 /** One line of the PAYG dollars card (§1.2). */
 export interface PaygLine {
   id: string;
@@ -1351,6 +1364,8 @@ export interface SnapshotRecord {
 /** The hub's family-2 + PAYG + charges model, served by Source.usage(). */
 export interface UsageView {
   services: SaasService[];
+  /** Tracker-derived SaaS services without an instrumented quota card. */
+  uninstrumentedServices: UninstrumentedSaasService[];
   payg: PaygLine[];
   charges: ChargeRow[];
   /** Set when no charge evidence could be derived — the strip explains itself. */

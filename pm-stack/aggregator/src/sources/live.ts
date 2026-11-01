@@ -32,6 +32,7 @@ import {
   extractPaygLines,
   extractSaasServices,
   extractSubscriptions,
+  extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
@@ -867,6 +868,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // plus the stewardship / check-usage outbox), and ingesting them
       // here — append with dedupe — is the one write this reader makes.
       const feed = await getFeed();
+      const uninstrumentedServices =
+        feed?.uninstrumentedServices ??
+        (await readFile(cfg.freeServicesTrackerFile, "utf8")
+          .then(extractUninstrumentedServices)
+          .catch(() => []));
       const store = new SnapshotStore(cfg.snapshotsDir);
       if (feed?.snapshots?.length) {
         await store.append(feed.snapshots).catch(() => 0);
@@ -904,6 +910,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const chargesDroppedNote = feed?.chargesDropped
         ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
         : "";
+      const trackerRowsDroppedNote = feed?.uninstrumentedServicesDropped
+        ? ` · sanitized at load: dropped ${feed.uninstrumentedServicesDropped} malformed tracker row(s) (#1172)`
+        : "";
+      const usageSanitizationNote = chargesDroppedNote + trackerRowsDroppedNote;
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -913,7 +923,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       }));
       if (feed?.saas && feed.saas.length) {
         provenance.usage =
-          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + usageSanitizationNote;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -922,6 +932,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           .catch(() => null);
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: feed.payg ?? [],
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
@@ -954,6 +965,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          uninstrumentedServices,
           payg: extractPaygLines(doc, registryText),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
@@ -961,7 +973,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage =
           "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
-          chargesDroppedNote;
+          usageSanitizationNote;
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -972,13 +984,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + usageSanitizationNote;
         const fallback = await fix.usage();
         // #3124: even the fixtures fallback keeps the feed's charge
         // evidence when a feed exists — fixtures stand in for the
         // sections that are missing, not for the ones that arrived.
         return {
           ...fallback,
+          uninstrumentedServices,
           charges: feedCharges.length ? feedCharges : fallback.charges,
           chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
           attention: [...fallback.attention, ...feedChargeFlags],
