@@ -134,7 +134,7 @@ Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/`:
 | `tools.ts` | `tool.transform` with namespace + `discover`/`exec`/`observe`/`daemon_*` | namespaced registration |
 | `timing.ts` | `tool.hook("execute.after")` recording both statuses | failures recorded |
 | `remember.ts` | `ctx.storage` remembered daemon | no state file |
-| `daemon.ts` | re-export of `../../mcpx/daemon.ts` | core reuse |
+| `daemon.ts` | re-export of `../mcpx/daemon.ts` | core reuse |
 
 Tests follow the existing `bun test` style in `plugin/opencode/mcpx/*.test.ts`
 (`daemon.test.ts`, `ops.test.ts`, `ceiling.test.ts`), stubbing the context
