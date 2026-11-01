@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import { isChargeRow, isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import { renderQuota } from "../src/render.ts";
 import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -305,6 +306,75 @@ describe("feed subscriptions sanitization (#2446)", () => {
     const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+describe("isChargeRow + loadFeed charges sanitization (#2445)", () => {
+  const CHOICES = { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] };
+  const ROW = { at: "2026-10-30", label: "Mystery AI Inc", amountUsd: 42.5, method: "Visa \u20227535", source: "plaid" };
+  const feedWithCharges = (charges: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: CHOICES },
+    attention: [],
+    ...(charges === undefined ? {} : { charges }),
+  });
+  const load = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-charges-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("isChargeRow accepts a well-formed row and rejects malformed ones", () => {
+    expect(isChargeRow(ROW)).toBe(true);
+    expect(isChargeRow(null)).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: undefined })).toBe(false);
+    expect(isChargeRow({ ...ROW, amountUsd: "42.50" })).toBe(false);
+    expect(isChargeRow({ at: ROW.at, label: ROW.label, amountUsd: 1, source: "plaid" })).toBe(false);
+  });
+
+  test("charges [null] drops the row, keeps the feed, surfaces the count", async () => {
+    const loaded = await load(feedWithCharges([null]));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toEqual([]);
+    expect(loaded?.chargesDropped).toBe(1);
+  });
+
+  test("[valid, null] keeps the valid row", async () => {
+    const loaded = await load(feedWithCharges([ROW, null]));
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(1);
+  });
+
+  test("entries missing amountUsd or with a string amountUsd drop individually", async () => {
+    const noAmount = { at: ROW.at, label: ROW.label, method: ROW.method, source: ROW.source };
+    const loaded = await load(feedWithCharges([noAmount, { ...ROW, amountUsd: "42.50" }, ROW]));
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBe(2);
+  });
+
+  test("a non-array charges section yields [] with the drop surfaced", async () => {
+    for (const bad of ["oops", { at: ROW.at }]) {
+      const loaded = await load(feedWithCharges(bad));
+      expect(loaded).not.toBeNull();
+      expect(loaded?.charges).toEqual([]);
+      expect(loaded?.chargesDropped).toBe(1);
+    }
+  });
+
+  test("an absent charges section stays absent", async () => {
+    const loaded = await load(feedWithCharges(undefined));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.charges).toBeUndefined();
+    expect(loaded?.chargesDropped).toBeUndefined();
+  });
+
+  test("a well-formed feed is unchanged through the gate + loadFeed (collector self-acceptance)", async () => {
+    const feed = feedWithCharges([ROW]);
+    expect(isFleetFeed(feed)).toBe(true);
+    const loaded = await load(feed);
+    expect(loaded?.charges).toEqual([ROW]);
+    expect(loaded?.chargesDropped).toBeUndefined();
   });
 });
 
