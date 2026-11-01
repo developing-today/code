@@ -25,6 +25,7 @@ import {
   refUrl,
 } from "../model.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { gristDocUrl } from "../service-links.ts";
 import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
@@ -199,6 +200,7 @@ type SeedRow = { Title: string; Area: string; Status: string; Horizon: string; S
 
 export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i) => {
   const refs = new Set([...refsInText(`${r.Source} ${r.Notes}`), ...(ROADMAP_LINKS[r.Title] ?? [])]);
+  const horizonValidation = validateRoadmapHorizon(r.Horizon);
   return {
     id: i + 1,
     subject: `grist:${GRIST_DOC}/Roadmap/${i + 1}`,
@@ -206,6 +208,7 @@ export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i)
     area: r.Area,
     status: r.Status,
     horizon: r.Horizon,
+    ...(!horizonValidation.valid ? { horizonError: horizonValidation.error } : {}),
     source: r.Source,
     notes: r.Notes,
     links: [...refs].map((ref) => link(ref)),

@@ -1789,7 +1789,10 @@ function roadmapCard(
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${expansion}</div>`;
+  const horizonWarning = row.horizonError
+    ? ` <span class="badge horizon-invalid" title="${esc(row.horizonError)}">Invalid Horizon</span>`
+    : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${refBadges}${grist}${expansion}</div>`;
 }
 
 function timelineTable(
@@ -1801,13 +1804,15 @@ function timelineTable(
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
+      const themeRows = [...(tl.cells.get(theme)?.values() ?? [])].flat();
+      const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("")}</td>`;
         })
         .join("");
-      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
     })
     .join("");
   return `<div class="tblwrap"><table><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
@@ -1835,6 +1840,10 @@ export function renderRoadmap(
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
+  const invalidHorizons = rows.filter((row) => row.horizonError);
+  const horizonFlag = invalidHorizons.length
+    ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
+    : "";
   let body: string;
   if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill);
@@ -1842,24 +1851,35 @@ export function renderRoadmap(
     body = timelineTable(monthTimeline(rows), items, counts, drill);
   } else {
     const dg = roadmapDayGrain(rows, grain);
-    const sections = dg.lanes
-      .map(
-        (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
-      )
-      .join("");
-    const notes: string[] = [];
-    if (dg.outside > 0) notes.push(`${dg.outside} dated row${dg.outside === 1 ? "" : "s"} fall outside this window`);
-    if (dg.coarse.length > 0) {
-      notes.push(
-        `${dg.coarse.length} row${dg.coarse.length === 1 ? "" : "s"} have no calendar date (quarter grain, ongoing, or unscheduled) — see the Quarter view`,
-      );
+    const byTheme = new Map<string, RoadmapRow[]>();
+    for (const row of rows) {
+      const theme = row.area || "Unthemed";
+      byTheme.set(theme, [...(byTheme.get(theme) ?? []), row]);
     }
-    body = `${sections}${notes.length ? `<p class="muted">${notes.join(" · ")}</p>` : ""}`;
+    body = byTheme.size
+      ? [...byTheme.entries()]
+          .map(([theme, themeRows]) => {
+            const done = themeRows.filter((row) => row.status.trim().toLowerCase() === "done").length;
+            const cards = (laneRows: RoadmapRow[]) =>
+              laneRows.map((row) => roadmapCard(row, items, counts, drill?.get(row.subject))).join("");
+            const lanes = dg.lanes
+              .map((lane) => {
+                const laneRows = lane.rows.filter((row) => (row.area || "Unthemed") === theme);
+                return laneRows.length ? `<h3>${esc(lane.label)}</h3>${cards(laneRows)}` : "";
+              })
+              .join("");
+            const outsideRows = dg.outsideRows.filter((row) => (row.area || "Unthemed") === theme);
+            const coarseRows = dg.coarse.filter((row) => (row.area || "Unthemed") === theme);
+            const outside = outsideRows.length ? `<h3>Outside this window (${outsideRows.length})</h3>${cards(outsideRows)}` : "";
+            const coarse = coarseRows.length ? `<h3>Undated or coarse horizons (${coarseRows.length})</h3>${cards(coarseRows)}` : "";
+            return `<section class="roadmap-theme"><h2>${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></h2>${lanes}${outside}${coarse}</section>`;
+          })
+          .join("")
+      : '<p class="muted">No roadmap rows.</p>';
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}`,
     provenance,
     "/roadmap",
     "",
