@@ -586,6 +586,8 @@ func (s *Server) taskStore() *tasks.Store {
 			dbPath := filepath.Join(s.paths.State, "tasks.db")
 			if store, err := tasks.Open(dbPath); err == nil {
 				s.tasks = store
+			} else if s.logger != nil {
+				s.logger.Printf("task store: could not open %s: %v; using in-memory fallback", dbPath, err)
 			}
 		}
 		if s.tasks == nil {
