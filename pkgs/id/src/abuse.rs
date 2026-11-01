@@ -442,7 +442,8 @@ impl AbuseEvaluator {
             &mut state.preauth_frames
         };
         if bucket.try_take(1, now_ms) {
-            self.registry.record(self.local_node, endpoint, 1, 0, now_ms);
+            self.registry
+                .record(self.local_node, endpoint, 1, 0, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
@@ -473,7 +474,8 @@ impl AbuseEvaluator {
             &mut state.preauth_bytes
         };
         if bucket.try_take(bytes, now_ms) {
-            self.registry.record(self.local_node, endpoint, 0, bytes, now_ms);
+            self.registry
+                .record(self.local_node, endpoint, 0, bytes, now_ms);
             Ok(())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);

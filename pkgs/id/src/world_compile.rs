@@ -1403,9 +1403,18 @@ restore = |text| match U64.from_str(text) {
         ] {
             let app = spec(vec![("main.roc", &format!("{spelling}\napp [x] {{}}"))]);
             let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
-            assert!(refused.contains("main.roc imports Screen"), "{spelling}: {refused}");
-            assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(), "{spelling}");
-            assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok(), "{spelling}");
+            assert!(
+                refused.contains("main.roc imports Screen"),
+                "{spelling}: {refused}"
+            );
+            assert!(
+                check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(),
+                "{spelling}"
+            );
+            assert!(
+                check_imports(&app, &modules, &["*".to_owned()]).is_ok(),
+                "{spelling}"
+            );
         }
     }
 
