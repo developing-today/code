@@ -261,32 +261,39 @@ pub enum AuthorisationState {
 /// ([`author_id`]) — [`chain::decode`] has already verified every
 /// signature before this function sees an object.
 ///
-/// Rules: bodies for other authorisation ids are ignored. A body
-/// whose named issuer is not its event author is invalid and ignored,
-/// as is a revoke signed by anyone other than the authorisation's
-/// issuer. Among the valid versions the highest is the candidate:
-/// if an issuer-signed revoke covers it (`revoked_version_from <=`
-/// highest version) the state is [`AuthorisationState::Revoked`],
-/// otherwise [`AuthorisationState::Live`]. Returns `None` when no
-/// valid version of the authorisation exists.
+/// Rules: bodies for other authorisation ids are ignored. Version
+/// selection is bound to `expected_issuer`: an `authorisation_id`
+/// alone does not establish ownership, so only objects whose event
+/// author is the expected issuer are considered — a foreign signer
+/// reusing the id with a higher version cannot hijack the fold, and
+/// a revoke signed by anyone other than the expected issuer is
+/// ignored. Among the expected issuer's valid versions the highest
+/// is the candidate: if an issuer-signed revoke covers it
+/// (`revoked_version_from <=` highest version) the state is
+/// [`AuthorisationState::Revoked`] with the *earliest* effective
+/// covering revocation (ties break to the smallest
+/// `revoked_version_from`, deterministically); otherwise
+/// [`AuthorisationState::Live`]. Returns `None` when the expected
+/// issuer has no valid version of the authorisation.
 #[must_use]
 pub fn fold_authorisation(
     authorisation_id: u128,
+    expected_issuer: &IssuerId,
     authorisations: &[(IssuerId, RateAuthorisation)],
     revokes: &[(IssuerId, RateAuthorisationRevoke)],
 ) -> Option<AuthorisationState> {
     let live = authorisations
         .iter()
+        .filter(|(author, _)| author == expected_issuer)
         .filter(|(_, body)| body.authorisation_id == authorisation_id)
         .filter(|(author, body)| body.validate(author).is_ok())
         .max_by_key(|(_, body)| body.version)?;
-    let issuer = live.1.issuer_id;
     let covering = revokes
         .iter()
-        .filter(|(author, _)| *author == issuer)
+        .filter(|(author, _)| author == expected_issuer)
         .filter(|(_, body)| body.authorisation_id == authorisation_id)
         .filter(|(_, body)| body.revoked_version_from <= live.1.version)
-        .min_by_key(|(_, body)| body.revoked_version_from);
+        .min_by_key(|(_, body)| (body.effective_at, body.revoked_version_from));
     match covering {
         Some((_, revoke)) => Some(AuthorisationState::Revoked {
             authorisation: live.1.clone(),
@@ -466,11 +473,11 @@ mod tests {
             (issuer_id(&other_key()), rev.clone()),
         ];
         assert_eq!(
-            fold_authorisation(7, &objects, &[]),
+            fold_authorisation(7, &issuer_id(&lp_key()), &objects, &[]),
             Some(AuthorisationState::Live(fwd))
         );
         assert_eq!(
-            fold_authorisation(8, &objects, &[]),
+            fold_authorisation(8, &issuer_id(&other_key()), &objects, &[]),
             Some(AuthorisationState::Live(rev))
         );
     }
@@ -481,7 +488,10 @@ mod tests {
         let stranger = issuer_id(&other_key());
         assert_eq!(auth.validate(&stranger), Err(ValidateError::IssuerMismatch));
         // And the fold ignores a mismatched body entirely.
-        assert_eq!(fold_authorisation(7, &[(stranger, auth)], &[]), None);
+        assert_eq!(
+            fold_authorisation(7, &issuer_id(&lp_key()), &[(stranger, auth)], &[]),
+            None
+        );
     }
 
     #[test]
@@ -493,7 +503,7 @@ mod tests {
         let author = issuer_id(&lp_key());
         let objects = [(author, v1), (author, v2.clone())];
         assert_eq!(
-            fold_authorisation(7, &objects, &[]),
+            fold_authorisation(7, &author, &objects, &[]),
             Some(AuthorisationState::Live(v2))
         );
     }
@@ -512,7 +522,7 @@ mod tests {
             reason: None,
         };
         assert_eq!(
-            fold_authorisation(7, &objects, &[(author, revoke)]),
+            fold_authorisation(7, &author, &objects, &[(author, revoke)]),
             Some(AuthorisationState::Revoked {
                 authorisation: v2,
                 revoked_version_from: 2,
@@ -533,10 +543,79 @@ mod tests {
         assert_eq!(
             fold_authorisation(
                 7,
+                &issuer_id(&lp_key()),
                 &[(issuer_id(&lp_key()), auth.clone())],
                 &[(issuer_id(&other_key()), revoke)],
             ),
             Some(AuthorisationState::Live(auth))
+        );
+    }
+
+    #[test]
+    fn foreign_signer_cannot_hijack_authorisation_id() {
+        // Codex P1 on PR #3888: a foreign signer reuses the
+        // authorisation id with their own issuer and a higher
+        // version. Folding for the expected (original) issuer must
+        // ignore it entirely.
+        let v1 = forward();
+        let lp = issuer_id(&lp_key());
+        let attacker = issuer_id(&other_key());
+        let mut hijack = v1.clone();
+        hijack.version = 99;
+        hijack.issuer_id = attacker;
+        hijack.rate_num = 1;
+        let objects = [(lp, v1.clone()), (attacker, hijack.clone())];
+        assert_eq!(
+            fold_authorisation(7, &lp, &objects, &[]),
+            Some(AuthorisationState::Live(v1))
+        );
+        // Under the attacker's own issuer scope the object is theirs
+        // alone; it never displaces the LP's authorisation.
+        assert_eq!(
+            fold_authorisation(7, &attacker, &objects, &[]),
+            Some(AuthorisationState::Live(hijack))
+        );
+    }
+
+    #[test]
+    fn earliest_effective_covering_revoke_wins() {
+        // Codex P2 on PR #3888: revokes from version 2 effective at
+        // t=100 and from version 1 effective at t=200 both cover
+        // version 2; the folded state must carry the earliest
+        // effective revocation (t=100), not the smallest
+        // revoked_version_from.
+        let v1 = forward();
+        let mut v2 = v1.clone();
+        v2.version = 2;
+        let author = issuer_id(&lp_key());
+        let objects = [(author, v1), (author, v2.clone())];
+        let revokes = [
+            (
+                author,
+                RateAuthorisationRevoke {
+                    authorisation_id: 7,
+                    revoked_version_from: 1,
+                    effective_at: 200,
+                    reason: None,
+                },
+            ),
+            (
+                author,
+                RateAuthorisationRevoke {
+                    authorisation_id: 7,
+                    revoked_version_from: 2,
+                    effective_at: 100,
+                    reason: None,
+                },
+            ),
+        ];
+        assert_eq!(
+            fold_authorisation(7, &author, &objects, &revokes),
+            Some(AuthorisationState::Revoked {
+                authorisation: v2,
+                revoked_version_from: 2,
+                effective_at: 100,
+            })
         );
     }
 
@@ -550,7 +629,7 @@ mod tests {
         let body =
             RateAuthorisation::from_body(&auth.body().expect("body bytes")).expect("decode body");
         assert_eq!(
-            fold_authorisation(7, &[(author_id(&decoded), body)], &[]),
+            fold_authorisation(7, &issuer_id(&key), &[(author_id(&decoded), body)], &[]),
             Some(AuthorisationState::Live(auth))
         );
     }
