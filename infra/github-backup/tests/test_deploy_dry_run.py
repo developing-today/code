@@ -23,15 +23,19 @@ executables on PATH that log every invocation:
 
 Run: python3 infra/github-backup/tests/test_deploy_dry_run.py
 """
+
 import os, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEPLOY = os.path.abspath(os.path.join(HERE, "..", "worker", "deploy.mjs"))
 
 PASS = []
+
+
 def check(name, ok):
     PASS.append((name, ok))
     print(("PASS " if ok else "FAIL ") + name)
+
 
 STUB = """#!/bin/sh
 echo "$(basename "$0") $@" >> "$STUB_LOG"
@@ -46,6 +50,7 @@ esac
 exit 0
 """
 
+
 def run_deploy(args):
     root = tempfile.mkdtemp(prefix="ghb-deploy-test-")
     stub_bin = os.path.join(root, "bin")
@@ -56,23 +61,29 @@ def run_deploy(args):
             f.write(STUB)
         os.chmod(path, 0o755)
     log = os.path.join(root, "stub.log")
-    env = {**os.environ,
-           "PATH": stub_bin + os.pathsep + os.environ["PATH"],
-           "CLOUDFLARE_ACCOUNT_ID": "stub-account",
-           "STUB_LOG": log}
-    proc = subprocess.run(["node", DEPLOY, *args], env=env,
-                          capture_output=True, text=True, timeout=60)
+    env = {
+        **os.environ,
+        "PATH": stub_bin + os.pathsep + os.environ["PATH"],
+        "CLOUDFLARE_ACCOUNT_ID": "stub-account",
+        "STUB_LOG": log,
+    }
+    proc = subprocess.run(
+        ["node", DEPLOY, *args], env=env, capture_output=True, text=True, timeout=60
+    )
     calls = ""
     if os.path.exists(log):
         with open(log) as f:
             calls = f.read()
     return proc, calls
 
+
 # 1. the dangerous combination is rejected before anything runs
 proc, calls = run_deploy(["--dry-run", "--deploy-version", "version-stub"])
 check("combo: non-zero exit", proc.returncode != 0)
-check("combo: error names --dry-run and --deploy-version",
-      "--dry-run" in proc.stderr and "--deploy-version" in proc.stderr)
+check(
+    "combo: error names --dry-run and --deploy-version",
+    "--dry-run" in proc.stderr and "--deploy-version" in proc.stderr,
+)
 check("combo: no wrangler invocation", "wrangler" not in calls)
 check("combo: no bws invocation", "bws" not in calls)
 
@@ -84,14 +95,17 @@ check("combo-reversed: no wrangler invocation", "wrangler" not in calls)
 # 3. the ordinary rollback path is unchanged
 proc, calls = run_deploy(["--deploy-version", "version-stub"])
 check("rollback: exit 0", proc.returncode == 0)
-check("rollback: versions deploy at 100%",
-      "wrangler versions deploy version-stub@100%" in calls)
+check(
+    "rollback: versions deploy at 100%",
+    "wrangler versions deploy version-stub@100%" in calls,
+)
 
 # 4. plain --dry-run still validates without deploying
 proc, calls = run_deploy(["--dry-run"])
 check("dry-run: exit 0", proc.returncode == 0)
-check("dry-run: wrangler deploy --dry-run invoked",
-      "wrangler deploy --dry-run" in calls)
+check(
+    "dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls
+)
 check("dry-run: no versions deploy", "versions deploy" not in calls)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
