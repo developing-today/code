@@ -1341,7 +1341,13 @@ fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<Stri
 /// value silently, as the pre-#2180 bare-`u64` parse did.
 fn parse_dimension(raw: &str) -> Option<u64> {
     let trimmed = raw.trim();
-    let body = if trimmed.len() >= 2 && trimmed[trimmed.len() - 2..].eq_ignore_ascii_case("px") {
+    // Byte-wise suffix check: slicing the string at len()-2 to test
+    // the suffix would panic when that offset falls inside a multibyte
+    // UTF-8 character (e.g. fullwidth digits). When the last two bytes
+    // are the ASCII bytes p/x, len()-2 is a char boundary, so the
+    // slice below is safe.
+    let bytes = trimmed.as_bytes();
+    let body = if bytes.len() >= 2 && bytes[bytes.len() - 2..].eq_ignore_ascii_case(b"px") {
         &trimmed[..trimmed.len() - 2]
     } else {
         trimmed
@@ -4685,7 +4691,7 @@ Some text
         // #2180: values with no lossless numeric-pixel form are
         // refused (attr absent; the import path warns) -- never
         // silently truncated or reinterpreted.
-        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx"] {
+        for raw in ["50%", "200.5", "200.5px", "10em", "2rem", "abc", "", "-5", "200pxpx", "２００", "２００px"] {
             let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
                 .expect("img parses");
             assert!(
