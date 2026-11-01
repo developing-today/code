@@ -288,7 +288,14 @@ func Build(spec *Spec, opt Options) (*API, error) {
 	seen := map[string]bool{}
 	for _, path := range paths {
 		item := spec.Paths[path]
-		for method, op := range item.operations() {
+		operations := item.operations()
+		operationMethods := make([]string, 0, len(operations))
+		for method := range operations {
+			operationMethods = append(operationMethods, method)
+		}
+		sort.Strings(operationMethods)
+		for _, method := range operationMethods {
+			op := operations[method]
 			if !allowed[method] {
 				continue
 			}
@@ -537,10 +544,26 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 	}
 
 	if op.RequestBody != nil {
-		for media, c := range op.RequestBody.Content {
+		mediaTypes := make([]string, 0, len(op.RequestBody.Content))
+		for media := range op.RequestBody.Content {
 			if !strings.Contains(media, "json") {
 				continue
 			}
+			mediaTypes = append(mediaTypes, media)
+		}
+		sort.Strings(mediaTypes)
+		selectedMedia := ""
+		for _, media := range mediaTypes {
+			if media == "application/json" {
+				selectedMedia = media
+				break
+			}
+		}
+		if selectedMedia == "" && len(mediaTypes) > 0 {
+			selectedMedia = mediaTypes[0]
+		}
+		if selectedMedia != "" {
+			c := op.RequestBody.Content[selectedMedia]
 			entry := map[string]any{"description": "the request body"}
 			for k, v := range c.Schema {
 				entry[k] = v
@@ -549,7 +572,6 @@ func buildSchema(params []Parameter, op *Operation) json.RawMessage {
 			if op.RequestBody.Required {
 				required = append(required, "body")
 			}
-			break
 		}
 	}
 
