@@ -58,7 +58,7 @@ inventory turned into.
 | 6  | Proposed | `docs/proposals.md` | open designs, badged `proposed`. A reader deciding whether mcpx will do something next starts here |
 | 7  | Catalogue | `docs/catalogue/` (directory) | things outside mcpx: MCP servers, resources, indexes and registries, URLs, projects. Structure below; the entries are seeded by the follow-up task |
 | 8  | Comparisons and history | `docs/compare/` (directory) + `ASSESSMENT.md`, `OPENCODE-V2.md` | the living comparison and the historical documents, kept as history with their text intact (#153) |
-| 9  | Research and findings | `docs/audit/` (directory) + `in-name-only.md`, `work-strategies.md` | audits and lessons: what was found, not what was designed. The research and Nix chapters join here (#1871) |
+| 9  | Research and findings | `docs/audit/` (directory) + `in-name-only.md`, `work-strategies.md`, `research-and-findings.md` | audits and lessons: what was found, not what was designed. The research chapter (#1871) has joined; its Nix section is still a later slice |
 | 10 | Maintaining these docs | `docs/release-runbook.md`, `compendium.md` | how `story.md` stays true, the key-block rules, and this structure |
 | 11 | Document history | `docs/archive.md` | retired entries and refactored-out text, append-only and unordered (#150) |
 
@@ -77,6 +77,7 @@ inventory on #1867 covered 20-odd of them; the seven it never saw now land as:
 | `docs/runtimes.md` | 2 Designs |
 | `docs/schema-validation.md` | 2 Designs |
 | `docs/work-strategies.md` | 9 Research and findings (lessons learned) |
+| `docs/research-and-findings.md` | 9 Research and findings (the #1871 chapter: findings by topic, provenance-tagged) |
 | `docs/audit/` (3 files) | 9 Research and findings |
 | `docs/compare/` (18 files) | 8 Comparisons and history |
 | `docs/decisions/` (5 files) | 3 Decision records |
