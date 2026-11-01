@@ -113,6 +113,10 @@ pub(crate) enum ClientFrame {
         admin_token: String,
         module_hash: String,
     },
+    /// Admin: export the bounded ordered history, including host events.
+    EventHistoryAdmin {
+        admin_token: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,
@@ -316,6 +320,18 @@ pub(crate) enum ServerFrame<'a> {
     },
     ModuleEnd {
         module_hash: String,
+    },
+    /// Starts an admin-only ordered event-history transfer.
+    EventHistoryBegin {
+        world_id: String,
+        module_hash: Option<String>,
+        current_sequence: u64,
+        complete: bool,
+        event_count: usize,
+    },
+    /// One sequenced or host-originated event in journal order.
+    EventHistoryEvent {
+        event: &'a WorldEvent,
     },
     Invite(&'a InviteResponse),
     /// The worlds this server hosts.

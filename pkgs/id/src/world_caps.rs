@@ -2,9 +2,11 @@
 //!
 //! A program stays a pure function. What it needs from the server is **data
 //! it returns** (`wants`, a pure projection of its model) and **events it
-//! receives** (delivered through `update` with participant id `0`, every one
-//! journaled once the program accepts it, so replay feeds the program exactly
-//! what it saw the first time).
+//! receives** (delivered through `update` with participant id `0`; accepted
+//! live events are journaled so replay feeds the program what it saw). Restore
+//! may also synthesize presence-cleanup `left` events for legacy checkpoints
+//! whose open-presence set cannot be recovered; those cleanup events can be
+//! redundant and are not evidence that a participant was online.
 //!
 //! ```json
 //! {"v":1,
@@ -18,6 +20,10 @@
 //! `"error"`), and each subscription with its own events
 //! (`{"cap":"time.tick","interval":5000,"now":<unix ms>}`,
 //! `{"cap":"players","event":"joined"|"left","participant":{"id":1,"name":"ann"}}`).
+//! A `players.left` event removes that participant from the program's online
+//! set if present. Legacy checkpoint migration may send it for every known
+//! capability because the original online set is unknowable; programs should
+//! therefore make this removal idempotent.
 //!
 //! This module holds the pure parts: the schema and its bounds, the catalog of
 //! capability names, and the grant policy with its usage accounting. The

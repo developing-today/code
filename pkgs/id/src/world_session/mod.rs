@@ -741,7 +741,7 @@ pub async fn run_session<I: SessionIo>(hub: &WorldHub, io: &mut I) {
 }
 
 /// The admin secret a first frame carries, if it is an administrative one.
-/// A valid secret lets the frame create the world it names.
+/// Most admin frames can create the world they name; history reads cannot.
 pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     match frame {
         ClientFrame::Invite { admin_token, .. }
@@ -749,6 +749,7 @@ pub(crate) fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        ClientFrame::EventHistoryAdmin { admin_token } => Some(admin_token),
         ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
     }
@@ -854,8 +855,19 @@ pub async fn run_session_with<I: SessionIo>(hub: &WorldHub, io: &mut I, config: 
         }
         _ => {}
     }
+    if let ClientFrame::EventHistoryAdmin { admin_token } = &frame
+        && (admin_token.len() > MAX_ADMIN_TOKEN_BYTES || !hub.admin_ok(admin_token))
+    {
+        let _ = send_error(&unattributed, io, "admin denied").await;
+        return;
+    }
     let admin = frame_admin_token(&frame).filter(|token| token.len() <= MAX_ADMIN_TOKEN_BYTES);
-    let lease = match hub.lease(world.as_deref(), admin).await {
+    let create_token = if matches!(&frame, ClientFrame::EventHistoryAdmin { .. }) {
+        None
+    } else {
+        admin
+    };
+    let lease = match hub.lease(world.as_deref(), create_token).await {
         Ok(lease) => lease,
         Err(error) => {
             let _ = send_error(&unattributed, io, error.message()).await;
@@ -1271,6 +1283,11 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(service.frame_meter(), io, message).await;
             }
         }
+        ClientFrame::EventHistoryAdmin { admin_token } => {
+            if let Err(message) = event_history_admin_session(service, io, &admin_token).await {
+                let _ = send_error(service.frame_meter(), io, message).await;
+            }
+        }
         ClientFrame::WorldState {
             admin_token,
             capability,
@@ -1641,6 +1658,89 @@ async fn records_session<I: SessionIo>(
         return Err("connection closed");
     }
     Ok(())
+}
+
+async fn event_history_admin_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+) -> Result<(), &'static str> {
+    service
+        .authorize_admin(Some(admin_token))
+        .map_err(|_| "admin denied")?;
+    let history = service
+        .world()
+        .admin_event_history()
+        .await
+        .map_err(|_| "admin history unavailable")?;
+    if !send_json(
+        service.frame_meter(),
+        io,
+        &ServerFrame::EventHistoryBegin {
+            world_id: history.world_id,
+            module_hash: history.module_hash,
+            current_sequence: history.current_sequence,
+            complete: history.complete,
+            event_count: history.events.len(),
+        },
+    )
+    .await
+    {
+        return Err("connection closed");
+    }
+    for event in &history.events {
+        if !send_json(
+            service.frame_meter(),
+            io,
+            &ServerFrame::EventHistoryEvent { event },
+        )
+        .await
+        {
+            return Err("event history exceeds the frame limit");
+        }
+    }
+
+    let mut after: Option<String> = None;
+    loop {
+        let mut page = crate::world::Records::new();
+        let mut used = 0usize;
+        let mut last_included: Option<String> = None;
+        let mut more = false;
+        for (key, value) in &history.records {
+            if after.as_deref().is_some_and(|after| key.as_str() <= after) {
+                continue;
+            }
+            let size = key.len() + serde_json::to_vec(value).map_or(0, |bytes| bytes.len()) + 8;
+            if used + size > MAX_RECORDS_PAGE_BYTES {
+                if page.is_empty() {
+                    return Err("a record is too large to serve in one page");
+                }
+                more = true;
+                break;
+            }
+            used += size;
+            last_included = Some(key.clone());
+            page.insert(key.clone(), value.clone());
+        }
+        let next_after = more.then_some(last_included).flatten();
+        if !send_json(
+            service.frame_meter(),
+            io,
+            &ServerFrame::Records {
+                sequence: history.current_sequence,
+                records: page,
+                next_after: next_after.clone(),
+            },
+        )
+        .await
+        {
+            return Err("connection closed");
+        }
+        match next_after {
+            Some(next) => after = Some(next),
+            None => return Ok(()),
+        }
+    }
 }
 
 async fn download_module_session<I: SessionIo>(
@@ -2452,6 +2552,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
         | ClientFrame::DownloadModuleAdmin { .. }
+        | ClientFrame::EventHistoryAdmin { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {

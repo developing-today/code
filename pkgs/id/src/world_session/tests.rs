@@ -122,6 +122,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_history_is_admin_only_and_system_events_stay_off_join_streams() {
+        struct Players;
+        impl crate::world::WorldProgram for Players {
+            fn wants(&mut self) -> anyhow::Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({"v": 1, "subscribe": ["players"]}).to_string(),
+                ))
+            }
+        }
+
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        core.ledger
+            .set_granted(std::collections::BTreeSet::from(["players".to_owned()]));
+        let world = WorldHandle::spawn_with_program(core, Box::new(Players));
+        let (_, capability) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+
+        let mut joiner = Peer::connect(service.clone(), SessionConfig::default());
+        joiner
+            .say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+            }))
+            .await;
+        assert_eq!(joiner.next().await.unwrap()["type"], "snapshot");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(75), joiner.from_server.recv())
+                .await
+                .is_err(),
+            "the join event must not enter the participant stream"
+        );
+
+        let mut missing = Peer::connect(service.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({"type": "event_history_admin"}))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["type"], "error");
+
+        let mut denied = Peer::connect(service.clone(), SessionConfig::default());
+        denied
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": capability.expose(),
+            }))
+            .await;
+        assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+
+        world
+            .input(capability.clone(), b"move".to_vec())
+            .await
+            .unwrap();
+        let input = joiner.next().await.unwrap();
+        assert_eq!(input["type"], "event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+
+        let mut admin = Peer::connect(service, SessionConfig::default());
+        admin
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+            }))
+            .await;
+        let begin = admin.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["event_count"], 2);
+        let joined = admin.next().await.unwrap();
+        assert_eq!(joined["type"], "event_history_event");
+        assert_eq!(joined["event"]["kind"]["kind"], "system");
+        assert!(
+            joined["event"]["kind"]["data"]["event"]
+                .as_str()
+                .unwrap()
+                .contains("joined")
+        );
+        let input = admin.next().await.unwrap();
+        assert_eq!(input["type"], "event_history_event");
+        assert_eq!(input["event"]["kind"]["kind"], "input");
+        let records = admin.next().await.unwrap();
+        assert_eq!(records["type"], "records");
+        assert_eq!(records["sequence"], 1);
+    }
+
+    #[tokio::test]
     async fn execution_profile_change_is_admin_only_and_does_not_replace_live_program() {
         struct MarkerProgram;
         impl crate::world::WorldProgram for MarkerProgram {
@@ -1417,6 +1500,63 @@ mod tests {
             0,
             "nothing was opened or created by outsiders"
         );
+    }
+
+    #[tokio::test]
+    async fn routed_admin_history_authenticates_before_lookup_and_never_creates() {
+        let (hub, opener) = memory_hub(crate::world_hub::HubLimits::default());
+        invite_into(&hub, "arena", "ann").await;
+        let opens = opener.opens.load(std::sync::atomic::Ordering::SeqCst);
+
+        for world in ["arena", "missing"] {
+            let mut denied = Peer::connect_hub(hub.clone(), SessionConfig::default());
+            denied
+                .say(serde_json::json!({
+                    "type": "event_history_admin",
+                    "admin_token": "wrong",
+                    "world": world,
+                }))
+                .await;
+            assert_eq!(denied.next().await.unwrap()["message"], "admin denied");
+        }
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "invalid admin tokens are rejected without resolving either route"
+        );
+
+        let mut missing = Peer::connect_hub(hub.clone(), SessionConfig::default());
+        missing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "missing",
+            }))
+            .await;
+        assert_eq!(missing.next().await.unwrap()["message"], "unknown world");
+        assert_eq!(
+            opener.known.lock().unwrap().clone(),
+            vec!["arena".to_owned()],
+            "an authenticated history read does not create a missing world"
+        );
+        assert_eq!(
+            opener.opens.load(std::sync::atomic::Ordering::SeqCst),
+            opens,
+            "a non-creating history read does not open the world"
+        );
+
+        let mut existing = Peer::connect_hub(hub, SessionConfig::default());
+        existing
+            .say(serde_json::json!({
+                "type": "event_history_admin",
+                "admin_token": "admin",
+                "world": "arena",
+            }))
+            .await;
+        let begin = existing.next().await.unwrap();
+        assert_eq!(begin["type"], "event_history_begin");
+        assert_eq!(begin["world_id"], "arena");
+        assert_eq!(existing.next().await.unwrap()["type"], "records");
     }
 
     #[tokio::test]

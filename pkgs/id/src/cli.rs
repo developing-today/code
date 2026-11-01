@@ -1912,14 +1912,14 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
-    /// Write a world's retained history and records to a replayable fixture
-    /// (JSON Lines). Needs only a join capability, never admin rights.
+    /// Write a world's retained journal history and records to a replayable
+    /// fixture (JSON Lines). Host events require the host's admin token.
     Record {
         /// The host's node ID (64 hex characters).
         node: String,
-        /// Guest capability from `id world invite`.
-        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
-        capability: String,
+        /// Host admin token.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
         /// Write the fixture here instead of standard output.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
@@ -1956,10 +1956,9 @@ pub enum WorldCommand {
     /// through a module and compare the records after every event. Prints a
     /// verdict line first; exits nonzero at the first divergence.
     ///
-    /// Verification covers the fixture's recorded events only. Host-originated
-    /// events are not retained in the event stream (#242), so a live recording
-    /// never contains them: a guest whose live behaviour depended on host
-    /// events is outside what verify can check.
+    /// Verification covers the events captured by the admin-authorized fixture,
+    /// including host-originated events in their recorded order. It proves
+    /// determinism for that history, not correctness of host policy.
     #[cfg(feature = "sandbox")]
     Verify {
         /// The Wasm module the fixture was recorded under.
@@ -4319,15 +4318,21 @@ mod tests {
             "world",
             "record",
             &node,
-            "--capability",
-            "c",
+            "--admin-token",
+            "admin-secret",
             "--out",
             "run.jsonl",
             "--no-relay",
         ]);
         match cli.command {
             Some(Command::World(cmd)) => match *cmd {
-                WorldCommand::Record { out, no_relay, .. } => {
+                WorldCommand::Record {
+                    admin_token,
+                    out,
+                    no_relay,
+                    ..
+                } => {
+                    assert_eq!(admin_token, "admin-secret");
                     assert_eq!(out, Some(PathBuf::from("run.jsonl")));
                     assert!(no_relay);
                 }

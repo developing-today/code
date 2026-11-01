@@ -86,6 +86,12 @@
       "opens": "closed",
       "fields": { "admin_token": "string", "module_hash": "string" }
     },
+    "event_history_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
     "caps": {
       "class": "query",
       "phases": ["opening", "joined"],
@@ -301,6 +307,20 @@
     "records": {
       "class": "reply",
       "fields": { "sequence": "u64", "records": "object", "next_after": "string?" }
+    },
+    "event_history_begin": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "module_hash": "string?",
+        "current_sequence": "u64",
+        "complete": "bool",
+        "event_count": "u64"
+      }
+    },
+    "event_history_event": {
+      "class": "reply",
+      "fields": { "event": "object" }
     },
     "records_ticket": {
       "class": "reply",

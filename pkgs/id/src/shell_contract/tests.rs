@@ -51,6 +51,8 @@ fn server_frame_type(frame: &ServerFrame<'_>) -> &'static str {
         ServerFrame::UploadReady { .. } => "upload_ready",
         ServerFrame::ModuleInstalled { .. } => "module_installed",
         ServerFrame::ProgramChanged { .. } => "program_changed",
+        ServerFrame::EventHistoryBegin { .. } => "event_history_begin",
+        ServerFrame::EventHistoryEvent { .. } => "event_history_event",
         ServerFrame::Error { .. } => "error",
     }
 }
@@ -80,6 +82,8 @@ const SERVER_FRAME_TYPES: &[&str] = &[
     "upload_ready",
     "module_installed",
     "program_changed",
+    "event_history_begin",
+    "event_history_event",
     "error",
 ];
 
@@ -138,6 +142,11 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         participant_id: 3,
         display_name: "ada".to_owned(),
     };
+    let history_event = crate::world::WorldEvent {
+        sequence: 1,
+        participant_id: 1,
+        kind: crate::world::WorldEventKind::Chat("x".to_owned()),
+    };
     for frame in [
         ServerFrame::View {
             sequence: 1,
@@ -180,6 +189,16 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
         ServerFrame::ProgramChanged {
             module_hash: "h",
             sequence: 1,
+        },
+        ServerFrame::EventHistoryBegin {
+            world_id: "w".to_owned(),
+            module_hash: None,
+            current_sequence: 1,
+            complete: true,
+            event_count: 1,
+        },
+        ServerFrame::EventHistoryEvent {
+            event: &history_event,
         },
         ServerFrame::Error { message: "no" },
         ServerFrame::ModuleInfo {
