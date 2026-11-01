@@ -579,11 +579,13 @@ export class SnapshotStore {
 
   /** History grouped by service id, oldest first per service. */
   async byService(): Promise<Record<string, SnapshotRecord[]>> {
-    const grouped: Record<string, SnapshotRecord[]> = {};
+    const grouped = new Map<string, SnapshotRecord[]>();
     for (const r of await this.readAll()) {
-      (grouped[r.serviceId] ??= []).push(r);
+      const records = grouped.get(r.serviceId) ?? [];
+      records.push(r);
+      grouped.set(r.serviceId, records);
     }
-    return grouped;
+    return Object.fromEntries(grouped);
   }
 
   /** Dedupe keys of every observation already compacted into rollups. */
@@ -729,16 +731,25 @@ export class SnapshotStore {
         }
       }
       const rollups = compactRecordsToRollups(month, records, existing);
-      const perService: Record<string, CompactionServiceCounts> = {};
+      const perServiceCounts = new Map<string, CompactionServiceCounts>();
+      const countsFor = (serviceId: string): CompactionServiceCounts => {
+        let counts = perServiceCounts.get(serviceId);
+        if (!counts) {
+          counts = { before: 0, after: 0 };
+          perServiceCounts.set(serviceId, counts);
+        }
+        return counts;
+      };
       for (const r of records) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += 1;
+        countsFor(r.serviceId).before += 1;
       }
       for (const r of existing) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += r.count;
+        countsFor(r.serviceId).before += r.count;
       }
       for (const r of rollups) {
-        (perService[r.serviceId] ??= { before: 0, after: 0 }).after += 1;
+        countsFor(r.serviceId).after += 1;
       }
+      const perService = Object.fromEntries(perServiceCounts);
       const monthReport: CompactionMonthReport = {
         month,
         recordsBefore: records.length + existing.reduce((n, r) => n + r.count, 0),
