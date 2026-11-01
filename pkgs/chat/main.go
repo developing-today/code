@@ -167,11 +167,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			m.app.send(chatMsg{
-				id:   m.id,
-				text: m.textarea.Value(),
-			})
-			m.textarea.Reset()
+			// #3273: Enter on an empty or whitespace-only input must
+			// not broadcast a blank message into every session's
+			// history; leave the textarea untouched.
+			if strings.TrimSpace(m.textarea.Value()) != "" {
+				m.app.send(chatMsg{
+					id:   m.id,
+					text: m.textarea.Value(),
+				})
+				m.textarea.Reset()
+			}
 		}
 
 	case chatMsg:
