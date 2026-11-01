@@ -412,6 +412,42 @@ window.__dashAfter = window.__dashAfter || function (form, msg) {
   window.dispatchEvent(new CustomEvent("dashrefresh"));
   if (!document.querySelector("[data-frag]")) location.reload();
 };
+window.__dashAuthorPickers = window.__dashAuthorPickers || function () {
+  var fill = function (list) {
+    document.querySelectorAll("select[name=author][data-author-picker]").forEach(function (s) {
+      if (s.dataset.hydrated) return;
+      var cur = s.value;
+      var frag = document.createDocumentFragment();
+      list.forEach(function (i) {
+        var o = document.createElement("option");
+        o.value = i.kind + "|" + i.id + "|" + (i.sessionId || "");
+        o.textContent = i.label + (i.kind === "agent" ? " (agent)" : "");
+        if (i.id === "drew") o.defaultSelected = true;
+        frag.appendChild(o);
+      });
+      s.replaceChildren(frag);
+      s.value = cur;
+      s.dataset.hydrated = "1";
+    });
+  };
+  if (window.__dashIdentities) { fill(window.__dashIdentities); return; }
+  if (window.__dashIdentitiesPromise) return;
+  window.__dashIdentitiesPromise = fetch("/api/author-identities")
+    .then(function (r) { return r.json(); })
+    .then(function (d) { window.__dashIdentities = (d && d.identities) || []; fill(window.__dashIdentities); })
+    .catch(function () { window.__dashIdentitiesPromise = null; });
+};
+if (!window.__dashAuthorPickerHook) {
+  window.__dashAuthorPickerHook = true;
+  document.addEventListener("pointerdown", function (ev) {
+    var t = ev.target;
+    if (t && t.closest && t.closest("select[name=author][data-author-picker], .actbox, .cbox")) window.__dashAuthorPickers();
+  });
+  document.addEventListener("focusin", function (ev) {
+    var t = ev.target;
+    if (t && t.matches && t.matches("select[name=author][data-author-picker]")) window.__dashAuthorPickers();
+  });
+}
 `;
 
 /**
@@ -696,14 +732,30 @@ export interface CommentFormOpts {
   identities: AuthorIdentity[];
 }
 
-export function commentFormHtml(objectRef: string, opts: CommentFormOpts): string {
-  const ghRefs = opts.githubRefs ?? [];
-  const authorOptions = opts.identities
+/**
+ * The author picker's server-rendered options (#1179): the standing
+ * identities only. Session identities (one per registry session --
+ * ~700 and growing) used to be inlined into every card's picker,
+ * which made list pages quadratic: /program shipped 351 copies of a
+ * ~123 KB option list (44 MB of HTML), /board 94 copies (12.9 MB).
+ * The full list now loads on demand from /api/author-identities the
+ * first time any picker on the page is touched and is applied to
+ * every picker at once (see DASH_AFTER_JS). Pickers keep working
+ * without that fetch -- standing identities are the common case.
+ */
+export function authorOptionsHtml(identities: AuthorIdentity[]): string {
+  return identities
+    .filter((i) => !i.sessionId)
     .map(
       (i) =>
         `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
     )
     .join("");
+}
+
+export function commentFormHtml(objectRef: string, opts: CommentFormOpts): string {
+  const ghRefs = opts.githubRefs ?? [];
+  const authorOptions = authorOptionsHtml(opts.identities);
   const ghTarget = ghRefs.length
     ? `<div class="ghtarget" style="display:none"><label>Post to GitHub issue / PR (explicit target)</label><select name="githubRef">${ghRefs.map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("")}</select></div>`
     : "";
@@ -711,7 +763,7 @@ export function commentFormHtml(objectRef: string, opts: CommentFormOpts): strin
     ? `<label><input type="radio" name="kind" value="github"> Post as GitHub comment</label>`
     : "";
   return `<form class="cform" data-object="${esc(objectRef)}">
-<label>Comment as</label><select name="author">${authorOptions}</select>
+<label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
 <label>Kind</label><div class="kinds">
 <label><input type="radio" name="kind" value="note" checked> Note — read when this is next picked up</label>
 <label><input type="radio" name="kind" value="message"> ✉ Message to Muse — the orchestrator triages it on its next pass</label>
@@ -896,18 +948,13 @@ export function cardCommentHtml(
   const list = comments?.length
     ? comments.map((c) => dashCommentHtml(c)).join("")
     : `<p class="muted">No comments on this card yet.</p>`;
-  const authorOptions = opts.identities
-    .map(
-      (i) =>
-        `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
-    )
-    .join("");
+  const authorOptions = authorOptionsHtml(opts.identities);
   const ghBox = ghRef
     ? `<label><input type="checkbox" name="alsoGithub" value="1"> Also post publicly to the GitHub issue (${esc(ghRef)})</label>`
     : `<span class="muted">No GitHub issue on this card — the comment stays internal.</span>`;
   return `<div class="cbox"><details><summary>💬 Comments for the orchestrator${comments?.length ? ` (${comments.length})` : ""}</summary>${list}<form class="cform" data-object="${esc(objectRef)}"${ghRef ? ` data-ghref="${esc(ghRef)}"` : ""}>
 <input type="hidden" name="kind" value="message">
-<label>Comment as</label><select name="author">${authorOptions}</select>
+<label>Comment as</label><select name="author" data-author-picker>${authorOptions}</select>
 <label>Comment</label><textarea name="body" rows="2" required placeholder="Note for the orchestrator…"></textarea>
 <div class="kinds">${ghBox}</div>
 <button type="submit">Send comment</button><div class="err"></div></form></details></div>`;
@@ -976,13 +1023,7 @@ export function quickBarHtml(objectRef: string, tier: "needs-drew" | "needs-orch
 }
 
 function authorSelectHtml(identities: AuthorIdentity[]): string {
-  const options = identities
-    .map(
-      (i) =>
-        `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
-    )
-    .join("");
-  return `<div class="ahead"><label>Act as</label><select name="author">${options}</select></div>`;
+  return `<div class="ahead"><label>Act as</label><select name="author" data-author-picker>${authorOptionsHtml(identities)}</select></div>`;
 }
 
 interface AFormSpec {
