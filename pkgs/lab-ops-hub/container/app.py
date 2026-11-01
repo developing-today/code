@@ -15,6 +15,7 @@ import json
 import re
 import socket
 import ssl
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -1203,9 +1204,24 @@ _OPENER = urllib.request.build_opener(
     _ValidatingRedirectHandler, urllib.request.HTTPSHandler(context=CTX)
 )
 
+_CRAWL_TIMEOUT_SECONDS = 20
+_CRAWL_MAX_BODY_BYTES = 2_000_000
+_CRAWL_READ_CHUNK_BYTES = 65_536
+
 
 def _fetch_crawl(url):
-    # Fetch a validated URL and return (status, body capped at 2 MB).
+    # Fetch a validated URL and return (status, body capped at 2 MB). One
+    # absolute deadline covers opening the response and reading its body;
+    # unlike the Worker fallback's per-hop timeout, redirects share this
+    # container fetch's budget.
+    deadline = time.monotonic() + _CRAWL_TIMEOUT_SECONDS
+
+    def remaining_seconds():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("crawl exceeded its total deadline")
+        return remaining
+
     # urllib raises HTTPError for 4xx/5xx, but an HTTPError is also the
     # response: an error-status page is still a crawl result (the
     # Worker fallback extracts it and reports its real status_code),
@@ -1227,14 +1243,34 @@ def _fetch_crawl(url):
     # hostname and fail before any request is sent (#622).
     _apply_userinfo_auth(req)
     try:
-        response = _OPENER.open(req, timeout=20)
+        response = _OPENER.open(req, timeout=remaining_seconds())
     except urllib.error.HTTPError as e:
         if not 400 <= e.code < 600:
             raise
         response = e
     with response as res:
         status = getattr(res, "status", None) or res.getcode()
-        return status, res.read(2_000_000)
+        body = bytearray()
+        while len(body) < _CRAWL_MAX_BODY_BYTES:
+            remaining = remaining_seconds()
+            # urllib's HTTPResponse uses a buffered reader over the socket.
+            # Tighten the socket timeout before every bounded read so a
+            # peer that keeps dribbling bytes cannot renew the 20s budget.
+            fp = getattr(res, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None)
+            if sock is not None:
+                sock.settimeout(remaining)
+            chunk = res.read1(min(
+                _CRAWL_READ_CHUNK_BYTES,
+                _CRAWL_MAX_BODY_BYTES - len(body),
+            ))
+            if time.monotonic() >= deadline:
+                raise TimeoutError("crawl exceeded its total deadline")
+            if not chunk:
+                break
+            body.extend(chunk)
+        return status, bytes(body)
 
 
 class Extractor(HTMLParser):
