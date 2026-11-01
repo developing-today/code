@@ -10,7 +10,7 @@
 // external to the thing that might be down. Warnings never push in
 // v1 (page + ledger only).
 import type { Config } from "./config.ts";
-import { sendPush, type PushTarget } from "./push.ts";
+import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
 
 // --- Shapes ----------------------------------------------------------------
@@ -436,18 +436,21 @@ interface DeliverySummary {
   errors: number;
 }
 
+type PushSender = (target: PushTarget, payload: unknown) => Promise<PushOutcome>;
+
 async function deliverToAll(
   store: AlertsStore,
   targets: PushSubscriptionRow[],
   incident: Incident,
   origin: string,
   escalation: boolean,
+  push: PushSender,
 ): Promise<DeliverySummary> {
   const payload = buildIncidentPayload(incident, origin, escalation);
   const summary: DeliverySummary = { subscriptions: targets.length, sent: 0, gone: 0, errors: 0 };
   for (const sub of targets) {
     const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
-    const outcome = await sendPush(target, payload);
+    const outcome = await push(target, payload);
     if (outcome.ok) {
       summary.sent += 1;
       await store.logSend({
@@ -482,22 +485,34 @@ async function deliverToAll(
 /**
  * One engine tick: deliver new open criticals, then escalate unacked
  * criticals past the ack window — exactly once each (delivered_at /
- * escalated_at are the guards, set only after the sends complete).
+ * escalated_at are the guards, set only after at least one send succeeds).
  * With zero subscriptions there is nothing to deliver to, so the
  * incident stays undelivered (and unescalated) until someone
  * subscribes — a later subscription still gets the push.
  */
-export async function runAlertTick(cfg: Config, store: AlertsStore): Promise<void> {
+export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSender = sendPush): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
   if (targets.length > 0) {
     for (const incident of await store.pendingDeliveries()) {
-      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false);
-      await store.markDelivered(incident.id, { ...summary });
+      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false, push);
+      if (summary.sent > 0) {
+        await store.markDelivered(incident.id, { ...summary });
+      } else {
+        console.warn(
+          `alerts engine: delivery not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
+        );
+      }
     }
     for (const incident of await store.pendingEscalations(cfg.alerts.ackWindowMin)) {
-      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true);
-      await store.markEscalated(incident.id, { ...summary, ackWindowMin: cfg.alerts.ackWindowMin });
+      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true, push);
+      if (summary.sent > 0) {
+        await store.markEscalated(incident.id, { ...summary, ackWindowMin: cfg.alerts.ackWindowMin });
+      } else {
+        console.warn(
+          `alerts engine: escalation not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
+        );
+      }
     }
   }
 }
