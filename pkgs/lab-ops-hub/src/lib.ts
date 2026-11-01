@@ -659,15 +659,25 @@ export function extractHtml(html: string): { title: string; links: number; text:
     if (next === "/") {
       // End tags may carry (invalid but recoverable) attributes, which
       // HTMLParser consumes rather than emitting as text: </p foo>
-      // still closes the paragraph.
-      const m = /^<\/([a-zA-Z][^\s/>]*)[^>]*>/.exec(html.slice(i));
+      // still closes the paragraph. The match is bounded at the next
+      // '>' up front: an unbounded name-plus-remainder pattern
+      // backtracks quadratically on an incomplete end tag at EOF
+      // (</p followed by a long letter run and no '>').
+      const gt = html.indexOf(">", i);
+      const m =
+        gt === -1 ? null : /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(i, gt + 1));
       if (m === null) {
+        if (gt === -1 && /^<\/[a-zA-Z]/.test(html.slice(i))) {
+          // Incomplete end tag at EOF: HTMLParser drops it.
+          i = n;
+          continue;
+        }
         handleData("<");
         i += 1;
         continue;
       }
       handleEndTag(m[1].toLowerCase());
-      i += m[0].length;
+      i = gt + 1;
       continue;
     }
     if (/[a-zA-Z]/.test(next)) {
