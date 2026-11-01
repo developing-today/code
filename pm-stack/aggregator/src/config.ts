@@ -1,7 +1,7 @@
 // Environment configuration. Secrets are read by NAME from the environment
 // only — never committed, never printed. Everything has a fixture-safe default.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
@@ -34,6 +34,8 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  /** Separate latest-tick record; it can advance while current data stays last-known. */
+  quotaHeartbeatFile: string;
   coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
@@ -100,6 +102,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    quotaHeartbeatFile: s(
+      env.PM_AGG_QUOTA_HEARTBEAT_FILE,
+      join(dirname(s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json"))), "quota-gatherer-heartbeat.json"),
+    ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,

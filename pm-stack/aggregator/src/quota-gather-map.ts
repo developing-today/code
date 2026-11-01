@@ -23,6 +23,10 @@ export interface QuotaProviderResult {
   usage?: unknown;
   fetchedAt?: number;
   error?: string;
+  adapterStatus?: QuotaCurrentEntry["adapterStatus"];
+  sourceClass?: string;
+  cadenceSeconds?: number | null;
+  fallback?: boolean | null;
   planLabel?: string;
   credentialId?: string;
   credentialLabel?: string;
@@ -116,19 +120,26 @@ export function entryFromFileExport(
     state: "error",
     measuredAt: opts.fileMtimeIso ?? new Date(0).toISOString(),
     source: doc?.source ?? "file-export",
+    sourceClass: "file-export",
+    cadenceSeconds: null,
+    fallback: true,
     windows: [],
   };
   if (doc?.tier) entry.planLabel = doc.tier;
   if (!doc) {
+    entry.adapterStatus = "fetch-failed";
     entry.error = "file-export unreadable (missing or unparseable latest.json)";
     return entry;
   }
   if (opts.stale) {
+    entry.adapterStatus = "transport-unavailable";
     entry.error = "file-export stale (latest.json older than the staleness bound — producer unreachable)";
     return entry;
   }
   const measuredMs = doc.measuredAt ? Date.parse(doc.measuredAt) : Number.NaN;
   if (doc.status !== "ok" || Number.isNaN(measuredMs)) {
+    if (doc.status === "session-expired") entry.adapterStatus = "session-expired";
+    else if (doc.status === "unparseable") entry.adapterStatus = "unparseable";
     entry.error = `file-export status: ${doc.status ?? "unknown"}`;
     return entry;
   }
@@ -187,8 +198,22 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
     state,
     measuredAt,
     source: GATHERER_SOURCE,
+    sourceClass: typeof result.sourceClass === "string" ? result.sourceClass : "api",
+    cadenceSeconds:
+      typeof result.cadenceSeconds === "number" && Number.isFinite(result.cadenceSeconds)
+        ? result.cadenceSeconds
+        : result.cadenceSeconds === null
+          ? null
+          : 15 * 60,
+    fallback: typeof result.fallback === "boolean" ? result.fallback : null,
     windows: [],
   };
+  if (
+    result.adapterStatus === "session-expired" ||
+    result.adapterStatus === "unparseable" ||
+    result.adapterStatus === "transport-unavailable" ||
+    result.adapterStatus === "fetch-failed"
+  ) entry.adapterStatus = result.adapterStatus;
   if (result.credentialId) entry.credentialId = result.credentialId;
   if (result.credentialLabel) entry.credentialLabel = result.credentialLabel;
   if (result.planLabel) entry.planLabel = result.planLabel;
@@ -450,6 +475,9 @@ export function entryFromTurso(
     state: "error",
     measuredAt: opts.measuredAt,
     source: TURSO_SOURCE,
+    sourceClass: "api",
+    cadenceSeconds: 15 * 60,
+    fallback: false,
     windows: [],
   };
   const sub = (subscriptionDoc?.subscription ?? subscriptionDoc) as Record<string, unknown> | null | undefined;

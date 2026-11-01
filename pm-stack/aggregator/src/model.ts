@@ -295,8 +295,12 @@ export interface GathererProviderFreshness {
   serviceId: string;
   credentialLabel?: string;
   state: "ok" | "stale" | "error";
-  measuredAt: string;
+  health: "ok" | "stale" | "expired" | "unparseable" | "down" | "unknown";
+  measuredAt: string | null;
   source: string;
+  sourceClass: string | null;
+  cadenceSeconds: number | null;
+  fallback: boolean | null;
   error?: string;
 }
 
@@ -304,10 +308,12 @@ export interface GathererProviderFreshness {
  * health, and every provider it read — including providers with no
  * pool on the page (OpenCode Go workspaces, Antigravity models). */
 export interface GathererSummary {
-  generatedAt: string;
+  generatedAt: string | null;
   source: string;
   tickAt: string | null;
-  ok: boolean;
+  ok: boolean | null;
+  durationMs?: number | null;
+  error?: string;
   providers: GathererProviderFreshness[];
 }
 
@@ -1312,6 +1318,12 @@ export interface QuotaCurrentEntry {
    *  fresh reads. */
   retainedFromFailedTick?: string;
   source: string;
+  /** Structured adapter cause; never reconstructed by parsing error text. */
+  adapterStatus?: "session-expired" | "unparseable" | "transport-unavailable" | "fetch-failed";
+  /** Optional producer metadata; missing evidence is rendered as unknown. */
+  sourceClass?: string;
+  cadenceSeconds?: number | null;
+  fallback?: boolean | null;
   error?: string;
   windows: QuotaCurrentWindow[];
   /** The provider result's raw usage object, kept for fidelity until consumers settle. */
@@ -1323,7 +1335,16 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<
+    string,
+    {
+      state: "ok" | "error";
+      ms: number;
+      rows: number;
+      adapterStatus?: "session-expired" | "unparseable" | "transport-unavailable" | "fetch-failed";
+      error?: string;
+    }
+  >;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }
@@ -1332,7 +1353,7 @@ export interface QuotaCurrentFile {
   version: 1;
   generatedAt: string;
   source: string;
-  heartbeat: QuotaGatherHeartbeat;
+  heartbeat?: QuotaGatherHeartbeat;
   providers: QuotaCurrentEntry[];
 }
 

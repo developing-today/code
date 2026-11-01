@@ -313,6 +313,7 @@ interface ProviderRun {
   state: "ok" | "error";
   ms: number;
   entries: QuotaCurrentEntry[];
+  adapterStatus?: QuotaCurrentEntry["adapterStatus"];
   error?: string;
   /** #1268: entries are last-known retentions, not fresh reads. */
   retained?: boolean;
@@ -333,6 +334,7 @@ async function runProvider(quota: QuotaModule, id: string, tickIso: string): Pro
       state: anyOk ? "ok" : "error",
       ms: Date.now() - t0,
       entries,
+      ...(!anyOk && firstBad?.adapterStatus ? { adapterStatus: firstBad.adapterStatus } : {}),
       ...(!anyOk && firstBad?.error ? { error: firstBad.error } : {}),
     };
   } catch (err) {
@@ -341,6 +343,7 @@ async function runProvider(quota: QuotaModule, id: string, tickIso: string): Pro
       state: "error",
       ms: Date.now() - t0,
       entries: [],
+      adapterStatus: "fetch-failed",
       error: err instanceof Error ? err.message : String(err),
     };
   }
@@ -370,6 +373,7 @@ async function runFileExport(fx: (typeof FILE_EXPORTS)[number]): Promise<Provide
     state: entry.state === "ok" ? "ok" : "error",
     ms: Date.now() - t0,
     entries: [entry],
+    ...(entry.adapterStatus ? { adapterStatus: entry.adapterStatus } : {}),
     ...(entry.error ? { error: entry.error } : {}),
   };
 }
@@ -454,6 +458,7 @@ async function main(): Promise<number> {
       state: run.state,
       ms: run.ms,
       rows: run.entries.length,
+      ...(run.adapterStatus ? { adapterStatus: run.adapterStatus } : {}),
       ...(run.error ? { error: run.error } : {}),
     };
     console.log(

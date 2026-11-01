@@ -37,7 +37,14 @@ import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
+import {
+  latestQuotaHeartbeat,
+  overlayQuotaCurrent,
+  overlayStandaloneQuotaHeartbeat,
+  overlayTursoUsage,
+  parseQuotaCurrent,
+  parseQuotaGatherHeartbeat,
+} from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -850,15 +857,26 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();
       }
+      let standaloneHeartbeat = null;
+      try {
+        standaloneHeartbeat = parseQuotaGatherHeartbeat(JSON.parse(await readFile(cfg.quotaHeartbeatFile, "utf8")));
+      } catch {
+        /* no standalone tick record (or unreadable) */
+      }
       try {
         const raw = await readFile(cfg.quotaCurrentFile, "utf8");
         const file = parseQuotaCurrent(JSON.parse(raw));
         if (file) {
-          provenance.quota += ` · gatherer ${file.generatedAt}`;
-          return overlayQuotaCurrent(view, file);
+          const heartbeat = latestQuotaHeartbeat(file.heartbeat, standaloneHeartbeat);
+          provenance.quota += ` · gatherer ${heartbeat?.tickAt ?? "status unknown"}`;
+          return overlayQuotaCurrent(view, { ...file, heartbeat });
         }
       } catch {
-        /* no gatherer file (or unreadable): base view stands */
+        /* no current quota file (or unreadable): standalone status can still be useful */
+      }
+      if (standaloneHeartbeat) {
+        provenance.quota += ` · gatherer ${standaloneHeartbeat.tickAt}`;
+        return overlayStandaloneQuotaHeartbeat(view, standaloneHeartbeat);
       }
       return view;
     },
