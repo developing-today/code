@@ -170,7 +170,7 @@ buildGo127Module {
       mkdir -p "$HOME"
       pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... \
         | grep -vxF -e "" ${
-          lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude
+          lib.concatMapStringsSep " " (p: "-e github.com/developing-today/code/pkgs/mcpx/${p}") checkExclude
         })
       echo "testing $(echo "$pkgs" | wc -l) packages: $pkgs"
       # Go's default per-package timeout is 10m. On a 2-CPU machine the
@@ -217,7 +217,7 @@ buildGo127Module {
       concurrent agents get separate processes instead of corrupting one
       shared browser.
     '';
-    homepage = "https://github.com/dezren39/mcpx";
+    homepage = "https://github.com/developing-today/code/tree/main/pkgs/mcpx";
     license = lib.licenses.mit;
     mainProgram = "mcpx";
     platforms = lib.platforms.unix;

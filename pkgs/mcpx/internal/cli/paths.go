@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // resolvePathsForConfig keys the daemon to whichever config this invocation

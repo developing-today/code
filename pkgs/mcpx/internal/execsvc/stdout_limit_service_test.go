@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/execsvc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 )
 
 // CODE-16 (#1937), Codex P2 on PR 2979: when large JSON stdout is

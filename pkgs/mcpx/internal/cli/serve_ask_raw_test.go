@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
 )
 
 // rawAskBackend is an mcpserver.Backend that can list every upstream's

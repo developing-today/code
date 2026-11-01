@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
 )
 
 // Knobs are flags rather than constants: this is test support run by a script, and each has a reason to be

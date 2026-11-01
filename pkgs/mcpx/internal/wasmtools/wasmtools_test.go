@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/wasmtools"
+	"github.com/developing-today/code/pkgs/mcpx/internal/wasmtools"
 )
 
 //go:embed testdata/echo.wasm

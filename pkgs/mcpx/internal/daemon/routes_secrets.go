@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/dezren39/mcpx/internal/secrets"
+	"github.com/developing-today/code/pkgs/mcpx/internal/secrets"
 )
 
 // routesSecrets are the endpoints that give servers the secrets they need.

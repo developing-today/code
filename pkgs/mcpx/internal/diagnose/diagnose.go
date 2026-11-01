@@ -19,7 +19,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/nearmiss"
+	"github.com/developing-today/code/pkgs/mcpx/internal/nearmiss"
 )
 
 // Kind classifies a diagnostic, so a caller can act on one without reading
