@@ -21,7 +21,10 @@ const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 /** Every ISO date in a text, ascending. */
 function datesIn(text: string): string[] {
   // Real calendar dates only (#2264), mirroring snapshot-records.ts.
-  return [...text.matchAll(DATE_RE)].map((m) => m[0]).filter((d) => parseIsoDate(d) !== null).sort();
+  return [...text.matchAll(DATE_RE)]
+    .map((m) => m[0])
+    .filter((d) => parseIsoDate(d) !== null)
+    .sort();
 }
 
 /** The freshest ISO date in a text, or null. */
@@ -466,7 +469,10 @@ const modalMetrics: MetricExtractor = (section) => {
       used,
       limit: credits ? Number(credits[1]) : 30,
       highlight: true,
-      note: used != null ? "Monthly console read (§2.2)." : "No run hours or credit balance recorded — manual dashboard read (§2.2).",
+      note:
+        used != null
+          ? "Monthly console read (§2.2)."
+          : "No run hours or credit balance recorded — manual dashboard read (§2.2).",
     }),
   ];
 };
@@ -884,9 +890,7 @@ export function applySupabaseExport(
   if (nowMs - measuredMs > SUPABASE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
   const supabase = services.find((s) => s.id === "supabase");
   if (!supabase) return services;
-  const byId = new Map(
-    doc.metrics.filter((m) => m && typeof m.id === "string").map((m) => [m.id, m]),
-  );
+  const byId = new Map(doc.metrics.filter((m) => m && typeof m.id === "string").map((m) => [m.id, m]));
   if (!byId.size) return services;
   supabase.metrics = supabase.metrics.map((m) => {
     const live = byId.get(m.id);
@@ -901,7 +905,9 @@ export function applySupabaseExport(
       parts.push(`Live via ${live.source ?? doc.source ?? "file-export/supabase"}, measured ${doc.measuredAt}.`);
       if (live.detail) parts.push(live.detail);
       if (live.flag === "approaching-paid-trigger") {
-        parts.push("Approaching-paid trigger: at or above 80% of the Free-plan limit (Drew's $30/mo ceiling is the decision context).");
+        parts.push(
+          "Approaching-paid trigger: at or above 80% of the Free-plan limit (Drew's $30/mo ceiling is the decision context).",
+        );
       }
     }
     return {
@@ -913,7 +919,12 @@ export function applySupabaseExport(
       note: parts.join(" ").slice(0, 600),
     };
   });
-  if (doc.billing && doc.billing.measured !== false && typeof doc.billing.billedUsd === "number" && Number.isFinite(doc.billing.billedUsd)) {
+  if (
+    doc.billing &&
+    doc.billing.measured !== false &&
+    typeof doc.billing.billedUsd === "number" &&
+    Number.isFinite(doc.billing.billedUsd)
+  ) {
     supabase.billedUsd = doc.billing.billedUsd;
   } else {
     // Codex P2 (PR #2369 re-review, 2026-10-29): an accepted export with no
@@ -923,7 +934,9 @@ export function applySupabaseExport(
     // no billed line at all.
     supabase.billedUsd = null;
   }
-  supabase.plan = doc.billing?.plan ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}` : supabase.plan;
+  supabase.plan = doc.billing?.plan
+    ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}`
+    : supabase.plan;
   supabase.measuredAt = doc.measuredAt.slice(0, 10);
   supabase.sourceClass = "api";
   const gapCount = (doc.scope ?? []).filter((s) => typeof s.status === "number" && s.status >= 400).length;

@@ -132,10 +132,7 @@ describe("saas extraction (Part b)", () => {
     const view = VIEW.replace(
       "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
       "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
-    ).replace(
-      "- **Last checked:** 2026-10-22 (Tracker).",
-      "- **Last checked:** console read 2026-10-24.",
-    );
+    ).replace("- **Last checked:** 2026-10-22 (Tracker).", "- **Last checked:** console read 2026-10-24.");
     const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
     const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
     expect(credits.used).toBe(12.5);
@@ -230,7 +227,9 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
   });
 
   test("subscriptions strip is renewal-only rows from the records", () => {
-    const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
+    const subs = extractSubscriptions(
+      `${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`,
+    );
     expect(subs).toEqual([
       { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
       { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
@@ -264,7 +263,15 @@ describe("bubble rules (§1.3)", () => {
       services: [],
       payg: [
         { id: "a", label: "A", accruedUsd: null, unbilledUsd: 5, note: "", measuredAt: null, sourceClass: "estimate" },
-        { id: "b", label: "B", accruedUsd: null, unbilledUsd: 5.01, note: "", measuredAt: null, sourceClass: "estimate" },
+        {
+          id: "b",
+          label: "B",
+          accruedUsd: null,
+          unbilledUsd: 5.01,
+          note: "",
+          measuredAt: null,
+          sourceClass: "estimate",
+        },
       ],
     });
     expect(flags.filter((f) => f.kind === "payg-unbilled").map((f) => f.label)).toEqual(["B"]);
@@ -327,7 +334,15 @@ describe("snapshot store (§4)", () => {
     try {
       const store = new SnapshotStore(dir);
       await store.append([
-        { ts: "2026-10-25T12:00:00Z", serviceId: "cloudflare", metricId: "est", value: { low: 29.6, high: 45.1 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+        {
+          ts: "2026-10-25T12:00:00Z",
+          serviceId: "cloudflare",
+          metricId: "est",
+          value: { low: 29.6, high: 45.1 },
+          unit: "usd-est",
+          source: "estimate",
+          observedBy: "test",
+        },
       ]);
       const all = await store.readAll();
       expect(all[0].value).toEqual({ low: 29.6, high: 45.1 });
@@ -365,18 +380,12 @@ describe("pace + freshness (§4, §1.1)", () => {
   test("pace: out-of-domain pct yields no projection and never throws (#2346)", () => {
     // -1e9 -> -999999999 over 2 days: slope 0.5/day passes the slope
     // gate; the unguarded extrapolation threw RangeError.
-    const poison = projectPace(
-      [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)],
-      "weekly",
-    )!;
+    const poison = projectPace([rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)], "weekly")!;
     expect(poison.projectedExhaustionAt).toBeNull();
     expect(poison.slopePerDay).toBe(0.5);
     // -5000 -> -4999.88 over 2 days: slope 0.06/day; previously
     // projected exhaustion in the year 2259.
-    const far = projectPace(
-      [rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)],
-      "weekly",
-    )!;
+    const far = projectPace([rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)], "weekly")!;
     expect(far.projectedExhaustionAt).toBeNull();
     // Happy-path control: 30 -> 40 over 2 days projects as before.
     const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
@@ -384,9 +393,7 @@ describe("pace + freshness (§4, §1.1)", () => {
   });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
-    expect(
-      projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly"),
-    ).toBeNull();
+    expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
   });
   test("freshness: older than cadence is stale; same-day is not", () => {
     const now = new Date("2026-10-26T12:00:00Z");
