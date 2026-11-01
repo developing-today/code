@@ -23,6 +23,7 @@
 # store) and is read at service start.
 let
   homeDir = "/home/user";
+  acpxPlugin = inputs.nix-openclaw.packages.${system}.openclaw-runtime-plugin-acpx;
   # Local provider-proxy ports. The canonical definitions live in
   # home/common/default.nix (clefProxyPort..claudeCodeProxyPort); these are
   # the same numbers, repeated here because OpenClaw's config is rendered
@@ -44,13 +45,21 @@ in
   # Point acpx's harnesses at this laptop's pinned binaries instead of
   # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
   # OpenCode fork (the build OpenChamber uses); claude/codex run the local
-  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
+  # managed wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
   # the system antigravity-acp server.
+  # Keep separate names from OpenClaw's generated wrappers: plugin admission
+  # can rewrite those, and they remain a rollback path until verified.
+  home.file = {
+    ".openclaw/acpx/bin/claude-agent-acp.mjs".source = "${acpxPlugin}/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
+    ".openclaw/acpx/bin/codex-acp.mjs".source = "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
+    ".openclaw/acpx/managed-claude-agent-acp-wrapper.mjs".source = ./acpx/claude-agent-acp-wrapper.mjs;
+    ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+  };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
-      claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
-      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      claude.command = "/home/user/.openclaw/acpx/managed-claude-agent-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
     };
   };
@@ -367,8 +376,8 @@ in
         # so the acpx startup check never resolves a harness to an
         # npx-fetched adapter (that fetch hangs on this laptop's flaky
         # npmjs route; 120s check timeout, 2026-10-26). claude/codex run
-        # the local wrappers in ~/.openclaw/acpx (adapters bundled with
-        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # the managed wrappers in ~/.openclaw/acpx (adapters bundled with
+        # the acpx plugin); agy runs the
         # system antigravity-acp binary. Drew enabled all four
         # 2026-10-28. Claude/Codex ALSO work via their native runtime
         # plugins for chat bindings — ACP is the background-spawn path.
@@ -401,10 +410,10 @@ in
               args = [ "acp" ];
             };
             agents.claude = {
-              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+              command = "/home/user/.openclaw/acpx/managed-claude-agent-acp-wrapper.mjs";
             };
             agents.codex = {
-              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+              command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
             };
             agents.agy = {
               command = "/run/current-system/sw/bin/agy_acp_server";
