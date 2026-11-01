@@ -1266,45 +1266,55 @@ async fn handle_collab_socket(
 mod tests {
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_try_apply_steps_concurrent_same_base_version() {
-        // #2968: two sockets submitting Steps at the same base version
-        // must not both be accepted. Exactly one wins; the loser observes
-        // the winner's version, and the stored steps/version reflect
-        // only the winner. Repeated rounds with a barrier-synchronised
-        // start make the pre-fix check-then-lock race (both loads before
-        // either bump) fail reliably.
+        // #2968: sockets submitting Steps at the same base version must
+        // not diverge. Exactly one is accepted; every other observes the
+        // winner's bumped version and is rejected; the stored steps and
+        // version reflect only the winner.
+        //
+        // The test holds the steps write lock while the submitters
+        // arrive, modelling the production window: steps-lock contention
+        // (e.g. a join catch-up read) parks a socket between its version
+        // check and its append, so a check done before acquiring the
+        // lock is stale for every parked submitter at once. Under the
+        // pre-fix ordering several submitters pass the stale check and
+        // are all accepted (Ok(1), Ok(2), ...); with the check inside
+        // the lock exactly one wins, deterministically.
         use std::sync::Arc;
-        for _round in 0..50 {
-            let doc = Arc::new(Document::new());
-            let barrier = Arc::new(tokio::sync::Barrier::new(2));
-            let submit = |client_id: u64, marker: &'static str| {
-                let doc = Arc::clone(&doc);
-                let barrier = Arc::clone(&barrier);
-                tokio::spawn(async move {
-                    barrier.wait().await;
-                    let steps = vec![serde_json::json!({ "stepType": "replace", "marker": marker })];
-                    (marker, doc.try_apply_steps(0, &steps, client_id).await)
-                })
-            };
-            let (r1, r2) = tokio::join!(submit(1, "alpha"), submit(2, "beta"));
-            let (m1, res1) = r1.unwrap();
-            let (m2, res2) = r2.unwrap();
-            let results = [(m1, res1), (m2, res2)];
-            let winners: Vec<&str> = results
-                .iter()
-                .filter(|(_, r)| *r == Ok(1))
-                .map(|(m, _)| *m)
-                .collect();
-            let losers: Vec<&Result<u64, u64>> =
-                results.iter().map(|(_, r)| r).filter(|r| r.is_err()).collect();
-            assert_eq!(winners.len(), 1, "exactly one submission must be accepted");
-            assert_eq!(losers, vec![&Err(1)], "loser must observe the winner's version");
-            assert_eq!(doc.version(), 1, "version reflects only the winner's step");
-            let stored = doc.steps.read().await;
-            assert_eq!(stored.len(), 1, "only the winner's step is stored");
-            assert_eq!(stored[0].0.data["marker"], winners[0]);
+        let doc = Arc::new(Document::new());
+        let gate = doc.steps.write().await;
+        let mut handles = Vec::new();
+        for client_id in 1..=4u64 {
+            let doc = Arc::clone(&doc);
+            handles.push(tokio::spawn(async move {
+                let steps = vec![serde_json::json!({
+                    "stepType": "replace",
+                    "marker": client_id,
+                })];
+                (client_id, doc.try_apply_steps(0, &steps, client_id).await)
+            }));
         }
+        // Let every submitter arrive at the steps lock.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        drop(gate);
+        let mut winners: Vec<u64> = Vec::new();
+        for handle in handles {
+            let (client_id, result) = handle.await.unwrap();
+            match result {
+                Ok(1) => winners.push(client_id),
+                Err(1) => {}
+                other => panic!(
+                    "submitter {client_id} got {other:?}: only Ok(1) for the single winner and Err(1) for every loser are possible"
+                ),
+            }
+        }
+        assert_eq!(winners.len(), 1, "exactly one submission must be accepted");
+        assert_eq!(doc.version(), 1, "version reflects only the winner's step");
+        let stored = doc.steps.read().await;
+        assert_eq!(stored.len(), 1, "only the winner's step is stored");
+        assert_eq!(stored[0].0.data["marker"], winners[0]);
+        assert_eq!(stored[0].1, serde_json::json!(winners[0]));
     }
 
     #[tokio::test]
