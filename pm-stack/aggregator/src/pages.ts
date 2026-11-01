@@ -138,6 +138,15 @@ export const PAGES: PageDef[] = [
     nav: "dropdown",
   },
   {
+    id: "search",
+    title: "Search",
+    route: "/search",
+    api: "/api/search.json",
+    blurb: "Search board and roadmap work by title or linked issue/PR ref.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "program",
     title: "Program status",
     route: "/program",

@@ -89,6 +89,7 @@ import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
+import type { SearchResult } from "./search-view.ts";
 
 export function esc(s: unknown): string {
   return String(s ?? "")
@@ -114,6 +115,11 @@ const CSS = `
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navsearch { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.navsearch input, .search-page-form input { min-width: 12rem; padding: 7px 9px; border: 1px solid #30363d; border-radius: 6px; background: #0d1117; color: inherit; }
+.navsearch button, .search-page-form button { padding: 7px 10px; border: 1px solid #30363d; border-radius: 6px; background: #21262d; color: inherit; cursor: pointer; }
+.search-page-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.search-page-form input { flex: 1; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
@@ -655,6 +661,10 @@ export function pageDropdown(active: string): string {
   return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
+function globalSearch(): string {
+  return `<form class="navsearch" action="/search" method="get" role="search"><input type="search" name="q" aria-label="Search board and roadmap work" placeholder="Search work…" required><button type="submit">Search</button></form>`;
+}
+
 function layout(
   title: string,
   body: string,
@@ -674,9 +684,41 @@ function layout(
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<body><nav>${links}${dropdown}${globalSearch()}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script>${extra}</body></html>`;
+}
+
+/** First-slice global search over board/roadmap subjects and linked refs. */
+export function renderSearch(
+  query: string,
+  results: SearchResult[],
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
+  const cards = results
+    .map((result) => {
+      const badges = result.refs
+        .map((ref) => {
+          const item = items.get(ref);
+          return item
+            ? itemBadge(item)
+            : `<a class="badge closed" href="${esc(refUrl(ref))}" title="Unresolved by the current item source">${esc(ref)} · unresolved</a>`;
+        })
+        .join(" ");
+      return `<div class="card"><a href="/item/${encodeURIComponent(result.id)}"><strong>${esc(result.title)}</strong></a><br><span class="muted">${result.kind} · ${esc(result.summary)}</span>${badges ? `<div class="strip">${badges}</div>` : ""}</div>`;
+    })
+    .join("");
+  const body = `<h1>Search</h1><p class="muted">Search board items and roadmap rows by subject, title, or linked issue/PR ref. Linked GitHub badges show their current projected state and whether the result is fixture-only.</p><form class="search-page-form" action="/search" method="get" role="search"><label for="search-query">Search work</label><input id="search-query" type="search" name="q" value="${esc(query)}" placeholder="Title or owner/repo#123"><button type="submit">Search</button></form>${query ? `<h2>${results.length} result${results.length === 1 ? "" : "s"} for “${esc(query)}”</h2>${cards || '<p class="muted">No matching work found.</p>'}` : '<p class="muted">Enter a title or issue/PR reference to search.</p>'}`;
+  return layout(
+    "Search",
+    body,
+    provenance,
+    "/search",
+    "",
+    detail ? freshnessChips(detail, ["board", "roadmap", "items"]) : "",
+  );
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
