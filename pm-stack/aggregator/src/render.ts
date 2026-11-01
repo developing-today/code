@@ -112,11 +112,12 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
+[id] { scroll-margin-top: 96px; }
 nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
 .navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
 .navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
 .navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
-nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; display: inline-flex; align-items: center; min-height: 40px; }
 nav a.active, nav a:hover { background: #21262d; }
 nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
 .navgroup[data-current="true"] .navlabel { color: #58a6ff; }
@@ -157,7 +158,7 @@ th { background: #161b22; }
 .pool { display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; }
 meter { width: 140px; height: 14px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
-.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; }
+.chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; display: inline-flex; align-items: center; min-height: 40px; }
 .chips a.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
 .fchip { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; color: #e6edf3; background: #161b22; font-size: 12.5px; }
 .fchip.live { border-color: #2ea04388; }
@@ -219,7 +220,7 @@ meter { width: 140px; height: 14px; }
 .unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
 .qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
 .qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
-.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 32px; }
+.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 40px; }
 .optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
@@ -233,9 +234,10 @@ details.carddetail dl { display: grid; grid-template-columns: 110px 1fr; gap: 2p
 details.carddetail dt { color: #8b949e; }
 details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .histline { font-size: 12.5px; margin: 3px 0; }
+pre { max-width: 100%; overflow-x: auto; }
 .quickbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
 .quickbar .qlabel { font-size: 12px; color: #8b949e; flex-basis: 100%; }
-.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 36px; }
+.qchip { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 12.5px; cursor: pointer; min-height: 40px; }
 .qchip.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
 .qchip:disabled { opacity: .45; cursor: not-allowed; }
 .aform.qform { display: inline-flex; margin: 0; }
@@ -261,7 +263,7 @@ details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .xpl-filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
 .xpl-filters input[type="search"], .xpl-filters select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; }
 .xpl-filters input[type="search"] { min-width: 220px; flex: 1; }
-.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
+.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; min-height: 40px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
 .xchip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .xchip.off { opacity: .38; text-decoration: line-through; }
 .xp-seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
@@ -281,8 +283,8 @@ body.xp-plan .xpl-costcol { display: none; }
 .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
 .xpl-ctl select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
 .chart h3 { display: inline-block; margin: 2px 10px 2px 0; font-size: 13.5px; }
-.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
-.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 2px 4px; }
+.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; min-height: 40px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
+.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 10px 8px; }
 .xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
 /* Non-colour cues (#1215): state badges also differ by icon prefix and
    status dots by shape, so colour is never the only signal. */
