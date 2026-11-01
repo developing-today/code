@@ -1183,11 +1183,29 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
         // #1565's twenty-seventh cut). Tracked across continuation
         // lines until the closing fence.
         let mut def_fence = fence_opener_run(opening_body);
+        // An HTML block opened by the definition's own content --
+        // on the opening line (`[^a]: <!--`) or on a later indented
+        // line -- makes the lines it covers literal HTML content,
+        // never paragraph content, exactly like def_fence above:
+        // while it is open an unindented line is NOT a lazy
+        // continuation (HTML blocks take no lazy continuations),
+        // so the definition ends there and the outer scan's own
+        // HTML tracker owns the line. Ignoring the state let the
+        // loop lazy-consume a top-level `<em>` into the definition,
+        // bypass the outer tracker, and promote the
+        // definition-shaped line inside that top-level block to a
+        // real footnote (Codex P2 on #1565's twenty-eighth cut).
+        let mut def_html = HtmlBlockTracker::default();
+        def_html.feed(opening_body, true);
         let mut j = i + 1;
         while j < lines.len() {
             let next = lines[j];
             if next.trim().is_empty() {
                 source_lines.push(next);
+                // A blank line ends a blank-line-terminated HTML
+                // block inside the definition (marker-ended blocks
+                // ignore it), mirroring the outer scans.
+                def_html.feed("", true);
                 prev_is_content = false;
                 j += 1;
                 continue;
@@ -1233,6 +1251,16 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                         def_fence = None;
                     }
                     prev_is_content = false;
+                } else if def_html.feed(content.trim_start_matches(' '), !prev_is_content) {
+                    // Inside an HTML block opened by this
+                    // definition (or opening one on this line):
+                    // the line is HTML content, never paragraph
+                    // content (twenty-eighth cut). A type-7 opening
+                    // is refused while a paragraph is open, exactly
+                    // as in the outer scans -- the tag is then
+                    // paragraph text and falls through to the
+                    // classification below on a later line shape.
+                    prev_is_content = false;
                 } else if indentation_columns(content) < 4 {
                     if let Some(opened) = fence_opener_run(content.trim_start_matches(' ')) {
                         // An indented fence opener inside the
@@ -1245,6 +1273,17 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                             && !starts_new_block(content.trim_start_matches(' '))
                             && !(prev_is_content && is_setext_underline(content));
                     }
+                } else if prev_is_content {
+                    // Overindented (eight-plus columns in total)
+                    // with a paragraph already open: indented code
+                    // cannot interrupt a paragraph, so the line
+                    // continues that paragraph and lazy eligibility
+                    // survives -- resetting it truncated the
+                    // definition at the following unindented line
+                    // and deleted that text on save (Codex P2 on
+                    // #1565's twenty-eighth cut: `[^a]: First.` /
+                    // eight-space continuation / `second.` lost
+                    // `second.`).
                 } else {
                     prev_is_content = false;
                 }
@@ -1258,7 +1297,10 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             // `second line.`); collecting only indented lines
             // truncated the definition and lost the continuation
             // on save.
-            if prev_is_content && !starts_new_block(next.trim_start_matches(' ')) {
+            if prev_is_content
+                && !def_html.in_html()
+                && !starts_new_block(next.trim_start_matches(' '))
+            {
                 source_lines.push(next);
                 last_content = source_lines.len() - 1;
                 // An unindented setext underline lazy-continued
@@ -1727,6 +1769,15 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
         } else {
             container_stripped
         };
+        // The container this line sits in (empty at the top
+        // level): a definition that opens inside a container
+        // continues on lines carrying that same container, and
+        // those continuation lines are processed RELATIVE to it
+        // -- in the multiline-label accumulation below and in the
+        // destination/title collection loop (Codex P2 on #1565's
+        // twenty-eighth cut).
+        let def_container_prefix = &stripped[..stripped.len() - container_stripped.len()];
+        let def_container_levels = container_signature(def_container_prefix).chars().count();
         // A reference label may itself span lines (fourteenth
         // cut): `[long\nlabel]: https://example.com` is a valid
         // definition whose label normalizes to `long label`, but
@@ -1757,6 +1808,17 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                     let mut found = None;
                     while j < lines.len() && text.len() < 1000 {
                         let next = lines[j].trim_start_matches(' ');
+                        // Read the segment relative to the
+                        // candidate's container (twenty-eighth
+                        // cut): `> label]: ...` contributes
+                        // `label]: ...` to the label text.
+                        let next = if def_container_levels > 0
+                            && carries_container_prefix(next, def_container_prefix)
+                        {
+                            strip_container_levels(next, def_container_levels)
+                        } else {
+                            next
+                        };
                         if next.trim().is_empty() {
                             break;
                         }
@@ -1816,6 +1878,23 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
             while j < lines.len() {
                 let next = lines[j];
                 let next_stripped = next.trim_start_matches(' ');
+                // A continuation line inside the definition's own
+                // container is processed relative to that
+                // container: the boundary check below mistook the
+                // continuing `>` marker of `> [url]:` /
+                // `> /target` for a new block and stopped before
+                // the destination, so the collector returned no
+                // definition and a recovered footnote lost its
+                // hyperlink on save (Codex P2 on #1565's
+                // twenty-eighth cut). The ORIGINAL line is still
+                // what `block` collects verbatim for the probe.
+                let next_stripped = if def_container_levels > 0
+                    && carries_container_prefix(next_stripped, def_container_prefix)
+                {
+                    strip_container_levels(next_stripped, def_container_levels)
+                } else {
+                    next_stripped
+                };
                 if next_stripped.trim().is_empty() {
                     break;
                 }
@@ -6191,6 +6270,101 @@ mod tests {
             ["a"],
             "saved form must not promote fake either: {saved_doc}"
         );
+    }
+
+    #[test]
+    fn test_overindented_continuation_keeps_footnote_paragraph() {
+        // #1565 twenty-eighth cut (Codex P2): an eight-space line
+        // continues the footnote's open paragraph (indented code
+        // cannot interrupt a paragraph), so the unindented
+        // `second.` after it is a lazy continuation of the same
+        // paragraph. The continuation loop reset eligibility on
+        // the overindented line, truncated the collected
+        // definition there, and saving deleted `second.`.
+        let original = "[^a]: First.\n        continuation\nsecond.\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("second."),
+            "overindented continuation keeps the lazy line: {orphan}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(first.contains("second."), "lazy line survives save: {first:?}");
+        assert_eq!(first, second, "overindented-continuation round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_html_block_in_footnote_does_not_promote_fake_definition() {
+        // #1565 twenty-eighth cut (Codex P2): a comment block
+        // opened by the footnote's own content takes no lazy
+        // continuation: the unindented `<em>` ends the definition
+        // and opens a top-level HTML block whose
+        // definition-shaped interior is literal. The continuation
+        // loop tracked fenced blocks inside the definition but
+        // not HTML blocks, lazy-consumed `<em>` into the
+        // footnote, bypassed the outer HTML tracker, and
+        // promoted `[^fake]:` to a real footnote on save.
+        let original = "[^a]: <!--\n    code\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<_> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["a"],
+            "HTML block in footnote must not synthesize fake: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(first.contains("code"), "comment content survives: {first:?}");
+        assert_eq!(first, second, "HTML-in-footnote round-trip is a fixpoint");
+        let saved_doc = markdown_to_prosemirror(&first);
+        let saved_labels: Vec<_> = saved_doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            saved_labels,
+            ["a"],
+            "saved form must not promote fake either: {saved_doc}"
+        );
+    }
+
+    #[test]
+    fn test_blockquote_multiline_reference_definition_resolves() {
+        // #1565 twenty-eighth cut (Codex P2): a reference
+        // definition inside a blockquote with its destination on
+        // the following quote line is document-global, but the
+        // collector's boundary check treated the continuing `>`
+        // marker as a new block and stopped before the
+        // destination, so the definition never reached the
+        // synthesis context and the recovered footnote's
+        // `[x][url]` saved as literal brackets.
+        let original = "> [url]:\n> /target\n\n[^a]: [x][url]\n";
+        let doc = markdown_to_prosemirror(original);
+        let orphan = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("orphan definition recovered");
+        assert!(
+            orphan.to_string().contains("/target"),
+            "blockquote multiline destination resolves the orphan link: {orphan}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "blockquote-definition round-trip is a fixpoint");
     }
 
     #[test]
