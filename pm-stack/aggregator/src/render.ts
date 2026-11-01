@@ -2727,9 +2727,21 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
         if (cur.length) chunks.push(cur);
         for (var ci = 0; ci < chunks.length; ci++) {
           var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunks[ci] }) });
-          var body = await res.json().catch(function () { return {}; });
-          if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
-          (body.results || []).forEach(function (r) { allResults.push(r); });
+          var body;
+          try {
+            body = await res.json();
+          } catch (e) {
+            // A 200 whose body never finished is an UNKNOWN outcome,
+            // not an empty success: rethrow so the outer handler
+            // keeps the snapshot (and its tokens) for an exact retry.
+            if (res.ok) throw e;
+            body = {};
+          }
+          if (!res.ok) throw new Error((body && body.error) || ("HTTP " + res.status));
+          if (!body || !Array.isArray(body.results) || body.results.length !== chunks[ci].length) {
+            throw new Error("batch response did not include per-item results for every action");
+          }
+          body.results.forEach(function (r) { allResults.push(r); });
         }
       } catch (e) {
         // No definitive result: the snapshot (and its client tokens)
