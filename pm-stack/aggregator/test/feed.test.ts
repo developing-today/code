@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isFleetFeed, isProjectPoolSection, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
+import { isFleetFeed, isProjectPoolSection, isUnmatchedCharge, loadFeed, poolFromFeed, projectPoolSectionProblem, sanitizeQuotaView, sanitizeSubscriptions } from "../src/feed.ts";
 import { renderQuota } from "../src/render.ts";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -305,5 +305,64 @@ describe("feed subscriptions sanitization (#2446)", () => {
     const clean = await loadWithSubs([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptions).toEqual([SUB, SUB_NULL_RENEW]);
     expect(clean?.subscriptionsDropped).toBeUndefined();
+  });
+});
+
+describe("feed chargesAttention gate + sanitization (#2439)", () => {
+  const UNMATCHED = { merchant: "Mystery AI Inc", normalized: "mystery ai", amountUsd: 42.5, at: "2026-10-30", source: "plaid" };
+  const feedWithCa = (chargesAttention: unknown) => ({
+    version: 1,
+    generatedAt: "2026-10-01T00:00:00Z",
+    quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+    attention: [],
+    chargesAttention,
+  });
+  const loadFrom = async (feed: unknown) => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-feed-ca-"));
+    const file = join(dir, "feed.json");
+    writeFileSync(file, JSON.stringify(feed));
+    return loadFeed(file);
+  };
+
+  test("the gate accepts absent and array chargesAttention, rejects a present non-array", () => {
+    const absent = feedWithCa(undefined) as Record<string, unknown>;
+    delete absent.chargesAttention;
+    expect(isFleetFeed(absent)).toBe(true);
+    expect(isFleetFeed(feedWithCa([]))).toBe(true);
+    expect(isFleetFeed(feedWithCa([UNMATCHED]))).toBe(true);
+    expect(isFleetFeed(feedWithCa("nope"))).toBe(false);
+    expect(isFleetFeed(feedWithCa(42))).toBe(false);
+    expect(isFleetFeed(feedWithCa(null))).toBe(false);
+  });
+
+  test("isUnmatchedCharge pins exactly the fields the live source dereferences", () => {
+    expect(isUnmatchedCharge(UNMATCHED)).toBe(true);
+    expect(isUnmatchedCharge(null)).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, merchant: 42 })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: "42.50" })).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, amountUsd: Number.NaN })).toBe(false);
+    const noAmount = { ...UNMATCHED } as Record<string, unknown>;
+    delete noAmount.amountUsd;
+    expect(isUnmatchedCharge(noAmount)).toBe(false);
+    expect(isUnmatchedCharge({ ...UNMATCHED, at: 20261030 })).toBe(false);
+    // source/normalized are tolerated in any form (consumer never dereferences them unsafely)
+    expect(isUnmatchedCharge({ merchant: "X", amountUsd: 1, at: "2026-10-30" })).toBe(true);
+  });
+
+  test("loadFeed drops malformed entries individually and surfaces the count", async () => {
+    const loaded = await loadFrom(feedWithCa([null, UNMATCHED, { ...UNMATCHED, amountUsd: "42.50" }, { merchant: "No Amount Co", at: "2026-10-30" }]));
+    expect(loaded).not.toBeNull();
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBe(3);
+  });
+
+  test("loadFeed returns null for a non-array chargesAttention (fixture-fallback path)", async () => {
+    expect(await loadFrom(feedWithCa("nope"))).toBeNull();
+  });
+
+  test("a well-formed chargesAttention passes loadFeed unchanged, with no dropped field", async () => {
+    const loaded = await loadFrom(feedWithCa([UNMATCHED]));
+    expect(loaded?.chargesAttention).toEqual([UNMATCHED]);
+    expect(loaded?.chargesAttentionDropped).toBeUndefined();
   });
 });

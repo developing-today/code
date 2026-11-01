@@ -41,6 +41,10 @@ export interface FleetFeed {
   /** Element drops loadFeed's quota sanitization made (#2429), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
   quotaDropped?: { pools: number; windows: number; burn: number };
+  /** Element drops loadFeed's chargesAttention sanitization made
+   * (#2439), set only when at least one entry dropped; absent on raw
+   * parsed feeds and on feeds whose entries all survived. */
+  chargesAttentionDropped?: number;
   /** Subscription rows loadFeed's sanitization dropped (#2446), set
    * only when at least one row (or a non-array section) was dropped;
    * absent on raw parsed feeds and on clean loads. */
@@ -334,6 +338,17 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
   );
 }
 
+/** One unmatched-charge entry as the live source dereferences it
+ * (#2439): merchant and at are interpolated, amountUsd is formatted
+ * with toFixed and used as a severity, so those three must be a
+ * string, a finite number, and a string. normalized/source are not
+ * gate-required: the consumer tolerates any source value and never
+ * dereferences normalized. */
+export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
+  if (!isRecord(v)) return false;
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+}
+
 /** The choices block renderQuota dereferences (hasHeadroom et al.). */
 function isQuotaChoices(v: unknown): boolean {
   if (!isRecord(v)) return false;
@@ -416,7 +431,13 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
     // feeds, rather than crashing /quota.
     Array.isArray(q.burn) &&
     isQuotaChoices(q.choices) &&
-    Array.isArray(f.attention)
+    Array.isArray(f.attention) &&
+    // chargesAttention is optional, but a present non-array value is
+    // a shape failure, not data (#2439): the live source maps it
+    // unguarded, so — like burn/choices above — the feed is rejected
+    // whole. Malformed ELEMENTS inside an array are loadFeed's
+    // drop-and-count concern, not the gate's.
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
   );
 }
 
@@ -461,11 +482,18 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // sees only renderer-safe pools/windows (#2429). Drop counts are
     // attached to the feed so they are visible, not swallowed.
     const san = sanitizeQuotaView(parsed.quota);
+    // Same drop-and-count treatment for chargesAttention elements
+    // (#2439): the gate has already pinned the section to array-or-
+    // absent, so arrayOf cannot return null here; malformed entries
+    // drop individually and well-formed siblings still surface.
+    const charges = parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
     return {
       ...parsed,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      ...(charges ? { chargesAttention: charges.values } : {}),
+      ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
     };
