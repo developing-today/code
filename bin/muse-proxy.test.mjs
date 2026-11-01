@@ -77,6 +77,7 @@ if (args[0] === 'serve') {
         reply({ session: { sessionId: msg.params.sessionId } });
       } else if (msg.method === 'turn/start') {
         const text = (msg.params.input || []).map(p => p.text || '').join('');
+        if (text.includes('KILLHOST')) { log('KILLED ' + text); process.kill(process.pid, 'SIGKILL'); }
         log('TURN ' + text);
         const sid = msg.params.sessionId;
         const turnId = msg.params.commandId;
@@ -368,6 +369,31 @@ test('warm serve path: streaming turn streams the MSP deltas (#480)', async (t) 
   }));
   assert.equal(content, 'RE:alpha one');
   assert.equal(finish, 'stop');
+});
+
+test('warm host killed mid-turn degrades to a successful cold exec request (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const turn1 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'alpha one' }]
+  }));
+  assert.equal(turn1.choices[0].message.content, 'RE:alpha one', 'turn 1 must be served warm');
+  // Turn 2's new message kills the warm serve host mid-turn (before any
+  // delta is committed); the request must degrade to the cold exec path
+  // and still answer, not surface a client-visible error (#480 spike
+  // criterion 4).
+  const turn2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [
+      { role: 'user', content: 'alpha one' },
+      { role: 'assistant', content: 'RE:alpha one' },
+      { role: 'user', content: 'KILLHOST now' }
+    ]
+  }));
+  assert.equal(turn2.choices[0].message.content, 'Hello world', 'exec stub answer proves the cold fallback ran after the warm host died');
+  const log = fs.readFileSync(logFile, 'utf-8');
+  assert.match(log, /KILLED KILLHOST now/, 'the warm host must actually have been killed mid-turn');
 });
 
 test('warm serve failure falls back to the exec path (#480)', async (t) => {
