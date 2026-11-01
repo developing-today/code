@@ -458,3 +458,30 @@ proptest! {
         prop_assert_eq!(run(&reordered, max_age_ms)?, drawn);
     }
 }
+
+/// The event store's path (#1730): holds go through `restore`, releases
+/// through `release`. Releasing any number of applied keys must leave the
+/// pool's retained state exactly as it was — the pool used to record every
+/// released key in its arrived set forever (+37 MB per 2M arrivals in a
+/// pool reporting itself empty). Held events aside, pool state after N
+/// releases is independent of N.
+#[test]
+fn store_path_releases_do_not_grow_the_pool() {
+    let mut pool: WaitingPool<u32, u32> = WaitingPool::new(WaitingLimits::default());
+    // One held event waiting on key 9, restored the way the store holds.
+    pool.restore(author_key(1), 1_000_000, [9], 1, 0).unwrap();
+    assert_eq!(pool.len(), 1);
+    // A long stream of applied events, none of them key 9.
+    for key in (0..10_000u32).filter(|key| *key != 9) {
+        assert!(pool.release(key, 0).is_empty());
+    }
+    assert_eq!(pool.len(), 1, "releases retained state in the pool");
+    // The one real dependency still releases the held event...
+    assert_eq!(pool.release(9, 0), vec![1]);
+    assert!(pool.is_empty());
+    // ...and none of the released keys was recorded as arrived: a later
+    // insert depending on one still waits for it.
+    pool.insert(author_key(1), 1_000_001, [5], 2, 0).unwrap();
+    assert!(pool.take_ready().is_empty());
+    assert_eq!(pool.len(), 1);
+}
