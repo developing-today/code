@@ -1293,6 +1293,46 @@ func TestEffectiveSchemaPinnedDraft07RootRefKeepsDefinitions(t *testing.T) {
 // (2020-12, where `dependencies` is not a keyword), so the
 // advertised schema accepts calls runtime enforcement of the
 // original draft-07 rule rejects.
+// Codex P2 on PR #2976: the modern-dialect conjunction path must
+// hoist the legacy definitions container alongside $defs. A rule in
+// the 2020-12 dialect whose root reference target reaches a second
+// definition by document-absolute pointer ("#/definitions/options")
+// projects into a document with no root definitions when the
+// container stays inside the allOf member, so the advertised schema
+// fails reference resolution even though the rule is valid.
+func TestEffectiveSchemaPinnedModernRootRefHoistsDefinitions(t *testing.T) {
+	rule := `{"$schema":"https://json-schema.org/draft/2020-12/schema","definitions":{"need":{"required":["tailnet"],"properties":{"options":{"$ref":"#/definitions/options"}}},"options":{"type":"string"}},"$ref":"#/definitions/need","required":["limit"]}`
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"limit":{"type":"number"},"options":{"type":"string"},"tailnet":{"type":"string"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("effective schema does not compile: %v (%s)", err, eff)
+	}
+	for _, tc := range []struct {
+		inst  string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+		{`{"limit":1,"options":"x"}`, true},
+		{`{"limit":1,"options":1}`, false},
+	} {
+		dec, err := schemaval.DecodeInstance(json.RawMessage(tc.inst))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(dec) == nil; got != tc.valid {
+			t.Errorf("instance %s: advertised-valid = %v, want %v (schema %s)", tc.inst, got, tc.valid, eff)
+		}
+	}
+}
+
 func TestEffectiveSchemaPinnedDraft07RootRefKeepsDialect(t *testing.T) {
 	rule := `{"$schema":"http://json-schema.org/draft-07/schema#","definitions":{"need":{"required":["tailnet"],"dependencies":{"limit":["cursor"]}}},"$ref":"#/definitions/need"}`
 	set, err := CompileArgumentRules([]ArgumentRuleSource{

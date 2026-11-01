@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -514,10 +515,22 @@ type schemaProjector struct {
 }
 
 func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
+	removed := 0
 	if props, ok := m["properties"].(map[string]any); ok {
+		seen := map[string]bool{}
 		for _, h := range p.hide {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			if _, present := props[h]; present {
+				removed++
+			}
 			delete(props, h)
 		}
+	}
+	if removed > 0 {
+		adjustPropertyCounts(m, removed)
 	}
 	if req, ok := m["required"].([]any); ok {
 		kept := req[:0]
@@ -577,6 +590,39 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 				p.hidePropsAtScope(copy)
 			}
 		}
+	}
+}
+
+// adjustPropertyCounts projects minProperties/maxProperties at one
+// scope after removed hidden properties were deleted from it. The
+// pins supply those properties on every call -- they merge before
+// forwarding -- so the merged instance always carries removed more
+// properties than the caller supplied. Counting constraints left
+// unadjusted count caller arguments instead: minProperties:1 over a
+// sole pinned property advertises a schema no caller can satisfy
+// even though {} succeeds once the pin merges (Codex P2 on
+// PR #2976). A min that reaches zero is no constraint and is
+// dropped; a max floors at zero (the pin alone already exceeds a
+// smaller upstream max, which no advertised count can express).
+func adjustPropertyCounts(m map[string]any, removed int) {
+	for _, key := range []string{"minProperties", "maxProperties"} {
+		num, ok := m[key].(json.Number)
+		if !ok {
+			continue
+		}
+		n, err := num.Int64()
+		if err != nil {
+			continue
+		}
+		n -= int64(removed)
+		if key == "minProperties" && n <= 0 {
+			delete(m, key)
+			continue
+		}
+		if n < 0 {
+			n = 0
+		}
+		m[key] = json.Number(strconv.FormatInt(n, 10))
 	}
 }
 

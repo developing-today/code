@@ -355,6 +355,38 @@ func TestHideSchemaPropsSharedRefPreservesNestedConstraints(t *testing.T) {
 	}
 }
 
+// Codex P2 on PR #2976: hiding a pinned property must project the
+// scope's property-count constraints too. minProperties/maxProperties
+// count the merged instance (the pin merges before forwarding), so
+// left unadjusted they count caller arguments instead: a schema
+// whose only property is the pinned one, with minProperties:1 and
+// additionalProperties:false, advertises a schema no caller can
+// satisfy even though {} succeeds upstream once the pin is inserted.
+func TestHideSchemaPropsAdjustsPropertyCounts(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"}},"required":["tailnet"],"minProperties":1,"maxProperties":1}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	if strings.Contains(string(out), `"minProperties":1`) || strings.Contains(string(out), `"maxProperties":1`) {
+		t.Errorf("property counts must drop by the hidden pinned property: %s", out)
+	}
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("empty caller args must validate once the pin merges: %v (%s)", err, out)
+	}
+	if err := compiled.ValidateJSON(json.RawMessage(`{"other":1}`)); err == nil {
+		t.Fatal("undeclared caller properties must stay rejected")
+	}
+
+	// Partial hide: counts drop by exactly the number removed.
+	schema = json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"minProperties":2,"maxProperties":3}`)
+	out = hideSchemaProps(schema, []string{"tailnet"})
+	if !strings.Contains(string(out), `"minProperties":1`) || !strings.Contains(string(out), `"maxProperties":2`) {
+		t.Errorf("counts must drop by one for one hidden property: %s", out)
+	}
+}
+
 func TestHideSchemaPropsProjectsAllOfRequirements(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"required":["limit"],"allOf":[{"required":["tailnet","limit"]}]}`)
 	out := hideSchemaProps(schema, []string{"tailnet"})

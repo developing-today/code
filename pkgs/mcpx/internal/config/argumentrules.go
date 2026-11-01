@@ -854,8 +854,13 @@ func stripPinnedRequirements(v any, pinned map[string]any) any {
 // its sibling schema as conjuncts under allOf. $defs is inert without
 // a reference and other schemas may still point into it by
 // document-absolute pointer, so it stays at the level where the
-// reference sat rather than inside the conjunction. With no sibling
-// constraints left, the target alone is the projection.
+// reference sat rather than inside the conjunction. The legacy
+// definitions container rides along the same way: a modern-dialect
+// rule may still declare one, and a reference like
+// "#/definitions/options" is document-absolute wherever it sits --
+// leaving the container inside the allOf member strands every such
+// reference (Codex P2 on PR #2976). With no sibling constraints
+// left, the target alone is the projection.
 func conjoinRefProjection(target, siblings any) any {
 	sm, ok := siblings.(map[string]any)
 	if !ok {
@@ -863,11 +868,20 @@ func conjoinRefProjection(target, siblings any) any {
 	}
 	defs, hasDefs := sm["$defs"]
 	delete(sm, "$defs")
+	legacy, hasLegacy := sm["definitions"]
+	delete(sm, "definitions")
 	tm, tok := target.(map[string]any)
 	if len(sm) == 0 {
-		if hasDefs && tok {
-			if _, clash := tm["$defs"]; !clash {
-				tm["$defs"] = defs
+		if tok {
+			if hasDefs {
+				if _, clash := tm["$defs"]; !clash {
+					tm["$defs"] = defs
+				}
+			}
+			if hasLegacy {
+				if _, clash := tm["definitions"]; !clash {
+					tm["definitions"] = legacy
+				}
 			}
 		}
 		return target
@@ -875,6 +889,9 @@ func conjoinRefProjection(target, siblings any) any {
 	out := map[string]any{"allOf": []any{target, sm}}
 	if hasDefs {
 		out["$defs"] = defs
+	}
+	if hasLegacy {
+		out["definitions"] = legacy
 	}
 	return out
 }
