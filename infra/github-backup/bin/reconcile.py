@@ -21,6 +21,25 @@ from ghb_common import load_config, backup_root, inventory, build_plan, valid_mi
 import manifest as manifest_mod
 
 
+def _dependency_order(plan):
+    """Order a merged plan the way build_plan does: parents (anchors)
+    before their members, then by repo name."""
+    by_repo = {p["repo"]: p for p in plan}
+
+    def depth(item):
+        n, cur, guard = 0, item, set()
+        while True:
+            p = cur.get("parent")
+            if p and p in by_repo and p not in guard:
+                guard.add(p)
+                n += 1
+                cur = by_repo[p]
+            else:
+                return n
+
+    return sorted(plan, key=lambda it: (depth(it), it["repo"]))
+
+
 def main():
     cfg = load_config()
     root = backup_root(cfg)
@@ -29,9 +48,26 @@ def main():
     plan, excluded, gaps, pending, skipped_empty = build_plan(repos, cfg)
     today = time.strftime("%Y-%m-%d")
     old_plan_path = os.path.join(root, "plan.json")
-    old = []
+    old_items = []
     if os.path.exists(old_plan_path):
-        old = [p["repo"] for p in json.load(open(old_plan_path))]
+        old_items = json.load(open(old_plan_path))
+    old = [p["repo"] for p in old_items]
+    # Last-known-good (#3229): an owner whose inventory FAILED (null
+    # repositoryOwner, SAML-blocked, gh error, ...) keeps its previously
+    # planned entries in the new plan. Without this, one invisible owner
+    # would silently drop out of plan.json and MANIFEST.json while the
+    # run still exits on the error path alone. Owners that inventoried
+    # successfully are unaffected: their drops are real.
+    retained = []
+    if errors:
+        planned_repos = {p["repo"] for p in plan}
+        for item in old_items:
+            if item["repo"].split("/")[0] in errors \
+                    and item["repo"] not in planned_repos:
+                plan.append(item)
+                retained.append(item["repo"])
+        if retained:
+            plan = _dependency_order(plan)
     new = [p["repo"] for p in plan]
     added = sorted(set(new) - set(old))
     removed = sorted(set(old) - set(new))
@@ -49,6 +85,13 @@ def main():
         for o, e in errors.items():
             lines.append(f"- {o}: {e}")
         lines.append("")
+    if retained:
+        lines.append("## plan entries retained for failed owners (last-known-good)")
+        lines.append(f"- {len(retained)} previously planned repos kept in "
+                     f"plan.json + MANIFEST.json because their owner's "
+                     f"inventory failed; their mirrors stay covered until "
+                     f"the owner inventories cleanly again:")
+        lines += [f"- {r}" for r in sorted(retained)] + [""]
     if added:
         lines.append("## newly planned")
         lines += [f"- {r}" for r in added] + [""]
