@@ -367,7 +367,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	if n >= 2 && chars[0] == '#' && chars[1] == '!' {
 		scanStart = n
 		for j := 0; j < n; j++ {
-			if chars[j] == '\n' {
+			if isLineTerminator(chars[j]) {
 				scanStart = j
 				break
 			}
@@ -556,8 +556,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 		}
 
-		if ch == '\n' {
-			line++
+		if isLineTerminator(ch) {
+			// Every JavaScript line terminator (LF, CR, CRLF, LS,
+			// PS) is a line break for ASI and comment termination,
+			// not just LF: a lone CR between 'async' and 'function'
+			// separates them the same way (Codex P2 on #3354).
+			// CRLF counts once: the CR defers the increment to
+			// its LF.
+			if ch != '\r' || i+1 >= n || chars[i+1] != '\n' {
+				line++
+			}
 			lineBreakPending = true
 			if inSingleLineComment && lineCommentStart >= 0 {
 				// Record the line comment's range alongside the
@@ -565,7 +573,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// skip it the same way, or a digit at the end
 				// of a line comment (f // 1\n<number>) is
 				// mistaken for the preceding token (Codex P2
-				// on #3354). A trailing '\r' is the CRLF
+				// on #3354). The range ends at the terminator
+				// that closed the comment; for an LF-closed
+				// comment a trailing '\r' is the CRLF
 				// terminator, not comment text.
 				end := i
 				if end > lineCommentStart && chars[end-1] == '\r' {
@@ -1354,6 +1364,16 @@ func isIdentChar(ch rune) bool {
 		ch == '\u200c' || ch == '\u200d'
 }
 
+// isLineTerminator reports whether ch is a JavaScript line
+// terminator: LF, CR, U+2028 (line separator), or U+2029
+// (paragraph separator). CRLF is a single terminator made of the
+// first two. The scan loop's terminator branch handles all four;
+// treating only LF as a break left CR/LS/PS invisible to ASI
+// classification (Codex P2 on #3354).
+func isLineTerminator(ch rune) bool {
+	return ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029'
+}
+
 // isJSWhitespace reports whether ch is in the ECMAScript WhiteSpace
 // or LineTerminator set other than '\n' (handled separately at the
 // top of the scan loop): space, tab, carriage return, vertical tab,
@@ -1441,7 +1461,7 @@ func nextSignificant(chars []rune, from int) rune {
 			continue
 		}
 		if c == '/' && j+1 < n && chars[j+1] == '/' {
-			for j < n && chars[j] != '\n' {
+			for j < n && !isLineTerminator(chars[j]) {
 				j++
 			}
 			continue
@@ -1516,7 +1536,15 @@ func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool
 				hi = mid
 			}
 		}
-		if lo < len(comments) && comments[lo].end == end {
+		// The match is containment, not just an exact end: the
+		// whitespace strip above can move end INSIDE a comment
+		// whose text ends in spaces or tabs (f // 1   \n<number>),
+		// and an exact-end lookup then misses the range and reads
+		// the comment's trailing digit as the previous token
+		// (Codex P2 on #3354). Ranges are disjoint and sorted, so
+		// the first range ending at or after end is the only one
+		// that can contain it.
+		if lo < len(comments) && comments[lo].start < end && end <= comments[lo].end {
 			end = comments[lo].start
 			skippedComment = true
 		}
