@@ -115,6 +115,14 @@
   // provider; both older definitions stay FULL below per the
   // switchboard rule, and the routes' Meta leaves were retargeted to
   // muse-direct contributor models in the same pass.
+  // 2026-10-31 (Drew, direct order): "commandcode" joins the list.
+  // Its credits are exhausted (about ten cents left, expired the morning
+  // of 2026-10-31) and an empty pool must not run: sessions were
+  // still being routed onto its leaves (deepseek-flash-plan,
+  // spark-plan, sol-plan, beam-plan, mimo-flash-plan, scout) and
+  // retry-looping on "insufficient credits". Per the switchboard
+  // rule the definition and every seat stay in place; deleting
+  // this line re-enables Command Code if it is ever refilled.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -138,7 +146,8 @@
     "meta",
     "muse",
     "antigravity-ls",
-    "antigravity-agy"
+    "antigravity-agy",
+    "commandcode"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -6633,9 +6642,14 @@
         // every other door in this pool (openai, openai.alternate,
         // opendesign) at half of 5.6's reference rates, so the pool
         // now serves one Luna generation on every door.
+        // 2026-10-31 (Drew): within the ChatGPT pair, alternate
+        // (popesdrew) seats ahead of main (drewrypope) - target order
+        // swapped and alternate weighted 1.5 vs main's default 1 - so
+        // alternate's quota burns first and main is the pair's reserve.
+        // The Go burn-by-expiry weights (3/2) above are untouched.
         "targets": [
-          "openai/gpt-6-luna",
           "openai.alternate/gpt-6-luna",
+          "openai/gpt-6-luna",
           {
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
@@ -6648,7 +6662,8 @@
         "autonomy": "rules",
         "weights": {
           "opencode-go.personal/gpt-6-luna": 3,
-          "opencode-go.lab/gpt-6-luna": 2
+          "opencode-go.lab/gpt-6-luna": 2,
+          "openai.alternate/gpt-6-luna": 1.5
         }
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
@@ -6799,9 +6814,13 @@
         // Code (gpt-6.1-sol verified in the LIVE :18748 /v1/models
         // list, 85 ids, 2026-10-28 — the running bridge trails the
         // source catalog but does serve Sol).
+        // 2026-10-31 (Drew): alternate (popesdrew) seats FIRST in the
+        // ChatGPT pair (target order + weights 2:1 over main) -
+        // alternate's quota burns before main's; main (drewrypope)
+        // is the reserve door.
         "targets": [
-          "openai/gpt-6.1-sol",
           "openai.alternate/gpt-6.1-sol",
+          "openai/gpt-6.1-sol",
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
@@ -6809,7 +6828,11 @@
           "commandcode/gpt-6.1-sol"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "openai.alternate/gpt-6.1-sol": 2,
+          "openai/gpt-6.1-sol": 1
+        }
       },
       "terra-plan": {
         "name": "GPT Terra - plan providers",
@@ -6831,12 +6854,21 @@
         // door structure: the openai provider + openai.alternate (which resolves
         // Terra through the fork's refreshed built-in catalog, PR opencode#563).
         // The codex-door entries added in #1296 stay in their catalogs.
+        // 2026-10-31 (Drew): alternate (popesdrew) seats FIRST in the
+        // Codex pair (target order + weights 2:1 over main). This pool
+        // is workhorse's primary seat, so this is the burn order that
+        // matters most: alternate's quota burns before main's
+        // (drewrypope), which is the reserve door.
         "targets": [
-          "openai/gpt-6.1-terra",
-          "openai.alternate/gpt-6.1-terra"
+          "openai.alternate/gpt-6.1-terra",
+          "openai/gpt-6.1-terra"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "openai.alternate/gpt-6.1-terra": 2,
+          "openai/gpt-6.1-terra": 1
+        }
       },
       "argon-plan": {
         "name": "Gemini Argon - plan providers",
