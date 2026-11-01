@@ -350,6 +350,7 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
   return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+}
 
 /** One charges-evidence row as the /quota charges strip renders it
  * (#2445): a record with string at/label/method/source and a
