@@ -140,7 +140,18 @@ func TestSupervisedPumpDetachReattach(t *testing.T) {
 	if err := tr1.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	tr2, err := mcpclient.NewSupervised(opts)
+
+	// The supervisor processes the detach asynchronously (io.Copy sees EOF,
+	// then it acquires the lock and clears the attached state).
+	var tr2 *mcpclient.SupervisedTransport
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tr2, err = mcpclient.NewSupervised(opts)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		t.Fatalf("attach 2: %v", err)
 	}
