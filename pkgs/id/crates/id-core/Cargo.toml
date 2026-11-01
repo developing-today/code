@@ -11,6 +11,7 @@ default = ["world", "sandbox"]
 world = []
 sandbox = []
 web = ["dep:qrcode"]
+test-utils = []
 
 [dependencies]
 anyhow = "1"
