@@ -64,8 +64,22 @@ type Backend interface {
 	// Complete answers completion/complete for a ref/prompt or ref/resource
 	// by asking the upstream server that owns it. params is the request as
 	// the client sent it. An unknown ref wraps ErrInvalidParams.
-	Complete(ctx context.Context, params json.RawMessage) ([]string, error)
+	Complete(ctx context.Context, params json.RawMessage) (Completion, error)
 	ResourceTemplates(ctx context.Context) ([]ResourceRef, error)
+}
+
+// Completion is a completion/complete answer: the values, plus the
+// full ranked match count they were drawn from when the backend knows
+// it. The daemon caps its /v1/complete reply before the MCP surface
+// sees it (#2878), so a backend that only handed over values would
+// make this surface report total = len(values) and hasMore = false
+// for a reply the daemon had already truncated from a larger set.
+// TotalKnown is false when the backend has no count (a direct
+// upstream answer): the caller then uses len(values) as before.
+type Completion struct {
+	Values     []string
+	Total      int
+	TotalKnown bool
 }
 
 // Notifier is where the server hears about things worth pushing.
@@ -2757,6 +2771,7 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			Message: `ref.type is "ref/prompt" or "ref/resource", got "` + p.Ref.Type + `"`}
 	}
 	var values []string
+	total := -1 // the backend's full match count, when it reported one
 	if s.backend != nil {
 		got, err := s.backend.Complete(ctx, params)
 		if err != nil {
@@ -2766,7 +2781,10 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 			}
 			return nil, &rpcError{Code: code, Message: err.Error()}
 		}
-		values = got
+		values = got.Values
+		if got.TotalKnown {
+			total = got.Total
+		}
 	}
 	// The ceiling the specification sets. Read per request, because
 	// completion.maxValues is a hot setting: a value read once when the
@@ -2781,7 +2799,9 @@ func (s *Server) complete(ctx context.Context, params json.RawMessage) (map[stri
 	// revision's CompleteResult allows. The cap computation is shared
 	// with the daemon surface via settings (#2878).
 	max = settings.EffectiveCompletionCap(max)
-	total := len(values)
+	if total < 0 {
+		total = len(values)
+	}
 	if len(values) > max {
 		values = values[:max]
 	}
