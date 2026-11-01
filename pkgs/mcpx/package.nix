@@ -64,7 +64,7 @@ buildGo127Module {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-B962TunDKasBWH+RXqvjwRRkKwUC1MtDkBEwFkWlhxA=";
+  vendorHash = lib.fakeHash;
 
   subPackages = [ "cmd/mcpx" ];
 
