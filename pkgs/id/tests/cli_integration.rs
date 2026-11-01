@@ -552,6 +552,33 @@ mod list_tests {
             }
         }
     }
+
+    #[test]
+    fn test_list_quotes_control_characters_in_names() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-control.txt");
+        fs::write(&test_file, b"Control character list test").unwrap();
+
+        let name = "unsafe\nforged\tcolumn";
+        let put_spec = format!("{}:{name}", test_file.display());
+        run_cmd_success(&["put", &put_spec], tmp.path());
+
+        let output = run_cmd_success_stdout(&["list"], tmp.path());
+        let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the stored name must not forge another row: {output:?}"
+        );
+        let fields: Vec<_> = rows[0].split('\t').collect();
+        assert_eq!(
+            fields.len(),
+            2,
+            "the stored name must not forge a column: {output:?}"
+        );
+        assert_eq!(fields[0].len(), 64);
+        assert_eq!(fields[1], r#""unsafe\nforged\tcolumn""#);
+    }
 }
 
 mod find_search_tests {
