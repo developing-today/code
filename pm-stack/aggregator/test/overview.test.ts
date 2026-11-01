@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import { deriveOverview, renderOverview, renderOverviewBody, type OverviewData } from "../src/render.ts";
 import type { HealthView } from "../src/health.ts";
+import type { GhItem, OrchestrationSection, RefKey } from "../src/model.ts";
 
 // #1134: "/" is the aggregator front door. The overview's numbers are
 // derived from the same views the dedicated pages render, so these
@@ -155,10 +156,11 @@ describe("overview front door (#1134)", () => {
     expect(summary.quota).toEqual([{ provider: "Meta", plan: "High Usage", state: "near", worstPercent: 80 }]);
   });
 
-  test("recently-done is recency-ordered; in-progress comes from the board", () => {
+  test("recently-done is recency-ordered; the reconciled set does not treat any board card as a session", () => {
     const summary = deriveOverview(data);
     expect(summary.recentDone.map((i) => i.title)).toEqual(["Shipped thing", "Older done thing"]);
-    expect(summary.inProgress.map((i) => i.title)).toEqual(["Moving thing"]);
+    expect(summary.inProgress.map((i) => i.title)).toEqual(["One"]);
+    expect(summary.inProgress[0]?.signals).toEqual(["project-status"]);
   });
 
   test("rendered overview carries every section and links the board at /board", () => {
@@ -183,6 +185,94 @@ describe("overview front door (#1134)", () => {
     expect(html).toContain("Shipped thing");
     expect(html).toContain('href="/board"');
     expect(html).not.toContain("Cross-repo WIP board</h1>");
+  });
+});
+
+describe("overview reconciled in-progress set (#1162)", () => {
+  const issueRef = "developing-today/code#4";
+  const prRef = "developing-today/code#8";
+  const openPr: GhItem = {
+    ref: prRef,
+    kind: "pr",
+    url: "https://github.com/developing-today/code/pull/8",
+    title: "PR eight",
+    state: "open",
+    labels: [],
+    author: "agent",
+    updatedAt: "2026-10-29T00:00:00Z",
+  };
+  const reconciled: OverviewData = {
+    ...data,
+    pool: [
+      ...data.pool,
+      {
+        id: "PVTI_4",
+        url: "https://example.invalid/4/project",
+        projectUrl: "https://example.invalid/project",
+        ref: issueRef,
+        repo: "developing-today/code",
+        number: 4,
+        issueUrl: "https://github.com/developing-today/code/issues/4",
+        title: "Four",
+        state: "open",
+        contentKind: "issue",
+        status: "Todo",
+        area: null,
+        horizon: null,
+        kind: "Task",
+      },
+    ],
+    board: [
+      {
+        id: "gh:developing-today/code#8",
+        title: "PR eight",
+        repo: "developing-today/code",
+        source: "github",
+        status: "in-review",
+        links: [
+          { ref: issueRef, relation: "implements" },
+          { ref: prRef, relation: "implements" },
+        ],
+      },
+    ],
+    items: new Map<RefKey, GhItem>([[prRef, openPr]]),
+    orchestration: {
+      version: 1,
+      generatedAt: "2026-10-29T00:00:00Z",
+      runId: "orch-test",
+      provenance: { sources: [] },
+      tiers: { needsDrew: [], needsOrchestrator: [] },
+      dependencies: [],
+      goals: [{
+        goalId: null,
+        goal: "test goal",
+        momentum: "moving",
+        summary: "test",
+        linedUp: [{ title: "Four", ref: issueRef, status: "in-progress", horizon: "today", horizonWhy: "test" }],
+        progressedSinceLastRun: [],
+        stalled: [],
+        gaps: [],
+      }],
+      actions: [],
+    } as OrchestrationSection,
+  };
+
+  test("unions Project, active-session, and open-PR signals and publishes disagreements", () => {
+    const summary = deriveOverview(reconciled);
+    const byRef = new Map(summary.inProgress.map((item) => [item.ref, item]));
+    expect(byRef.get("developing-today/code#1")?.signals).toEqual(["project-status"]);
+    expect(byRef.get(issueRef)?.signals).toEqual(["active-session", "open-pr"]);
+    expect(byRef.get(prRef)?.signals).toEqual(["open-pr"]);
+    expect(byRef.get(issueRef)?.disagreement).toEqual({ project: "Todo", derived: "In Progress" });
+    expect(JSON.stringify(summary)).toContain('"signals":["active-session","open-pr"]');
+  });
+
+  test("overview renders the same set and uses the /projects disagreement badge", () => {
+    const html = renderOverviewBody(deriveOverview(reconciled));
+    expect(html).toContain("Four");
+    expect(html).toContain("Active session");
+    expect(html).toContain("Open PR");
+    expect(html).toContain("⚠ project: Todo · derived: In Progress");
   });
 });
 
@@ -264,7 +354,7 @@ describe("overview Codex fixes (PR 2424 review)", () => {
       source: "orchestrator" as const,
       status: "in-flight",
       orchStatus: "blocked",
-      links: [],
+      links: [{ ref: `developing-today/code#${80 + i}`, relation: "tracks" as const }],
     }));
     const running = {
       id: "orch:running",
@@ -273,9 +363,9 @@ describe("overview Codex fixes (PR 2424 review)", () => {
       source: "orchestrator" as const,
       status: "in-flight",
       orchStatus: "in-progress",
-      links: [],
+      links: [{ ref: "developing-today/code#99", relation: "tracks" as const }],
     };
     const summary = deriveOverview({ ...data, board: [...blocked, running] });
-    expect(summary.inProgress.map((i) => i.title)).toEqual(["Running thing"]);
+    expect(summary.inProgress.map((i) => i.title)).toEqual(["One", "Running thing"]);
   });
 });
