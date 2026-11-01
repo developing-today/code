@@ -488,6 +488,23 @@ afterAll(() => {
 });
 
 describe("slice-3 routes", () => {
+  test("global search HTML and JSON share ref/title matching", async () => {
+    const q = encodeURIComponent("developing-today/code#902");
+    const data = (await (await fetch(`http://127.0.0.1:${port}/api/search.json?q=${q}`)).json()) as {
+      query: string;
+      total: number;
+      results: { title: string; refs: string[] }[];
+    };
+    expect(data.query).toBe("developing-today/code#902");
+    expect(data.total).toBeGreaterThan(0);
+    expect(data.results.some((result) => result.refs.includes("developing-today/code#902"))).toBe(true);
+
+    const html = await (await fetch(`http://127.0.0.1:${port}/search?q=${q}`)).text();
+    expect(html).toContain("Search board and roadmap work");
+    expect(html).toContain("developing-today/code#902");
+    expect(html).toContain("items · fixtures");
+  });
+
   test("dns + sessions + pages routes serve", async () => {
     const dns = await (await fetch(`http://127.0.0.1:${port}/dns`)).text();
     expect(dns).toContain("DNS / domain register");
