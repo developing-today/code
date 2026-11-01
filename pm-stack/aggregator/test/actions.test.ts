@@ -77,6 +77,72 @@ describe("dashboard actions store", () => {
     expect((await store.pendingCounts()).triage).toBe(1); // only the first test's ack remains new… see below
   });
 
+  test("answer question slots dedupe option and survey submissions with an audit pointer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agg-answer-dedupe-"));
+    const store = new ActionsStore(join(dir, "actions.json"));
+    const objectRef = "orch:shared-question";
+
+    const option = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { optionId: "yes", questionId: "q1" } }),
+    );
+    const otherQuestion = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q2", value: "notes" }] } }),
+    );
+    expect(otherQuestion.action.state).toBe("new");
+
+    const surveyDuplicate = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q1", value: "no" }] } }),
+    );
+    expect(surveyDuplicate.action.state).toBe("rejected");
+    expect(surveyDuplicate.duplicateOf).toBe(option.action.id);
+    expect(surveyDuplicate.action.duplicateOf).toBe(option.action.id);
+    expect(surveyDuplicate.action.resultNote).toContain(option.action.id);
+
+    await store.markResult(option.action.id, { outcome: "rejected", byRun: "orch-test", note: "not applied" });
+    const retryAfterReject = await store.add(
+      newAction({ verb: "answer", objectRef, payload: { answers: [{ questionId: "q1", value: "no" }] } }),
+    );
+    expect(retryAfterReject.action.state).toBe("new");
+
+    const structuredFirst = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:structured-first",
+        payload: { answers: [{ questionId: "q3", value: "yes" }] },
+      }),
+    );
+    const optionSecond = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:structured-first",
+        payload: { optionId: "yes", questionId: "q3" },
+      }),
+    );
+    expect(optionSecond.duplicateOf).toBe(structuredFirst.action.id);
+
+    const applied = await store.add(
+      newAction({
+        verb: "answer",
+        objectRef: "orch:applied",
+        payload: { answers: [{ questionId: "q4", value: "yes" }] },
+      }),
+    );
+    await store.markResult(applied.action.id, { outcome: "applied", byRun: "orch-test" });
+    const appliedDuplicate = await store.add(
+      newAction({ verb: "answer", objectRef: "orch:applied", payload: { optionId: "no", questionId: "q4" } }),
+    );
+    expect(appliedDuplicate.duplicateOf).toBe(applied.action.id);
+
+    const concurrent = await Promise.all([
+      store.add(newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { optionId: "yes", questionId: "q5" } })),
+      store.add(
+        newAction({ verb: "answer", objectRef: "orch:concurrent", payload: { answers: [{ questionId: "q5", value: "yes" }] } }),
+      ),
+    ]);
+    expect(concurrent.filter((result) => result.action.state === "new")).toHaveLength(1);
+    expect(concurrent.filter((result) => result.duplicateOf)).toHaveLength(1);
+  });
+
   test("supersede transitions a still-new action; applied history stands", async () => {
     const store = new ActionsStore(file);
     const snooze = await store.add(
@@ -100,6 +166,23 @@ describe("dashboard actions store", () => {
         "snooze",
       )?.id,
     ).toBe(unsnooze.action.id);
+  });
+
+  test("cardState exposes option answers under their canonical question id", () => {
+    const action: DashAction = {
+      id: "da-option-q1",
+      clientToken: "ct-option-q1-abcdefgh",
+      kind: "triage",
+      verb: "answer",
+      objectRef: "orch:item-q1",
+      payload: { optionId: "yes", questionId: "q1" },
+      author: drew,
+      createdAt: iso(NOW),
+      state: "new",
+    };
+    const state = cardState([action], NOW);
+    expect(state.answered.get("q1")).toBe("yes");
+    expect(state.answerActionsByQuestion.get("q1")).toBe(action);
   });
 
   test("drops malformed payload records on load and cardState ignores malformed answer shapes", async () => {
@@ -579,6 +662,30 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
       ).status,
     ).toBe(400);
     expect((await post("/api/actions", { ...body, clientToken: "ct-http-bad-2", author: undefined })).status).toBe(400);
+  });
+
+  test("duplicate answer response includes the persisted audit pointer", async () => {
+    const body = {
+      clientToken: "ct-session-answer-1",
+      kind: "session",
+      verb: "answer",
+      objectRef: "session:duplicate-answer",
+      sessionId: "duplicate-answer",
+      sessionSource: "jules",
+      author: drew,
+      payload: { text: "continue" },
+    };
+    const first = await post("/api/actions", body);
+    expect(first.status).toBe(201);
+    const { action: original } = (await first.json()) as { action: DashAction };
+
+    const duplicate = await post("/api/actions", { ...body, clientToken: "ct-session-answer-2" });
+    expect(duplicate.status).toBe(409);
+    const recorded = (await duplicate.json()) as { action: DashAction; duplicateOf: string };
+    expect(recorded.action.state).toBe("rejected");
+    expect(recorded.action.duplicateOf).toBe(original.id);
+    expect(recorded.duplicateOf).toBe(original.id);
+    await post("/api/actions/result", { id: original.id, outcome: "applied", byRun: "jules-fixture" });
   });
 
   test("/attention serves the action forms; /api/actions.json is inspectable", async () => {

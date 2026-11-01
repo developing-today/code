@@ -32,6 +32,7 @@ import {
   effectiveStandingAuto,
   proposalExpired,
   proposalIdentity,
+  questionIdForOption,
   type NeedsOrder,
 } from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
@@ -535,6 +536,7 @@ document.addEventListener("submit", async (ev) => {
   if (standingAuto) payload.standingAuto = standingAuto === "true";
   const answersByQuestion = {};
   for (const el of form.querySelectorAll("[name^='answers:']")) {
+    if (el.disabled) continue;
     const qid = el.name.slice("answers:".length);
     if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
     else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
@@ -560,7 +562,15 @@ document.addEventListener("submit", async (ev) => {
   if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
   try {
     const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      if (typeof b.duplicateOf === "string") {
+        if (submitBtn) submitBtn.disabled = false;
+        if (err) err.textContent = "Duplicate recorded" + (typeof b.action?.id === "string" ? " as " + b.action.id : "") + "; points to existing answer " + b.duplicateOf + ".";
+        return;
+      }
+      throw new Error(b.error || ("HTTP " + res.status));
+    }
     window.__dashAfter(form, "✓ sent · pending — the fleet applies it on its next pass");
   } catch (e) {
     if (submitBtn) submitBtn.disabled = false;
@@ -1162,9 +1172,10 @@ export function whyUserBadge(item: TierItem): string {
   return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
 }
 
-function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[]): string {
+function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[], answerAction?: DashAction): string {
   const name = `answers:${q.id}`;
   const answered = answeredValue !== undefined;
+  const disabled = answered ? " disabled" : "";
   let field: string;
   if (q.type === "single" || q.type === "yesno") {
     const opts = q.options ?? [
@@ -1174,7 +1185,7 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${opts
       .map(
         (o) =>
-          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${answeredValue === o.id ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else if (q.type === "multi") {
@@ -1182,16 +1193,16 @@ function questionFieldHtml(q: TierItemQuestion, answeredValue?: string | string[
     field = `<span class="qopts">${(q.options ?? [])
       .map(
         (o) =>
-          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}> ${esc(o.label)}</label>`,
+          `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"${chosen.includes(o.id) ? " checked" : ""}${disabled}> ${esc(o.label)}</label>`,
       )
       .join("")}</span>`;
   } else {
-    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}">`;
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}" value="${esc(typeof answeredValue === "string" ? answeredValue : "")}"${disabled}>`;
   }
   // #1451: answered state rides the card — a partial submit records
   // what it covered and the still-open required questions say so.
   const state = answered
-    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}</span>`
+    ? ` <span class="qanswered">✓ answered: ${esc(Array.isArray(answeredValue) ? answeredValue.join(", ") : (answeredValue ?? ""))}${answerAction ? ` · ${answerAction.state === "new" ? "pending" : "applied"} · action ${esc(answerAction.id)}` : ""}</span>`
     : q.required
       ? ` <span class="qremaining">still needed</span>`
       : "";
@@ -1296,28 +1307,45 @@ export function needsUserFormsHtml(
   cs: CardState = cardState(undefined),
 ): string {
   const forms: string[] = [];
+  // Older option actions predate the canonical question pointer. Resolve
+  // them from the currently published item so already-answered cards
+  // cannot reopen the same question after this deploy.
+  const answered = new Map(cs.answered);
+  const answerActionsByQuestion = new Map(cs.answerActionsByQuestion);
+  for (const [optionId, action] of cs.answeredOptionActionsById) {
+    const questionId = questionIdForOption(item, optionId);
+    if (questionId && !answered.has(questionId)) {
+      answered.set(questionId, optionId);
+      answerActionsByQuestion.set(questionId, action);
+    }
+  }
   for (const opt of item.options ?? []) {
-    const picked = cs.answeredOptionId === opt.id;
+    const questionId = questionIdForOption(item, opt.id);
+    const questionValue = questionId ? answered.get(questionId) : undefined;
+    const answerAction = questionId ? answerActionsByQuestion.get(questionId) : cs.answeredOptionAction;
+    const locked = questionId ? questionValue !== undefined : cs.answeredOptionActionsById.size > 0;
+    const picked = cs.answeredOptionId === opt.id || (questionId !== undefined && questionValue === opt.id);
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${picked ? " disabled" : ""}>${esc(opt.label)}${picked ? " ✓ answered · pending" : ""}</button>${
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary"${locked ? " disabled" : ""}>${esc(opt.label)}${locked ? ` ✓ answered${answerAction?.state === "new" ? " · pending" : ""}` : ""}</button>${locked && answerAction ? `<span class="muted">Answer action ${esc(answerAction.id)}</span>` : ""}${
           opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
         }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
       }),
     );
   }
   if (item.questions?.length) {
-    const remaining = item.questions.filter((q) => q.required && !cs.answered.has(q.id));
-    const allDone = remaining.length === 0 && item.questions.some((q) => cs.answered.has(q.id));
+    const remaining = item.questions.filter((q) => q.required && !answered.has(q.id));
+    const allDone = remaining.length === 0 && item.questions.some((q) => answered.has(q.id));
+    const hasUnanswered = item.questions.some((q) => !answered.has(q.id));
     forms.push(
       aformHtml({
         kind: "triage",
         verb: "answer",
         objectRef,
-        inner: `${item.questions.map((q) => questionFieldHtml(q, cs.answered.get(q.id))).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">${
+        inner: `${item.questions.map((q) => questionFieldHtml(q, answered.get(q.id), answerActionsByQuestion.get(q.id))).join("")}<button type="submit" class="primary"${hasUnanswered ? "" : " disabled"}>Submit answers</button><span class="why">${
           allDone
             ? "All required questions are answered — the answers are recorded and pending with the orchestrator."
             : `Answer any subset and submit (#1451): answered questions are recorded, and the card keeps showing what remains${remaining.length ? ` — still needed: ${esc(remaining.map((q) => q.id).join(", "))}` : ""}.`

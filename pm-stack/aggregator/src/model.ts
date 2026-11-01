@@ -557,6 +557,9 @@ export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" |
 export interface TierItemOption {
   id: string;
   label: string;
+  /** The survey question this shortcut answers, when it is one of the
+   *  question's alternate controls. */
+  questionId?: string;
   description?: string;
   /** Predicted effect of picking this option, shown under its button. */
   effect?: string;

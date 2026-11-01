@@ -130,6 +130,9 @@ export interface DashActionPayload {
   mode?: "first-pass" | "auto" | "user";
   /** answer: the published option the user picked (one content verb). */
   optionId?: string;
+  /** Canonical survey question answered by an option shortcut. The server
+   *  resolves this from the current published item before storing. */
+  questionId?: string;
   /** answer: survey answers, keyed by the published question id. A
    *  multi-choice answer carries an array of option ids. */
   answers?: { questionId: string; value: string | string[] }[];
@@ -171,6 +174,8 @@ export interface DashAction {
   resultNote?: string;
   /** Id of the action this one replaces (undo = supersede). */
   supersedes?: string;
+  /** Existing answer action this rejected attempt duplicates. */
+  duplicateOf?: string;
 }
 
 export interface ActionsFile {
@@ -189,6 +194,16 @@ export interface NewAction {
   payload: DashActionPayload;
   author: DashAuthor;
   supersedes?: string;
+}
+
+/** The question slots an answer action claims. Option-only and free-text
+ *  answers use reserved slots until the item resolver supplies a question id. */
+function answerQuestionIds(action: Pick<NewAction, "verb" | "payload">): string[] {
+  if (action.verb !== "answer") return [];
+  const ids = new Set(action.payload.answers?.map((answer) => answer.questionId) ?? []);
+  if (action.payload.optionId) ids.add(action.payload.questionId ?? "$options");
+  if (action.payload.text && !ids.size) ids.add("$answer");
+  return [...ids];
 }
 
 const GH_REF = /^[\w.-]+\/[\w.-]+#\d+$/;
@@ -256,11 +271,14 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   const optionId = cleanText(rawPayload.optionId, 200);
   if (optionId !== undefined) payload.optionId = optionId;
+  const questionId = cleanText(rawPayload.questionId, 200);
+  if (questionId !== undefined) payload.questionId = questionId;
   if (rawPayload.answers !== undefined) {
     if (!Array.isArray(rawPayload.answers) || rawPayload.answers.length > 50) {
       return { ok: false, error: "payload.answers must be an array of at most 50 {questionId, value}" };
     }
     const answers: { questionId: string; value: string | string[] }[] = [];
+    const seenQuestionIds = new Set<string>();
     for (const entry of rawPayload.answers) {
       if (typeof entry !== "object" || entry === null) {
         return { ok: false, error: "payload.answers entries must be {questionId, value}" };
@@ -283,6 +301,8 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
       if (q === undefined || v === undefined) {
         return { ok: false, error: "payload.answers entries need non-empty questionId and value" };
       }
+      if (seenQuestionIds.has(q)) return { ok: false, error: `payload.answers repeats question id "${q}"` };
+      seenQuestionIds.add(q);
       answers.push({ questionId: q, value: v });
     }
     if (answers.length) payload.answers = answers;
@@ -546,12 +566,25 @@ export class ActionsStore {
    * still-new action in `supersedes` transitions it to "superseded" —
    * undo is a superseding action, never a delete; an already-applied
    * action stays in history and the newer action wins by recency in
-   * the effective-state derivation.
+   * the effective-state derivation. A distinct answer for an occupied
+   * question slot is itself persisted as rejected with `duplicateOf`
+   * pointing to the pending/applied answer that owns that slot.
    */
-  async add(input: NewAction): Promise<{ action: DashAction; created: boolean }> {
+  async add(input: NewAction): Promise<{ action: DashAction; created: boolean; duplicateOf?: string }> {
     await this.load();
     const existing = this.actions.find((a) => a.clientToken === input.clientToken);
     if (existing) return { action: existing, created: false };
+    const questionIds = answerQuestionIds(input);
+    const duplicate = questionIds.length
+      ? this.actions.find(
+          (candidate) =>
+            candidate.objectRef === input.objectRef &&
+            candidate.verb === "answer" &&
+            candidate.state !== "rejected" &&
+            candidate.state !== "superseded" &&
+            answerQuestionIds(candidate).some((questionId) => questionIds.includes(questionId)),
+        )
+      : undefined;
     const action: DashAction = {
       id: newActionId(),
       clientToken: input.clientToken,
@@ -564,16 +597,17 @@ export class ActionsStore {
       payload: input.payload,
       author: input.author,
       createdAt: new Date().toISOString(),
-      state: "new",
+      state: duplicate ? "rejected" : "new",
       ...(input.supersedes ? { supersedes: input.supersedes } : {}),
+      ...(duplicate ? { duplicateOf: duplicate.id, resultNote: `Duplicate answer; existing action ${duplicate.id} is ${duplicate.state}.` } : {}),
     };
     this.actions.push(action);
-    if (input.supersedes) {
+    if (!duplicate && input.supersedes) {
       const old = this.actions.find((a) => a.id === input.supersedes);
       if (old && old.state === "new") old.state = "superseded";
     }
     await this.persist();
-    return { action, created: true };
+    return { action, created: true, ...(duplicate ? { duplicateOf: duplicate.id } : {}) };
   }
 
   /**
