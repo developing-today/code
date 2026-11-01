@@ -334,4 +334,25 @@ test("measurement strings use plain decimals; request counts remain integers (#2
   assert.equal(classifyR2([{ dimensions: { actionType: "GetObject" }, sum: { requests: "12" } }]).classB, 12);
   assert.equal(foldKv([{ dimensions: { actionType: "read" }, sum: { requests: "12" } }]).reads, 12);
   assert.equal(classifyR2([{ dimensions: { actionType: "GetObject" }, sum: { requests: 1.5 } }]).classB, 1.5);
+
+  // Neurons are a fractional measurement, not a count (Codex P2 on PR #3488):
+  // a plain-decimal string total parses exactly like the numeric fixture.
+  const decimalNeurons = structuredClone(ACCOUNT);
+  decimalNeurons.aiInferenceAdaptiveGroups[0].sum.totalNeurons = "4114515.31";
+  assert.equal(
+    Object.fromEntries(parseGraphqlUsage(decimalNeurons, { now: NOW, cycleStart: START }).metrics.map((m) => [m.id, m]))[
+      "workers-ai-neurons"
+    ].used,
+    144792,
+  );
+  // Drifted spellings still fail closed for neurons, naming the ai field.
+  for (const value of ["", "   ", " 4114515.31 ", "0x10", "1e2"]) {
+    const bad = structuredClone(ACCOUNT);
+    bad.aiInferenceAdaptiveGroups[0].sum.totalNeurons = value;
+    assert.throws(
+      () => parseGraphqlUsage(bad, { now: NOW, cycleStart: START }),
+      (error) => error instanceof ExportError && error.status === "unparseable" && error.exitCode === 6 &&
+        error.message.includes("ai.totalNeurons"),
+    );
+  }
 });

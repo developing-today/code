@@ -170,12 +170,12 @@ export function foldKv(groups) {
   return { reads, writes };
 }
 
-const firstSum = (groups, field, label) => {
+const firstSum = (groups, field, label, { integerString = true } = {}) => {
   if (!Array.isArray(groups)) {
     throw new ExportError("unparseable", 6, `graphql: ${label} groups missing`);
   }
   let total = 0;
-  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`, { integerString: true });
+  for (const g of groups) total += num(g?.sum?.[field], `${label}.${field}`, { integerString });
   return total;
 };
 
@@ -235,7 +235,8 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
         : ""),
   });
 
-  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai");
+  // Neurons are a fractional measurement (fixture total 4114515.31), not a request count: plain-decimal strings stay valid here.
+  const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai", { integerString: false });
   const daysElapsed = Math.max(1, (now - cycleStart) / 86_400_000);
   push("workers-ai-neurons", Math.round(neuronsTotal / daysElapsed), "neurons", {
     detail: `per-day average over the cycle to date; cycle total ${Math.round(neuronsTotal)} neurons`,
