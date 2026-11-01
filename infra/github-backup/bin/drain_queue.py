@@ -3,8 +3,9 @@
 
 The Cloudflare Worker (../worker) receives GitHub App webhooks, validates
 the HMAC, and stores events in KV. This drainer (timer: every 5 min):
-  GET  <GHB_WORKER_URL>/queue   (Authorization: Bearer <GHB_WORKER_BEARER>)
-  ->   {"events": [{"id", "repo", "event", "ts"}]}
+  GET  <GHB_WORKER_URL>/queue[?cursor=...] (Authorization: Bearer <GHB_WORKER_BEARER>)
+  ->   {"events": [{"id", "repo", "event", "ts"}], "cursor": ..., "list_complete": ...}
+       The drainer follows all pages before applying the ack policy.
   POST <GHB_WORKER_URL>/queue/ack {"ids": [...]}
 Per-repo coalescing: a repo is fetched at most once per 15 min
 (state.json key drain_last::<repo>) — hatch-personal pushes every ~2 min.
@@ -39,7 +40,7 @@ acked as handled-by-policy (never retried, never counted as failures),
 logged as one loud DRAIN-DROP line, and counted in the run summary.
 The allowlist fails closed: no owners in config, nothing is fetched.
 """
-import json, os, sys, time, urllib.request
+import json, os, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +63,37 @@ def worker_req(path, payload=None):
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read() or b"{}")
+
+
+def queue_events(queue_poll_path):
+    """Read every Worker KV page before applying the existing ack policy.
+
+    Older Worker responses without pagination metadata remain a one-page
+    response. An incomplete/malformed cursor fails closed before any event
+    from this poll can be acknowledged.
+    """
+    events = []
+    cursor = None
+    seen_cursors = set()
+    while True:
+        path = queue_poll_path
+        if cursor is not None:
+            sep = "&" if "?" in path else "?"
+            path += sep + urllib.parse.urlencode({"cursor": cursor})
+        page = worker_req(path)
+        page_events = page.get("events", [])
+        if not isinstance(page_events, list):
+            raise RuntimeError("Worker queue response events must be a list")
+        events.extend(page_events)
+        if page.get("list_complete", True):
+            return events
+        next_cursor = page.get("cursor")
+        if not isinstance(next_cursor, str) or not next_cursor:
+            raise RuntimeError("Worker queue response is incomplete but has no cursor")
+        if next_cursor in seen_cursors:
+            raise RuntimeError("Worker queue pagination cursor repeated")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
 
 def event_age_s(ev, now):
@@ -134,8 +166,7 @@ def main():
     root = backup_root(cfg)
     state_path = os.path.join(root, "state.json")
     state = json.load(open(state_path)) if os.path.exists(state_path) else {}
-    q = worker_req(cfg["worker"]["queue_poll_path"])
-    events = q.get("events", [])
+    events = queue_events(cfg["worker"]["queue_poll_path"])
     if not events:
         print("queue empty")
         return 0

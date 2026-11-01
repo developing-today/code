@@ -3,7 +3,7 @@
 // POST /github        GitHub webhook. Verifies X-Hub-Signature-256 (HMAC
 //                     SHA-256 with GITHUB_WEBHOOK_SECRET), stores
 //                     {id, repo, event, action, ts} in KV (TTL 7 days).
-// GET  /queue         Bearer DRAIN_BEARER. Returns pending events.
+// GET  /queue         Bearer DRAIN_BEARER. Returns a page; ?cursor follows.
 // POST /queue/ack     Bearer DRAIN_BEARER. Body {"ids":[...]} deletes them.
 // GET  /health        Liveness.
 //
@@ -52,13 +52,20 @@ export default {
     }
     if (url.pathname === "/queue" && req.method === "GET") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
-      const list = await env.GHB_EVENTS.list({ prefix: "ev:", limit: 500 });
+      const cursor = url.searchParams.get("cursor");
+      const options = { prefix: "ev:", limit: 500 };
+      if (cursor) options.cursor = cursor;
+      const list = await env.GHB_EVENTS.list(options);
       const events = [];
       for (const k of list.keys) {
         const v = await env.GHB_EVENTS.get(k.name);
         if (v) events.push(JSON.parse(v));
       }
-      return Response.json({ events });
+      return Response.json({
+        events,
+        cursor: list.cursor || null,
+        list_complete: list.list_complete,
+      });
     }
     if (url.pathname === "/queue/ack" && req.method === "POST") {
       if (!authed(req, env)) return new Response("unauthorized", { status: 401 });
