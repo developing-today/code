@@ -143,6 +143,12 @@ describe("mimeToExtension", () => {
   it("returns bin for empty string", () => {
     expect(mimeToExtension("")).toBe("bin");
   });
+
+  it("returns bin for prototype-named MIME types", () => {
+    expect(mimeToExtension("constructor")).toBe("bin");
+    expect(mimeToExtension("toString")).toBe("bin");
+    expect(mimeToExtension("__proto__")).toBe("bin");
+  });
 });
 
 // ============================================================================
