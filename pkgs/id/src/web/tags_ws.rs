@@ -48,6 +48,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
+use crate::frames::MAX_FRAME_BYTES;
 use crate::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
 
 /// Resolve the `ns` request parameter to a namespace pair.
@@ -205,7 +206,8 @@ pub async fn ws_tags_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_tags_socket(socket, state))
+    ws.max_message_size(MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_tags_socket(socket, state))
 }
 
 /// Handle a tag WebSocket connection.
@@ -483,13 +485,17 @@ mod tests {
         body::{Body, to_bytes},
         http::{Request, StatusCode},
     };
+    use futures::{SinkExt as _, StreamExt as _};
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_blobs::{api::Store, store::mem::MemStore};
     use iroh_docs::protocol::Docs;
     use iroh_gossip::net::Gossip;
+    use std::{net::SocketAddr, time::Duration};
+    use tokio_tungstenite::tungstenite::Message as ClientMessage;
     use tower::ServiceExt as _;
 
     use super::*;
+    use crate::frames::MAX_FRAME_BYTES;
     use crate::tags::TagStore;
     use crate::web::AppState;
 
@@ -551,6 +557,15 @@ mod tests {
         (status, json)
     }
 
+    async fn serve(app: Router) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        address
+    }
+
     #[tokio::test]
     async fn value_without_key_is_rejected() {
         let (app, _dir, _endpoint, _docs) = router().await;
@@ -609,5 +624,68 @@ mod tests {
         let (status, body) = get(&app, "/api/tags").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn websocket_caps_inbound_messages_and_keeps_tag_events_working() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let address = serve(app.clone()).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/ws/tags"))
+            .await
+            .unwrap();
+
+        client
+            .send(ClientMessage::Ping(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        let pong = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for ping response")
+            .expect("WebSocket closed after ping")
+            .expect("WebSocket failed after ping");
+        assert!(matches!(pong, ClientMessage::Pong(payload) if payload == vec![1, 2, 3]));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tags")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"subject":"ws.md","key":"label","value":"rust"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let event = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("timed out waiting for tag event")
+            .expect("WebSocket closed before tag event")
+            .expect("WebSocket failed before tag event");
+        let ClientMessage::Text(event) = event else {
+            panic!("expected tag event text frame, got {event:?}");
+        };
+        let event: serde_json::Value = serde_json::from_str(&event).unwrap();
+        assert_eq!(event["type"], "set");
+        assert_eq!(event["subject"], "ws.md");
+        assert_eq!(event["key"], "label");
+        assert_eq!(event["value"], "rust");
+
+        client
+            .send(ClientMessage::Text("x".repeat(MAX_FRAME_BYTES + 1).into()))
+            .await
+            .unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(5), client.next())
+            .await
+            .expect("oversized message did not close the WebSocket");
+        assert!(
+            matches!(
+                closed,
+                None | Some(Err(_)) | Some(Ok(ClientMessage::Close(_)))
+            ),
+            "oversized message was not rejected: {closed:?}"
+        );
     }
 }
