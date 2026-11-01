@@ -191,12 +191,6 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-/// Available CLI commands.
-///
-/// Each variant represents a distinct operation mode for the `id` tool.
-/// Commands are organized by their primary function: storage, retrieval,
-/// search, or system operations.
-#[derive(Subcommand, Debug)]
 /// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
 /// rejected with a clear error instead of silently producing an empty result
 /// or a header-only preview (#3059). Clap names the flag in its error prefix,
@@ -209,6 +203,12 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
     }
 }
 
+/// Available CLI commands.
+///
+/// Each variant represents a distinct operation mode for the `id` tool.
+/// Commands are organized by their primary function: storage, retrieval,
+/// search, or system operations.
+#[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
     ///
