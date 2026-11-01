@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Install/update the aggregator on the laptop.
 #
-# Copies this package to ~/pm-stack/aggregator, renders the service
-# env file from ~/secrets/pm-stack.sops.yaml (keys by name; values
-# never printed or committed), installs the user systemd unit, and
-# restarts the service ONLY when the deployed tree changed (#1150);
-# the install then fails loudly unless /api/health reports the build
+# Installs this package directly from the git checkout, renders the
+# service env file from ~/secrets/pm-stack.sops.yaml (keys by name;
+# values never printed or committed), installs the repository-owned
+# user systemd units, and restarts the service ONLY when the checkout
+# or deployment inputs changed (#1150). Runtime data stays under
+# ~/.local/state/pm-aggregator; the legacy ~/pm-stack/aggregator
+# symlink is intentionally left alone as a feed-push compatibility
+# bridge until the sandbox deployment is updated and verified.
+# The install then fails loudly unless /api/health reports the build
 # version it just deployed. Kaneo/Grist stay their own deployments; the
 # aggregator only reads them over their local HTTP APIs.
 #
@@ -16,21 +20,27 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 SRC="$PWD"
-DST="$HOME/pm-stack/aggregator"
+EXPECTED_SRC="$HOME/git/code/pm-stack/aggregator"
+if [ "$SRC" != "$EXPECTED_SRC" ]; then
+  echo "ERROR: run install.sh from the primary checkout at $EXPECTED_SRC (the systemd unit runs that checkout)" >&2
+  exit 1
+fi
+STATE_DIR="$HOME/.local/state/pm-aggregator"
 SOPS="$HOME/secrets/pm-stack.sops.yaml"
-UNIT_SRC="$HOME/pm-stack/systemd/pm-aggregator.service"
+UNIT_SRC="$SRC/../systemd/pm-aggregator.service"
 UNIT_DST="$HOME/.config/systemd/user/pm-aggregator.service"
 TAILNET_IP="${TAILNET_IP:-100.99.113.103}"
 
-mkdir -p "$DST" "$HOME/.config/systemd/user"
+mkdir -p "$STATE_DIR/snapshots" "$HOME/.config/systemd/user"
+chmod 700 "$STATE_DIR"
 
 # --- Change detection + build marker (#1150) ---------------------------
 # BUILD_VERSION is what /api/health must report once this deploy is
 # live: the source commit when the package sits in a git checkout,
-# else the tree hash. The tree hash covers exactly the files the copy
-# below installs; the last deployed hash is kept in $DST so an
-# unchanged tree is a true no-op (no copy, no restart). Deployment
-# inputs that are not in the tree — the tailnet bind address, the SOPS
+# else the tree hash. The tree hash covers the runtime package inputs;
+# the last deployed hash is kept in the state directory so an
+# unchanged tree is a true no-op (no dependency install, no restart).
+# Deployment inputs that are not in the tree — the tailnet bind address, the SOPS
 # env source and the unit file — are hashed separately (see
 # deploy_inputs_hash), so rotating a credential or editing the unit is
 # a real change instead of a silent no-op.
@@ -38,15 +48,15 @@ DEPLOY_COMMIT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 tree_hash() {
   local root="$1"
   (cd "$root" && {
-    for f in package.json bun.lock tsconfig.json fleet-feed.json; do
+    for f in package.json bun.lock tsconfig.json; do
       [ -f "$f" ] && echo "$f"
     done
-    find src test scripts opencode-tools -type f 2>/dev/null
+    find src test scripts opencode-tools systemd -type f 2>/dev/null
   } | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done | sha256sum | cut -d' ' -f1)
 }
 SRC_HASH="$(tree_hash "$SRC")"
-DST_HASH=""
-[ -f "$DST/.deploy-tree-hash" ] && DST_HASH="$(cat "$DST/.deploy-tree-hash")"
+DEPLOYED_TREE_HASH=""
+[ -f "$STATE_DIR/.deploy-tree-hash" ] && DEPLOYED_TREE_HASH="$(cat "$STATE_DIR/.deploy-tree-hash")"
 # Deployment inputs the tree hash cannot see (#1150, Codex P2 on PR 2432):
 # TAILNET_IP is rendered into .env, and both the SOPS file and the unit
 # are installed verbatim. Hashing the SOPS *ciphertext* and the unit file
@@ -57,13 +67,14 @@ DST_HASH=""
 deploy_inputs_hash() {
   {
     printf 'TAILNET_IP=%s\n' "$TAILNET_IP"
+    printf 'STATE_DIR=%s\n' "$STATE_DIR"
     if [ -f "$SOPS" ]; then sha256sum "$SOPS"; else echo "sops:absent"; fi
     if [ -f "$UNIT_SRC" ]; then sha256sum "$UNIT_SRC"; else echo "unit:absent"; fi
   } | sha256sum | cut -d' ' -f1
 }
 SRC_INPUTS="$(deploy_inputs_hash)"
-DST_INPUTS=""
-[ -f "$DST/.deploy-inputs-hash" ] && DST_INPUTS="$(cat "$DST/.deploy-inputs-hash")"
+DEPLOYED_INPUTS_HASH=""
+[ -f "$STATE_DIR/.deploy-inputs-hash" ] && DEPLOYED_INPUTS_HASH="$(cat "$STATE_DIR/.deploy-inputs-hash")"
 BUILD_VERSION="${DEPLOY_COMMIT:-tree:${SRC_HASH}}"
 live_version() {
   # Parse with bun (already a hard dependency of this script): the API
@@ -72,32 +83,31 @@ live_version() {
   curl -s --max-time 3 "http://127.0.0.1:4870/api/health" | bun -e 'const t = await Bun.stdin.text(); try { console.log(JSON.parse(t).version ?? "") } catch { console.log("") }' || true
 }
 CHANGED=1
-if [ "$SRC_HASH" = "$DST_HASH" ] && [ "$SRC_INPUTS" = "$DST_INPUTS" ] && systemctl --user is-active --quiet pm-aggregator.service && [ "$(live_version)" = "$BUILD_VERSION" ]; then
+if [ "$SRC_HASH" = "$DEPLOYED_TREE_HASH" ] && [ "$SRC_INPUTS" = "$DEPLOYED_INPUTS_HASH" ] && systemctl --user is-active --quiet pm-aggregator.service && [ "$(live_version)" = "$BUILD_VERSION" ]; then
   CHANGED=0
-  echo "aggregator unchanged (tree ${SRC_HASH:0:12}, inputs ${SRC_INPUTS:0:12}, version ${BUILD_VERSION}) - no copy, no restart"
-elif [ "$SRC_HASH" = "$DST_HASH" ] && [ "$SRC_INPUTS" != "$DST_INPUTS" ]; then
+  echo "aggregator unchanged (tree ${SRC_HASH:0:12}, inputs ${SRC_INPUTS:0:12}, version ${BUILD_VERSION}) - no install, no restart"
+elif [ "$SRC_HASH" = "$DEPLOYED_TREE_HASH" ] && [ "$SRC_INPUTS" != "$DEPLOYED_INPUTS_HASH" ]; then
   echo "aggregator tree unchanged but deployment inputs changed (tailnet/SOPS/unit) - re-rendering env and restarting"
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
-# Package files (no node_modules, no local feed/env artifacts).
-for f in package.json bun.lock tsconfig.json fleet-feed.json; do
-  [ -f "$SRC/$f" ] && cp "$SRC/$f" "$DST/$f"
-done
-rm -rf "$DST/src" "$DST/test" "$DST/scripts" "$DST/opencode-tools"
-cp -r "$SRC/src" "$DST/src"
-cp -r "$SRC/test" "$DST/test"
-cp -r "$SRC/scripts" "$DST/scripts"
-cp -r "$SRC/opencode-tools" "$DST/opencode-tools"
-
-# Service env from the SOPS file — same pattern as Kaneo's postgres.env.
+# Service env and runtime data paths. The old ~/pm-stack/aggregator
+# symlink is neither replaced nor removed here; older sandbox feed
+# deployments can keep using it until their update and delivery are
+# verified.
 umask 077
-ENV_FILE="$DST/.env"
+ENV_FILE="$STATE_DIR/.env"
 {
   echo "PM_AGG_BUILD_VERSION=${BUILD_VERSION}"
   echo "PM_AGG_SOURCE=live"
   echo "PM_AGG_HOSTS=127.0.0.1,${TAILNET_IP}"
-  echo "PM_AGG_FEED_FILE=${DST}/fleet-feed.json"
+  echo "PM_AGG_FEED_FILE=${STATE_DIR}/fleet-feed.json"
+  echo "PM_AGG_COMMENTS_FILE=${STATE_DIR}/comments.json"
+  echo "PM_AGG_ACTIONS_FILE=${STATE_DIR}/actions.json"
+  echo "PM_AGG_REGISTRY_FILE=${STATE_DIR}/registry.json"
+  echo "PM_AGG_SNAPSHOTS_DIR=${STATE_DIR}/snapshots"
+  echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
+  echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
   echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
   for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
     sops_key="${key%%:*}"
@@ -110,10 +120,10 @@ chmod 600 "$ENV_FILE"
 
 cp "$UNIT_SRC" "$UNIT_DST"
 
-cd "$DST"
+cd "$SRC"
 bun install --silent
-echo "$SRC_HASH" > "$DST/.deploy-tree-hash"
-echo "$SRC_INPUTS" > "$DST/.deploy-inputs-hash"
+echo "$SRC_HASH" > "$STATE_DIR/.deploy-tree-hash"
+echo "$SRC_INPUTS" > "$STATE_DIR/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload
@@ -149,15 +159,11 @@ echo
 systemctl --user is-active pm-aggregator.service
 
 # Quota gatherer (#1151): a user timer on the same 15-minute cadence
-# as the Meta file exporter (#1301), running the deployed package's
-# scripts/gather-quota.ts. Units ship with this package (systemd/);
-# a ~/pm-stack/systemd copy wins when present, matching how the
-# aggregator unit itself is sourced. Guarded: a checkout without
-# the units skips this block instead of failing the install.
+# as the Meta file exporter (#1301), running scripts/gather-quota.ts
+# from this checkout. Units ship with this package (systemd/). Guarded:
+# a checkout without the units skips this block instead of failing the install.
 GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
 GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
-[ -f "$HOME/pm-stack/systemd/quota-gatherer.service" ] && GATHERER_SVC_SRC="$HOME/pm-stack/systemd/quota-gatherer.service"
-[ -f "$HOME/pm-stack/systemd/quota-gatherer.timer" ] && GATHERER_TMR_SRC="$HOME/pm-stack/systemd/quota-gatherer.timer"
 if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
   cp "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
   cp "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
