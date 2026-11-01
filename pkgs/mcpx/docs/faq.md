@@ -43,9 +43,20 @@ More: [the opencode plugin](./opencode-plugin.md).
 ## "is it safe?", no.
 
 No. Scripts run on a real runtime with your authority — filesystem, network,
-subprocesses. `script.permissions` defaults to `all`, and the narrower profiles
-(`net`, `read`, `read-net`, `strict`) apply only on Deno: bun and node run with
-the user's own authority whatever you ask for. The daemon API is
+subprocesses. `script.permissions` defaults to `all`. What a narrower profile
+does depends on the runtime, and the defaults say so exactly
+(`internal/defaults/defaults.json`): on Deno the profiles become Deno
+permission flags, and on node `readnet` / `read-net` are enforced with
+`--permission --allow-fs-read=*`. `net`, `read`, and `strict` are defined for
+Deno only. Ask for a named profile that has no entry for the runtime you
+chose and mcpx refuses to run the script at all — "permission profile %q
+defines no flags for %s, so %s cannot enforce it"
+(`internal/runner/runtimes.go`) — it never runs the script unenforced and
+pretends otherwise. Bun has no permission model, so no narrower profile is
+defined for it and every narrower ask there is refused the same way. The
+profiles that are defined for bun and node — `all`, `none`, `off`,
+`unsandboxed` — carry an empty flag list by design: defined, and
+deliberately unrestricted, not enforcement. The daemon API is
 unauthenticated. It listens on loopback and on a socket only you can open, and
 binding it wider prints a warning. `mcpx prompt` hands you a generated script
 instead of running it, because generated code runs with your credentials. So
