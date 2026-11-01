@@ -2283,6 +2283,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         if let Some(content) = json["content"].as_array() {
             for (idx, child_json) in content.iter().enumerate() {
                 if child_json["type"].as_str() == Some("paragraph") {
+                    // GFM cells cannot contain block breaks. Preserve word
+                    // boundaries when adjacent paragraphs are flattened.
+                    if idx > 0 && content[idx - 1]["type"].as_str() == Some("paragraph") {
+                        ast_node.append(arena.alloc(AstNode::from(NodeValue::Text(" ".into()))));
+                    }
                     // Unwrap: add paragraph's inline children directly to cell
                     if let Some(para_content) = child_json["content"].as_array() {
                         for (inline_idx, _inline_json) in para_content.iter().enumerate() {
@@ -4577,6 +4582,24 @@ Some text
         let doc = markdown_to_prosemirror(&md);
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "table");
+    }
+
+    #[test]
+    fn test_table_cell_paragraphs_keep_word_boundaries() {
+        let para =
+            |text: &str| json!({"type": "paragraph", "content": [{"type": "text", "text": text}]});
+        let pm = json!({"type": "doc", "content": [{"type": "table", "content": [
+            {"type": "table_row", "content": [{"type": "table_header", "content": [para("head"), para("tail")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("first"), para("second"), para("third")]}]},
+            {"type": "table_row", "content": [{"type": "table_cell", "content": [para("single")]}]}
+        ]}]});
+        let md = prosemirror_to_markdown(&pm).unwrap();
+        assert_eq!(
+            md,
+            "| head tail |\n| --- |\n| first second third |\n| single |\n"
+        );
+        let reparsed = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reparsed).unwrap(), md);
     }
 
     #[test]
