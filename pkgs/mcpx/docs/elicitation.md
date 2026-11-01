@@ -1,13 +1,15 @@
 # Elicitation: a design
 
 ```
+id:           elicitation-a-design
+since:        pre-release
 created:      2026-09-28T18:00:00-05:00
 last-updated: 2026-09-28T18:00:00-05:00
-increment:    1
-status:       partial -- largely shipped, and differently in places
+status:       partial
 tags:         area:protocol, area:integration
 description:  how a server asks a question, and how the answer gets back
               through a CLI, a REST call, a script, an MCP host or a plugin.
+note:         largely shipped, and differently in places
 ```
 
 **This was written before the feature existed, and the feature has since

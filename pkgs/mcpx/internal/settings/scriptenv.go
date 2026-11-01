@@ -219,6 +219,15 @@ func ScriptEnv() []EnvVar {
 			ReadBy:  client + ", " + nested + ", the plugin",
 		},
 		{
+			Name:  "MCPX_SETTINGS",
+			SetBy: []Setter{SetByCLI, SetByExec},
+			When:  "only when the caller sent call settings with the run (for example a requested pool.callTimeout)",
+			Meaning: "the call-settings header for this run, carried into the script so the " +
+				"generated client forwards the caller's per-call requests on the " +
+				"calls it makes on the script's behalf",
+			ReadBy: client + ", which sends it as the x-mcpx-settings header",
+		},
+		{
 			Name:    "MCPX_ARTIFACTS_LOCAL",
 			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the daemon shares this filesystem, so artifact({path}) may hand over a path instead of the bytes",

@@ -74,7 +74,8 @@ Anything larger opens with a key block:
 ​```
 created:      2026-09-25T18:30:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    4
+id:           session-isolated-process-pools
+since:        pre-release
 status:       core
 tags:         area:pools, area:concurrency
 description:  one sentence, present tense, what it does
@@ -85,12 +86,61 @@ Prose, examples, the reasoning that is not obvious from the code.
 2026-09-27T05:05:00-05:00
 ```
 
-Required keys: `created`, `last-updated`, `increment`, `status`, `description`.
+Required keys: `created`, `last-updated`, `id`, `since`, `status`, `description`.
 
 Optional: `owner`, `creator`, `tags`, `dek`, `note`, `editors-note`, `links`.
 
-`increment` is a counter of commits on `main` that touched the section. It does
-not have to be exact; it has to be non-decreasing. Bump it with every edit.
+`increment` is retired (removed in the #1865 migration). It counted commits
+inexactly; `changed` below counts recorded changes of meaning, exactly.
+
+### History metadata: `id`, `since`, `changed`
+
+Every section carries a stable ID, frozen from the heading's slug the day the
+metadata landed, so links never break when a heading is reworded:
+
+- `id` — the section's ID, first key in the block.
+- `since` — the first release containing the section: a version (`0.2.0`), or
+  `unreleased` for work not yet released, or `pre-release` for everything that
+  predates the first release (the migration sentinel; no release has shipped).
+- `changed` — the section's recorded history, one list item per change:
+
+```markdown
+changed:
+  - 0.2.0 (2026-11-02): idle exit is now a setting
+```
+
+Headings without a key block use the compact comment form, directly under the
+heading:
+
+```markdown
+<!-- id: pools-lifetime since: 0.2.0 -->
+```
+
+A change is recorded per PR as one fragment file, `docs/changes/<slug>.md`:
+
+```markdown
+sections: pools, pools-lifetime
+kind: Changed
+summary: idle exit is now a setting
+```
+
+`kind` is a Keep a Changelog kind (`Added`, `Changed`, `Deprecated`,
+`Removed`, `Fixed`, `Security`). At release time `stamp` folds fragments into
+the named sections' `changed` lists and deletes them. An edit that changes no
+meaning (typos, reflow, link repair) needs no fragment: mark the PR with the
+`docs:trivial` label or a `Docs-Trivial: yes` trailer.
+
+`status` also accepts the closed-proposal values `shipped`, `implemented` and
+`rejected` (used by `proposals.md`); a status that needs more words becomes a
+vocabulary `status` plus a free-text `note` key.
+
+The tool is `tools/docs-history` (one Go program, `render` / `stamp` /
+`check` on a single parser; not part of the shipped binary). `render` emits
+the `since` marker and one closed-by-default `<details>` history per heading
+whose subtree has history — its own entries in full, then one line per
+descendant change grouped by release — and with `--agent` the agent-twin form
+(no disclosures, a since/status line and a history link per section). It also
+speaks the mdBook external-preprocessor protocol on stdin/stdout.
 
 `tags` are Datadog-style: bare tags (`area:pools`) and key-value labels
 (`platform:nix`, `cost:context`). Reuse existing keys before inventing one —
@@ -109,6 +159,8 @@ current keys are `area`, `platform`, `cost`.
 | `deprecated` | works, will be removed. Link the replacement |
 | `broken` | known broken, not yet removed |
 | `retired` | removed. Struck through, or moved to `docs/archive.md` |
+| `shipped` / `implemented` | closed proposal: built (proposals, document-level blocks) |
+| `rejected` | closed proposal: decided against |
 
 **Every top-level entry ends with its `last-updated` timestamp on its own
 line**, RFC 3339 with offset. It duplicates the key block on purpose: the key
@@ -133,7 +185,10 @@ and has no ordering rules.
 Any commit that lands on `main` and changes behaviour:
 
 1. Edit or add the entry below the marker.
-2. Bump `increment`, set `last-updated`, update the trailing timestamp.
+2. Set `last-updated`, update the trailing timestamp, and add a change
+   fragment naming the section IDs you changed (`docs/changes/<slug>.md`),
+   or mark the PR trivial (`docs:trivial` label / `Docs-Trivial: yes`
+   trailer). CI runs the docs-history `check` on PRs touching `docs/**`.
 3. If it changed something the story quotes, re-run the command and paste the
    real output.
 4. If it changed `AGENTS.md`, update the quote and the breakdown.
@@ -143,15 +198,21 @@ a new one; it needs that entry updated.
 
 ## Per-release
 
-1. Confirm every entry touched since the last release has a current
-   `last-updated` and a bumped `increment`.
+1. Run the docs-history `check` (see Checks): every entry touched since the
+   last release must carry a change fragment or a trivial marker, and every
+   `since` must be valid.
 2. Re-run the story's commands and diff against what is quoted. This is the
    real check — the story is the only part that can silently rot.
 3. Move anything now `retired` into `docs/archive.md`.
 4. Promote `proposed` entries that shipped: change `status`, move them up into
    the shipped run, set `created` to when the work landed rather than when it
    was first wanted.
-5. Re-read the first screen. If the first thing a newcomer sees is no longer
+5. Run `stamp` with the release version and date
+   (`go run ./tools/docs-history stamp --version X.Y.Z --date YYYY-MM-DD docs/*.md`):
+   it replaces `since: unreleased`, folds the fragments into `changed` lists
+   and deletes them. Commit the stamped docs, then tag that commit — the
+   tagged tree is the stamped tree.
+6. Re-read the first screen. If the first thing a newcomer sees is no longer
    the most important thing, reorder.
 
 ## Checks
@@ -164,6 +225,16 @@ go test ./... -count=1
 MCPX=./bin/mcpx scripts/stress.sh      # concurrency, leaks, orphans
 MCPX=./bin/mcpx scripts/bench.sh       # latency, against lootbox
 (cd ../.. && nix build .#mcpx)         # unit suites in the sandbox
+```
+
+The docs-history check (duplicate IDs, bad `since` values, fragments naming
+unknown sections, and — with `--diff` — prose changes with no fragment and no
+trivial marker):
+
+```bash
+go run ./tools/docs-history check docs/story.md docs/proposals.md
+git diff origin/main...HEAD -- docs/ > /tmp/docs.diff
+go run ./tools/docs-history check --diff /tmp/docs.diff docs/story.md
 ```
 
 `README.md` must stay a symlink to `docs/story.md`:

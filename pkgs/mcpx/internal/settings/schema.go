@@ -201,6 +201,16 @@ type Setting struct {
 	// the runtime API refuses it and says a restart is needed instead.
 	Hot bool
 
+	// CallRequest marks a daemon-scoped setting a caller may also request
+	// per call, in the call-settings header. The request is a request, not
+	// an order: whoever acts on it clamps it to the daemon's own configured
+	// value first, so carrying it can never raise a bound the operator set.
+	// It exists for pool.callTimeout (#1864 item 4): the daemon's value is
+	// the ceiling, a call may ask for less, never more. The two filters
+	// that build and read the header (cli.callHeader, daemon.callSettings)
+	// pass a CallRequest setting through alongside the ScopeCall ones.
+	CallRequest bool
+
 	// Bootstrap marks a setting that is needed before there is anything to
 	// resolve it from: which configuration file to read cannot come from a
 	// configuration file. Only the environment and an explicit Flag reach

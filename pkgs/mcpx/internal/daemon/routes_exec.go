@@ -300,7 +300,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		// requestor, which Start maps there), capped like any other.
 		requestor := tasks.Caller(firstNonEmpty(req.Options.Session, r.Header.Get("X-Mcpx-Session"), r.Header.Get("X-Mcpx-Run")))
 		t, terr := store.Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
-			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+			res, err := svc.Run(ctx, execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 			if err != nil && res == nil {
 				return nil, &tasks.Fault{Code: -32603, Message: err.Error()}
 			}
@@ -321,7 +321,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	case execsvc.OutputStream:
 		s.execStream(w, r, svc, req)
 	case "", execsvc.OutputStructured, execsvc.OutputText:
-		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, nil)
+		res, err := svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, nil)
 		if err != nil && res == nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
@@ -400,7 +400,7 @@ func (s *Server) execStream(w http.ResponseWriter, r *http.Request, svc *execsvc
 		}
 		return nil
 	}
-	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options}, enc)
+	_, _ = svc.Run(r.Context(), execsvc.Request{Source: req.Source, File: req.File, Opts: req.Options, CallSettings: r.Header.Get(CallSettingsHeader)}, enc)
 }
 
 // ---- artifacts ----

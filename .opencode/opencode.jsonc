@@ -7065,7 +7065,8 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex only: Terra",
+        "name": "Workhorse primary - Codex only: Luna",
+        // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
         // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
@@ -7150,12 +7151,12 @@
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
-          "opencode-route/terra-plan#medium"
+          "opencode-route/luna-plan#xhigh"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/terra-plan": 2
+          "opencode-route/luna-plan": 2
         }
       },
       "workhorse": {
@@ -7251,7 +7252,8 @@
         "targets": [
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
-          "opencode-route/spark-plan#max",
+        // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
+          "opencode-route/spark-plan#xhigh",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",

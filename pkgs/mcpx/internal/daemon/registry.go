@@ -1191,7 +1191,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(ctx, key, tool, args)
+	res, err := p.Call(withRequestedCallTimeout(ctx), key, tool, args)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}

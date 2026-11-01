@@ -29,6 +29,15 @@ queue — only once the drainer has made the mirror reflect it:
   (state key drain_fail::<repo>); at CHRONIC_DRAIN_FAILURES the failure
   is logged loudly (DRAIN-CHRONIC) and the run exits non-zero so
   systemd surfaces it — the event is still kept, never silently dropped.
+
+Owner allowlist (#3326): the App is public (org installs require it),
+so anyone can install it and their deliveries verify and queue. Before
+any fetch work, each event's owner must be in config.json `owners`
+(the same set reconcile plans from; case-insensitive). Foreign events
+— and malformed events whose owner cannot be determined — are dropped:
+acked as handled-by-policy (never retried, never counted as failures),
+logged as one loud DRAIN-DROP line, and counted in the run summary.
+The allowlist fails closed: no owners in config, nothing is fetched.
 """
 import json, os, sys, time, urllib.request
 from datetime import datetime, timezone
@@ -78,6 +87,48 @@ def event_age_s(ev, now):
     return None
 
 
+def event_repo(ev):
+    """Canonical full_name for a queued event, or None.
+
+    The Worker flattens events to {repo: <full_name>}; accept a raw
+    webhook-shaped payload too (repository.full_name) so hand-built or
+    future payloads drain identically.
+    """
+    repo = ev.get("repo")
+    if isinstance(repo, str) and repo:
+        return repo
+    rep = ev.get("repository")
+    if isinstance(rep, dict):
+        fn = rep.get("full_name")
+        if isinstance(fn, str) and fn:
+            return fn
+    return None
+
+
+def event_owner(ev):
+    """Owner login for a queued event, or None if not determinable.
+
+    Precedence: repository.owner.login, then the owner segment of the
+    repo full_name (what the Worker flattened the repository into),
+    then installation.account.login — the fallback for payloads that
+    carry an installation but no repository owner.
+    """
+    rep = ev.get("repository")
+    if isinstance(rep, dict):
+        login = (rep.get("owner") or {}).get("login")
+        if isinstance(login, str) and login:
+            return login
+    repo = event_repo(ev)
+    if repo and "/" in repo:
+        return repo.split("/", 1)[0]
+    inst = ev.get("installation")
+    if isinstance(inst, dict):
+        login = (inst.get("account") or {}).get("login")
+        if isinstance(login, str) and login:
+            return login
+    return None
+
+
 def main():
     cfg = load_config()
     root = backup_root(cfg)
@@ -99,11 +150,23 @@ def main():
         with open(log_path, "a") as f:
             f.write(line + "\n")
 
-    # Group events by repo; events without a repo carry nothing the
-    # drainer can act on, so they are acked immediately.
-    by_repo, ack = {}, []
+    allowed = {o.lower() for o in cfg.get("owners", [])}
+
+    # Owner allowlist first (#3326): foreign or owner-less events are
+    # dropped before any fetch work — acked as handled-by-policy,
+    # logged loudly, never counted as drain failures. Group the rest
+    # by repo; events without a repo carry nothing the drainer can act
+    # on, so they are acked immediately.
+    by_repo, ack, dropped = {}, [], []
     for ev in events:
-        repo = ev.get("repo")
+        owner = event_owner(ev)
+        repo = event_repo(ev)
+        if owner is None or owner.lower() not in allowed:
+            log(f"{stamp} DRAIN-DROP foreign owner={owner or 'unknown'} "
+                f"repo={repo or 'unknown'} delivery={ev.get('id')}")
+            ack.append(ev["id"])
+            dropped.append(repo or "unknown")
+            continue
         if not repo:
             ack.append(ev["id"])
             continue
@@ -152,6 +215,7 @@ def main():
         worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
     print(json.dumps({"events": len(events), "fetched": fetched,
                       "failed": failed, "unplanned": unplanned,
+                      "dropped_foreign": len(dropped),
                       "coalesced_pending": pending, "acked": len(ack)}))
     chronic = [f["repo"] for f in failed
                if f["consecutive_failures"] >= CHRONIC_DRAIN_FAILURES]

@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
@@ -661,7 +662,7 @@ export function commentBadge(objectRef: string, counts?: Map<string, number>): s
 
 export function authorBadge(a: DashAuthor): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
-  const link = a.sessionId ? ` <a href="/sessions#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
+  const link = a.sessionId ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
   return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
 }
 
@@ -1805,7 +1806,7 @@ export function sessionRecordLine(
 ): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
   const parent = r.parentId
-    ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
+    ? ` · sub of <a href="/sessions?id=${encodeURIComponent(r.parentId)}#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
     : "";
   const refs = r.taskRefs.length
     ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
@@ -2212,7 +2213,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions?id=${encodeURIComponent(e.sessionId)}#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2965,6 +2966,30 @@ const AA_EXPLORER_SCRIPT = `<script>
   var CAI_POINTS = DATA.caiPoints || [];
   var CATALOG = DATA.catalog || null;
   var POINTS = AA_POINTS;
+  // Default benchmark vintage (2026-11-01, Drew): the payload carries
+  // every vintage the AA import holds (v5 beside v4.3.2 today); ranking
+  // across vintages compares scores from different methodologies, so
+  // the first-load view pins the newest vintage present. "All
+  // benchmarks" (bench "") stays one click away in the filter, and
+  // saved setups / perspective switches keep their existing semantics.
+  function benchVersionKey(b) {
+    var m = /v(\d+(?:\.\d+)*)/.exec(b || "");
+    return m ? m[1].split(".").map(function (n) { return parseInt(n, 10) || 0; }) : null;
+  }
+  function cmpVer(a, b) {
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++) { var d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+    return 0;
+  }
+  function latestBench(points) {
+    var best = "", bestKey = null;
+    (points || []).forEach(function (p) {
+      var k = benchVersionKey(p.benchmark);
+      if (!k) return;
+      if (!bestKey || cmpVer(k, bestKey) > 0) { bestKey = k; best = p.benchmark; }
+    });
+    return best;
+  }
   var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
   var famColor = {};
   var famList = [];
@@ -3061,7 +3086,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     q: "",
     creator: "",
     fam: "",
-    bench: "",
+    bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
     off: {},
@@ -3300,6 +3325,10 @@ const AA_EXPLORER_SCRIPT = `<script>
       var f = sizeHi > sizeLo ? Math.min(1, Math.max(0, (t - sizeLo) / (sizeHi - sizeLo))) : 0.5;
       return 1.6 + Math.pow(f, 1.5) * 8.4;
     }
+    // 2026-11-01 (Drew, code#3335): every dot carries its family color;
+    // frontier membership is emphasis (white ring, full opacity), not
+    // the only color — on real data a chart's frontier can be a single
+    // dominant point, which used to grey out the whole chart.
     rows.forEach(function (p) {
       var cx = X(cfg.x(p)), cy = Y(cfg.y(p));
       var onF = !!p[cfg.flag];
@@ -3307,7 +3336,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       var r = radius(p, onF);
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
       var tip = p.family + " " + (p.effort || "") + " — " + scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + (onF ? col : "#9aa0a6") + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.9 : 0.5) + '" stroke="' + (S.sel === p.key ? "#fff" : onF ? col : "#6b7075") + '" stroke-width="' + (S.sel === p.key ? 2 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.95 : 0.45) + '" stroke="' + (S.sel === p.key || onF ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : onF ? 1.8 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (onF || S.sel === p.key) {
         var anchorEnd = cx > ML + PW * 0.78;
         g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - r - 3 : cx + r + 3) + '" y="' + (cy + 3) + '" font-size="8.6" fill="' + (onF ? "#c9d1d9" : "#8b949e") + '" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
@@ -3854,7 +3883,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     g += '<text x="10" y="' + (mt + ph / 2) + '" font-size="9" fill="#8b949e" text-anchor="middle" transform="rotate(-90 10 ' + (mt + ph / 2) + ')">time — faster is down</text>';
     pts.forEach(function (p) {
       var on = !!pickKeys[p.key], col = famColor[p.family];
-      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + (on ? col : "#9aa0a6") + '" fill-opacity="' + (on ? 0.95 : 0.35) + '" stroke="' + (on ? "#fff" : "#6b7075") + '" stroke-width="' + (on ? 1.4 : 0.7) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + col + '" fill-opacity="' + (on ? 0.95 : 0.4) + '" stroke="' + (on ? "#fff" : col) + '" stroke-width="' + (on ? 1.6 : 0.8) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
     });
     return g + "</svg>";
   }
@@ -4086,7 +4115,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
-      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · solid dots in the charts sit on that chart's frontier, gray are beaten on its axes";
+      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
       return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
     }).join("");
@@ -4680,7 +4709,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
-<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; solid dots sit on it, gray are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only workbook measurements are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
+<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
 <div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
@@ -4765,6 +4794,7 @@ export function renderSessions(
   provenance: Provenance,
   detail?: ProvenanceDetail,
   act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+  view?: RegistryView,
 ): string {
   const bySource = new Map<string, SessionRecord[]>();
   for (const r of records) bySource.set(r.source, [...(bySource.get(r.source) ?? []), r]);
@@ -4783,8 +4813,40 @@ export function renderSessions(
           .join("")}`,
     )
     .join("");
+  // #1209: when the server hands us a RegistryView, the page is one
+  // windowed/filtered/paginated slice of the store — say so, with the
+  // hidden counts, a search/filter form, and pagination links. Without
+  // a view (older callers/tests) the page renders what it was given.
+  let viewHtml = "";
+  if (view) {
+    const q = view.query;
+    const windowLabel = q.windowDays === null ? "all history" : `last ${q.windowDays} days`;
+    const filterBits = [
+      q.q ? `search "${esc(q.q)}"` : "",
+      q.agent ? `agent "${esc(q.agent)}"` : "",
+      q.task ? `task "${esc(q.task)}"` : "",
+    ].filter(Boolean);
+    const hiddenBits = [
+      view.hiddenByWindow > 0 ? `${view.hiddenByWindow} hidden by the ${windowLabel} window` : "",
+      view.hiddenByPagination > 0 ? `${view.hiddenByPagination} more on other pages` : "",
+    ].filter(Boolean);
+    const toggle =
+      q.windowDays === null
+        ? `<a href="/sessions${registryQueryString(q, { windowDays: 7, offset: 0 })}">last 7 days</a>`
+        : `<a href="/sessions${registryQueryString(q, { windowDays: null, offset: 0 })}">all history</a>`;
+    const prev =
+      q.offset > 0
+        ? `<a href="/sessions${registryQueryString(q, { offset: Math.max(0, q.offset - q.limit) })}">← prev</a>`
+        : "";
+    const next =
+      view.remainingAfterPage > 0
+        ? `<a href="/sessions${registryQueryString(q, { offset: q.offset + q.limit })}">next →</a>`
+        : "";
+    viewHtml = `<div class="card"><strong>${view.matched} of ${view.totalAll} sessions</strong> · window: ${esc(windowLabel)}${filterBits.length ? ` · ${filterBits.join(" · ")}` : ""}${hiddenBits.length ? `<br><span class="muted">${hiddenBits.join(" · ")}</span>` : ""}${view.pinnedIncluded ? `<br><span class="muted">A deep-linked session outside this view is pinned at the top of the list.</span>` : ""}<br>${toggle}${prev ? ` · ${prev}` : ""}${next ? ` · ${next}` : ""}
+<form method="get" action="/sessions"><label>Search <input type="search" name="q" value="${esc(q.q ?? "")}"></label> <label>Agent <input type="text" name="agent" value="${esc(q.agent ?? "")}"></label> <label>Task ref <input type="text" name="task" value="${esc(q.task ?? "")}"></label> <label>Window <select name="window"><option value="7"${q.windowDays === 7 ? " selected" : ""}>last 7 days</option><option value="1"${q.windowDays === 1 ? " selected" : ""}>last 24 hours</option><option value="30"${q.windowDays === 30 ? " selected" : ""}>last 30 days</option><option value="90"${q.windowDays === 90 ? " selected" : ""}>last 90 days</option><option value="all"${q.windowDays === null ? " selected" : ""}>all history</option></select></label> <button type="submit">Filter</button></form></div>`;
+  }
   const body = `<h1>Sessions — identity registry</h1>
-<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
+${viewHtml}<p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records shown · ${totalTokens.toLocaleString()} tokens recorded on this page. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
 <p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
   return layout(
