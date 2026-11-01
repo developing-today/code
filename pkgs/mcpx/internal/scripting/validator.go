@@ -158,6 +158,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// regex).
 	signAfterOperand := false
 	var curIdent []rune
+	// curIdentBrokeLine records whether a line terminator appeared
+	// in the trivia before the identifier now being accumulated
+	// started (lineBreakPending at its first character; comment
+	// characters never consume that flag, so a break inside an
+	// intervening comment counts). The async branches below
+	// consult it: async is a modifier of function only with NO
+	// line terminator between the two words (Codex P2 on #3354:
+	// new async<newline>function f() {} is a constructor call on
+	// the identifier async plus a function declaration, by ASI).
+	curIdentBrokeLine := false
 	lastIdent := ""
 	prevChar := rune(0)
 	// identPrev is the last significant character before the
@@ -401,6 +411,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
+					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, 'x')
 				// The escape is an identifier character: it
@@ -434,6 +445,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
 					prevIdentDotRun = lastIdentDotRun
+					curIdentBrokeLine = lineBreakPending
 				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
@@ -509,7 +521,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// expression's frame (Codex P2 on #3354:
 					// class C extends {x:[class extends class {}
 					// {} / 2]}.x {} and the function permutation).
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "extends" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3) && inClassHeritage) || (lastIdent == "function" && prevIdent == "async" && !curIdentBrokeLine && prevIdentPrev != '#' && !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevPrevIdent == "new" && prevPrevIdentPrev != '#' && !(prevPrevIdentPrev == '.' && prevPrevIdentDotRun < 3)) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
