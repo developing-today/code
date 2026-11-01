@@ -59,6 +59,7 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
+import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -635,16 +636,30 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/sessions") {
     const records = await source.registry();
+    // #1209: window/filter/pagination, shared with the JSON twin.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
     return html(
-      renderSessions(records, prov(), provDetail(), {
+      renderSessions(view.records, prov(), provDetail(), {
         actionsByObject: await actionsStore.byObject(),
         identities: identitiesFromRecords(records),
-      }),
+      }, view),
     );
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
-    return json({ records, identities: identitiesFromRecords(records) });
+    // #1209: same query pipeline as /sessions — same params, same page.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
+    return json({
+      records: view.records,
+      identities: identitiesFromRecords(records),
+      total: view.matched,
+      totalAll: view.totalAll,
+      hiddenByWindow: view.hiddenByWindow,
+      hiddenByPagination: view.hiddenByPagination,
+      windowDays: view.query.windowDays,
+      limit: view.query.limit,
+      offset: view.query.offset,
+    });
   }
 
   if (path === "/projects") {
