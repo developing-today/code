@@ -51,6 +51,14 @@ on:
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
       - ".github/scripts/check-id-source-snapshot.sh"
+  pull_request:
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-check.yml"
+      - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-crash-gate-coverage.sh"
+      - ".github/scripts/check-id-source-snapshot.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -174,22 +182,49 @@ jobs:
       - name: Run PR check
         run: nix build -L --no-link "./pkgs/id#checks.x86_64-linux.${{ matrix.check }}"
 
+  # Replay the same checked-in WASM session natively on ARM64. This is a
+  # focused test, not a cross-compiled build: the fixture's per-event snapshot
+  # digests must match the x86_64-pinned values above.
+  world-snapshot-arm64:
+    name: "native arm64: world snapshot determinism"
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Run the checked-in session snapshot test natively
+        run: >-
+          nix develop ./pkgs/id --command cargo test
+          --manifest-path pkgs/id/Cargo.toml --lib
+          world_fixture::tests::replay_tests::checked_in_session_snapshot_hashes_are_stable
+          -- --exact
+
   # Aggregator: preserves the historical required status context
   # "nix flake check" so branch protection keeps working unchanged,
   # while the matrix above does the real work in parallel.
   check:
     name: nix flake check
-    needs: check_each
+    needs: [check_each, world-snapshot-arm64]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every PR check job to succeed
         run: |
-          result="${{ needs.check_each.result }}"
-          echo "matrix result: $result"
-          if [ "$result" != "success" ]; then
-            echo "::error::one or more PR check jobs did not succeed (result: $result) — see the per-check jobs above."
+          matrix_result="${{ needs.check_each.result }}"
+          arm64_result="${{ needs.world-snapshot-arm64.result }}"
+          echo "matrix result: $matrix_result"
+          echo "native arm64 snapshot result: $arm64_result"
+          if [ "$matrix_result" != "success" ] || [ "$arm64_result" != "success" ]; then
+            echo "::error::the x86_64 PR checks or native arm64 determinism check did not succeed — see the jobs above."
             exit 1
           fi
 
