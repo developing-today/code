@@ -39,7 +39,7 @@ Details worth knowing:
 - A remote endpoint is **never** auto-started. If nothing answers, the error
   names the host and the exact remote command that was tried; start the
   daemon there with `ssh buildbox mcpx daemon` (or `mcpx daemon
-  --detached`).
+--detached`).
 - Server-sent events (`/v1/events`, `mcpx log --follow`) stream over the
   same tunnel; there is no separate event path.
 
@@ -112,7 +112,7 @@ the MCP-over-ssh form in [`protocol.md`](./protocol.md#24-transport-and-identity
 The short version:
 
 ```json
-{"mcpServers":{"mcpx":{"command":"ssh","args":["buildbox","mcpx","serve","--transport","stdio"]}}}
+{ "mcpServers": { "mcpx": { "command": "ssh", "args": ["buildbox", "mcpx", "serve", "--transport", "stdio"] } } }
 ```
 
 That runs `mcpx serve` on the remote host, so the daemon there is the one

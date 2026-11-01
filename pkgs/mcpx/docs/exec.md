@@ -42,7 +42,7 @@ templates, five injection phases, `--keep`, a typecheck mode, placeholder
 files — and flattening all of that into the wire type would make the wire type
 a mirror of one command's flag list.
 
-What must not be duplicated is everything *after* the process starts: which
+What must not be duplicated is everything _after_ the process starts: which
 frames are produced, how artifacts are reconciled, when media is intercepted,
 how delivery is applied. That is all in `RunWith`, and it is the same code for
 both. Hooks the caller already set are chained rather than replaced, so the
@@ -66,7 +66,7 @@ does work, in the sense that the script runs and the calls succeed; it just
 quietly produces a different artifact story, and saying so beats a subtly
 different result.
 
-A remote run sends the script's *text*, not its path. A path would mean the
+A remote run sends the script's _text_, not its path. A path would mean the
 daemon's filesystem, and somebody typing `mcpx run ./report.ts --remote` means
 the file in front of them. The consequence is that relative imports do not
 survive the trip: the daemon writes the text to its own disk, and a sibling
@@ -77,7 +77,7 @@ Every flag that shapes the program travels with it: `--env`, `--typecheck`,
 `--launcher`/`--no-launcher`, `--allow-repeat`, `--no-capture-console`,
 `--export`, and the five phases (`--before`, `--prefix`, `--suffix`,
 `--on-success`, `--on-error`). The CLI resolves them -- reading any file a
-phase or launcher names on *its* side -- and sends source, so the daemon runs
+phase or launcher names on _its_ side -- and sends source, so the daemon runs
 the program that would have run locally. Until #192 the remote path sent five
 of these and silently dropped the rest; `TestEveryExecFlagChangesSomething`
 now runs every row both ways.
@@ -90,29 +90,33 @@ receive, the script declares what it produced, mcpx handles delivery.
 
 ```ts
 type ExecOptions = {
-  runtime?: "auto" | "deno" | "bun" | "node"
-  timeout?: string
-  permissions?: string
-  placeholders?: Record<string, unknown>
-  session?: string
-  cwd?: string; env?: Record<string, string>; stdin?: string
-  output?: "text" | "structured" | "stream"
-  capabilities?: string[]
+  runtime?: "auto" | "deno" | "bun" | "node";
+  timeout?: string;
+  permissions?: string;
+  placeholders?: Record<string, unknown>;
+  session?: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+  output?: "text" | "structured" | "stream";
+  capabilities?: string[];
   artifacts?: {
-    delivery?: "reference" | "inline" | "stream"
-    maxBytes?: number
-    sharedFs?: string
-    dir?: string
-  }
-  task?: { ttl: number }
-  ns?: string[]; args?: string[]; export?: string
-  typecheck?: "off" | "on" | "strict"
-  launcher?: string; launcherName?: string   // template text, or "none"
-  allowRepeat?: string[]
-  captureConsole?: boolean
-  phases?: { before?: string[]; prefix?: string[]; onSuccess?: string[];
-             onError?: string[]; suffix?: string[] }
-}
+    delivery?: "reference" | "inline" | "stream";
+    maxBytes?: number;
+    sharedFs?: string;
+    dir?: string;
+  };
+  task?: { ttl: number };
+  ns?: string[];
+  args?: string[];
+  export?: string;
+  typecheck?: "off" | "on" | "strict";
+  launcher?: string;
+  launcherName?: string; // template text, or "none"
+  allowRepeat?: string[];
+  captureConsole?: boolean;
+  phases?: { before?: string[]; prefix?: string[]; onSuccess?: string[]; onError?: string[]; suffix?: string[] };
+};
 ```
 
 `cwd`, `env` and `stdin` are the **caller's** context, not the daemon's. A
@@ -136,12 +140,12 @@ whose result holds references, which already fits `tasks/result`.
 Three renderings of one run.
 
 - **text** — the CLI default. stdout is the script's answer and a person
-  reading it wants it unadorned. It goes to the terminal *as it is produced*,
+  reading it wants it unadorned. It goes to the terminal _as it is produced_,
   not collected and printed at the end; a long run that printed as it went
   must keep doing so.
 - **structured** — the `/v1` and MCP default. One document:
   `{result, emits[], logs[], stdout, artifacts[], exitCode, durationMs,
-  error?}`. A caller over HTTP wants fields, not text it has to scrape.
+error?}`. A caller over HTTP wants fields, not text it has to scrape.
 - **stream** — frames as they happen. SSE by default because it is plain
   HTTP and a browser consumes it with no code; NDJSON on
   `Accept: application/x-ndjson`, because a program with a JSON decoder should
@@ -197,15 +201,15 @@ because the next thing to read that directory cannot tell the difference.
 ### The script API is the same everywhere
 
 ```ts
-const shot = await chrome_devtools.take_screenshot({ format: "png" })
-await artifact("checkout.png", shot)
-return { total }
+const shot = await chrome_devtools.take_screenshot({ format: "png" });
+await artifact("checkout.png", shot);
+return { total };
 ```
 
 `data` may be a string, a `Uint8Array`, an `ArrayBuffer`, `{ path }`, an MCP
 `image`/`audio`/`resource` content item, or a tool result carrying one on
 `.raw`. Accepting the content item directly is what makes the common case one
-line: a screenshot *arrives* as `{type:"image",data,mimeType}` and that is
+line: a screenshot _arrives_ as `{type:"image",data,mimeType}` and that is
 exactly what gets passed in.
 
 The script never asks where it is running. The issue's step 1 — `if
@@ -222,7 +226,7 @@ then fetched by whoever wants them.
 
 Remoteness is declared, never inferred. A unix socket can be ssh-forwarded and
 loopback TCP can be a container with its own filesystem; neither transport
-tells you whether the caller can see the daemon's disk. So the *caller* says
+tells you whether the caller can see the daemon's disk. So the _caller_ says
 so, with `capabilities: ["artifacts"]` and optionally `sharedFs`.
 
 An `ssh://` endpoint is the clearest case of `sharedFs: false`: the bytes
@@ -275,11 +279,11 @@ concurrent runs of the same script would lose.
 
 ### Delivery
 
-| mode | what crosses | when |
-| --- | --- | --- |
-| `reference` (default) | an id and a URI | always correct; the only mode whose cost does not scale with what the script happened to produce |
-| `inline` | base64 in the structured result, bounded by `artifacts.inlineMaxBytes` **and** the caller's `maxBytes` | a caller that cannot make a second request |
-| `stream` | frames after `end` | one response, cancellable |
+| mode                  | what crosses                                                                                           | when                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `reference` (default) | an id and a URI                                                                                        | always correct; the only mode whose cost does not scale with what the script happened to produce |
+| `inline`              | base64 in the structured result, bounded by `artifacts.inlineMaxBytes` **and** the caller's `maxBytes` | a caller that cannot make a second request                                                       |
+| `stream`              | frames after `end`                                                                                     | one response, cancellable                                                                        |
 
 A `sharedFs` or `dir` lets the caller read the destination directly, but the
 store still copies the bytes into that directory; this saves a later transfer,
@@ -315,11 +319,11 @@ to the caller is rewritten. `artifacts.interceptImages` turns it off.
 
 ## Reaching an artifact
 
-| surface | how |
-| --- | --- |
-| MCP | `resource_link` in the `mcpx_exec` result, then `resources/read` on `mcpx://artifacts/{id}`; also `resources/list` and a resource template |
-| `/v1` | `GET /v1/artifacts/{id}` with Range, `GET /v1/artifacts?run=…`, `DELETE /v1/artifacts/{id}` |
-| CLI | `mcpx exec --artifacts-dir ./out` |
+| surface | how                                                                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| MCP     | `resource_link` in the `mcpx_exec` result, then `resources/read` on `mcpx://artifacts/{id}`; also `resources/list` and a resource template |
+| `/v1`   | `GET /v1/artifacts/{id}` with Range, `GET /v1/artifacts?run=…`, `DELETE /v1/artifacts/{id}`                                                |
+| CLI     | `mcpx exec --artifacts-dir ./out`                                                                                                          |
 
 `GET /v1/artifacts/{id}` goes through `http.ServeContent`, which brings Range,
 conditional requests and 206 for free — and Range is what makes reading the
@@ -346,28 +350,28 @@ it was.
 ## Settings
 
 Everything is declared in `internal/settings/exec.go`. It is **not** declared
-*once*: unlike `internal/settings/consumer.go` and `internal/settings/wire.go`,
+_once_: unlike `internal/settings/consumer.go` and `internal/settings/wire.go`,
 which read `defaults.*`, every `Default:` in `exec.go` is an inline string
 literal (`"120s"`, `"64MiB"`, `"10m"`, …), so each value that also lives in
 `defaults.json` is written in two places with nothing holding them equal. Three
 of them — `exec.where`, `artifacts.enabled` and `artifacts.dir` — have no
 `defaults.json` key at all. The values below are what both say today.
 
-| setting | default | what it decides |
-| --- | --- | --- |
-| `exec.timeout` | `120s` | how long a script may run, wherever it runs |
-| `exec.output` | `text` | text, structured or stream |
-| `exec.where` | `auto` | local, remote, or decided by whether the daemon is |
-| `artifacts.enabled` | `true` | whether the store exists at all |
-| `artifacts.dir` | — | `--artifacts-dir` |
-| `artifacts.delivery` | `reference` | reference, inline or stream |
-| `artifacts.ttl` | `24h` | retention before collection |
-| `artifacts.maxBytes` | `64MiB` | the largest single artifact |
-| `artifacts.quota` | `1GiB` | the total, over distinct content |
-| `artifacts.inlineMaxBytes` | `1MiB` | the largest that may be base64'd into a result |
-| `artifacts.chunkBytes` | `256KiB` | one streamed body frame |
-| `artifacts.gcInterval` | `10m` | how often expired artifacts are swept |
-| `artifacts.interceptImages` | `true` | rewrite inline media at the boundary |
+| setting                     | default     | what it decides                                    |
+| --------------------------- | ----------- | -------------------------------------------------- |
+| `exec.timeout`              | `120s`      | how long a script may run, wherever it runs        |
+| `exec.output`               | `text`      | text, structured or stream                         |
+| `exec.where`                | `auto`      | local, remote, or decided by whether the daemon is |
+| `artifacts.enabled`         | `true`      | whether the store exists at all                    |
+| `artifacts.dir`             | —           | `--artifacts-dir`                                  |
+| `artifacts.delivery`        | `reference` | reference, inline or stream                        |
+| `artifacts.ttl`             | `24h`       | retention before collection                        |
+| `artifacts.maxBytes`        | `64MiB`     | the largest single artifact                        |
+| `artifacts.quota`           | `1GiB`      | the total, over distinct content                   |
+| `artifacts.inlineMaxBytes`  | `1MiB`      | the largest that may be base64'd into a result     |
+| `artifacts.chunkBytes`      | `256KiB`    | one streamed body frame                            |
+| `artifacts.gcInterval`      | `10m`       | how often expired artifacts are swept              |
+| `artifacts.interceptImages` | `true`      | rewrite inline media at the boundary               |
 
 Exceeding `maxBytes` is an error, not a truncation. A truncated screenshot is
 worse than a refused one, because it looks like it worked.
@@ -376,7 +380,7 @@ worse than a refused one, because it looks like it worked.
 `defaults.json` without a registry entry: they are read at package
 initialisation and a configuration file arriving later could not change them,
 and a setting that does nothing is worse than no setting. (This paragraph used
-to offer `plumbing.eventHistory` as the comparison. That one *is* a setting —
+to offer `plumbing.eventHistory` as the comparison. That one _is_ a setting —
 `events.history`, `internal/settings/wire.go:239`, flag `--events-history` —
 so it was the wrong example.)
 

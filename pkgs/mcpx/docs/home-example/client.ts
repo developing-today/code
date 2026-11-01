@@ -13,11 +13,15 @@ function env(name: string): string {
   try {
     const d = (globalThis as any).Deno;
     if (d?.env?.get) return d.env.get(name) ?? "";
-  } catch { /* permission denied: fall through */ }
+  } catch {
+    /* permission denied: fall through */
+  }
   try {
     const p = (globalThis as any).process;
     if (p?.env) return p.env[name] ?? "";
-  } catch { /* not Node-like */ }
+  } catch {
+    /* not Node-like */
+  }
   return "";
 }
 
@@ -88,15 +92,19 @@ function realpath(p: string): string {
   try {
     const d = (globalThis as any).Deno;
     if (d?.realPathSync) return d.realPathSync(p);
-  } catch { /* not Deno, or denied */ }
+  } catch {
+    /* not Deno, or denied */
+  }
   try {
     // Bun and Node both expose node:fs; require is available in Bun/CJS and
     // createRequire covers the rest without a static import.
-    const req = (globalThis as any).require ??
-      (globalThis as any).process?.getBuiltinModule?.bind((globalThis as any).process);
+    const req =
+      (globalThis as any).require ?? (globalThis as any).process?.getBuiltinModule?.bind((globalThis as any).process);
     const fs = req ? req("node:fs") : undefined;
     if (fs?.realpathSync) return fs.realpathSync(p);
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
   return p;
 }
 
@@ -123,7 +131,7 @@ function permissionDenied(kind: string, path?: string): Error {
 
 function installDenoCompat(): void {
   const g = globalThis as any;
-  const d = g.Deno ??= {};
+  const d = (g.Deno ??= {});
   d.args ??= g.process?.argv?.slice(2) ?? [];
   if (typeof d.exit !== "function" && typeof g.process?.exit === "function") {
     d.exit = (code?: number) => g.process.exit(code);
@@ -137,8 +145,7 @@ function installDenoCompat(): void {
   }
   if (typeof d.inspect !== "function") {
     if (typeof g.Bun?.inspect === "function") {
-      d.inspect = (v: unknown, opts?: { colors?: boolean; depth?: number }) =>
-        g.Bun.inspect(v, opts);
+      d.inspect = (v: unknown, opts?: { colors?: boolean; depth?: number }) => g.Bun.inspect(v, opts);
     } else {
       const util = builtin("node:util");
       if (typeof util?.inspect === "function") {
@@ -274,7 +281,9 @@ function attachRaw<T>(value: T, raw: RawToolResult): T {
   if (value !== null && typeof value === "object") {
     try {
       Object.defineProperty(value, "raw", { value: raw, enumerable: false, configurable: true });
-    } catch { /* frozen object: leave it alone */ }
+    } catch {
+      /* frozen object: leave it alone */
+    }
     return value;
   }
   // Primitives cannot carry properties; box strings so .raw still works.
@@ -307,7 +316,9 @@ function unwrap(server: string, tool: string, raw: RawToolResult): ToolResult {
     if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
       try {
         return attachRaw(JSON.parse(t) as ToolResult, raw);
-      } catch { /* not JSON after all */ }
+      } catch {
+        /* not JSON after all */
+      }
     }
     return attachRaw(joined as ToolResult, raw);
   }
@@ -333,11 +344,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
       body: JSON.stringify({ server, tool, args: args ?? {} }),
     });
   } catch (e) {
-    throw new ToolError(
-      `cannot reach the mcpx daemon at ${ENDPOINT}: ${(e as Error).message}`,
-      server,
-      tool,
-    );
+    throw new ToolError(`cannot reach the mcpx daemon at ${ENDPOINT}: ${(e as Error).message}`, server, tool);
   }
   const body = await resp.json().catch(() => ({ error: `bad response (http ${resp.status})` }));
   if (resp.status === 202 && body.inputRequired) {
@@ -388,11 +395,12 @@ const MIN_LEVEL = levelFrom(env("MCPX_LOG_LEVEL"), LEVEL_ORDER.info);
  * to know where it came from. So the default traces warn and above, and
  * MCPX_LOG_SOURCE widens it to everything.
  */
-const SOURCE_LEVELS: number = env("MCPX_LOG_SOURCE") === "1"
-  ? LEVEL_ORDER.debug
-  : env("MCPX_LOG_SOURCE") === "0"
-  ? Number.POSITIVE_INFINITY
-  : levelFrom(env("MCPX_LOG_SOURCE"), LEVEL_ORDER.warn);
+const SOURCE_LEVELS: number =
+  env("MCPX_LOG_SOURCE") === "1"
+    ? LEVEL_ORDER.debug
+    : env("MCPX_LOG_SOURCE") === "0"
+      ? Number.POSITIVE_INFINITY
+      : levelFrom(env("MCPX_LOG_SOURCE"), LEVEL_ORDER.warn);
 
 function writeStderr(line: string): void {
   const d = (globalThis as any).Deno;
@@ -410,8 +418,13 @@ function writeStderr(line: string): void {
 
 /** A plain data object, as opposed to an Error, an array or a primitive. */
 function isAttrs(v: unknown): v is LogAttrs {
-  return typeof v === "object" && v !== null && !Array.isArray(v) &&
-    !(v instanceof Error) && Object.getPrototypeOf(v) === Object.prototype;
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    !(v instanceof Error) &&
+    Object.getPrototypeOf(v) === Object.prototype
+  );
 }
 
 function formatFrames(name: string, message: string, frames: Frame[]): string {
@@ -430,9 +443,7 @@ function describeError(e: Error): LogAttrs {
   // touched -- ask for one and the other is gone. So frames are captured and
   // the string is rendered from them.
   const frames = errorFrames(e, 16);
-  const stack = frames.length ? formatFrames(e.name, e.message, frames) : (
-    typeof e.stack === "string" ? e.stack : ""
-  );
+  const stack = frames.length ? formatFrames(e.name, e.message, frames) : typeof e.stack === "string" ? e.stack : "";
   return {
     name: e.name,
     message: e.message,
@@ -547,13 +558,7 @@ function send(kind: "log" | "result" | "artifact", payload: Record<string, unkno
   writeStderr(LOG_SENTINEL + JSON.stringify({ kind, ts: new Date().toISOString(), ...payload }));
 }
 
-function emitRecord(
-  level: LogLevel,
-  bound: LogAttrs,
-  msg: string,
-  rest: unknown[],
-  fileOnly = false,
-): void {
+function emitRecord(level: LogLevel, bound: LogAttrs, msg: string, rest: unknown[], fileOnly = false): void {
   // Short-circuit before any work. A debug call in a loop should cost a
   // comparison when nothing will print.
   const n = LEVEL_ORDER[level];
@@ -695,12 +700,12 @@ export function captureConsole(): void {
     env("MCPX_RUNTIME") === "node" && typeof nodeInspect === "function"
       ? (v) => nodeInspect(v)
       : typeof g.Deno?.inspect === "function"
-      ? (v) => g.Deno.inspect(v, { colors: false, depth: 4 })
-      : typeof g.Bun?.inspect === "function"
-      ? (v) => g.Bun.inspect(v)
-      : typeof nodeInspect === "function"
-      ? (v) => nodeInspect(v)
-      : undefined;
+        ? (v) => g.Deno.inspect(v, { colors: false, depth: 4 })
+        : typeof g.Bun?.inspect === "function"
+          ? (v) => g.Bun.inspect(v)
+          : typeof nodeInspect === "function"
+            ? (v) => nodeInspect(v)
+            : undefined;
   const one = (a: unknown) => {
     if (typeof a === "string") return a;
     if (native) {
@@ -863,16 +868,14 @@ export function captureConsole(): void {
     const started = timers.get(label);
     if (started === undefined) return;
     const ms = performance.now() - started;
-    emitRecord("debug", { console: "timeLog", label, ms },
-      label + ": " + ms.toFixed(3) + "ms " + render(args), []);
+    emitRecord("debug", { console: "timeLog", label, ms }, label + ": " + ms.toFixed(3) + "ms " + render(args), []);
   });
   patch("timeEnd", (label = "default") => {
     const started = timers.get(label);
     if (started === undefined) return;
     timers.delete(label);
     const ms = performance.now() - started;
-    emitRecord("debug", { console: "timeEnd", label, ms },
-      label + ": " + ms.toFixed(3) + "ms", []);
+    emitRecord("debug", { console: "timeEnd", label, ms }, label + ": " + ms.toFixed(3) + "ms", []);
   });
 
   c.__mcpxWrapped = true;
@@ -982,15 +985,12 @@ export function describe(name: string): string {
   const tool = parts[1];
   const group = __toolMeta[ns];
   if (!group) {
-    return "no namespace " + JSON.stringify(ns) +
-      "; there is " + Object.keys(tools).join(", ");
+    return "no namespace " + JSON.stringify(ns) + "; there is " + Object.keys(tools).join(", ");
   }
   const render = (t: string): string => {
     const m = group[t];
     if (!m) return "  " + t + "(...)";
-    const args = m.params
-      .map((p) => (m.required.indexOf(p) >= 0 ? p : p + "?"))
-      .join(", ");
+    const args = m.params.map((p) => (m.required.indexOf(p) >= 0 ? p : p + "?")).join(", ");
     const head = "  " + ns + "." + t + "({ " + args + " })";
     return m.description ? head + "\n      " + m.description : head;
   };
@@ -1030,7 +1030,10 @@ export function installGlobals(): void {
 
 /** Call any tool by name, including ones added after this client was generated. */
 export async function call(serverOrTool: string, toolOrArgs?: any, args?: unknown): Promise<ToolResult> {
-  if (arguments.length === 1 || (arguments.length === 2 && (typeof toolOrArgs === "object" || toolOrArgs === undefined))) {
+  if (
+    arguments.length === 1 ||
+    (arguments.length === 2 && (typeof toolOrArgs === "object" || toolOrArgs === undefined))
+  ) {
     return __call("", serverOrTool, toolOrArgs ?? {});
   }
   return __call(serverOrTool, String(toolOrArgs), args ?? {});
@@ -1039,8 +1042,18 @@ export async function call(serverOrTool: string, toolOrArgs?: any, args?: unknow
 /** Execute multiple tool calls in a single turn. */
 export async function batch(
   calls: Array<{ server?: string; namespace?: string; tool: string; args?: unknown; arguments?: unknown }>,
-  options?: { stopOnError?: boolean; parallel?: boolean }
-): Promise<Array<{ index: number; server?: string; tool: string; status: string; result?: any; error?: string; isError?: boolean }>> {
+  options?: { stopOnError?: boolean; parallel?: boolean },
+): Promise<
+  Array<{
+    index: number;
+    server?: string;
+    tool: string;
+    status: string;
+    result?: any;
+    error?: string;
+    isError?: boolean;
+  }>
+> {
   const resp = await TRANSPORT.fetch(base() + "/v1/batch", {
     method: "POST",
     headers: {
@@ -1062,7 +1075,7 @@ export async function batch(
     }),
   });
   const body = await resp.json();
-  if (!resp.ok || body.error) throw new Error(body.error ?? ("http " + resp.status));
+  if (!resp.ok || body.error) throw new Error(body.error ?? "http " + resp.status);
   return body.results ?? [];
 }
 
@@ -1148,7 +1161,7 @@ export async function artifact(
     // the client transport; the store still reads, hashes, and copies it.
     headers["x-mcpx-path"] = norm.path;
   } else if (norm.path !== undefined) {
-    body = await readFileBytes(norm.path) as unknown as BodyInit;
+    body = (await readFileBytes(norm.path)) as unknown as BodyInit;
   } else {
     body = norm.bytes as unknown as BodyInit;
   }
@@ -1292,18 +1305,14 @@ export const demo = {
   /**
    * Record a value in this process's state.
    */
-  open(args: {
-    value: string;
-  }): Promise<ToolResult> {
+  open(args: { value: string }): Promise<ToolResult> {
     return __call("demo", "open", args);
   },
 
   /**
    * Sleep for ms milliseconds, then return.
    */
-  slow(args: {
-    ms: number;
-  }): Promise<ToolResult> {
+  slow(args: { ms: number }): Promise<ToolResult> {
     return __call("demo", "slow", args);
   },
 
@@ -1317,9 +1326,11 @@ export const demo = {
   /**
    * Return structuredContent.
    */
-  structured(args?: Record<string, unknown>): Promise<Attached<{
-    n?: number;
-  }>> {
+  structured(args?: Record<string, unknown>): Promise<
+    Attached<{
+      n?: number;
+    }>
+  > {
     return __call("demo", "structured", args);
   },
 
@@ -1335,86 +1346,72 @@ export const tools = {
   demo,
 };
 
-Object.setPrototypeOf(tools, new Proxy({} as any, {
-  get(_target, prop, _receiver) {
-    for (const ns of Object.values(tools)) {
-      if (typeof ns === "object" && ns !== null && typeof prop === "string" && prop in (ns as any)) {
-        return (ns as any)[prop];
+Object.setPrototypeOf(
+  tools,
+  new Proxy({} as any, {
+    get(_target, prop, _receiver) {
+      for (const ns of Object.values(tools)) {
+        if (typeof ns === "object" && ns !== null && typeof prop === "string" && prop in (ns as any)) {
+          return (ns as any)[prop];
+        }
       }
-    }
-    if (typeof prop === "string" && prop !== "then" && prop !== "catch") {
-      return (args: any) => __call("", prop, args ?? {});
-    }
-    return undefined;
-  }
-}));
+      if (typeof prop === "string" && prop !== "then" && prop !== "catch") {
+        return (args: any) => __call("", prop, args ?? {});
+      }
+      return undefined;
+    },
+  }),
+);
 
 /** Parameter names and descriptions, for search() and describe(). */
 const __toolMeta: Record<string, Record<string, { description: string; params: string[]; required: string[] }>> = {
-  "demo": {
-    "boom": {
-      "description": "Always returns a tool error.",
-      "params": [],
-      "required": []
+  demo: {
+    boom: {
+      description: "Always returns a tool error.",
+      params: [],
+      required: [],
     },
-    "chatty": {
-      "description": "Report progress and log messages, then echo the request's _meta.",
-      "params": [],
-      "required": []
+    chatty: {
+      description: "Report progress and log messages, then echo the request's _meta.",
+      params: [],
+      required: [],
     },
-    "echo": {
-      "description": "Echo a message back.",
-      "params": [
-        "message"
-      ],
-      "required": [
-        "message"
-      ]
+    echo: {
+      description: "Echo a message back.",
+      params: ["message"],
+      required: ["message"],
     },
     "fancy-name": {
-      "description": "Tool whose name is not a TypeScript identifier.",
-      "params": [
-        "count",
-        "items",
-        "mode",
-        "nested"
-      ],
-      "required": []
+      description: "Tool whose name is not a TypeScript identifier.",
+      params: ["count", "items", "mode", "nested"],
+      required: [],
     },
-    "open": {
-      "description": "Record a value in this process's state.",
-      "params": [
-        "value"
-      ],
-      "required": [
-        "value"
-      ]
+    open: {
+      description: "Record a value in this process's state.",
+      params: ["value"],
+      required: ["value"],
     },
-    "slow": {
-      "description": "Sleep for ms milliseconds, then return.",
-      "params": [
-        "ms"
-      ],
-      "required": [
-        "ms"
-      ]
+    slow: {
+      description: "Sleep for ms milliseconds, then return.",
+      params: ["ms"],
+      required: ["ms"],
     },
-    "state": {
-      "description": "Report this process's pid and everything it has recorded.",
-      "params": [],
-      "required": []
+    state: {
+      description: "Report this process's pid and everything it has recorded.",
+      params: [],
+      required: [],
     },
-    "structured": {
-      "description": "Return structuredContent.",
-      "params": [],
-      "required": []
+    structured: {
+      description: "Return structuredContent.",
+      params: [],
+      required: [],
     },
-    "wipe": {
-      "description": "Forget everything this process recorded.",
-      "params": [],
-      "required": []
-    }
-  }
+    wipe: {
+      description: "Forget everything this process recorded.",
+      params: [],
+      required: [],
+    },
+  },
 };
 
 export default tools;
