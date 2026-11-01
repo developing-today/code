@@ -2,7 +2,7 @@
 
 import { terminalBytesForKey } from "./world-keyboard";
 import { parseWorldSeed } from "./world-seed";
-import { renderWorldSurface, type ScreenSurface } from "./world-surface";
+import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
   type:
@@ -28,6 +28,9 @@ type WorldFrame = {
   sequence?: number;
   data?: string;
   surface?: ScreenSurface;
+  view_revision?: number;
+  base_view_revision?: number;
+  patch?: ScreenPatch;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
@@ -116,6 +119,8 @@ function initWorld(): void {
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
   let cursor = 0;
+  let renderedSurface: ScreenSurface | null = null;
+  let renderedViewRevision: number | null = null;
   let records: Record<string, unknown> = {};
   let recordsAfter: string | null = null;
   let recordsPending = false;
@@ -173,8 +178,34 @@ function initWorld(): void {
         break;
       }
       case "view":
-        if (frame.surface && renderWorldSurface(view, frame.surface)) break;
-        if (frame.data !== undefined) view.textContent = frame.data;
+        if (frame.patch) {
+          if (
+            renderedSurface &&
+            renderedViewRevision === frame.base_view_revision &&
+            typeof frame.view_revision === "number"
+          ) {
+            const patched = applyScreenPatch(renderedSurface, frame.patch);
+            if (patched && renderWorldSurface(view, patched)) {
+              renderedSurface = patched;
+              renderedViewRevision = frame.view_revision;
+              break;
+            }
+          }
+          // A gap or invalid patch means the browser no longer has the exact
+          // base. A same-size resize asks the server to reset with a full view.
+          sendViewport();
+          break;
+        }
+        if (frame.surface && renderWorldSurface(view, frame.surface)) {
+          renderedSurface = frame.surface;
+          renderedViewRevision = frame.view_revision ?? null;
+          break;
+        }
+        if (frame.data !== undefined) {
+          view.textContent = frame.data;
+          renderedSurface = null;
+          renderedViewRevision = frame.view_revision ?? null;
+        }
         break;
       case "records": {
         if (!recordsPending) return;
@@ -297,6 +328,8 @@ function initWorld(): void {
     // (block) this connection's first fetch.
     recordsPending = false;
     recordsRefetch = false;
+    renderedSurface = null;
+    renderedViewRevision = null;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
@@ -310,7 +343,15 @@ function initWorld(): void {
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
       reconnects = 0;
-      ws.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
+      ws.send(
+        JSON.stringify({
+          type: "join",
+          capability: token,
+          after: cursor || null,
+          world: selectedWorld(),
+          screen_patches: true,
+        }),
+      );
       sendViewport();
     });
     ws.addEventListener("message", (event) => {

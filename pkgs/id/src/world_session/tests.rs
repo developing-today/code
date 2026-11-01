@@ -953,6 +953,9 @@ mod tests {
             sequence: 3,
             data: "count=1",
             surface: None,
+            view_revision: 0,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
@@ -970,6 +973,9 @@ mod tests {
             sequence: 8,
             data,
             surface: Some(&surface),
+            view_revision: 1,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));

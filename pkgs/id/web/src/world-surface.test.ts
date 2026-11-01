@@ -1,11 +1,83 @@
 import { describe, expect, it } from "vitest";
-import { renderWorldSurface, type ScreenSurface } from "./world-surface";
+import { applyScreenPatch, renderWorldSurface, type ScreenSurface } from "./world-surface";
 
 function makeScreen(cells: ScreenSurface["cells"]): ScreenSurface {
   return { kind: "screen", version: 1, width: cells.length, height: 1, cells };
 }
 
 describe("world screen presenter", () => {
+  it("applies revision-independent cell runs to the same validated surface as a full frame", () => {
+    const previous: ScreenSurface = {
+      kind: "screen",
+      version: 1,
+      width: 4,
+      height: 1,
+      cells: [
+        { symbol: "a", fg: 0, bg: 0, bold: false, columns: 1 },
+        { symbol: "b", fg: 0, bg: 0, bold: false, columns: 1 },
+        { symbol: "c", fg: 0, bg: 0, bold: false, columns: 1 },
+        { symbol: "d", fg: 0, bg: 0, bold: false, columns: 1 },
+      ],
+    };
+    const patch = {
+      version: 1,
+      width: 4,
+      height: 1,
+      runs: [
+        { start: 0, cells: [{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }, { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 }] },
+        { start: 3, cells: [{ symbol: "x", fg: 4, bg: 0, bold: true, columns: 1 }] },
+      ],
+    };
+    const full: ScreenSurface = { ...previous, cells: [...patch.runs[0].cells, previous.cells[2], ...patch.runs[1].cells] };
+    const applied = applyScreenPatch(previous, patch);
+    expect(applied).toEqual(full);
+    const root = document.createElement("div");
+    expect(applied && renderWorldSurface(root, applied)).toBe(true);
+    expect(renderWorldSurface(document.createElement("div"), full)).toBe(true);
+  });
+
+  it("rejects malformed, overlapping, out-of-range, and invalid-cell patches", () => {
+    const previous = makeScreen([
+      { symbol: "a", fg: 0, bg: 0, bold: false, columns: 1 },
+      { symbol: "b", fg: 0, bg: 0, bold: false, columns: 1 },
+    ]);
+    const patch = (runs: Array<{ start: number; cells: ScreenSurface["cells"] }>) => ({
+      version: 1,
+      width: 2,
+      height: 1,
+      runs,
+    });
+    expect(applyScreenPatch(previous, patch([{ start: 1, cells: [previous.cells[1]] }, { start: 1, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(applyScreenPatch(previous, patch([{ start: 2, cells: [previous.cells[0]] }]))).toBeNull();
+    expect(
+      applyScreenPatch(
+        previous,
+        patch([
+          {
+            start: 0,
+            cells: [
+              { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+              { symbol: "x", fg: 0, bg: 0, bold: false, columns: 1 },
+            ],
+          },
+        ]),
+      ),
+    ).not.toBeNull();
+    const invalid = applyScreenPatch(
+      previous,
+      patch([
+        {
+          start: 0,
+          cells: [
+            { symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 },
+            { symbol: "x", fg: 0, bg: 0, bold: false, columns: 1 },
+          ],
+        },
+      ]),
+    );
+    expect(invalid && renderWorldSurface(document.createElement("div"), invalid)).toBe(false);
+  });
+
   it("uses text nodes and fixed palette styles, not guest HTML", () => {
     const root = document.createElement("div");
     const markup = "<";
