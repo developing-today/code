@@ -10,6 +10,51 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # TEMPORARY (developing-today/code#4005, found via #2715): the
+  # nixpkgs-25 segment below takes activitywatch from this input's
+  # raw legacyPackages, and on the current pin (31ecbaca) it is
+  # broken twice over. (1) aw-core 0.5.17 pins peewee==3.* and its
+  # datastore imports SqliteExtDatabase from playhouse.sqlite_ext,
+  # which peewee 4 removed; the tree now ships peewee 4.4.0, so
+  # aw-core fails its runtime-deps check and would be broken at
+  # runtime too -- a relaxDeps would only mask that. Pin peewee to
+  # 3.17.9 (the last 3.x) for this set's python packages instead,
+  # dropping cython from its buildInputs: 3.17.9's vendored .pyx
+  # sources no longer compile under the tree's Cython 3, and peewee
+  # builds fine from its pre-generated C sources without it.
+  # (2) aw-qt's makeWrapperArgs use the single-string form
+  # "--suffix PATH : ...", which the tree's C makeWrapper rejects
+  # ("Unknown argument"); restate them in split form. The same
+  # peewee skew exists on the current master and unstable pins, so
+  # no pin offers a consistent set. Remove this binding and use the
+  # raw legacyPackages again once stock activitywatch builds on the
+  # pin; tracked in #4005.
+  nixpkgs-25-fixed = inputs.nixpkgs-25.legacyPackages.${system}.extend (
+    final: prev: {
+      python314 = prev.python314.override {
+        packageOverrides = self: super: {
+          peewee = super.peewee.overridePythonAttrs (old: {
+            version = "3.17.9";
+            src = prev.fetchPypi {
+              pname = "peewee";
+              version = "3.17.9";
+              hash = "sha256-/hXNABdY4yTI48qMjtkA5zl8KQcpF4nh78OD5mubx6g=";
+            };
+            buildInputs = [ prev.sqlite ];
+          });
+        };
+      };
+      python3Packages = final.python314.pkgs;
+      aw-qt = prev.aw-qt.overridePythonAttrs (old: {
+        makeWrapperArgs = [
+          "--suffix"
+          "PATH"
+          ":"
+          (prev.lib.makeBinPath [ prev.xdg-utils ])
+        ];
+      });
+    }
+  );
   # TEMPORARY (developing-today/code#3906, found via #2715): the
   # nixpkgs-master segment below takes haskellPackages.misfortune from
   # this input's raw legacyPackages, and on the current master pin
@@ -746,7 +791,7 @@ in
       jdk21
       androidSdk.androidsdk
     ])
-    ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
+    ++ (with nixpkgs-25-fixed; [ activitywatch ])
     ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       # AI coding agents. Kept on the unstable channel rather than master
