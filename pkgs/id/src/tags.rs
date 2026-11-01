@@ -584,7 +584,7 @@ fn encode_omega_null_key_prefix(key: &[u8]) -> Vec<u8> {
 /// Handles both `TupleValue::String` and `TupleValue::Bytes` for binary support.
 fn decode_alpha_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)> {
     let fields = decode(raw)?;
-    if fields.len() < 3 {
+    if fields.len() != 3 {
         bail!("α key has {} fields, expected 3", fields.len());
     }
     let subject = tuple_value_to_tag_value(&fields[0])
@@ -608,7 +608,7 @@ fn decode_alpha_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)
 /// back to `(subject, key, value?)`. Handles both String and Bytes variants.
 fn decode_omega_key(raw: &[u8]) -> Result<(TagValue, TagValue, Option<TagValue>)> {
     let fields = decode(raw)?;
-    if fields.len() < 3 {
+    if fields.len() != 3 {
         bail!("Ω key has {} fields, expected 3", fields.len());
     }
     let value = if fields[0].is_null() {
@@ -1940,6 +1940,47 @@ mod tests {
         assert_eq!(subject, "file.txt");
         assert_eq!(key, "label");
         assert_eq!(value, Some(TagValue::from("rust")));
+    }
+
+    /// Build a 4-field α-shaped key: a valid tag key plus a trailing field.
+    /// No writer emits this; it models the phantom key from issue #1832.
+    fn encode_alpha_key_4_fields() -> Vec<u8> {
+        let mut enc = TupleEncoder::new();
+        encode_smart(&mut enc, b"file.txt");
+        encode_smart(&mut enc, b"tag");
+        encode_smart(&mut enc, b"v1");
+        encode_smart(&mut enc, b"extra");
+        enc.build()
+    }
+
+    /// Build a 4-field Ω-shaped key: (value, key, subject) plus a trailing field.
+    fn encode_omega_key_4_fields() -> Vec<u8> {
+        let mut enc = TupleEncoder::new();
+        encode_smart(&mut enc, b"v1");
+        encode_smart(&mut enc, b"tag");
+        encode_smart(&mut enc, b"file.txt");
+        encode_smart(&mut enc, b"extra");
+        enc.build()
+    }
+
+    #[test]
+    fn test_decode_alpha_key_rejects_four_fields() {
+        let raw = encode_alpha_key_4_fields();
+        let err = decode_alpha_key(&raw).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 3"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_omega_key_rejects_four_fields() {
+        let raw = encode_omega_key_4_fields();
+        let err = decode_omega_key(&raw).unwrap_err();
+        assert!(
+            err.to_string().contains("expected 3"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
