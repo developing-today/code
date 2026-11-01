@@ -80,6 +80,7 @@ import {
   entryFromTurso,
   lastKnownEntries,
   mapWithConcurrency,
+  markRetained,
   recordsFromEntries,
   type FileExportDoc,
   type QuotaProviderResult,
@@ -440,7 +441,7 @@ async function main(): Promise<number> {
       if (run.state !== "error" || run.entries.some((e) => e.state === "ok")) continue;
       const retained = lastKnownEntries(prevEntries, run.id);
       if (retained.length) {
-        run.entries = retained;
+        run.entries = markRetained(retained, tickAt);
         run.retained = true;
       }
     }

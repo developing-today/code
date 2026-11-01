@@ -571,3 +571,14 @@ export async function mapWithConcurrency<T, R>(
 export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId: string): QuotaCurrentEntry[] {
   return prev.filter((e) => e.providerId === providerId && e.state === "ok");
 }
+
+/**
+ * #1268: stamp retained entries with the failed tick that kept them.
+ * Copies, never the previous tick's objects; measuredAt is preserved
+ * (it is the honest age of the data) — the stamp is the explicit
+ * signal readers use to classify the entry stale immediately,
+ * instead of it reading as fresh until the freshness bound lapses.
+ */
+export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
+  return entries.map((e) => ({ ...e, retainedFromFailedTick: failedTickIso }));
+}

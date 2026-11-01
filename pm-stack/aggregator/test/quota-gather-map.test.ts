@@ -5,6 +5,7 @@ import {
   entryFromResult,
   lastKnownEntries,
   mapWithConcurrency,
+  markRetained,
   normalizeResetAt,
   recordsFromEntries,
   serviceIdFor,
@@ -165,6 +166,14 @@ describe("lastKnownEntries (#1268)", () => {
     expect(lastKnownEntries([errEntry], "cline-pass")).toEqual([]);
     expect(lastKnownEntries([okEntry], "nope")).toEqual([]);
     expect(lastKnownEntries([], "cline-pass")).toEqual([]);
+  });
+  test("markRetained stamps copies with the failed tick; originals and measuredAt untouched", () => {
+    const stamped = markRetained([okEntry], "2026-10-27T05:15:00.000Z");
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0].retainedFromFailedTick).toBe("2026-10-27T05:15:00.000Z");
+    expect(stamped[0].measuredAt).toBe(okEntry.measuredAt);
+    expect(stamped[0]).not.toBe(okEntry);
+    expect(okEntry.retainedFromFailedTick).toBeUndefined();
   });
 });
 
