@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/testsupport/gen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport/gen"
 )
 
 // goldenSeed is a fixed test vector. It pins the GENERATOR, not a

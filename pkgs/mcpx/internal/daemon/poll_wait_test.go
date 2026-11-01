@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/settings"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 func TestLongPollWaitBounds(t *testing.T) {

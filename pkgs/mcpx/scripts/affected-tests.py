@@ -425,14 +425,14 @@ def main():
             imp_path, imports = parts[0], parts[1:]
             for cp in changed_pkgs:
                 full = (
-                    "github.com/dezren39/mcpx"
+                    "github.com/developing-today/code/pkgs/mcpx"
                     if cp == "."
-                    else "github.com/dezren39/mcpx/" + cp
+                    else "github.com/developing-today/code/pkgs/mcpx/" + cp
                 )
                 if full in imports and imp_path != full:
                     importers.add(imp_path)
         for imp in sorted(importers):
-            short = imp.replace("github.com/dezren39/mcpx/", "")
+            short = imp.replace("github.com/developing-today/code/pkgs/mcpx/", "")
             if short == "internal/e2e" or short in unit_pkgs:
                 continue
             commands.append(("T1b", f"(cd pkgs/mcpx && go test -count=1 ./{short}/)"))

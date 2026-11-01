@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/schemaval"
+	"github.com/developing-today/code/pkgs/mcpx/internal/schemaval"
 )
 
 // Argument rules (#1986, Phase 2 of the write-policy design #2126):

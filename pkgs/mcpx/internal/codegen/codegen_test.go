@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
 )
 
 func typeOf(t *testing.T, schemaJSON string) string {

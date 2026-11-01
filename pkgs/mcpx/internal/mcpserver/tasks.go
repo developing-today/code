@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // The task store moved to internal/tasks so the daemon's /v1 and this server

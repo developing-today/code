@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // Attempt is one rung of the connection ladder, and what happened on it.

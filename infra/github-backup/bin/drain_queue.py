@@ -13,14 +13,32 @@ Per-repo coalescing: a repo is fetched at most once per 15 min
 clone attempt through the normal plan if the repo is already planned.
 Secrets come from the environment; the systemd unit sources them from
 Bitwarden by name (see config.json app.bitwarden_secret_names).
+
+Ack discipline (#3219): an event is acked — i.e. deleted from the Worker
+queue — only once the drainer has made the mirror reflect it:
+
+- planned repo, fetch attempted: ack iff fetch_repo returned "ok".
+  On "fail"/"missing" the event STAYS QUEUED for the next drain tick,
+  the failure is appended to fetch.log (same leading format as the
+  daily pass), and the coalesce stamp is NOT advanced.
+- planned repo inside its coalesce window: the event stays queued
+  (not acked); a drain after the window passes fetches and acks it.
+- unplanned repo: acked + a fetch.log note (mirror creation is the
+  weekly reconcile's decision).
+- consecutive drain failures are counted per repo
+  (state key drain_fail::<repo>); at CHRONIC_DRAIN_FAILURES the failure
+  is logged loudly (DRAIN-CHRONIC) and the run exits non-zero so
+  systemd surfaces it — the event is still kept, never silently dropped.
 """
 import json, os, sys, time, urllib.request
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ghb_common import load_config, backup_root
 import fetch_mirrors
 
 COALESCE_S = 15 * 60
+CHRONIC_DRAIN_FAILURES = 5
 
 
 def worker_req(path, payload=None):
@@ -37,6 +55,29 @@ def worker_req(path, payload=None):
         return json.loads(r.read() or b"{}")
 
 
+def event_age_s(ev, now):
+    """Age of a queued event in seconds, or None if its ts is unusable.
+
+    The Worker stamps ts with `new Date().toISOString()`; accept epoch
+    numbers too so a format change degrades to 'unknown', not a crash.
+    """
+    ts = ev.get("ts")
+    if isinstance(ts, (int, float)):
+        return max(0, int(now - ts))
+    if isinstance(ts, str):
+        try:
+            t = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ") \
+                .replace(tzinfo=timezone.utc).timestamp()
+            return max(0, int(now - t))
+        except ValueError:
+            try:
+                t = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                return max(0, int(now - t))
+            except ValueError:
+                return None
+    return None
+
+
 def main():
     cfg = load_config()
     root = backup_root(cfg)
@@ -48,33 +89,76 @@ def main():
         print("queue empty")
         return 0
     now = time.time()
-    to_fetch, ack = [], []
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    log_path = os.path.join(root, "fetch.log")
+    plan_path = os.path.join(root, "plan.json")
+    planned = {p["repo"] for p in json.load(open(plan_path))} \
+        if os.path.exists(plan_path) else set()
+
+    def log(line):
+        with open(log_path, "a") as f:
+            f.write(line + "\n")
+
+    # Group events by repo; events without a repo carry nothing the
+    # drainer can act on, so they are acked immediately.
+    by_repo, ack = {}, []
     for ev in events:
         repo = ev.get("repo")
-        ack.append(ev["id"])
         if not repo:
+            ack.append(ev["id"])
+            continue
+        by_repo.setdefault(repo, []).append(ev)
+
+    fetched, failed, unplanned, pending = [], [], [], []
+    for repo in sorted(by_repo):
+        evs = by_repo[repo]
+        ids = [e["id"] for e in evs]
+        ages = [a for a in (event_age_s(e, now) for e in evs) if a is not None]
+        age_note = f"oldest event age {max(ages)}s" if ages else "event age unknown"
+        if repo not in planned:
+            log(f"{stamp} {repo} webhook event for unplanned repo — "
+                f"left for weekly reconcile")
+            ack.extend(ids)
+            unplanned.append(repo)
             continue
         key = f"drain_last::{repo}"
         if now - state.get(key, 0) < COALESCE_S:
+            # Inside the coalesce window: keep the event queued. A drain
+            # after the window passes will fetch (and then ack) it.
+            pending.append(repo)
             continue
-        state[key] = now
-        if repo not in to_fetch:
-            to_fetch.append(repo)
-    fetched = []
-    for repo in to_fetch:
-        plan_path = os.path.join(root, "plan.json")
-        planned = {p["repo"] for p in json.load(open(plan_path))} if os.path.exists(plan_path) else set()
-        if repo in planned:
-            fetch_mirrors.fetch_repo(root, repo, state)
+        res = fetch_mirrors.fetch_repo(root, repo, state)
+        if res == "ok":
+            state[key] = now
+            state.pop(f"drain_fail::{repo}", None)
+            ack.extend(ids)
             fetched.append(repo)
-        else:
-            with open(os.path.join(root, "fetch.log"), "a") as f:
-                f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {repo} "
-                        f"webhook event for unplanned repo — left for weekly reconcile\n")
+            continue
+        fkey = f"drain_fail::{repo}"
+        fs = state.setdefault(fkey, {"count": 0, "first": now})
+        fs["count"] += 1
+        fs["last"] = now
+        err = (state.get(repo) or {}).get("last_error", "")
+        log(f"{stamp} {repo} {res} {err} (drain: {age_note}, "
+            f"consecutive drain failures {fs['count']})")
+        if fs["count"] >= CHRONIC_DRAIN_FAILURES:
+            log(f"{stamp} {repo} DRAIN-CHRONIC {fs['count']} consecutive "
+                f"drain failures — event(s) kept queued, needs attention")
+        failed.append({"repo": repo, "result": res,
+                       "consecutive_failures": fs["count"]})
     with open(state_path, "w") as f:
         json.dump(state, f, indent=0)
-    worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
-    print(json.dumps({"events": len(events), "fetched": fetched}))
+    if ack:
+        worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
+    print(json.dumps({"events": len(events), "fetched": fetched,
+                      "failed": failed, "unplanned": unplanned,
+                      "coalesced_pending": pending, "acked": len(ack)}))
+    chronic = [f["repo"] for f in failed
+               if f["consecutive_failures"] >= CHRONIC_DRAIN_FAILURES]
+    if chronic:
+        print(f"drain: chronic failures (events kept queued): {chronic}",
+              file=sys.stderr)
+        return 1
     return 0
 
 

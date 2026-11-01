@@ -3,8 +3,8 @@ package settings
 import (
 	"strconv"
 
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // protoTasksSettings govern the tasks mcpx hands out, over MCP and /v1 alike.

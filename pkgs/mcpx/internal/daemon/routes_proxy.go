@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
 )
 
 type openAITool struct {

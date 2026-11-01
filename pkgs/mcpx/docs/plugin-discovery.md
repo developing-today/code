@@ -4,6 +4,8 @@ What the opencode plugin does when there is no `mcpx` on `PATH`, why each rung
 of the ladder exists, and what was found building it.
 
 ```
+id:           finding-the-daemon-without-the-binary
+since:        pre-release
 created:      2026-09-29T21:00:00-05:00
 last-updated: 2026-09-29T21:00:00-05:00
 status:       implemented

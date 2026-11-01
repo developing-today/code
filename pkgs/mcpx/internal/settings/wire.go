@@ -1,6 +1,6 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // wireSettings are the numbers that used to be written where they were
 // needed: a body limit beside one decoder, a ping interval beside one
