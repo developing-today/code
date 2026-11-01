@@ -5,6 +5,8 @@
 //! never supply terminal escapes, HTML, or CSS: adapters render this value
 //! using their own trusted presentation code.
 
+use std::fmt::Write as _;
+
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -425,54 +427,11 @@ impl ScreenSurface {
     /// validated numeric style fields; guest-provided glyphs contain no controls.
     #[must_use]
     pub fn render_ansi(&self) -> Option<String> {
-        let width = usize::from(self.width);
-        let height = usize::from(self.height);
-        if width == 0
-            || width > MAX_SCREEN_WIDTH
-            || height == 0
-            || height > MAX_SCREEN_HEIGHT
-            || self.cells.len() != width.checked_mul(height)?
-        {
+        if !self.is_valid() {
             return None;
         }
-        for (index, cell) in self.cells.iter().enumerate() {
-            let x = index % width;
-            if cell.columns == 0 {
-                if x == 0 {
-                    return None;
-                }
-                let previous = self.cells.get(index.checked_sub(1)?)?;
-                if previous.columns != 2
-                    || previous.fg != cell.fg
-                    || previous.bg != cell.bg
-                    || previous.bold != cell.bold
-                    || !cell.symbol.is_empty()
-                {
-                    return None;
-                }
-            } else if cell.columns == 1 || cell.columns == 2 {
-                if cell.symbol.graphemes(true).count() != 1
-                    || cell.symbol.chars().any(char::is_control)
-                    || UnicodeWidthStr::width(cell.symbol.as_str()) != usize::from(cell.columns)
-                    || (cell.columns == 2 && x + 1 == width)
-                {
-                    return None;
-                }
-                if cell.columns == 2 {
-                    let continuation = self.cells.get(index.checked_add(1)?)?;
-                    if continuation.columns != 0
-                        || continuation.fg != cell.fg
-                        || continuation.bg != cell.bg
-                        || continuation.bold != cell.bold
-                        || !continuation.symbol.is_empty()
-                    {
-                        return None;
-                    }
-                }
-            } else {
-                return None;
-            }
-        }
+        let width = usize::from(self.width);
+        let height = usize::from(self.height);
         let mut output = String::from("\x1b[H\x1b[2J");
         for row in 0..height {
             let mut previous_style: Option<(u8, u8, bool)> = None;
@@ -493,6 +452,118 @@ impl ScreenSurface {
             }
         }
         Some(output)
+    }
+
+    /// Render only rows that differ from the preceding screen. A changed row
+    /// is rewritten from column one so wide-to-narrow glyph transitions cannot
+    /// leave a stale continuation cell behind. `None` means the caller must
+    /// use a full repaint (invalid screen or changed dimensions/version).
+    #[must_use]
+    pub(crate) fn render_ansi_diff(&self, previous: &Self) -> Option<String> {
+        if !self.is_valid()
+            || !previous.is_valid()
+            || self.version != previous.version
+            || self.width != previous.width
+            || self.height != previous.height
+        {
+            return None;
+        }
+
+        let width = usize::from(self.width);
+        let height = usize::from(self.height);
+        let mut output = String::new();
+        for row in 0..height {
+            let start = row * width;
+            let end = start + width;
+            if self.cells[start..end] == previous.cells[start..end] {
+                continue;
+            }
+
+            // Repaint a complete changed row. This also replaces both cells
+            // when a glyph changes between narrow and wide forms.
+            write!(&mut output, "\x1b[{};1H", row + 1).ok()?;
+            let mut previous_style: Option<(u8, u8, bool)> = None;
+            for cell in &self.cells[start..end] {
+                if cell.columns == 0 {
+                    continue;
+                }
+                let style = (cell.fg, cell.bg, cell.bold);
+                if previous_style != Some(style) {
+                    output.push_str(&style_sequence(style.0, style.1, style.2));
+                    previous_style = Some(style);
+                }
+                output.push_str(&cell.symbol);
+            }
+            output.push_str("\x1b[0m");
+        }
+        if !output.is_empty() {
+            // An absolute move clears the terminal's pending-wrap state after
+            // writing a row through its last column, without changing cells.
+            write!(&mut output, "\x1b[{};{}H", height, width).ok()?;
+        }
+        Some(output)
+    }
+
+    fn is_valid(&self) -> bool {
+        let width = usize::from(self.width);
+        let height = usize::from(self.height);
+        if width == 0
+            || width > MAX_SCREEN_WIDTH
+            || height == 0
+            || height > MAX_SCREEN_HEIGHT
+            || width.checked_mul(height) != Some(self.cells.len())
+        {
+            return false;
+        }
+        for (index, cell) in self.cells.iter().enumerate() {
+            let x = index % width;
+            if cell.columns == 0 {
+                if x == 0 {
+                    return false;
+                }
+                let Some(previous) = index
+                    .checked_sub(1)
+                    .and_then(|previous| self.cells.get(previous))
+                else {
+                    return false;
+                };
+                if previous.columns != 2
+                    || previous.fg != cell.fg
+                    || previous.bg != cell.bg
+                    || previous.bold != cell.bold
+                    || !cell.symbol.is_empty()
+                {
+                    return false;
+                }
+            } else if cell.columns == 1 || cell.columns == 2 {
+                if cell.symbol.graphemes(true).count() != 1
+                    || cell.symbol.chars().any(char::is_control)
+                    || UnicodeWidthStr::width(cell.symbol.as_str()) != usize::from(cell.columns)
+                    || (cell.columns == 2 && x + 1 == width)
+                {
+                    return false;
+                }
+                if cell.columns == 2 {
+                    let Some(continuation) = index
+                        .checked_add(1)
+                        .and_then(|continuation| self.cells.get(continuation))
+                    else {
+                        return false;
+                    };
+                    if continuation.columns != 0
+                        || continuation.fg != cell.fg
+                        || continuation.bg != cell.bg
+                        || continuation.bold != cell.bold
+                        || !continuation.symbol.is_empty()
+                    {
+                        return false;
+                    }
+                }
+            } else {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -589,6 +660,78 @@ mod tests {
             }],
         };
         assert_eq!(bad.apply(&small), None, "run past the last cell");
+    }
+
+    #[test]
+    fn ansi_diff_repaints_changed_rows_with_terminal_parity_and_byte_savings() {
+        let previous = grid(80, 24, " ");
+        let mut cells = previous.cells.clone();
+        cells[10 * 80 + 30] = cell("x");
+        let next = ScreenSurface::from_cells(80, 24, cells).unwrap();
+
+        let diff = next.render_ansi_diff(&previous).unwrap();
+        let full = next.render_ansi().unwrap();
+        assert!(diff.contains("\x1b[11;1H"));
+        assert!(!diff.contains("\x1b[10;1H"));
+        assert!(!diff.contains("\x1b[2J"));
+        assert!(
+            diff.len() * 10 < full.len(),
+            "diff {diff:?} vs full repaint"
+        );
+
+        let mut patched = vt100::Parser::new(24, 80, 0);
+        patched.process(previous.render_ansi().unwrap().as_bytes());
+        patched.process(diff.as_bytes());
+        let mut repainted = vt100::Parser::new(24, 80, 0);
+        repainted.process(full.as_bytes());
+        assert_eq!(patched.screen().contents(), repainted.screen().contents());
+    }
+
+    #[test]
+    fn ansi_diff_handles_wide_glyph_transitions_and_style_changes() {
+        let previous = screen(json!({
+            "kind": "screen",
+            "version": 1,
+            "width": 6,
+            "height": 1,
+            "rows": ["界ab  "],
+            "styles": [[{"x": 0, "length": 2, "fg": 1, "bg": 0, "bold": false}]]
+        }))
+        .unwrap()
+        .unwrap();
+        let WorldSurface::Screen(previous) = previous else {
+            panic!("expected screen");
+        };
+        let next = screen(json!({
+            "kind": "screen",
+            "version": 1,
+            "width": 6,
+            "height": 1,
+            "rows": ["x界b  "],
+            "styles": [[{"x": 1, "length": 2, "fg": 2, "bg": 0, "bold": true}]]
+        }))
+        .unwrap()
+        .unwrap();
+        let WorldSurface::Screen(next) = next else {
+            panic!("expected screen");
+        };
+
+        let diff = next.render_ansi_diff(&previous).unwrap();
+        assert!(diff.contains("\x1b[0;1;38;5;2m"));
+        let mut patched = vt100::Parser::new(1, 6, 0);
+        patched.process(previous.render_ansi().unwrap().as_bytes());
+        patched.process(diff.as_bytes());
+        let mut repainted = vt100::Parser::new(1, 6, 0);
+        repainted.process(next.render_ansi().unwrap().as_bytes());
+        assert_eq!(patched.screen().contents(), repainted.screen().contents());
+        assert_eq!(patched.screen().cell(0, 1), repainted.screen().cell(0, 1));
+    }
+
+    #[test]
+    fn ansi_diff_is_empty_for_identical_screens_and_requests_full_fallback_on_resize() {
+        let screen = grid(4, 2, " ");
+        assert_eq!(screen.render_ansi_diff(&screen), Some(String::new()));
+        assert_eq!(screen.render_ansi_diff(&grid(2, 2, " ")), None);
     }
 
     #[test]
