@@ -10,6 +10,7 @@ import {
   MAX_CRAWL_BODY_BYTES,
   parseJsonObjectBody,
   readResponseTextCapped,
+  uploadKey,
   validateCrawlUrl,
   validateMachineBody,
   validateNoteBody,
@@ -855,4 +856,36 @@ test("validateTaskBody requires a nonblank string title", () => {
   const ok = validateTaskBody({ title: "do it" });
   assert.equal(ok.ok, true);
   if (ok.ok) assert.equal(ok.values.title, "do it");
+});
+
+test("uploadKey uniquifies same-millisecond uploads of the same name (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now, "rand-a");
+  const b = uploadKey("report.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+});
+
+test("uploadKey separates filenames that sanitize to the same string (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("my file.pdf", now, "rand-a");
+  const b = uploadKey("my:file.pdf", now, "rand-b");
+  assert.notEqual(a, b);
+  // The sanitized tails really are identical — only the rand segment differs.
+  assert.ok(a.endsWith("-my_file.pdf"));
+  assert.ok(b.endsWith("-my_file.pdf"));
+});
+
+test("uploadKey is deterministic for identical inputs and keeps the uploads/ shape (#2478)", () => {
+  const now = 1793100000000;
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), uploadKey("report.pdf", now, "rand-a"));
+  assert.equal(uploadKey("report.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-report.pdf");
+  assert.equal(uploadKey("my file.pdf", now, "rand-a"), "uploads/1793100000000-rand-a-my_file.pdf");
+});
+
+test("uploadKey defaults rand to a UUID so bare calls never repeat a key (#2478)", () => {
+  const now = 1793100000000;
+  const a = uploadKey("report.pdf", now);
+  const b = uploadKey("report.pdf", now);
+  assert.notEqual(a, b);
+  assert.match(a, /^uploads\/1793100000000-[0-9a-f-]{36}-report\.pdf$/);
 });

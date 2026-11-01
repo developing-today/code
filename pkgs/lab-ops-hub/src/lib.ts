@@ -1,6 +1,7 @@
-// Pure helpers for Lab Ops Hub: crawl-target validation (#441) and the
-// /api/budget computation (#442). Kept free of Worker bindings so they can
-// be unit-tested with plain Node (test/lib.test.ts).
+// Pure helpers for Lab Ops Hub: crawl-target validation (#441), the
+// /api/budget computation (#442), and upload R2 key derivation (#2478).
+// Kept free of Worker bindings so they can be unit-tested with plain
+// Node (test/lib.test.ts).
 
 // --- Crawl URL validation ---------------------------------------------------
 // The crawler fetches a caller-supplied URL from inside the Worker's /
@@ -417,4 +418,18 @@ export function validateTaskBody(body: Record<string, unknown>): Validated<{ tit
   const title = requireNonBlankString(body, "title");
   if (!title.ok) return title;
   return { ok: true, values: { title: title.value } };
+}
+
+// --- Upload R2 keys ---------------------------------------------------------
+// The key used to be `uploads/${Date.now()}-${sanitized}`: two uploads in
+// the same millisecond with the same (or sanitize-equivalent) filename
+// derived the SAME key, so the second FILES.put overwrote the first
+// object and its D1 INSERT then failed on the UNIQUE r2_key — leaving
+// the first row pointing at the second upload's bytes (#2478). The
+// random segment makes collisions practically impossible while the
+// timestamp + sanitized name keep keys sortable and recognisable. The
+// rand input is injectable so derivation stays a pure, testable
+// function; callers pass crypto.randomUUID().
+export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
+  return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }
