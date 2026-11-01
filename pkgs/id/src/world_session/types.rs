@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use iroh_blobs::api::{Store, TempTag};
@@ -8,8 +9,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
-    WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, SessionId, WorldEvent, WorldHandle,
+    WorldMetrics, WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
@@ -497,6 +498,8 @@ pub struct WorldService {
     /// The world's host metrics registry (F11.7), shared with the actor:
     /// the session layer records the frame bytes it sends into it.
     pub(crate) metrics: WorldMetrics,
+    /// Monotonic, process-local IDs for live connections to this service.
+    pub(crate) next_session_id: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for WorldService {

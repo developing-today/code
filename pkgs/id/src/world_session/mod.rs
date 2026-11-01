@@ -15,6 +15,7 @@
 //! is (an Iroh node ID); that never grants world authority.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -30,8 +31,8 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
-    WorldMetrics, WorldPolicy, WorldScopes,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, SessionId,
+    WorldHandle, WorldMetrics, WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
@@ -61,6 +62,11 @@ pub use types::{
 };
 
 impl WorldService {
+    /// Allocate an ephemeral identity for one accepted connection.
+    pub(crate) fn next_session_id(&self) -> SessionId {
+        SessionId::new(self.next_session_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Accept native (ELF) module installs. Wasm stays the default tier.
     #[must_use]
     pub const fn with_native_enabled(mut self) -> Self {
@@ -181,6 +187,7 @@ impl WorldService {
             mail: None,
             outbox: None,
             profile_operation: Arc::new(Mutex::new(())),
+            next_session_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -1850,6 +1857,7 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
 ) {
     let world = service.world();
+    let session_id = service.next_session_id();
     // Subscribe before taking the snapshot so no event can fall in the gap;
     // events at or below the cursor are skipped when delivered.
     let mut events = world.subscribe();
@@ -1935,7 +1943,7 @@ async fn joined<I: SessionIo>(
         tokio::select! {
             inbound = io.recv() => match inbound {
                 Inbound::Text(text) => {
-                    if !handle_client_frame(service, io, &token, &text, &mut viewport, cursor).await {
+                    if !handle_client_frame(service, io, &token, &text, &mut viewport, cursor, session_id).await {
                         break;
                     }
                 }
@@ -2134,6 +2142,7 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
     viewport: &mut Option<Viewport>,
     sequence: u64,
+    session_id: SessionId,
 ) -> bool {
     let world = service.world();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -2207,10 +2216,16 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             };
-            world.input(token.clone(), bytes).await
+            world
+                .input_from_session(token.clone(), bytes, session_id)
+                .await
         }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
-            Some(data) => world.input(token.clone(), data).await,
+            Some(data) => {
+                world
+                    .input_from_session(token.clone(), data, session_id)
+                    .await
+            }
             None => {
                 return send_error(service.frame_meter(), io, "input data must be hexadecimal")
                     .await;

@@ -122,6 +122,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cloned_service_allocates_distinct_ids_for_connections() {
+        let service = service(None);
+        let another_connection = service.clone();
+
+        assert!(service.next_session_id() != another_connection.next_session_id());
+    }
+
+    #[tokio::test]
     async fn execution_profile_change_is_admin_only_and_does_not_replace_live_program() {
         struct MarkerProgram;
         impl crate::world::WorldProgram for MarkerProgram {

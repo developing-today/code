@@ -87,6 +87,7 @@ impl WorldHandle {
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
         tokio::spawn(actor.run(receiver));
@@ -607,11 +608,32 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
+        self.input_with_session(token, input, None).await
+    }
+
+    /// Submit bounded opaque game input from a live session connection.
+    pub(crate) async fn input_from_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: SessionId,
+    ) -> Result<WorldEvent> {
+        self.input_with_session(token, input, Some(session_id))
+            .await
+    }
+
+    async fn input_with_session(
+        &self,
+        token: JoinCapability,
+        input: Vec<u8>,
+        session_id: Option<SessionId>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 reply,
             })
             .await

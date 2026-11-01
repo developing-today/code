@@ -50,6 +50,17 @@ pub(crate) use util::{
     constant_time_eq, hex_decode_32, sanitize_chat, sanitize_display_name, token_digest,
 };
 
+/// Identity of one live connection. It stays in memory only and is never part
+/// of a world event or journal entry.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) struct SessionId(u64);
+
+impl SessionId {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 /// A chat participant may send at most this many lines during the rolling window.
 pub(crate) const CHAT_RATE_BURST: u8 = 50;
 pub(crate) const CHAT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
