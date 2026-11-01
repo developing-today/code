@@ -2084,6 +2084,14 @@ mod tests {
         channel: &mut Channel<client::Msg>,
         terminal: &mut vt100::Parser,
         needle: &str,
+    ) {
+        let _ = read_until_bytes(channel, terminal, needle).await;
+    }
+
+    async fn read_until_bytes(
+        channel: &mut Channel<client::Msg>,
+        terminal: &mut vt100::Parser,
+        needle: &str,
     ) -> Vec<u8> {
         let mut received = Vec::new();
         tokio::time::timeout(Duration::from_secs(10), async {
@@ -3146,10 +3154,10 @@ mod tests {
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
-        let initial = read_until(&mut channel, &mut terminal, "count=0").await;
+        let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(4).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
-        let update = read_until(&mut channel, &mut terminal, "count=1").await;
+        let update = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
         assert!(
             !update.windows(4).any(|window| window == b"[2J"),
             "subsequent screen update should not clear and repaint the terminal"
