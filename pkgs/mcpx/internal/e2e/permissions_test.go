@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,9 @@ try { readFileSync("/etc/hosts"); console.log("ALLOWED"); } catch { console.log(
 	e := newEnv(t, oneServer)
 	for _, rt := range []string{"node", "bun"} {
 		if _, err := exec.LookPath(rt); err != nil {
+			if testsupport.MissingRequired(rt) {
+				t.Fatalf("%s is required by MCPX_TEST_REQUIRE but is not on PATH: %v", rt, err)
+			}
 			t.Logf("%s not installed", rt)
 			continue
 		}
@@ -35,9 +39,7 @@ try { readFileSync("/etc/hosts"); console.log("ALLOWED"); } catch { console.log(
 // under --permission with reads allowed, so a write is refused by node
 // itself. Without the flags the same write succeeds, which is the control.
 func TestNodeReceivesTheFlagsAProfileDefinesForIt(t *testing.T) {
-	if _, err := exec.LookPath("node"); err != nil {
-		t.Skip("node not installed")
-	}
+	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
 	target := filepath.Join(t.TempDir(), "w")
 	probe := `import { writeFileSync } from "node:fs";
@@ -55,10 +57,7 @@ try { writeFileSync(` + jsonQuote(target) + `, "1"); console.log("WROTE"); } cat
 // A runtime declared by name, with a binary whose name says nothing, runs
 // with the argv of its kind.
 func TestADeclaredRuntimeRunsByName(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Skip("node not installed")
-	}
+	node := testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer).withEnv(
 		`MCPX_SCRIPT_RUNTIMES={"engine":{"kind":"node","bin":` + jsonQuote(node) + `}}`)
 	out, err := e.try("exec", "--runtime", "engine", `console.log("kind=" + process.env.MCPX_RUNTIME)`)
