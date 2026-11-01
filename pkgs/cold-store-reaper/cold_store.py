@@ -227,6 +227,36 @@ def d1_sync_batch_rows(ncols: int) -> int:
     return max(1, D1_SYNC_PARAM_BUDGET // ncols)
 
 
+def _d1_first_error_message(payload) -> str | None:
+    """The API's own message from a D1 response payload, or None when the
+    payload does not carry one in the expected shape: a dict whose
+    "errors" is a list whose first entry is a dict with a message.
+    Never raises, whatever shape the payload actually has."""
+    if not isinstance(payload, dict):
+        return None
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+        message = errors[0].get("message")
+        if message:
+            return str(message)
+    return None
+
+
+def _d1_parse_payload(resp: bytes, what: str):
+    """Parse a D1 response body that must be a JSON object. A non-JSON
+    body or a non-object payload raises ColdStoreError naming the
+    unexpected shape, never a bare ValueError/AttributeError."""
+    try:
+        payload = json.loads(resp) if resp else {}
+    except (ValueError, TypeError):
+        raise ColdStoreError(f"{what}: non-JSON body") from None
+    if not isinstance(payload, dict):
+        raise ColdStoreError(
+            f"{what}: non-object body ({type(payload).__name__})"
+        )
+    return payload
+
+
 def d1_error_message(resp: bytes) -> str:
     """Best-effort extraction of the D1 API's own error text from a
     response body, so a sync failure is diagnosable from the CLI output
@@ -235,9 +265,9 @@ def d1_error_message(resp: bytes) -> str:
         payload = json.loads(resp) if resp else {}
     except (ValueError, TypeError):
         payload = {}
-    errors = payload.get("errors") or []
-    if errors and errors[0].get("message"):
-        return str(errors[0]["message"])
+    message = _d1_first_error_message(payload)
+    if message:
+        return message
     text = (resp or b"").decode("utf-8", "replace").strip()
     return text[:200] if text else "no error detail in response body"
 
@@ -1294,14 +1324,20 @@ class ColdStore:
             raise ColdStoreError(
                 f"D1 query failed (HTTP {status}): {d1_error_message(resp)}"
             )
-        payload = json.loads(resp) if resp else {}
-        if payload and not payload.get("success", True):
-            errors = payload.get("errors") or [{}]
+        payload = _d1_parse_payload(resp, "D1 query returned an unexpected shape")
+        if not payload.get("success", True):
             raise ColdStoreError(
-                f"D1 query rejected: {errors[0].get('message', 'unknown error')}"
+                f"D1 query rejected: "
+                f"{_d1_first_error_message(payload) or 'unknown error'}"
             )
-        results = (payload.get("result") or [{}])[0].get("results") or []
-        return results
+        result = payload.get("result") or [{}]
+        first = result[0] if isinstance(result, list) else result
+        if not isinstance(first, dict):
+            raise ColdStoreError(
+                f"D1 query returned a non-object result entry "
+                f"({type(first).__name__})"
+            )
+        return first.get("results") or []
 
     @staticmethod
     def _table_shape(conn, table: str) -> tuple[list[str], list[str]]:
@@ -1395,12 +1431,13 @@ class ColdStore:
                     f"{d1_error_message(resp)} — statements already sent are "
                     "idempotent upserts, re-run to resume"
                 )
-            payload = json.loads(resp) if resp else {}
-            if payload and not payload.get("success", True):
-                errors = payload.get("errors") or [{}]
+            payload = _d1_parse_payload(
+                resp, f"D1 sync failed on table {stmt['table']}"
+            )
+            if not payload.get("success", True):
                 raise ColdStoreError(
                     f"D1 sync rejected a {stmt['table']} statement: "
-                    f"{errors[0].get('message', 'unknown error')}"
+                    f"{_d1_first_error_message(payload) or 'unknown error'}"
                 )
         return total
 

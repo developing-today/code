@@ -2903,5 +2903,86 @@ class TestWorkerDecoder(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
+
+class TestD1ResponseShapes(ColdStoreTestBase):
+    """Regression (#2618): D1 response handling must not assume object
+    shapes — malformed bodies raise ColdStoreError (or fall back to raw
+    text in d1_error_message), never AttributeError."""
+
+    def _select_with_body(self, body: bytes):
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.object(
+            cold_store, "http_request", return_value=(200, {}, body)
+        ):
+            return self.store._d1_select("SELECT 1")
+
+    def test_d1_error_message_malformed_shapes_fall_back_to_raw_text(self):
+        for body in (
+            b'["not", "an", "object"]',
+            b'"just a string"',
+            b"42",
+            b'{"errors": [null]}',
+            b'{"errors": ["boom"]}',
+            b'{"errors": [{"code": 1}]}',
+        ):
+            with self.subTest(body=body):
+                message = cold_store.d1_error_message(body)
+                self.assertEqual(message, body.decode()[:200])
+
+    def test_d1_error_message_controls_unchanged(self):
+        self.assertEqual(
+            cold_store.d1_error_message(
+                b'{"success": false, "errors": [{"message": "api says no"}]}'
+            ),
+            "api says no",
+        )
+        self.assertEqual(
+            cold_store.d1_error_message(b"gateway exploded"), "gateway exploded"
+        )
+
+    def test_d1_select_non_object_payloads_raise_cold_store_error(self):
+        for body in (b'["x"]', b'"x"', b"42"):
+            with self.subTest(body=body):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self._select_with_body(body)
+
+    def test_d1_select_rejected_with_malformed_errors_is_unknown_error(self):
+        for errors in ('["nope"]', "[null]", "[]"):
+            body = ('{"success": false, "errors": ' + errors + "}").encode()
+            with self.subTest(errors=errors):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self._select_with_body(body)
+                self.assertIn("unknown error", str(ctx.exception))
+
+    def test_d1_select_non_object_result_entry_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self._select_with_body(
+                b'{"success": true, "result": ["x"]}'
+            )
+
+    def test_d1_select_controls_unchanged(self):
+        rows = self._select_with_body(
+            b'{"success": true, "result": [{"results": [{"a": 1}]}]}'
+        )
+        self.assertEqual(rows, [{"a": 1}])
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self._select_with_body(
+                b'{"success": false, "errors": [{"message": "bad sql"}]}'
+            )
+        self.assertIn("bad sql", str(ctx.exception))
+
+    def test_sync_loop_non_object_body_raises_cold_store_error(self):
+        self.store.build_sync_statements = lambda: (
+            [{"sql": "INSERT INTO meta VALUES (?)", "params": ["x"], "table": "meta"}],
+            {"meta": {"rows": 1, "statements": 1}},
+        )
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake"}):
+            with mock.patch.object(
+                cold_store, "http_request", return_value=(200, {}, b'["x"]')
+            ):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.sync_manifest()
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
