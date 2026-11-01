@@ -40,8 +40,8 @@ Each item has a status.
 | `shaped`      | The direction is decided. A design record exists or is being written. |
 | `planned`     | A plan with steps exists and the issues are filed.                    |
 | `in-progress` | At least one PR for it is open or merged.                             |
-| `shipped`     | Done. The row moves to the "Done" table with the date and the PR.     |
-| `dropped`     | Decided against. The row moves to the "Done" table with the reason.   |
+| `shipped`     | Done. Close the linked GitHub issue; keep the row in the roadmap.     |
+| `dropped`     | Decided against. Close the linked GitHub issue; keep the row.          |
 
 A roadmap row records intent. It is not a go-ahead to build the thing, and it does not settle a product question. Wherever this repo says a maintainer decides, a row at `proposed` or earlier still waits for that decision.
 
@@ -50,7 +50,7 @@ A roadmap row records intent. It is not a go-ahead to build the thing, and it do
 1. Add a new idea as one row under Ideas. One sentence of intent is enough.
 2. Change a row's horizon or status in the same PR as the work that causes the change.
 3. Link every row to its issues. When a design or plan exists, link that too.
-4. When a row ships or is dropped, move it to the "Done" table. Do not delete rows, since the history is useful.
+4. When a row ships or is dropped, set its status accordingly and close its linked GitHub issue. Keep the row in its roadmap; do not move it to a "Done" table or delete it.
 5. Open an issue for every item in Now, so the work can be picked up and tracked there. The roadmap links to issues and does not copy their content.
 
 ## Templates
