@@ -410,8 +410,11 @@ func TestArgsTypeMarksRuleRequiredAsMandatory(t *testing.T) {
 // per-call pool.callTimeout governs a script's calls too.
 func TestGeneratedClientsForwardCallSettings(t *testing.T) {
 	ts := codegen.Module(nil, "http://127.0.0.1:0", "session")
-	if n := strings.Count(ts, `"x-mcpx-settings": env("MCPX_SETTINGS")`); n < 2 {
+	if n := strings.Count(ts, `"x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS"))`); n < 2 {
 		t.Fatalf("TypeScript client: x-mcpx-settings present %d times, want at least 2 (__call and batch)", n)
+	}
+	if !strings.Contains(ts, "function asciiHeader(") {
+		t.Fatal("TypeScript client: asciiHeader helper missing (non-ASCII settings would break fetch headers)")
 	}
 	py := codegen.PythonModule(nil, "http://127.0.0.1:0", "session")
 	if !strings.Contains(py, `("x-mcpx-settings", os.environ.get("MCPX_SETTINGS", ""))`) {
