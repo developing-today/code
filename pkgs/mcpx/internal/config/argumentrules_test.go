@@ -1394,3 +1394,82 @@ func TestEffectiveSchemaPinnedProjectsDraft07Dependencies(t *testing.T) {
 		t.Errorf("pinned property must not appear in the advertised projection: %s", got2)
 	}
 }
+
+// Codex P2 on PR #2976: a definition referenced both at the instance
+// root and from a nested property must keep its nested-scope
+// requirements when the root use is projected: merging a top-level
+// pin does not supply options.tailnet, so {"options":{}} stays
+// invalid in the advertised schema.
+func TestEffectiveSchemaPinnedSharedDefKeepsNestedRequirements(t *testing.T) {
+	reproCheckPinned(t, `{"$ref":"#/$defs/need","$defs":{"need":{"required":["tailnet"]}},"properties":{"options":{"$ref":"#/$defs/need"}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"options":{"tailnet":"x"}}`, true},
+		{`{"options":{}}`, false},
+	})
+}
+
+// Codex P2 on PR #2976: a negation the pins do not fully decide must
+// still have the fixed pin contribution projected out of it. Keeping
+// {"not":{"required":["tailnet","limit"]}} verbatim advertises
+// {"limit":1} as valid (tailnet is hidden, so absent for the caller),
+// but enforcement merges the pin and rejects exactly that call.
+func TestEffectiveSchemaPinnedProjectsMixedNegations(t *testing.T) {
+	reproCheckPinned(t, `{"not":{"required":["tailnet","limit"]}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+	})
+}
+
+// Codex P2 on PR #2976: the direct projection must respect $id
+// resource boundaries. A same-instance subschema declaring its own
+// $id resolves its fragment references against its own $defs, not
+// the outer document's: the outer need (requiring the pinned
+// tailnet) must not be substituted for the resource's own need
+// (requiring limit).
+func TestEffectiveSchemaPinnedRespectsResourceBoundaryProjection(t *testing.T) {
+	reproCheckPinned(t, `{"$defs":{"need":{"required":["tailnet"]}},"allOf":[{"$id":"https://example.test/resource","$defs":{"need":{"required":["limit"]}},"$ref":"#/$defs/need"}]}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+	})
+}
+
+// reproCheckPinned compiles the advertised (pinned) projection of a
+// rule and validates caller instances against it: the projection is
+// correct exactly when it accepts the calls enforcement accepts once
+// the pins are merged.
+func reproCheckPinned(t *testing.T, rule string, cases []struct {
+	input string
+	valid bool
+}) {
+	t.Helper()
+	set, err := CompileArgumentRules([]ArgumentRuleSource{
+		{Key: "list_devices", Origin: "test", Schema: json.RawMessage(rule)},
+	})
+	if err != nil {
+		t.Fatalf("CompileArgumentRules: %v", err)
+	}
+	upstream := json.RawMessage(`{"type":"object","properties":{"limit":{"type":"number"},"options":{"type":"object"}}}`)
+	eff := set.EffectiveSchemaPinned("list_devices", upstream, map[string]any{"tailnet": "-"})
+	compiled, err := schemaval.Compile(eff)
+	if err != nil {
+		t.Fatalf("compile %s: %v", eff, err)
+	}
+	for _, tc := range cases {
+		inst, err := schemaval.DecodeInstance(json.RawMessage(tc.input))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := compiled.Validate(inst) == nil; got != tc.valid {
+			t.Errorf("rule %s: %s valid=%v want %v (schema %s)", rule, tc.input, got, tc.valid, eff)
+		}
+	}
+}

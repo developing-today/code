@@ -421,3 +421,30 @@ func TestSchemaPropsCollectsComposedDeclarations(t *testing.T) {
 		t.Errorf("root declarations unchanged: %v", root)
 	}
 }
+
+// Codex P2 on PR #2976 (disposition evidence): a definition referenced
+// both at the top level and from a nested property is projected into
+// a separate same-instance target by hideSchemaProps; the nested use
+// keeps the original definition, so {"options":{}} stays invalid --
+// merging a top-level pin does not supply options.tailnet.
+func TestHideSchemaPropsSharedDefRootAndNested(t *testing.T) {
+	schema := json.RawMessage(`{"$ref":"#/$defs/need","$defs":{"need":{"required":["tailnet"]}},"properties":{"options":{"$ref":"#/$defs/need"},"tailnet":{"type":"string"}}}`)
+	out := hideSchemaProps(schema, []string{"tailnet"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"options":{"tailnet":"x"}}`, true},
+		{`{"options":{}}`, false},
+	} {
+		err := compiled.ValidateJSON(json.RawMessage(tc.input))
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: valid=%v err=%v schema=%s", tc.input, tc.valid, err, out)
+		}
+	}
+}

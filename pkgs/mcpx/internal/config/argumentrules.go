@@ -890,12 +890,33 @@ func conjoinRefProjection(target, siblings any) any {
 // only through a reference must not survive the projection
 // unexamined (Codex P2 on PR #2976).
 func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) any {
+	return stripPinnedScopeRes(v, pinned, pinVals, root, root, resolving)
+}
+
+// stripPinnedScopeRes is stripPinnedScope with the enclosing
+// resource root tracked separately: a subschema declaring its own
+// $id is a separate resource, and fragment references inside it
+// resolve against that resource's own definitions, not the outer
+// document's (Codex P2 on PR #2976). resRoot is the root of the
+// resource the traversal is currently inside; root remains the
+// rule document's root for the dialect and verdict helpers, which
+// decline $id-carrying shapes on their own.
+func stripPinnedScopeRes(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resRoot map[string]any, resolving map[string]bool) any {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return v
 	}
-	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[ref] {
-		if target, ok := resolveLocalPointer(root, ref); ok {
+	if id, isStr := m["$id"].(string); isStr && id != "" {
+		resRoot = m
+	}
+	resKey := func(ref string) string {
+		if id, isStr := resRoot["$id"].(string); isStr && id != "" {
+			return id + "|" + ref
+		}
+		return ref
+	}
+	if ref, ok := m["$ref"].(string); ok && strings.HasPrefix(ref, "#") && !resolving[resKey(ref)] {
+		if target, ok := resolveLocalPointer(resRoot, ref); ok {
 			if dialectIgnoresRefSiblings(root) {
 				// Draft-07 and earlier: the reference replaces
 				// this schema outright and its siblings are
@@ -910,9 +931,9 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 				// references resolve against them, so they ride
 				// along verbatim when the projected target does
 				// not carry its own (Codex P2 on PR #2976).
-				resolving[ref] = true
-				projected := stripPinnedScope(target, pinned, pinVals, root, resolving)
-				delete(resolving, ref)
+				resolving[resKey(ref)] = true
+				projected := stripPinnedScopeRes(target, pinned, pinVals, root, resRoot, resolving)
+				delete(resolving, resKey(ref))
 				if pm, isMap := projected.(map[string]any); isMap {
 					for _, defsKey := range []string{"$defs", "definitions"} {
 						if _, carried := pm[defsKey]; !carried {
@@ -953,10 +974,10 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 						siblings[k] = val
 					}
 				}
-				resolving[ref] = true
-				projectedTarget := stripPinnedScope(tm, pinned, pinVals, root, resolving)
-				projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
-				delete(resolving, ref)
+				resolving[resKey(ref)] = true
+				projectedTarget := stripPinnedScopeRes(tm, pinned, pinVals, root, resRoot, resolving)
+				projectedSiblings := stripPinnedScopeRes(siblings, pinned, pinVals, root, resRoot, resolving)
+				delete(resolving, resKey(ref))
 				return conjoinRefProjection(projectedTarget, projectedSiblings)
 			}
 			// A non-object target (a boolean schema) has no scope of
@@ -973,9 +994,9 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 			if len(siblings) == 0 {
 				return target
 			}
-			resolving[ref] = true
-			projectedSiblings := stripPinnedScope(siblings, pinned, pinVals, root, resolving)
-			delete(resolving, ref)
+			resolving[resKey(ref)] = true
+			projectedSiblings := stripPinnedScopeRes(siblings, pinned, pinVals, root, resRoot, resolving)
+			delete(resolving, resKey(ref))
 			return conjoinRefProjection(target, projectedSiblings)
 		}
 	}
@@ -1083,7 +1104,7 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 					}
 					continue
 				}
-				kept = append(kept, stripPinnedScope(sub, pinned, pinVals, root, resolving))
+				kept = append(kept, stripPinnedScopeRes(sub, pinned, pinVals, root, resRoot, resolving))
 			}
 			switch k {
 			case "allOf":
@@ -1129,17 +1150,28 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 			// instead: when the pins decide the inner schema, the
 			// negation's outcome is fixed -- drop it when it
 			// always passes, keep it as not:true when it always
-			// fails. When the pins do not decide it, keep the
-			// inner schema verbatim rather than stripping it.
+			// fails. When the pins do not decide it, project the
+			// inner schema (below) rather than keeping it verbatim.
 			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, root, resolving); decided {
 				if valid {
 					out[k] = true
 				}
 			} else {
-				out[k] = val
+				// The pins do not decide the negation, but their
+				// contribution is still fixed: a mixed predicate
+				// (a required list naming both a pinned and a
+				// caller property) must have the pinned names
+				// projected out, or the advertised negation
+				// accepts caller arguments enforcement -- which
+				// merges the pins first -- rejects (Codex P2 on
+				// PR #2976). Project the inner schema with the
+				// same equivalence-preserving projection used
+				// elsewhere; parts the projection cannot decide
+				// keep their verbatim meaning inside it.
+				out[k] = stripPinnedScopeRes(val, pinned, pinVals, root, resRoot, resolving)
 			}
 		case "if", "then", "else":
-			out[k] = stripPinnedScope(val, pinned, pinVals, root, resolving)
+			out[k] = stripPinnedScopeRes(val, pinned, pinVals, root, resRoot, resolving)
 		case "dependencies":
 			// The draft-07 predecessor of dependentRequired /
 			// dependentSchemas: under a pre-2019-09 dialect it
@@ -1187,7 +1219,7 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 						keptDeps[prop] = kept
 					}
 				case map[string]any, bool:
-					sub := stripPinnedScope(depVal, pinned, pinVals, root, resolving)
+					sub := stripPinnedScopeRes(depVal, pinned, pinVals, root, resRoot, resolving)
 					if pinned[prop] {
 						if pm, isMap := sub.(map[string]any); isMap && len(pm) == 0 {
 							continue
@@ -1215,7 +1247,7 @@ func stripPinnedScope(v any, pinned map[string]bool, pinVals map[string]any, roo
 				}
 				sort.Strings(triggers)
 				for _, prop := range triggers {
-					sub := stripPinnedScope(subs[prop], pinned, pinVals, root, resolving)
+					sub := stripPinnedScopeRes(subs[prop], pinned, pinVals, root, resRoot, resolving)
 					if pinned[prop] {
 						// The pin always supplies the trigger, so
 						// the projected dependent schema applies
