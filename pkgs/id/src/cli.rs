@@ -449,6 +449,13 @@ pub enum Command {
             conflicts_with = "world_module"
         )]
         world_source_only: bool,
+        /// Ed25519 module-signing public key trusted by this server (hex; repeatable).
+        #[arg(
+            long = "world-module-trust-key",
+            value_name = "HEX",
+            requires = "world"
+        )]
+        world_module_trust_keys: Vec<String>,
         /// Execution bounds for world programs.
         #[command(flatten)]
         world_runtime: WorldRuntimeArgs,
@@ -3977,6 +3984,34 @@ mod tests {
                 "trusted.wasm",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn module_trust_keys_are_repeatable_and_require_world_mode() {
+        let first = "11".repeat(32);
+        let second = "22".repeat(32);
+        let parsed = Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--world-module-trust-key",
+            &first,
+            "--world-module-trust-key",
+            &second,
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Serve {
+                world_module_trust_keys,
+                ..
+            }) => assert_eq!(world_module_trust_keys, vec![first.clone(), second]),
+            _ => panic!("Expected Serve command"),
+        }
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world-module-trust-key", &first]).is_err()
         );
     }
 

@@ -262,6 +262,9 @@ pub(crate) enum ClientFrame {
         /// Expected BLAKE3 hash. Optional for browser uploads, whose `WebCrypto`
         /// API does not provide BLAKE3; the host still computes and returns it.
         module_hash: Option<String>,
+        /// Optional Ed25519 signature over the domain-separated module digest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<ModuleSignature>,
         seed: u64,
     },
     InstallChunk {
@@ -269,6 +272,16 @@ pub(crate) enum ClientFrame {
         data_hex: String,
     },
     InstallEnd,
+}
+
+/// Signer metadata supplied with an uploaded module. Public keys and
+/// signatures are lower- or upper-case hexadecimal Ed25519 encodings. The
+/// signed message is `b"developing-today/id-world-module/v1\\0"` followed by
+/// the 32-byte BLAKE3 digest of the exact uploaded module bytes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ModuleSignature {
+    pub public_key: String,
+    pub signature: String,
 }
 
 // Install frames are only produced/consumed with the `sandbox` feature.
@@ -474,6 +487,9 @@ pub enum InstallError {
     RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
+    /// The server has a module trust list and the artifact is unsigned,
+    /// signed by an untrusted key, or has an invalid signature.
+    UntrustedModule,
     /// The blob could not be pinned or the world actor refused activation.
     Unavailable,
 }
@@ -501,6 +517,9 @@ pub struct WorldService {
     pub(crate) native: bool,
     /// Raw artifact installs are refused; compiled source remains permitted.
     pub(crate) source_only: bool,
+    /// Ed25519 public keys authorized to sign module artifacts. Empty keeps
+    /// legacy behavior and accepts unsigned modules.
+    pub(crate) trusted_module_keys: Vec<[u8; 32]>,
     pub(crate) runtime: crate::world_limits::RuntimeLimits,
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
