@@ -11,14 +11,14 @@ import { parseProxyPortValue, parseAddressPortValue, parseProxyMillisValue } fro
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
-test('millisecond timeouts accept only decimal integers in the Node timer range', () => {
-  for (const raw of [undefined, '']) assert.equal(parseProxyMillisValue('TIMEOUT', raw, 1200000), 1200000);
+test('proxy timeout milliseconds default to 240000 and accept only decimal integers in the Node timer range', () => {
+  for (const raw of [undefined, '']) assert.equal(parseProxyMillisValue('COMMANDCODE_PROXY_TIMEOUT_MS', raw, 240000), 240000);
   for (const [raw, value] of [['1', 1], ['00100', 100], ['2147483647', 2147483647]]) {
-    assert.equal(parseProxyMillisValue('TIMEOUT', raw, 1200000), value);
+    assert.equal(parseProxyMillisValue('COMMANDCODE_PROXY_TIMEOUT_MS', raw, 240000), value);
   }
   for (const raw of ['0', '-1', '+1', '1.5', '1e3', '0x10', ' 1', '1 ', 'abc', '2147483648', '999999999999999999999']) {
-    assert.throws(() => parseProxyMillisValue('TIMEOUT', raw, 1200000), (err) =>
-      err.message.includes('TIMEOUT') && err.message.includes(`"${raw}"`));
+    assert.throws(() => parseProxyMillisValue('COMMANDCODE_PROXY_TIMEOUT_MS', raw, 240000), (err) =>
+      err.message.includes('COMMANDCODE_PROXY_TIMEOUT_MS') && err.message.includes(`"${raw}"`));
   }
 });
 

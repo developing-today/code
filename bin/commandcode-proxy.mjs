@@ -53,11 +53,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyMillis, parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('COMMANDCODE_PROXY_PORT', 18748);
 const HOST = process.env.COMMANDCODE_PROXY_HOST || '127.0.0.1';
-const TIMEOUT_MS = Number(process.env.COMMANDCODE_PROXY_TIMEOUT_MS || 240000);
+const TIMEOUT_MS = parseProxyMillis('COMMANDCODE_PROXY_TIMEOUT_MS', 240000);
 const MAX_TURNS = process.env.COMMANDCODE_PROXY_MAX_TURNS || '1';
 // Spawn-fallback turn budget for agency turns only (chat stays at
 // MAX_TURNS). The ACP path has no turn cap (bounded by TIMEOUT_MS).

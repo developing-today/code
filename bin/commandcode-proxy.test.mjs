@@ -11,7 +11,7 @@
 // - agency requests (tools present) spawn `--tools-all`, a multi-turn
 //   budget, no `dont-ask`, with the workdir steer.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,25 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
+
+test('commandcode-proxy rejects invalid timeout values at startup', () => {
+  for (const raw of ['abc', '240000junk', '0', '-1', '2147483648']) {
+    const result = spawnSync(process.execPath, [path.join(binDir, 'commandcode-proxy.mjs')], {
+      env: {
+        ...process.env,
+        COMMANDCODE_PROXY_PORT: '18959',
+        COMMANDCODE_PROXY_HOST: '127.0.0.1',
+        COMMANDCODE_PROXY_TIMEOUT_MS: raw,
+      },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(result.status, 1, `value ${raw}: ${result.stderr}`);
+    assert.match(result.stderr, /COMMANDCODE_PROXY_TIMEOUT_MS/);
+    assert.ok(result.stderr.includes(`"${raw}"`), result.stderr);
+    assert.doesNotMatch(result.stdout, /listening/);
+  }
+});
 
 const STUB = `#!/usr/bin/env node
 const fs = require('node:fs');
