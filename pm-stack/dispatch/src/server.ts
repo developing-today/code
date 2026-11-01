@@ -175,7 +175,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
   const body = parseSessionRequest(await readJsonBody(req));
   assertCallerRepo(caller, body.repo, cfg.repoAllowlist);
   const warnings: string[] = [];
-  // Directory scoping (issue #2903) runs before ANY side effect: the
+  // Directory scoping (issue #2664) runs before ANY side effect: the
   // tracking issue, queue task and session below are all created after
   // this line, so a rejected directory leaves nothing behind.
   const directory = resolveSessionDirectory(caller.type, body.repo, body.directory, REPO_DIRS);

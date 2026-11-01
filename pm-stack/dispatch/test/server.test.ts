@@ -1,7 +1,7 @@
-// HTTP-level tests for POST /v1/sessions directory scoping (issue #2903).
+// HTTP-level tests for POST /v1/sessions directory scoping (issue #2664).
 // Drives the exported handler with a stubbed-JWKS OIDC token: no network,
-// no queue, no GitHub — any non-JWKS fetch throws, so a test that tried
-// to create an issue/task/session would fail loudly instead of 400ing.
+// queue, or GitHub — valid requests reach the unconfigured queue (502), while
+// rejected directories must return 400 first.
 import { describe, expect, test } from "bun:test";
 import { createSign, generateKeyPairSync } from "node:crypto";
 
@@ -56,29 +56,25 @@ function sessionsRequest(token: string, body: Record<string, unknown>): Request 
   });
 }
 
-const base = { repo: "developing-today/code", prompt: "do the thing" };
+const base = { repo: "developing-today/code", prompt: "do the thing", issue: false };
 
-describe("POST /v1/sessions directory scoping (issue #2903)", () => {
-  test("OIDC + foreign directory is rejected with 400 before any side effect", async () => {
-    const token = signOidc("developing-today/code");
-    const res = await handler(sessionsRequest(token, { ...base, directory: "/tmp/evil" }));
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/directory/);
+describe("POST /v1/sessions directory scoping (issue #2664)", () => {
+  test("relative, foreign, and outside paths are rejected with 400 before any side effect", async () => {
+    for (const directory of ["src", "/home/user/git/opencode", "/home/user/git/code-other", "/tmp/evil"]) {
+      const res = await handler(sessionsRequest(signOidc("developing-today/code"), { ...base, directory }));
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/directory/);
+    }
   });
 
-  test("OIDC + omitted directory passes validation (fails later at the unconfigured queue)", async () => {
-    // No SUPABASE_SERVICE_ROLE_KEY in test env, so a request that clears
-    // validation reaches requireQueue() and maps to 502 — proving the
-    // directory gate let it through. Any network beyond JWKS throws.
-    const token = signOidc("developing-today/code");
-    const res = await handler(sessionsRequest(token, base));
-    expect(res.status).toBe(502);
-  });
-
-  test("OIDC + own clone directory passes validation the same way", async () => {
-    const token = signOidc("developing-today/code");
-    const res = await handler(sessionsRequest(token, { ...base, directory: "/home/user/git/code" }));
-    expect(res.status).toBe(502);
+  test("blank directory defaults and in-repo subdirectory passes validation", async () => {
+    for (const directory of [undefined, "", " \n ", "/home/user/git/code/src"]) {
+      const body = { ...base, ...(directory === undefined ? {} : { directory }) };
+      const res = await handler(sessionsRequest(signOidc("developing-today/code"), body));
+      // These requests pass validation; without a test queue they fail only
+      // when trying to enqueue, after the directory gate.
+      expect(res.status).toBe(502);
+    }
   });
 });
