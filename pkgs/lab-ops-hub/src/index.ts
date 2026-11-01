@@ -6,6 +6,7 @@ import {
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
+  crawlArchiveKey,
   uploadKey,
   validateCrawlUrl,
   validateMachineBody,
@@ -415,7 +416,7 @@ export default {
           containerError = String(e).slice(0, 300);
           result = await crawlFallback(b.url);
         }
-        const key = `crawls/${Date.now()}.json`;
+        const key = crawlArchiveKey(Date.now(), crypto.randomUUID());
         await env.FILES.put(key, JSON.stringify({ url: b.url, source, ...result }, null, 2), {
           httpMetadata: { contentType: "application/json" },
         });
