@@ -174,4 +174,97 @@ describe("initCollab token handling (#1463)", () => {
 
     conn.disconnect();
   });
+
+  it("caps repeated open-then-drop failures until Init succeeds", () => {
+    const statuses: string[] = [];
+    const conn = track(initCollab(
+      "ws://example.test/collab",
+      makeContainer(),
+      "doc-1",
+      "notes.md",
+      null,
+      undefined,
+      (status) => statuses.push(status),
+    ));
+
+    let socket = FakeWebSocket.instances[0];
+    // The initial connection plus ten reconnects all reach OPEN, but the
+    // server drops each one before sending Init.
+    for (let i = 0; i < 11; i++) {
+      socket.open();
+      socket.drop();
+      if (i < 10) {
+        vi.advanceTimersToNextTimer();
+        socket = FakeWebSocket.instances.at(-1)!;
+      }
+    }
+
+    expect(FakeWebSocket.instances).toHaveLength(11);
+    expect(statuses.at(-1)).toBe("error");
+    conn.disconnect();
+  });
+
+  it("starts a fresh retry budget after receiving Init", () => {
+    const statuses: string[] = [];
+    const conn = track(initCollab(
+      "ws://example.test/collab",
+      makeContainer(),
+      "doc-1",
+      "notes.md",
+      null,
+      undefined,
+      (status) => statuses.push(status),
+    ));
+
+    let socket = FakeWebSocket.instances[0];
+    for (let i = 0; i < 10; i++) {
+      socket.open();
+      socket.drop();
+      vi.advanceTimersToNextTimer();
+      socket = FakeWebSocket.instances.at(-1)!;
+    }
+
+    socket.open();
+    socket.deliver([0, 0, { type: "doc", content: [{ type: "paragraph" }] }, "raw"]);
+    socket.drop();
+    vi.advanceTimersToNextTimer();
+    socket = FakeWebSocket.instances.at(-1)!;
+
+    // Ten failures after successful initialization may still schedule the
+    // tenth retry; the following failed connection reaches the cap.
+    for (let i = 0; i < 9; i++) {
+      socket.open();
+      socket.drop();
+      if (i < 8) {
+        vi.advanceTimersToNextTimer();
+        socket = FakeWebSocket.instances.at(-1)!;
+      }
+    }
+    expect(statuses.at(-1)).toBe("connecting");
+
+    vi.advanceTimersToNextTimer();
+    socket = FakeWebSocket.instances.at(-1)!;
+    socket.open();
+    socket.drop();
+    expect(statuses.at(-1)).toBe("error");
+    conn.disconnect();
+  });
+
+  it("does not reconnect after an intentional disconnect", () => {
+    const conn = track(initCollab(
+      "ws://example.test/collab",
+      makeContainer(),
+      "doc-1",
+    ));
+    const socket = FakeWebSocket.instances[0];
+
+    socket.open();
+    conn.disconnect();
+    // A failed close handshake can surface as an abnormal close after the
+    // client has already requested a normal, intentional close.
+    socket.drop();
+    vi.advanceTimersByTime(10_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
 });

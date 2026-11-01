@@ -263,6 +263,10 @@ export function initCollab(
         // Start reconnect cleanup timer (will remove stale cursors after 1s)
         // Must be called after editor is initialized
         onInitReceived(editorInstance.view);
+        // A WebSocket opening is not enough to prove the collaboration
+        // session recovered: the server may accept and immediately drop it
+        // before sending Init. Reset only after the protocol is initialized.
+        reconnectAttempts = 0;
         break;
       }
 
@@ -456,7 +460,6 @@ export function initCollab(
       }
       console.log("[collab] Connected to", wsUrl);
       connected = true;
-      reconnectAttempts = 0;
       updateStatus("connected");
       if (editorInstance) {
         setConnectionState(editorInstance.view, "connected");
