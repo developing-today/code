@@ -1563,6 +1563,20 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     Ok(strip_end_list_separators(doc, &output))
 }
 
+/// The start number a PM list renders with in Markdown, when it
+/// renders as an ordered list: ordered_list always (attrs.order,
+/// default 1); a task_list only when it carries attrs.order (#1370
+/// ordered task runs render as `1. [ ]`). Bullet-rendering lists and
+/// non-lists return None.
+fn ordered_start(node: &Value) -> Option<u64> {
+    let order = node["attrs"]["order"].as_u64();
+    match node["type"].as_str() {
+        Some("ordered_list") => Some(order.unwrap_or(1)),
+        Some("task_list") => order,
+        _ => None,
+    }
+}
+
 fn list_kind(node: &Value) -> Option<&str> {
     match node["type"].as_str() {
         Some(k @ ("bullet_list" | "ordered_list" | "task_list")) => Some(k),
@@ -1580,13 +1594,18 @@ fn list_kind(node: &Value) -> Option<&str> {
 /// tight lists stay tight, loose lists keep their blank lines. Where
 /// the kinds are the SAME (two ordered lists, two task lists) dropping
 /// it would merge the lists and lose restart/order information, so the
-/// separator stays for those pairs. If the lines found in the output
+/// separator stays for those pairs. It also stays for a DIFFERENT-kind
+/// pair that renders as the same ordered Markdown list (an ordered_list
+/// next to a task_list carrying `attrs.order`, or vice versa) when the
+/// second list does not start exactly where the first list's numbering
+/// ends: merging those on reparse renumbers the second run and loses
+/// its restart (Codex review, PR #3258). If the lines found in the output
 /// do not line up one-to-one with the boundaries computed from the doc,
 /// the output is returned untouched.
 fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     // Recompute with kinds: the drop decision needs them, so collect
-    // (prev_kind, kind, tight_pair) triples alongside.
-    let mut kinds: Vec<(String, String, bool)> = Vec::new();
+    // (prev_kind, kind, tight_pair, merge_safe) tuples alongside.
+    let mut kinds: Vec<(String, String, bool, bool)> = Vec::new();
     collect_boundary_kinds(doc, &mut kinds);
     if kinds.is_empty() {
         return output.to_string();
@@ -1607,7 +1626,7 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
         let line = lines[idx];
         if is_separator_line(line) {
             match boundary.next() {
-                Some((a, b, tight_pair)) if a != b => {
+                Some((a, b, tight_pair, merge_safe)) if a != b && *merge_safe => {
                     // Drop the separator. The renderer also puts a blank
                     // line on each side of it; with the comment gone,
                     // blanks between the lists would fuse them into ONE
@@ -1636,11 +1655,14 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     out
 }
 
-/// (prev PM kind, PM kind, both tight) for every list adjacency in the
-/// doc, in render order, interleaved with authored htmlBlocks (recorded
-/// as ("", "", false) so they consume a separator-line slot but are
-/// never dropped - see strip_end_list_separators' caller contract).
-fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool)>) {
+/// (prev PM kind, PM kind, both tight, merge-safe) for every list
+/// adjacency in the doc, in render order, interleaved with authored
+/// htmlBlocks (recorded as ("", "", false, false) so they consume a
+/// separator-line slot but are never dropped - see
+/// strip_end_list_separators' caller contract). Merge-safe is false
+/// only when dropping the separator would merge two ordered-rendering
+/// lists whose numbering does not continue across the boundary.
+fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, bool)>) {
     let Some(content) = node["content"].as_array() else {
         return;
     };
@@ -1653,10 +1675,23 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool)>) {
             let tight_pair = [prev, child]
                 .iter()
                 .all(|l| l["attrs"]["tight"].as_bool() == Some(true));
+            // Two lists that both render as ordered Markdown merge into
+            // one list on reparse if the separator goes; the merge is
+            // lossless only when the second list starts exactly where
+            // the first list's numbering ends (start + item count), so
+            // convert_list_runs recomputes the same run orders.
+            let merge_safe = match (ordered_start(prev), ordered_start(child)) {
+                (Some(prev_start), Some(next_start)) => {
+                    let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
+                    next_start == prev_start + prev_count
+                }
+                _ => true,
+            };
             out.push((
                 list_kind(prev).unwrap_or_default().to_string(),
                 kind.to_string(),
                 tight_pair,
+                merge_safe,
             ));
         }
         if child["type"].as_str() == Some("code_block")
@@ -1670,7 +1705,7 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool)>) {
                     == "<!-- end list -->"
             })
         {
-            out.push((String::new(), String::new(), false));
+            out.push((String::new(), String::new(), false, false));
         }
         collect_boundary_kinds(child, out);
         if kind.is_some() {
@@ -3207,6 +3242,10 @@ mod tests {
             "1. a\n\n- b\n",
             "- a\n- b\n\n1. c\n2. d\n",
             "1. [ ] a\n\n- b\n",
+            // Ordered plain/task pair whose numbering CONTINUES across
+            // the boundary (task run starts at 2): merging on reparse
+            // recomputes the same run order, so the separator drops.
+            "1. a\n\n2. [ ] b\n",
         ] {
             let (first, second) = two_saves(original);
             assert!(
@@ -3223,6 +3262,37 @@ mod tests {
                 markdown_to_prosemirror(original),
                 "reparse yields the same two lists for {original:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_adjacent_ordered_task_restart_keeps_separator() {
+        // Codex review on PR #3258: an ordered_list next to a task_list
+        // carrying attrs.order (or vice versa) renders as the SAME
+        // ordered Markdown list type. When the second list restarts at
+        // 1 instead of continuing the first list's numbering, dropping
+        // the separator merges them on reparse and convert_list_runs
+        // renumbers the second run (order 2), silently losing the
+        // restart - so the separator stays for these pairs.
+        for original in [
+            "1. plain\n\n<!-- end list -->\n\n1. [ ] restarted\n",
+            "1. [ ] first\n\n<!-- end list -->\n\n1. plain\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                first.contains("<!-- end list -->"),
+                "separator preserved for restart pair {original:?}: {first:?}"
+            );
+            assert_eq!(first, second, "restart shape is a fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original),
+                "reparse preserves both lists and the restart for {original:?}"
+            );
+            let doc = markdown_to_prosemirror(&first);
+            let content = doc["content"].as_array().unwrap();
+            assert_eq!(content.len(), 2, "two lists for {original:?}");
+            assert_eq!(content[1]["attrs"]["order"], 1, "second list restarts at 1 for {original:?}");
         }
     }
 
