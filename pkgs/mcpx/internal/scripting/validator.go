@@ -105,6 +105,10 @@ type delimToken struct {
 	line      int
 	exprAfter bool
 	heritage  bool
+	// heritageOwnsFloor marks a heritage brace that pushed a
+	// pending-body snapshot (heritageFloorStack): its closing '}'
+	// restores the snapshot it displaced.
+	heritageOwnsFloor bool
 }
 
 type blockCommentRange struct {
@@ -233,6 +237,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// statement boundary).
 	heritageFrameFloor := 0
 	heritageDeclPending := false
+	// heritageFloorStack / heritageDeclStack hold the snapshots
+	// displaced by NESTED heritage operands: a class nested inside a
+	// heritage expression has its own heritage operand, and that
+	// operand's braces must protect the nested class's pending body,
+	// not the outer class's (Codex P2 on #3354: class C extends
+	// {x:[class extends {x:{}}.x {} / 2]}.x {} — the single outer
+	// floor let the inner heritage object consume the inner class's
+	// frame, so its real body's '}' read as a block closure and the
+	// slash opened a phantom regex). Each floor-owning heritage
+	// brace pushes the previous snapshot; its '}' restores it.
+	var heritageFloorStack []int
+	var heritageDeclStack []bool
 	// dotRun counts consecutive '.' significant characters: a '{'
 	// after a spread token '...' is the spread object operand
 	// even when trivia (whitespace or a comment) intervenes
@@ -876,10 +892,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				(topHeritageBrace ||
 					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']') ||
 					(heritageBraceDepth > 0 && prevSig == 'o' && lastIdent == "extends"))
+			heritageOwnsFloor := false
 			if heritageExprBrace {
-				if heritageBraceDepth == 0 {
+				// A heritage brace owns a floor snapshot when it
+				// starts a heritage operand: the outermost one
+				// (depth 0), or a nested class's operand opened
+				// right after 'extends' inside an outer heritage
+				// expression. Plain braces nested inside an
+				// operand (object values) share its floor.
+				if heritageBraceDepth == 0 || (prevSig == 'o' && lastIdent == "extends") {
+					heritageFloorStack = append(heritageFloorStack, heritageFrameFloor)
+					heritageDeclStack = append(heritageDeclStack, heritageDeclPending)
 					heritageFrameFloor = len(funcClassFrames)
 					heritageDeclPending = expectDeclBody
+					heritageOwnsFloor = true
 				}
 				heritageBraceDepth++
 				exprAfter = false
@@ -903,7 +929,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				exprAfter = true
 				expectDeclBody = false
 			}
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter, heritage: heritageExprBrace})
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter, heritage: heritageExprBrace, heritageOwnsFloor: heritageOwnsFloor})
 			lastIdent = ""
 			lastIdentPrev = 0
 		case '[':
@@ -922,6 +948,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			stack = stack[:len(stack)-1]
 			if ch == '}' && top.heritage && heritageBraceDepth > 0 {
 				heritageBraceDepth--
+				if top.heritageOwnsFloor && len(heritageFloorStack) > 0 {
+					heritageFrameFloor = heritageFloorStack[len(heritageFloorStack)-1]
+					heritageFloorStack = heritageFloorStack[:len(heritageFloorStack)-1]
+					heritageDeclPending = heritageDeclStack[len(heritageDeclStack)-1]
+					heritageDeclStack = heritageDeclStack[:len(heritageDeclStack)-1]
+				}
 			}
 			if top.char == '(' {
 				for fi := range funcClassFrames {
@@ -1335,6 +1367,23 @@ func isHexDigit(ch rune) bool {
 // a number (Codex P2 on #3354: f1<number> / 2 lost instantiation
 // recognition to a guard that looked only at the final character,
 // and the relational '>' left the slash to open a phantom regex).
+// isIdentExceptionRune reports whether ch is one of the ECMAScript
+// Unicode identifier exceptions: a rune outside the general
+// ID_Start/ID_Continue categories that the spec still allows inside
+// an identifier — the ID_Continue exceptions U+00B7, U+0387,
+// U+1369–U+1371 and U+19DA (plus U+30FB/U+FF65, letter-adjacent in
+// Unicode but listed for completeness) and the Other_ID_Start
+// exceptions U+2118, U+212E, U+309B and U+309C. isIdentChar does not
+// cover these, so a scan that stops at one splits the identifier
+// (Codex P2 on #3354: f\u00b71 and \u21181 read as the number 1).
+func isIdentExceptionRune(ch rune) bool {
+	switch ch {
+	case '\u00b7', '\u0387', '\u19da', '\u2118', '\u212e', '\u309b', '\u309c', '\u30fb', '\uff65':
+		return true
+	}
+	return ch >= '\u1369' && ch <= '\u1371'
+}
+
 func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool {
 	end := lt
 	// Skip trailing trivia — whitespace and block comments — the
@@ -1359,7 +1408,7 @@ func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool
 	}
 	start := end
 	for start > 0 {
-		if isIdentChar(chars[start-1]) {
+		if isIdentChar(chars[start-1]) || isIdentExceptionRune(chars[start-1]) {
 			start--
 			continue
 		}

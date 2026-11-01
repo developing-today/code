@@ -231,6 +231,13 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after instantiation following block comment with inner opener text", "const q = f /* 1 /* text */<number> / 2;\n"},
 		{"division after instantiation with earlier string containing comment opener", "const s = \"1/*\"; const q = f /* comment */<number> / 2;\n"},
 		{"division after instantiation following two separate block comments", "const q = f /* a */ /* b */<number> / 2;\n"},
+		{"division inside nested class heritage with nested object operand", "class C extends {x:[class extends {x:{}}.x {} / 2]}.x {}\n"},
+		{"division after nested class heritage expression with nested object operand", "const q = class extends {x:[class extends {x:{y:{}}}.x {} / 2]}.x {} / 2;\n"},
+		{"division inside nested class heritage with arrow body in nested object", "class C extends {x:[class extends {x:{f:()=>{}}}.x {} / 2]}.x {}\n"},
+		{"division after TypeScript instantiation on middle-dot digit-ending identifier", "const q = f\u00b71<number> / 2;\n"},
+		{"division after TypeScript instantiation on middle-dot digit-ending member", "const q = obj.f\u00b71<number> / 2;\n"},
+		{"division after TypeScript instantiation on ano-teleia digit-ending identifier", "const q = f\u03871<number> / 2;\n"},
+		{"division after TypeScript instantiation on script-p digit-ending identifier", "const q = \u21181<number> / 2;\n"},
 		{"division after spread new class expression", "const a={...new class {} / 2};\n"},
 		{"division after spread new function expression", "const a={...new function() {} / 2};\n"},
 	}
