@@ -221,6 +221,12 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"postfix decrement after escaped identifier at line start", "let a=1;\n\\u0061-- / 2;\n"},
 		{"regex after class declaration following property named new", "const obj={new:1}; obj.new\nclass C {} /[)]/.test(')');\n"},
 		{"regex after function declaration following property named new", "const obj={new:1}; obj.new\nfunction f() {} /[)]/.test(')');\n"},
+		{"division after nested class expression in heritage array", "class C extends {x:[class extends {C:Object}.C {} / 2],Base:Object}.Base {}\n"},
+		{"division after nested class expression as heritage property", "const C = class extends {x: class extends {C:Object}.C {} / 2, Base:Object}.Base {} / 2;\n"},
+		{"division after instantiation following block comment with inner opener text", "const q = f /* 1 /* text */<number> / 2;\n"},
+		{"division after instantiation following two separate block comments", "const q = f /* a */ /* b */<number> / 2;\n"},
+		{"division after spread new class expression", "const a={...new class {} / 2};\n"},
+		{"division after spread new function expression", "const a={...new function() {} / 2};\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

@@ -170,6 +170,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// made isExprPositionStart treat the declaration as an
 	// expression).
 	prevIdentPrev := rune(0)
+	// identDotRun / lastIdentDotRun / prevIdentDotRun mirror
+	// identPrev / lastIdentPrev / prevIdentPrev for dotRun: how
+	// many consecutive '.' characters immediately preceded the
+	// identifier. A '.' before an identifier is member access
+	// only as a single dot — after a spread '...' the identifier
+	// is a keyword in its own right (Codex P2 on #3354:
+	// {...new class {} / 2} — the spread's final dot made 'new'
+	// read as a property name, so the class after it was taken
+	// for a declaration and its body closure misread).
+	identDotRun := 0
+	lastIdentDotRun := 0
+	prevIdentDotRun := 0
 	// funcClassFrames holds one frame per function or class
 	// EXPRESSION whose body '{' has not been seen yet: that
 	// brace closes an operand, not a statement block, so a '/'
@@ -340,8 +352,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				if len(curIdent) == 0 {
 					identPrev = prevChar
 					identPrevSig = prevSig
+					identDotRun = dotRun
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
+					prevIdentDotRun = lastIdentDotRun
 				}
 				curIdent = append(curIdent, 'x')
 				// The escape is an identifier character: it
@@ -368,13 +382,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				if len(curIdent) == 0 {
 					identPrev = prevChar
 					identPrevSig = prevSig
+					identDotRun = dotRun
 					prevIdent = lastIdent
 					prevIdentPrev = lastIdentPrev
+					prevIdentDotRun = lastIdentDotRun
 				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
 				lastIdent = string(curIdent)
 				lastIdentPrev = identPrev
+				lastIdentDotRun = identDotRun
 				curIdent = nil
 				// The next significant character after the
 				// identifier, skipping whitespace and comments:
@@ -382,7 +399,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// defeat the property-name guards below (Codex
 				// P2 on #1659: {class : 1}).
 				nextSig := nextSignificant(chars, i)
-				if isExprKeyword(lastIdent) && lastIdentPrev != '.' && lastIdentPrev != '#' {
+				if isExprKeyword(lastIdent) && !(lastIdentPrev == '.' && lastIdentDotRun < 3) && lastIdentPrev != '#' {
 					prevSig = 'o'
 				}
 				if (lastIdent == "in" || lastIdent == "of" || lastIdent == "instanceof") && lastIdentPrev != '.' && lastIdentPrev != '#' && identPrevSig == 'x' {
@@ -425,7 +442,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					if lastIdent == "class" {
 						inClassHeritage = true
 					}
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack)})
 					} else {
 						expectDeclBody = true
@@ -819,11 +836,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// body too, never a heritage operand.
 			topHeritageBrace := len(stack) > 0 && stack[len(stack)-1].char == '{' && stack[len(stack)-1].heritage
 			insideHeritageBrace := topHeritageBrace || heritageBraceDepth > 0
-			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0
+			// A '{' immediately after 'extends' opens that class's
+			// heritage operand, not its body — even when the class
+			// is itself nested inside an outer heritage brace
+			// (Codex P2 on #3354: {x:[class extends {C:Object}.C
+			// {} / 2]} — frameBodyBrace consumed the inner class's
+			// frame at its heritage brace, so its real body's '}'
+			// read as a block closure and the slash opened a
+			// phantom regex).
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && lastIdent != "extends"
 			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
 			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
 				(topHeritageBrace ||
-					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
+					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']') ||
+					(heritageBraceDepth > 0 && prevSig == 'o' && lastIdent == "extends"))
 			if heritageExprBrace {
 				if heritageBraceDepth == 0 {
 					heritageFrameFloor = len(funcClassFrames)
@@ -1140,8 +1166,8 @@ func isControlKeyword(kw string) bool {
 // keyword (return function() {}). Statement position — start of
 // input, or after ';', '{' or '}' — makes the keyword a declaration
 // instead, whose closing brace returns to expression position.
-func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune) bool {
-	if prevIdentPrev != '.' && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
+func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune, prevIdentDotRun int) bool {
+	if !(prevIdentPrev == '.' && prevIdentDotRun < 3) && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
 		return true
 	}
 	switch prev {
@@ -1286,6 +1312,43 @@ func isHexDigit(ch rune) bool {
 // '.', operator, or delimiter) rather than another operand, which
 // would make the '<' a relational operator instead
 // (a < Foo > b is a comparison chain, f<Foo> / 2 is not).
+// blockCommentOpen returns the start index of the '/*' that opens
+// the block comment whose closing '*/' begins at closeStart (the
+// index of the '*'), or -1 if there is none. Block comments do
+// not nest, so the opener is not simply the nearest preceding
+// '/*': a '/*' inside the comment's own text (f /* 1 /* text */)
+// is content, and the true opener is the earliest '/*' reachable
+// backward without crossing another '*/' — crossing one means
+// that '/*' opened an earlier, separate comment (Codex P2 on
+// #3354: the backward scan stopped at the inner '/*', resumed
+// inside the comment, and mistook its '1' for the previous token).
+func blockCommentOpen(chars []rune, closeStart int) int {
+	candidate := -1
+	for j := closeStart - 1; j >= 1; j-- {
+		if chars[j-1] == '/' && chars[j] == '*' {
+			candidate = j - 1
+			break
+		}
+	}
+	for candidate > 0 {
+		earlier := -1
+		for j := candidate - 1; j >= 0; j-- {
+			if chars[j] == '*' && j+1 < len(chars) && chars[j+1] == '/' {
+				break
+			}
+			if j >= 1 && chars[j-1] == '/' && chars[j] == '*' {
+				earlier = j - 1
+				break
+			}
+		}
+		if earlier < 0 {
+			break
+		}
+		candidate = earlier
+	}
+	return candidate
+}
+
 // prevTokenIsNumeric reports whether the token immediately before
 // offset lt is a numeric literal: it walks back over identifier
 // characters and checks the token's FIRST character, so an
@@ -1303,12 +1366,8 @@ func prevTokenIsNumeric(chars []rune, lt int) bool {
 			end--
 		}
 		if end >= 2 && chars[end-2] == '*' && chars[end-1] == '/' {
-			open := end - 2
-			for open >= 2 && !(chars[open-2] == '/' && chars[open-1] == '*') {
-				open--
-			}
-			if open >= 2 {
-				end = open - 2
+			if open := blockCommentOpen(chars, end-2); open >= 0 {
+				end = open
 				continue
 			}
 		}
