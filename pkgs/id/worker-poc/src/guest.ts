@@ -99,7 +99,12 @@ export class PlazaGuest {
   update(participant: number, event: Uint8Array): void {
     const { ptr, len, allocationLen } = this.copyInput(event);
     try {
-      this.model = this.ex.plaza_update(this.model, participant | 0, ptr, len);
+      // Clamp to i32::MAX as the native host does (sandbox.rs:
+      // i32::try_from(participant).unwrap_or(i32::MAX)): `participant | 0`
+      // alone wraps IDs above the i32 range (4294967296 becomes 0, which
+      // guests route differently), changing state evolution vs native.
+      const clamped = Math.min(participant, 2147483647);
+      this.model = this.ex.plaza_update(this.model, clamped | 0, ptr, len);
     } finally {
       this.ex.plaza_free(ptr, allocationLen);
     }
