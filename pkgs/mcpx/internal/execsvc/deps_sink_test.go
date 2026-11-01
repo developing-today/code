@@ -19,7 +19,9 @@ import (
 // conversion is the materialised set in the run's workdir.
 func TestDepsSurviveANonNilSink(t *testing.T) {
 	svc := service(t, store(t))
-	needRuntime(t)
+	if _, err := runner.Resolve("deno", "", runner.Setup{}); err != nil {
+		t.Skip("no deno runtime:", err)
+	}
 	work := t.TempDir()
 	var frames []execsvc.Frame
 	_, err := svc.RunWith(context.Background(), runner.Options{
@@ -27,14 +29,14 @@ func TestDepsSurviveANonNilSink(t *testing.T) {
 		ClientSource: minimalClient,
 		Permissions:  "all",
 		WorkDir:      work,
+		Runtime:      "deno",
 	}, execsvc.Options{
-		Runtime: "deno",
 		Deps: &execsvc.DepsOptions{
 			Packages:    []string{"zod@3.0.0"},
 			AutoInstall: "off",
 			Lockfiles: []execsvc.DepsLockfile{
 				{Name: "bun.lock", Content: []byte("bun")},
-				{Name: "deno.lock", Content: []byte("{}")},
+				{Name: "deno.lock", Content: []byte(`{"version":"4","specifiers":{},"npm":{}}`)},
 			},
 		},
 	}, func(f execsvc.Frame) error {
