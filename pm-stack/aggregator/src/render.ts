@@ -39,7 +39,7 @@ import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
-import type { HealthView } from "./health.ts";
+import type { HealthView, PageHealth } from "./health.ts";
 import {
   type AaCaiRow,
   type AaConfig,
@@ -80,7 +80,7 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
+import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
@@ -566,10 +566,11 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
 }
 
 /**
- * The grouped nav links (#1135, #1215): one labelled section per
- * PAGE_GROUP, in bar order, marking the active page's section. The bar
- * and the Pages dropdown are ONE navigation model: both render every
- * manifest page under the same sections — /pages included, no exclusions.
+ * The grouped nav links (#1135, #1215, #1497): one labelled section
+ * per PAGE_GROUP, in bar order, marking the active page's section.
+ * Since the #1497 curation the bar renders the PRIMARY-tier pages
+ * only; the Pages dropdown keeps every manifest page under the same
+ * sections, so demoted pages stay one click away.
  */
 export function navLinks(active: string, activeGroup?: string): string {
   // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
@@ -577,7 +578,7 @@ export function navLinks(active: string, activeGroup?: string): string {
   const activeRoute = manifestRouteFor(active) ?? active;
   const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
   let activeMarked = false;
-  return groupedPages()
+  return primaryGroupedPages()
     .map(({ group, pages }) => {
       const anchors = pages
         .map((p) => {
@@ -593,9 +594,10 @@ export function navLinks(active: string, activeGroup?: string): string {
 }
 
 /**
- * The Pages dropdown (#906 §1, #1215): the same grouped model as the
- * bar — one <optgroup> per manifest section, every page present — so
- * the bar and the dropdown always list the identical destination set.
+ * The Pages dropdown (#906 §1, #1215, #1497): the same grouped model
+ * as the bar — one <optgroup> per manifest section — but EVERY page
+ * present, primary and dropdown-tier alike: this is where demoted
+ * pages live.
  */
 export function pageDropdown(active: string): string {
   let selectedMarked = false;
@@ -2853,7 +2855,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
     ? summary.projects
         .map(
           (proj) =>
-            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/projects">projects</a></div>`,
+            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/program#projects-pool">projects</a></div>`,
         )
         .join("")
     : `<p class="muted">No Project pool items collected yet.</p>`;
@@ -2876,7 +2878,8 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${healthStrip}
 <h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
-<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}`;
+<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
+<p class="muted">In progress + recently done are the board's lanes — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
 }
 
 /** The overview page (#1134): full server render. */
@@ -4863,14 +4866,20 @@ ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
 
 // --- All pages (the manifest as a page) ---------------------------------------
 
-export function renderPages(provenance: Provenance): string {
-  const rows = PAGES.map(
-    (p) =>
-      `<tr><td><a href="${p.route}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${p.api ? `<a href="${p.api}"><code>${esc(p.api)}</code></a>` : '<span class="muted">—</span>'}</td><td>${esc(p.blurb)}</td></tr>`,
-  ).join("");
+export function renderPages(provenance: Provenance, history: PageHealth[] = []): string {
+  const byRoute = new Map(history.map((p) => [p.route, p]));
+  const rows = PAGES.map((p) => {
+    const h = byRoute.get(p.route);
+    const last =
+      !h || h.lastRenderedAt === null
+        ? '<span class="muted">not rendered since this process started</span>'
+        : `${esc(ageMsText(h.ageMs ?? 0))} · ${h.ok ? "ok" : '<span class="badge stale">last render failed</span>'}`;
+    const tier = p.nav === "primary" ? "Primary nav" : "Dropdown-only";
+    return `<tr><td><a href="${p.route}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${p.api ? `<a href="${p.api}"><code>${esc(p.api)}</code></a>` : '<span class="muted">—</span>'}</td><td>${tier}</td><td>${last}</td><td>${esc(p.blurb)}</td></tr>`;
+  }).join("");
   return layout(
     "All pages",
-    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar and the page dropdown render from the same list. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
+    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar renders the primary tier, the page dropdown lists them all (#1497). Last-rendered + status come live from the render registry (#1147), the same one <a href="/health">Health</a> reports — a page this process has not rendered yet says so, never a fake time. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">Nav tier</th><th scope="col">Last rendered</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
     provenance,
     "/pages",
   );
@@ -5037,9 +5046,11 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
 <p class="muted">${note} Open issues and gate labels come from the collector's Search API census in the fleet feed; pool counts from Project #4 (— = that source was unavailable for the repo, never a real zero). The same report is in <a href="/api/projects.json">/api/projects.json</a> as \`coverage\`.</p>`;
 }
 
-export function renderProjects(
+/** The Projects pool body (cards, chips, coverage) without the page
+ * shell — rendered standalone by renderProjects and, since the #1497
+ * merge, as the pool section of /program. */
+export function projectsBodyHtml(
   pool: ProjectPoolItem[],
-  provenance: Provenance,
   opts: {
     area?: string | null;
     orchestration?: OrchestrationSection | null;
@@ -5047,8 +5058,11 @@ export function renderProjects(
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
     coverage?: CoverageSnapshotFile | null;
+    /** Where the area chips point: /projects standalone, /program once merged (#1497). */
+    basePath?: string;
   } = {},
 ): string {
+  const base = opts.basePath ?? "/projects";
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
   // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
   // the /program index banner — without it they are silently mixed into
@@ -5059,26 +5073,21 @@ export function renderProjects(
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
   const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
-    `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    `<a href="${base}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
-        `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+        `<a href="${base}?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
     ...(unsetCount > 0
       ? [
-          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+          `<a href="${base}?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
         ]
       : []),
   ].join("");
   if (!pool.length) {
-    return layout(
-      "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
         .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
-        .join(" · ")}</p>`,
-      provenance,
-      "/projects",
-    );
+        .join(" · ")}</p>`;
   }
   const areaWeights = areas
     .map((a) => {
@@ -5113,10 +5122,9 @@ export function renderProjects(
       return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${statusCtl}</div>`;
     })
     .join("");
-  const body = `<h1>Projects — GitHub Project pool</h1>
-<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+  const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
-${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
 <p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
 ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
@@ -5124,9 +5132,26 @@ ${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
     .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
     .join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
+  return body;
+}
+
+export function renderProjects(
+  pool: ProjectPoolItem[],
+  provenance: Provenance,
+  opts: {
+    area?: string | null;
+    orchestration?: OrchestrationSection | null;
+    detail?: ProvenanceDetail;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
+    coverage?: CoverageSnapshotFile | null;
+    basePath?: string;
+  } = {},
+): string {
   return layout(
     "Projects",
-    body,
+    `<h1>Projects — GitHub Project pool</h1>
+${projectsBodyHtml(pool, opts)}`,
     provenance,
     "/projects",
     opts.identities ? ACTION_SCRIPT : "",
@@ -5176,7 +5201,7 @@ function trackedTable(tracked: TrackedIssue[]): string {
 
 function poolSummaryHtml(live: ProgramLive): string {
   return live.pool.total
-    ? `<div class="card"><strong><a href="/projects">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
+    ? `<div class="card"><strong><a href="/program#projects-pool">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
     : `<div class="banner">No Project pool in the current feed — the collector embeds it from the org Project when a Projects token is available. Pool summaries appear here when it lands; tracked issues still resolve through the projector/fixtures chain.</div>`;
 }
 
@@ -5190,7 +5215,7 @@ function projectCard(s: ProjectSummary): string {
   const poolLine =
     s.poolArea === null
       ? `<span class="muted">No dedicated Project Area yet.</span>`
-      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
+      : `<strong><a href="/program?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
   const roadmapLine =
     s.roadmapArea === null
       ? `<span class="muted">No Grist roadmap area yet.</span>`
@@ -5211,7 +5236,20 @@ export function renderProgram(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  poolSection?: {
+    pool: ProjectPoolItem[];
+    area?: string | null;
+    coverage?: CoverageSnapshotFile | null;
+    orchestration?: OrchestrationSection | null;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
+  } | null,
 ): string {
+  const poolSectionHtml = poolSection
+    ? `<h2 id="projects-pool">Projects pool</h2>
+<p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program" })}`
+    : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
   const unset = live.pool.byArea.find((c) => c.name === "(unset)")?.count ?? 0;
@@ -5233,13 +5271,13 @@ ${poolSummaryHtml(live)}
 ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
-${trackedTable(live.tracked)}`;
+${trackedTable(live.tracked)}${poolSectionHtml}`;
   return layout(
     "Program status",
     body,
     provenance,
     "/program",
-    "",
+    poolSection?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "items", "roadmap"]) : "",
   );
 }

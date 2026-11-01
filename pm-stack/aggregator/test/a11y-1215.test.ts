@@ -56,28 +56,34 @@ describe("non-colour cues (#1215)", () => {
   });
 });
 
-describe("one navigation model (#1215)", () => {
+describe("one navigation model (#1215, curated by #1497)", () => {
   const hrefs = [...navLinks("/quota").matchAll(/href="([^"]+)"/g)].map((m) => m[1]);
   const values = [...pageDropdown("/quota").matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]).filter((v) => v !== "");
 
-  test("bar and dropdown list the identical destination set", () => {
-    expect([...new Set(hrefs)].sort()).toEqual([...new Set(values)].sort());
-    expect(new Set(hrefs).size).toBe(PAGES.length);
+  test("the dropdown lists every manifest route; the bar lists the primary tier only", () => {
+    expect(new Set(values).size).toBe(PAGES.length);
+    expect([...new Set(hrefs)].sort()).toEqual(PAGES.filter((p) => p.nav === "primary").map((p) => p.route).sort());
+    for (const href of hrefs) expect(values).toContain(href);
   });
 
-  test("both include /pages and every manifest route", () => {
+  test("/pages and the demoted pages are dropdown-only; primary routes are in both", () => {
     for (const page of PAGES) {
-      expect(hrefs).toContain(page.route);
       expect(values).toContain(page.route);
+      if (page.nav === "primary") expect(hrefs).toContain(page.route);
+      else expect(hrefs).not.toContain(page.route);
     }
-    expect(hrefs).toContain("/pages");
     expect(values).toContain("/pages");
+    expect(hrefs).not.toContain("/pages");
   });
 
   test("the dropdown groups its options under the same sections as the bar", () => {
     const dropdown = pageDropdown("/");
     for (const label of ["Overview", "Work", "Ops", "System"]) {
       expect(dropdown).toContain(`<optgroup label="${label}">`);
+    }
+    // The bar renders a section label only when the section has a
+    // primary-tier page (#1497: System has none).
+    for (const label of ["Overview", "Work", "Ops"]) {
       expect(navLinks("/")).toContain(`>${label}</span>`);
     }
   });

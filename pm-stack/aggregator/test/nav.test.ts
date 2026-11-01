@@ -10,6 +10,7 @@ import {
   PAGES,
   SUBROUTE_PARENTS,
   groupedPages,
+  primaryGroupedPages,
   manifestRouteFor,
   pageByRoute,
 } from "../src/pages.ts";
@@ -55,19 +56,19 @@ describe("the manifest groups every page (#1135)", () => {
 describe("the nav bar renders the groups (#1135)", () => {
   const html = navLinks("/quota");
 
-  test("every page has a link in the bar, once each — /pages included (#1215)", () => {
+  test("every primary-tier page has a link in the bar, once each; dropdown-tier pages have none (#1497)", () => {
     for (const page of PAGES) {
       const hits = html.split(`href="${page.route}"`).length - 1;
-      expect(hits).toBe(1);
+      expect(hits).toBe(page.nav === "primary" ? 1 : 0);
     }
-    expect(html).toContain('href="/pages"');
-    expect(html.match(/<a href=/g)?.length).toBe(PAGES.length);
+    expect(html).not.toContain('href="/pages"');
+    expect(html.match(/<a href=/g)?.length).toBe(PAGES.filter((p) => p.nav === "primary").length);
   });
 
   test("each group with bar links renders its label, and the active page's section is marked", () => {
-    // Every group renders in the bar — /pages too, under System (#1215:
-    // one navigation model, no bar-only exclusions).
-    const inBar = groupedPages();
+    // Every group WITH a primary-tier page renders in the bar (#1497:
+    // System has none — its only page, All pages, is dropdown-only).
+    const inBar = primaryGroupedPages();
     for (const { group } of inBar) expect(html).toContain(`>${group.title}</span>`);
     expect(html).toContain('data-current="true"');
     expect(html.match(/data-current="true"/g)?.length).toBe(1);
