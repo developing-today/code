@@ -3482,12 +3482,63 @@ mod schedule_tests {
             .handle(WorldCommand::Input {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
+                session_id: None,
                 reply,
             })
             .await;
         actor.after_change().await;
         actor.acting = None;
         let _ = response.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn input_session_attribution_is_ephemeral_and_distinguishes_connections() {
+        let (mut actor, _, token, journal) = scheduling_actor("sessions", &[], false);
+        const SESSION_A: u64 = 0x5eed_cafe_0000_0001;
+        const SESSION_B: u64 = 0x5eed_cafe_0000_0002;
+        let session_ids = [SessionId::new(SESSION_A), SessionId::new(SESSION_B)];
+        let mut participant = None;
+
+        for session_id in session_ids {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::Input {
+                    token: token.clone(),
+                    input: b"{}".to_vec(),
+                    session_id: Some(session_id),
+                    reply,
+                })
+                .await;
+
+            let acting = actor
+                .acting
+                .expect("input participant is set while processing");
+            if let Some(first) = participant {
+                assert_eq!(acting, first);
+            } else {
+                participant = Some(acting);
+            }
+            assert!(actor.acting_session == Some(session_id));
+            response.await.unwrap().unwrap();
+            actor.after_change().await;
+            actor.acting = None;
+            actor.acting_session = None;
+        }
+
+        let committed: Vec<_> = journal
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+            .collect();
+        assert_eq!(committed.len(), 2);
+        for entry in committed {
+            let value = serde_json::to_value(entry).unwrap();
+            assert_eq!(value.as_object().unwrap().len(), 2);
+            assert!(value.get("session_id").is_none());
+            let serialized = value.to_string();
+            assert!(!serialized.contains(&SESSION_A.to_string()));
+            assert!(!serialized.contains(&SESSION_B.to_string()));
+        }
     }
 
     /// The records the program last published.

@@ -100,6 +100,7 @@ pub(crate) enum WorldCommand {
     Input {
         token: JoinCapability,
         input: Vec<u8>,
+        session_id: Option<SessionId>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
     Snapshot {
@@ -283,6 +284,9 @@ pub(crate) struct WorldActor {
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     pub(crate) acting: Option<u64>,
+    /// The connection whose input is being processed. Ephemeral actor context;
+    /// it is deliberately absent from `WorldEvent` and the journal.
+    pub(crate) acting_session: Option<SessionId>,
 }
 
 impl WorldActor {
@@ -321,6 +325,7 @@ impl WorldActor {
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
+            self.acting_session = None;
         }
     }
 
@@ -1132,6 +1137,7 @@ impl WorldActor {
             WorldCommand::Input {
                 token,
                 input,
+                session_id,
                 reply,
             } => {
                 let result = match self.core.prepare_input(&token, &input) {
@@ -1140,6 +1146,7 @@ impl WorldActor {
                     )),
                     Ok(candidate) if self.program_healthy => {
                         self.acting = Some(candidate.participant_id);
+                        self.acting_session = session_id;
                         match self
                             .program
                             .update(&candidate)
@@ -1554,6 +1561,7 @@ impl WorldActor {
             ticks: BTreeMap::new(),
             overdue_at_open,
             acting: None,
+            acting_session: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
         }
