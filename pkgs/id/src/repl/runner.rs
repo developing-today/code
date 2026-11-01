@@ -614,9 +614,8 @@ impl FindArgs<'_> {
         if self.first.is_some() && self.last.is_some() {
             anyhow::bail!("--first and --last cannot be used together");
         }
-        // #3059: an explicit zero limit is an error, never a silent empty result. (A
-        // nonnumeric value keeps the #2009 behaviour: it falls back to the default of 1
-        // in the parsers, so only a parsed 0 reaches this check.)
+        // #3059: an explicit zero limit is an error, never a silent empty result.
+        // Nonnumeric option values are rejected by the argument parsers.
         if self.first == Some(0) {
             anyhow::bail!("--first must be at least 1 (got 0)");
         }
@@ -709,24 +708,24 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> Result<Find
         } else if arg == "--first" {
             // --first with optional number argument
             if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    args.first = Some(n);
-                    i += 1;
-                } else {
-                    args.first = Some(1); // default to 1
-                }
+                let value = rest[i + 1];
+                args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 args.first = Some(1); // default to 1
             }
         } else if arg == "--last" {
             // --last with optional number argument
             if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    args.last = Some(n);
-                    i += 1;
-                } else {
-                    args.last = Some(1); // default to 1
-                }
+                let value = rest[i + 1];
+                args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 args.last = Some(1); // default to 1
             }
@@ -1263,23 +1262,23 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
             }
         } else if arg == "--first" {
             if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    find_args.first = Some(n);
-                    i += 1;
-                } else {
-                    find_args.first = Some(1);
-                }
+                let value = rest[i + 1];
+                find_args.first =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--first requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 find_args.first = Some(1);
             }
         } else if arg == "--last" {
             if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
-                if let Ok(n) = rest[i + 1].parse::<usize>() {
-                    find_args.last = Some(n);
-                    i += 1;
-                } else {
-                    find_args.last = Some(1);
-                }
+                let value = rest[i + 1];
+                find_args.last =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        anyhow::anyhow!("--last requires an integer (got {value:?})")
+                    })?);
+                i += 1;
             } else {
                 find_args.last = Some(1);
             }
@@ -1289,9 +1288,11 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
                 i += 1;
             }
         } else if arg == "--lines" || arg == "-n" {
-            if i + 1 < rest.len()
-                && let Ok(n) = rest[i + 1].parse::<usize>()
-            {
+            if i + 1 < rest.len() && !rest[i + 1].starts_with('-') {
+                let value = rest[i + 1];
+                let n = value
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("--lines requires an integer (got {value:?})"))?;
                 peek_opts.lines = n;
                 i += 1;
             }
@@ -1611,14 +1612,34 @@ mod tests {
             parse_find_args(&["q", "--last"], "tag").unwrap().last,
             Some(1)
         );
-        assert_eq!(
-            parse_find_args(&["q", "--first", "abc"], "tag")
-                .unwrap()
-                .first,
-            Some(1)
-        );
+        assert_eq!(parse_peek_args(&["q", "--first"]).unwrap().0.first, Some(1));
+        assert_eq!(parse_peek_args(&["q", "--last"]).unwrap().0.last, Some(1));
         // Peek without --lines keeps the default of 5.
         assert_eq!(parse_peek_args(&["q"]).unwrap().1.lines, 5);
+    }
+
+    #[test]
+    fn test_parse_rejects_nonnumeric_result_limit_values() {
+        for (flag, value) in [("--first", "two"), ("--last", "abc")] {
+            let find_error = parse_find_args(&["q", flag, value], "tag")
+                .err()
+                .expect("find parser should reject a nonnumeric limit");
+            assert!(find_error.to_string().contains(flag));
+            assert!(find_error.to_string().contains(value));
+
+            let peek_error = parse_peek_args(&["q", flag, value])
+                .err()
+                .expect("peek parser should reject a nonnumeric limit");
+            assert!(peek_error.to_string().contains(flag));
+            assert!(peek_error.to_string().contains(value));
+        }
+
+        for flag in ["--lines", "-n"] {
+            let error = parse_peek_args(&["q", flag, "abc"])
+                .err()
+                .expect("peek parser should reject a nonnumeric line count");
+            assert!(error.to_string().contains("abc"));
+        }
     }
 
     fn test_parse_find_args_basic() {
