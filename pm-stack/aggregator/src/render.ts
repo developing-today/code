@@ -24,7 +24,7 @@ import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import { diffCoverage, type CoverageSnapshotFile } from "./coverage.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
-import { applyBoardDonePolicy } from "./board-policy.ts";
+import { applyBoardDonePolicy, DONE_STRIP_RENDER_LIMIT } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -1572,6 +1572,7 @@ export function renderBoardBody(
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
   },
+  renderOpts?: { showAllDone?: boolean },
 ): string {
   // #1146: finished work is not WIP — aged-out done items and the
   // retired ROADMAP Done-table class never reach the board, whatever
@@ -1590,7 +1591,24 @@ export function renderBoardBody(
     .filter((k) => cols.has(k))
     .map((k) => {
       const colItems = cols.get(k) ?? [];
-      const cards = colItems
+      // #1179: the done strip renders only the most recent
+      // DONE_STRIP_RENDER_LIMIT cards (newest first); the rest are
+      // one click away (?done=all). Rendering all ~950 cost ~1 MB.
+      let visibleItems = colItems;
+      let doneNote = "";
+      if (k === "done" && colItems.length > DONE_STRIP_RENDER_LIMIT) {
+        const sorted = [...colItems].sort(
+          (a, b) => (Date.parse(b.updatedAt ?? "") || 0) - (Date.parse(a.updatedAt ?? "") || 0),
+        );
+        if (renderOpts?.showAllDone) {
+          visibleItems = sorted;
+          doneNote = ` — showing all, newest first; <a href="/board">show fewer</a>`;
+        } else {
+          visibleItems = sorted.slice(0, DONE_STRIP_RENDER_LIMIT);
+          doneNote = ` — showing the ${DONE_STRIP_RENDER_LIMIT} most recent; <a href="/board?done=all">show all ${colItems.length}</a>`;
+        }
+      }
+      const cards = visibleItems
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
@@ -1628,7 +1646,7 @@ export function renderBoardBody(
       if (k === "done") {
         // Collapsed by default (#1146): a count + the last 7 days
         // behind an expander, never a full column of finished cards.
-        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)</summary>${cards}</details>`;
+        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)${doneNote}</summary>${cards}</details>`;
       }
       const heading =
         k === "in-flight"
@@ -1652,10 +1670,11 @@ export function renderBoard(
     poolByRef?: Map<RefKey, ProjectPoolItem>;
     identities?: AuthorIdentity[];
   },
+  renderOpts?: { showAllDone?: boolean },
 ): string {
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p>${renderBoardBody(board, items, counts, act)}`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p>${renderBoardBody(board, items, counts, act, renderOpts)}`,
     provenance,
     "/board",
     act?.identities ? ACTION_SCRIPT : "",
