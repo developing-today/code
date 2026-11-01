@@ -37,6 +37,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::cli::TagCommand;
+use crate::helpers::display_text_field;
 use crate::meta_client::{MetaClient, MetaRequester, expect_ok};
 use crate::protocol::{MetaRequest, MetaResponse, WireTag};
 use crate::tags::TAG_DISPLAY_MAX_BYTES;
@@ -75,10 +76,7 @@ pub fn hex_decode(input: &str) -> Result<Vec<u8>> {
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
         .unwrap_or(trimmed);
-    let cleaned: String = stripped
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let cleaned: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
     if !cleaned.len().is_multiple_of(2) {
         bail!("hex value must have an even number of digits");
     }
@@ -112,7 +110,7 @@ impl TagDisplayOptions {
     /// Format a tag value for display according to these options.
     pub fn format_value(&self, value: &[u8]) -> String {
         let max = TAG_DISPLAY_MAX_BYTES;
-        match std::str::from_utf8(value) {
+        let formatted = match std::str::from_utf8(value) {
             Ok(text) => {
                 if self.no_truncate {
                     text.to_owned()
@@ -136,7 +134,8 @@ impl TagDisplayOptions {
                 }
             }
             Err(_) => format!("<binary {} bytes>", value.len()),
-        }
+        };
+        display_text_field(&formatted)
     }
 }
 
@@ -255,8 +254,17 @@ pub async fn run_set(
     match resp {
         MetaResponse::SetTag { success: true } => {
             match value {
-                Some(v) => println!("tag set: {subject} [{key}={}]", opts.format_value(v)),
-                None => println!("tag set: {subject} [{key}]"),
+                Some(v) => println!(
+                    "tag set: {} [{}={}]",
+                    display_text_field(subject),
+                    display_text_field(key),
+                    opts.format_value(v)
+                ),
+                None => println!(
+                    "tag set: {} [{}]",
+                    display_text_field(subject),
+                    display_text_field(key)
+                ),
             }
             Ok(())
         }
@@ -379,13 +387,22 @@ fn print_tags(tags: &[WireTag], opts: &TagDisplayOptions) {
 }
 
 /// Print a single tag line with display options applied.
-fn print_tag_line(subject: &[u8], key: &[u8], value: Option<&[u8]>, opts: &TagDisplayOptions) {
-    let subject = String::from_utf8_lossy(subject);
-    let key = String::from_utf8_lossy(key);
+fn format_tag_line(
+    subject: &[u8],
+    key: &[u8],
+    value: Option<&[u8]>,
+    opts: &TagDisplayOptions,
+) -> String {
+    let subject = display_text_field(&String::from_utf8_lossy(subject));
+    let key = display_text_field(&String::from_utf8_lossy(key));
     match value {
-        Some(v) => println!("{subject}\t{key}={}", opts.format_value(v)),
-        None => println!("{subject}\t{key}"),
+        Some(v) => format!("{subject}\t{key}={}", opts.format_value(v)),
+        None => format!("{subject}\t{key}"),
     }
+}
+
+fn print_tag_line(subject: &[u8], key: &[u8], value: Option<&[u8]>, opts: &TagDisplayOptions) {
+    println!("{}", format_tag_line(subject, key, value, opts));
 }
 
 #[cfg(test)]
@@ -397,6 +414,27 @@ mod tests {
     fn format_value_short_text_unchanged() {
         let opts = TagDisplayOptions::default();
         assert_eq!(opts.format_value(b"hello"), "hello");
+    }
+
+    #[test]
+    fn tag_line_escapes_whitespace_controls_in_each_stored_field() {
+        let opts = TagDisplayOptions::default();
+        for control in ['\n', '\t', '\r'] {
+            let dirty = format!("before{control}after");
+            let cases: [(&[u8], &[u8], Option<&[u8]>); 3] = [
+                (dirty.as_bytes(), b"key", Some(b"value")),
+                (b"subject", dirty.as_bytes(), Some(b"value")),
+                (b"subject", b"key", Some(dirty.as_bytes())),
+            ];
+            for (subject, key, value) in cases {
+                let line = format_tag_line(subject, key, value, &opts);
+                assert_eq!(line.matches('\t').count(), 1, "{line:?}");
+                assert!(!line.contains('\n'), "{line:?}");
+                assert!(!line.contains('\r'), "{line:?}");
+                assert_eq!(line.lines().count(), 1, "{line:?}");
+                assert!(line.contains(&format!("{dirty:?}")), "{line:?}");
+            }
+        }
     }
 
     #[test]
@@ -470,6 +508,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(opts.format_value(&[b'a', 0xff, b'b']), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn binary_flag_escapes_controls_without_changing_lossy_bytes() {
+        let opts = TagDisplayOptions {
+            binary: true,
+            ..Default::default()
+        };
+        assert_eq!(opts.format_value(b"a\nb\xff"), "\"a\\nb\u{fffd}\"");
     }
 
     #[test]
