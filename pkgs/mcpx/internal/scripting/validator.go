@@ -122,6 +122,7 @@ type blockCommentRange struct {
 type pendingBodyFrame struct {
 	parenDepth int
 	stackDepth int
+	arrayDepth int
 }
 
 func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
@@ -215,6 +216,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// — and records len(stack) when it was pushed: a ';' only
 	// clears a frame from its own scope.
 	var funcClassFrames []pendingBodyFrame
+	// arrayDepth records the open square-bracket nesting at the current
+	// token. A pending class/function body can only be consumed at the
+	// bracket depth where its keyword appeared: object literals inside a
+	// nested array heritage operand must not consume the class body's frame.
+	arrayDepth := 0
 	// inClassHeritage is set while scanning a class head before
 	// its body '{': the expression after 'extends' is a heritage
 	// expression in expression position (Codex P2 on #1659:
@@ -467,7 +473,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 						inClassHeritage = true
 					}
 					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) {
-						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack)})
+						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
 						expectDeclParenDepth = 0
@@ -886,7 +892,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// frame at its heritage brace, so its real body's '}'
 			// read as a block closure and the slash opened a
 			// phantom regex).
-			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && lastIdent != "extends"
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && lastIdent != "extends"
 			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
 			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
 				(topHeritageBrace ||
@@ -910,7 +916,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				heritageBraceDepth++
 				exprAfter = false
 			}
-			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
+			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}
@@ -934,6 +940,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			lastIdentPrev = 0
 		case '[':
 			stack = append(stack, delimToken{char: ch, line: line})
+			arrayDepth++
 		case ')', '}', ']':
 			if len(stack) == 0 {
 				diags = append(diags, diagnose.Diagnostic{
@@ -946,6 +953,9 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			if top.char == '[' && arrayDepth > 0 {
+				arrayDepth--
+			}
 			if ch == '}' && top.heritage && heritageBraceDepth > 0 {
 				heritageBraceDepth--
 				if top.heritageOwnsFloor && len(heritageFloorStack) > 0 {

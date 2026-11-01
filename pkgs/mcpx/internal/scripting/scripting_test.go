@@ -234,6 +234,8 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division inside nested class heritage with nested object operand", "class C extends {x:[class extends {x:{}}.x {} / 2]}.x {}\n"},
 		{"division after nested class heritage expression with nested object operand", "const q = class extends {x:[class extends {x:{y:{}}}.x {} / 2]}.x {} / 2;\n"},
 		{"division inside nested class heritage with arrow body in nested object", "class C extends {x:[class extends {x:{f:()=>{}}}.x {} / 2]}.x {}\n"},
+		{"division after nested class heritage array operand with object second", "class C extends {x:[class extends [0,{C:Object}][1].C {} / 2]}.x {}\n"},
+		{"division after nested class heritage array operand with object first", "class C extends {x:[class extends [{C:Object},0][0].C {} / 2]}.x {}\n"},
 		{"division after TypeScript instantiation on middle-dot digit-ending identifier", "const q = f\u00b71<number> / 2;\n"},
 		{"division after TypeScript instantiation on middle-dot digit-ending member", "const q = obj.f\u00b71<number> / 2;\n"},
 		{"division after TypeScript instantiation on ano-teleia digit-ending identifier", "const q = f\u03871<number> / 2;\n"},
