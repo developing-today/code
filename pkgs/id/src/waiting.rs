@@ -14,7 +14,10 @@
 //! use a fake clock. The event store holds one pool and mirrors it into the
 //! `waiting` table (P1.11). [`WaitingPool::restore`] rebuilds the pool from those
 //! rows on open. The pool keeps its own set of arrived keys, for the filter in
-//! [`WaitingPool::insert`].
+//! [`WaitingPool::insert`]. The store does not feed that set: it releases
+//! waiters through [`WaitingPool::release`], which records nothing, and its
+//! own applied table is its duplicate and replay record — so the set cannot
+//! grow with every event the store ever applies (#1730).
 //!
 //! The caller's loop:
 //!
@@ -164,7 +167,10 @@ pub struct WaitingPool<K, E> {
     /// entry.
     held: HashMap<AuthorKey, BTreeSet<u64>>,
     /// Keys that have arrived, and stay arrived. A dependency in this set is already satisfied.
-    /// The store calls this present: it is applied, voided by a fork, or a fork proof header.
+    /// Only the standalone [`insert`](Self::insert)/[`park`](Self::park) protocol
+    /// records here, through [`arrived`](Self::arrived). The event store never
+    /// does: it releases through [`release`](Self::release) and tracks applied
+    /// keys in its own table, so this set stays empty on the store path (#1730).
     arrived: HashSet<K>,
     /// Events whose dependencies had all arrived when they were inserted.
     ready: Vec<E>,
@@ -383,6 +389,23 @@ where
     /// so an expired event is never returned. If `key` was itself held, that copy
     /// is dropped without being returned, because the caller now holds the event.
     pub fn arrived(&mut self, key: K, now_ms: u64) -> Vec<E> {
+        let released = self.release(key.clone(), now_ms);
+        self.arrived.insert(key);
+        released
+    }
+
+    /// Release the events that were waiting only for `key`, exactly as
+    /// [`arrived`](Self::arrived) does — the held copy of `key` is dropped and
+    /// events due at `now_ms` expire first — but record nothing: `key` is not
+    /// added to the arrived set, so a later [`insert`](Self::insert) does not
+    /// treat it as a satisfied dependency or as a duplicate.
+    ///
+    /// This is the event store's path (#1730). The store calls it for every
+    /// applied event and every fork proof, and its own applied table already
+    /// recognises duplicates and replays; recording each key here as well
+    /// grew this pool by one set entry per event ever applied, in a pool no
+    /// store caller ever read back.
+    pub fn release(&mut self, key: K, now_ms: u64) -> Vec<E> {
         self.expire_due(now_ms);
         if let Some(seq) = self.by_key.get(&key).copied() {
             self.remove(seq);
@@ -401,7 +424,6 @@ where
                 released.push(done.event);
             }
         }
-        self.arrived.insert(key);
         released
     }
 
@@ -810,5 +832,30 @@ mod tests {
         );
         assert_eq!(pool.len(), 2);
         assert!(pool.contains(&1) && pool.contains(&2) && !pool.contains(&3));
+    }
+
+    #[test]
+    fn test_release_releases_waiters_without_recording_the_key() {
+        let mut pool: WaitingPool<u32, &str> = WaitingPool::new(WaitingLimits::default());
+        let author = [7u8; 32];
+        pool.insert(author, 10, [20], "a", 0).unwrap();
+        // release frees the waiter exactly as arrived does...
+        assert_eq!(pool.release(20, 0), vec!["a"]);
+        // ...but the key was not recorded: an event depending on it still
+        // waits, and the key itself is not treated as a duplicate (#1730).
+        pool.insert(author, 11, [20], "b", 0).unwrap();
+        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.len(), 1);
+        pool.insert(author, 20, [], "c", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["c"]);
+    }
+
+    #[test]
+    fn test_release_drops_the_held_copy_like_arrived() {
+        let mut pool: WaitingPool<u32, &str> = WaitingPool::new(WaitingLimits::default());
+        let author = [7u8; 32];
+        pool.insert(author, 10, [20], "a", 0).unwrap();
+        assert!(pool.release(10, 0).is_empty());
+        assert!(pool.is_empty());
     }
 }
