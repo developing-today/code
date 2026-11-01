@@ -3157,7 +3157,12 @@ mod tests {
         let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
-        let update = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
+        // The initial PTY resize may still be queued after the first view and
+        // correctly forces one more full repaint. Consume that recovery frame
+        // before checking a stable, consecutive update.
+        let _resize_recovery = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
+        channel.data(&b"inc"[..]).await.unwrap();
+        let update = read_until_bytes(&mut channel, &mut terminal, "count=2").await;
         assert!(
             !update.windows(3).any(|window| window == b"[2J"),
             "subsequent screen update should not clear and repaint the terminal"
