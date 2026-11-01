@@ -468,3 +468,163 @@ export function validateTaskBody(body: Record<string, unknown>): Validated<{ tit
 export function uploadKey(name: string, now: number, rand: string = crypto.randomUUID()): string {
   return `uploads/${now}-${rand}-${name.replace(/[^\w.\-]+/g, "_")}`;
 }
+
+// --- HTML extraction (#569) -------------------------------------------------
+// extractHtml mirrors the container crawler's Extractor (container/app.py,
+// an html.parser.HTMLParser) so the Worker fallback in index.ts and the
+// container return identical {title, links, text} for the same page:
+// - links counts every <a> start tag (bare <a> and <a/> included), never
+//   anchors inside scripts, styles, or comments;
+// - title is the concatenated character data of <title> (entities decoded),
+//   and title data never leaks into text;
+// - text is the remaining character data with script/style content
+//   skipped (an unclosed script/style swallows the rest of the document,
+//   as HTMLParser's CDATA mode does), chunks joined with one space and
+//   whitespace collapsed — the same `" ".join` + `\s+` collapse app.py
+//   applies. Paired fixtures: test/extractor-fixtures.json, exercised by
+//   both test/extractor.test.ts and test/test_extractor_parity.py.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  copy: "©", reg: "®", trade: "™", hellip: "…", mdash: "—", ndash: "–",
+  lsquo: "‘", rsquo: "’", ldquo: "“", rdquo: "”", laquo: "«", raquo: "»",
+  times: "×", divide: "÷", plusmn: "±", deg: "°", middot: "·",
+  bull: "•", dagger: "†", permil: "‰", euro: "€", pound: "£", yen: "¥",
+  cent: "¢", curren: "¤", sect: "§", para: "¶", micro: "µ", sup1: "¹",
+  sup2: "²", sup3: "³", frac12: "½", frac14: "¼", frac34: "¾",
+  iexcl: "¡", iquest: "¿", szlig: "ß", agrave: "à", aacute: "á",
+  acirc: "â", atilde: "ã", auml: "ä", aring: "å", aelig: "æ",
+  ccedil: "ç", egrave: "è", eacute: "é", ecirc: "ê", euml: "ë",
+  igrave: "ì", iacute: "í", icirc: "î", iuml: "ï", ntilde: "ñ",
+  ograve: "ò", oacute: "ó", ocirc: "ô", otilde: "õ", ouml: "ö",
+  ugrave: "ù", uacute: "ú", ucirc: "û", uuml: "ü", yacute: "ý",
+  yuml: "ÿ", Agrave: "À", Aacute: "Á", Auml: "Ä", Ccedil: "Ç",
+  Egrave: "È", Eacute: "É", Euml: "Ë", Ntilde: "Ñ", Ograve: "Ò",
+  Oacute: "Ó", Ouml: "Ö", Ugrave: "Ù", Uacute: "Ú", Uuml: "Ü",
+};
+
+export function decodeHtmlEntities(data: string): string {
+  return data.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z][a-zA-Z0-9]*);/g, (whole, body: string) => {
+    if (body.startsWith("#")) {
+      const hex = body[1] === "x" || body[1] === "X";
+      const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+      if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return whole;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return whole;
+      }
+    }
+    return NAMED_ENTITIES[body] ?? whole;
+  });
+}
+
+export function extractHtml(html: string): { title: string; links: number; text: string } {
+  let title = "";
+  let links = 0;
+  const textChunks: string[] = [];
+  let skipDepth = 0;
+  // Raw-text mode: script/style are HTMLParser CDATA elements, and
+  // HTMLParser likewise reports <title> content as raw character data
+  // (markup inside a title is literal and never counts as links).
+  let cdataTag: "script" | "style" | "title" | null = null;
+
+  const handleData = (raw: string) => {
+    if (raw === "") return;
+    const data = decodeHtmlEntities(raw);
+    if (cdataTag === "title") title += data;
+    else if (skipDepth === 0) textChunks.push(data);
+  };
+  const handleStartTag = (tag: string, selfClosing: boolean) => {
+    if (tag === "title") {
+      if (!selfClosing) cdataTag = "title";
+    } else if (tag === "a") links += 1;
+    else if (tag === "script" || tag === "style") {
+      skipDepth += 1;
+      if (selfClosing) skipDepth -= 1;
+      else cdataTag = tag;
+    }
+  };
+  const handleEndTag = (tag: string) => {
+    if ((tag === "script" || tag === "style") && skipDepth > 0) skipDepth -= 1;
+  };
+
+  let i = 0;
+  const n = html.length;
+  while (i < n) {
+    if (cdataTag !== null) {
+      // HTMLParser CDATA mode: only the matching close tag is markup.
+      const close = new RegExp(`</${cdataTag}(?=[\\s/>])`, "i").exec(html.slice(i));
+      if (close === null) {
+        handleData(html.slice(i));
+        i = n;
+        break;
+      }
+      handleData(html.slice(i, i + close.index));
+      i += close.index;
+      cdataTag = null;
+      continue; // the close tag itself is parsed by the normal path
+    }
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      handleData(html.slice(i));
+      break;
+    }
+    if (lt > i) handleData(html.slice(i, lt));
+    i = lt;
+    if (html.startsWith("<!--", i)) {
+      const end = html.indexOf("-->", i + 4);
+      i = end === -1 ? n : end + 3;
+      continue;
+    }
+    const next = html[i + 1] ?? "";
+    if (next === "!" || next === "?") {
+      const end = html.indexOf(">", i + 2);
+      i = end === -1 ? n : end + 1;
+      continue;
+    }
+    if (next === "/") {
+      const m = /^<\/([a-zA-Z][^\s/>]*)\s*\/?>/.exec(html.slice(i));
+      if (m === null) {
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleEndTag(m[1].toLowerCase());
+      i += m[0].length;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(next)) {
+      // Start tag: scan to the closing '>' without letting a quoted
+      // attribute value end the tag early.
+      let j = i + 1;
+      let quote = "";
+      while (j < n) {
+        const ch = html[j];
+        if (quote !== "") {
+          if (ch === quote) quote = "";
+        } else if (ch === '"' || ch === "'") quote = ch;
+        else if (ch === ">") break;
+        j += 1;
+      }
+      if (j >= n) {
+        handleData(html.slice(i)); // unterminated tag: HTMLParser emits it as data
+        break;
+      }
+      const inner = html.slice(i + 1, j);
+      const nameMatch = /^([a-zA-Z][^\s/>]*)/.exec(inner);
+      if (nameMatch === null) {
+        handleData("<");
+        i += 1;
+        continue;
+      }
+      handleStartTag(nameMatch[1].toLowerCase(), /\/\s*$/.test(inner));
+      i = j + 1;
+      continue;
+    }
+    handleData("<");
+    i += 1;
+  }
+
+  const text = textChunks.join(" ").replace(/\s+/g, " ").trim();
+  return { title: title.trim(), links, text };
+}
