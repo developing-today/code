@@ -174,6 +174,7 @@ impl Package {
     }
 
     /// `records` of an instance, parsed: `{board, plays, winner}`.
+    #[allow(dead_code)]
     fn records(world: &mut WorldInstance) -> Value {
         let raw = world
             .records()
