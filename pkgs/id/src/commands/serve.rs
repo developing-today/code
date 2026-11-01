@@ -1097,6 +1097,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
         let gossip_chat_presence = chat_presence.clone();
+        let gossip_signing_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
         let gossip_endpoint = router.endpoint().clone();
@@ -1107,6 +1108,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 receiver,
                 gossip_peer_discovery,
                 gossip_chat_presence,
+                gossip_signing_key,
                 gossip_store,
                 gossip_endpoint,
             )
@@ -1496,6 +1498,7 @@ async fn run_gossip_loop(
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
     chat_presence: PresenceTable,
+    signing_key: ed25519_dalek::SigningKey,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
 ) {
@@ -1546,7 +1549,7 @@ async fn run_gossip_loop(
             // heartbeat naming this node. Channel membership lives in the
             // chat layer above serve, so this heartbeat names no channels;
             // receivers scope and read it through PresenceTable.
-            let presence = PresenceHeartbeat::new(
+            let mut presence = PresenceHeartbeat::new(
                 *announce_node_id.as_bytes(),
                 Vec::new(),
                 Vec::new(),
@@ -1554,6 +1557,7 @@ async fn run_gossip_loop(
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_secs()),
             );
+            presence.sign(&signing_key);
             if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
                 debug!("gossip presence broadcast error: {}", e);
             }
@@ -1570,11 +1574,12 @@ async fn run_gossip_loop(
                     iroh_gossip::api::Event::Received(msg) => {
                         if let Some(heartbeat) = decode_frame(&msg.content) {
                             // Presence is a claim about `node`, and the gossip
-                            // topic is public: accept the frame only when the
-                            // claimed node is the message's authenticated
-                            // sender, so nobody can forge or suppress another
-                            // node's presence (#2809 Codex review).
-                            if heartbeat.node == *msg.sender.as_bytes() {
+                            // topic is public and does not authenticate
+                            // authors: accept the frame only when the
+                            // heartbeat's signature by its claimed node
+                            // verifies, so nobody can forge or suppress
+                            // another node's presence (#2809 Codex review).
+                            if heartbeat.verify() {
                                 debug!(
                                     "presence heartbeat from {}: {} channel(s)",
                                     heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
@@ -1582,7 +1587,7 @@ async fn run_gossip_loop(
                                 );
                                 recv_presence.update(heartbeat);
                             } else {
-                                debug!("presence heartbeat with unauthenticated node, dropped");
+                                debug!("presence heartbeat failed signature verification, dropped");
                             }
                         } else {
                             match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
