@@ -212,11 +212,12 @@ fn parse_result_limit(raw: &str) -> Result<usize, String> {
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
     ///
-    /// This is the only command that starts a server or a listener
-    /// (F13.8 client-only boundary): every other command — including
-    /// all `id world ...` subcommands — is a client that connects out
-    /// to a host and never serves. SSH world serving is likewise
-    /// opt-in here, via the `--world-ssh-port` family of flags.
+    /// This is the only command that hosts a world or serves stored
+    /// content (F13.8 client-only boundary): every other command —
+    /// including all `id world ...` subcommands — is a client that
+    /// connects out to a host and never hosts or serves a world. SSH
+    /// world serving is likewise opt-in here, via the
+    /// `--world-ssh-port` family of flags.
     ///
     /// The server runs indefinitely, hosting stored blobs and accepting
     /// new content from remote nodes. Automatically discovers other
@@ -1101,11 +1102,16 @@ pub enum Command {
     ///
     /// Every `world` subcommand is a client command (F13.8 client-only
     /// boundary): it connects out to a host, and opening further world
-    /// sessions starts no listener, host, or authority on this node.
-    /// Serving begins only through the explicit top-level `id serve`
-    /// command; there is no `--client-only` flag because no world
-    /// subcommand has a server mode to switch off. Node connectivity is
-    /// not world authority: a valid world capability is still required
+    /// sessions starts no world host or authority on this node. Hosting
+    /// begins only through the explicit top-level `id serve` command;
+    /// there is no `--client-only` flag because no world subcommand has
+    /// a hosting mode to switch off. Two subcommands do open local
+    /// listeners without hosting a world: `world ssh-tunnel` without
+    /// `--stdio` listens on a local address (loopback by default) to
+    /// proxy an SSH client to the host, and `world mirror` runs a
+    /// replica endpoint that accepts sync connections for the replica.
+    /// Neither grants any world authority: node connectivity is not
+    /// world authority, and a valid world capability is still required
     /// for every world operation.
     ///
     /// # Examples
