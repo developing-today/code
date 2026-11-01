@@ -114,7 +114,14 @@ describe("model parsing", () => {
 
 describe("request validation", () => {
   test("action-shaped priority strings resolve for both request types", () => {
-    for (const [priority, expected] of [["10", 10], ["45", 40], ["50", 50], ["90", 90], ["high", 20], [undefined, 40]] as const) {
+    for (const [priority, expected] of [
+      ["10", 10],
+      ["45", 40],
+      ["50", 50],
+      ["90", 90],
+      ["high", 20],
+      [undefined, 40],
+    ] as const) {
       // Both actions use jq --arg, which serializes priority as a JSON string.
       const payload = JSON.parse(JSON.stringify({ repo: "developing-today/code", title: "t", prompt: "p", priority }));
       expect(parseTaskRequest(payload).priority).toBe(expected);
@@ -132,12 +139,12 @@ describe("request validation", () => {
   });
 
   test("a prototype-spelling priority 400s at parse time, so no non-number reaches the packet (#2757)", () => {
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" }),
-    ).toThrow(ValidationError);
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" }),
-    ).toThrow(ValidationError);
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" })).toThrow(
+      ValidationError,
+    );
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" })).toThrow(
+      ValidationError,
+    );
     expect(() =>
       parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "constructor" }),
     ).toThrow(ValidationError);
@@ -233,14 +240,24 @@ describe("session directory scoping (issue #2903)", () => {
   });
 
   test("a directory inside the repo clone is accepted for both caller types (issue #2664)", () => {
-    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/pkgs", repoDirs)).toBe("/home/user/git/code/pkgs");
-    expect(resolveSessionDirectory("bearer", code, "/home/user/git/code/pkgs/", repoDirs)).toBe("/home/user/git/code/pkgs");
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(resolveSessionDirectory("bearer", code, "/home/user/git/code/pkgs/", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
   });
 
   test("paths are normalized before the containment check (issue #2664)", () => {
-    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/./pkgs/../pkgs", repoDirs)).toBe("/home/user/git/code/pkgs");
-    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code/../opencode", repoDirs)).toThrow(ValidationError);
-    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/code/../../etc", repoDirs)).toThrow(ValidationError);
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/./pkgs/../pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code/../opencode", repoDirs)).toThrow(
+      ValidationError,
+    );
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/code/../../etc", repoDirs)).toThrow(
+      ValidationError,
+    );
   });
 
   test("relative directories are rejected for both caller types (issue #2664)", () => {
@@ -255,10 +272,20 @@ describe("session directory scoping (issue #2903)", () => {
 
 describe("session blank title/directory parsing (issue #2664)", () => {
   test("empty and whitespace-only title/directory parse as omitted", () => {
-    const r = parseSessionRequest({ repo: "developing-today/code", prompt: "do the thing", title: "  ", directory: "" });
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  ",
+      directory: "",
+    });
     expect(r.title).toBeUndefined();
     expect(r.directory).toBeUndefined();
-    const r2 = parseSessionRequest({ repo: "developing-today/code", prompt: "do the thing", title: "", directory: " \t " });
+    const r2 = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "",
+      directory: " \t ",
+    });
     expect(r2.title).toBeUndefined();
     expect(r2.directory).toBeUndefined();
   });
