@@ -2963,8 +2963,8 @@ mod tests {
                 assert!(Cli::try_parse_from(["id", "peek", "--lines", "0", "query"]).is_err());
                 assert!(Cli::try_parse_from(["id", "peek", "-n", "0", "query"]).is_err());
                 // Bare flags keep their defaults (1 / 1 / 5 lines).
-                assert!(Cli::try_parse_from(["id", "find", "--first", "query"]).is_ok());
-                assert!(Cli::try_parse_from(["id", "find", "--last", "query"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "find", "query", "--first"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "find", "query", "--last"]).is_ok());
                 assert!(Cli::try_parse_from(["id", "peek", "query"]).is_ok());
             })
             .unwrap()
