@@ -47,11 +47,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
-import { parseProxyPort } from "./proxy-port.mjs";
+import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 
 const PORT = parseProxyPort("OPENCODE_ROUTE_PROXY_PORT", 18750);
 const HOST = process.env.OPENCODE_ROUTE_PROXY_HOST || "127.0.0.1";
-const TIMEOUT_MS = Number(process.env.OPENCODE_ROUTE_PROXY_TIMEOUT_MS || 1_200_000);
+const TIMEOUT_MS = parseProxyMillis("OPENCODE_ROUTE_PROXY_TIMEOUT_MS", 1_200_000);
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
