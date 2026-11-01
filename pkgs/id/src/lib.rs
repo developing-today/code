@@ -152,16 +152,20 @@
 //! id get abc123... myfile.txt
 //! ```
 
-pub mod access;
+pub use id_core::access;
+pub mod abuse;
 pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
 pub mod blob_gate;
+#[cfg(feature = "world")]
+pub mod boards;
 pub mod chain;
+pub mod chat;
 pub mod cli;
 pub mod commands;
-pub mod connectivity;
+pub use id_core::connectivity;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
@@ -173,7 +177,7 @@ pub mod directory_log;
 pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
-pub mod discovery;
+pub use id_core::discovery;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
@@ -187,15 +191,16 @@ pub mod fileops;
 pub mod frames;
 pub mod groups;
 pub mod helpers;
+pub mod idset;
 pub mod invite;
 pub mod invites;
 pub mod local;
 pub mod local_events;
 pub mod log_sync;
-pub mod membership;
+pub use id_core::membership;
 pub mod meta_client;
 #[cfg(feature = "world")]
-pub mod petname;
+pub use id_core::petname;
 pub mod protocol;
 pub mod pull_policy;
 pub mod rejection;
@@ -211,19 +216,19 @@ pub mod server_config;
 pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
-pub mod sync_method;
+pub use id_core::sync_method;
 pub mod tag_claims;
 pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
-pub(crate) mod time;
-pub mod tuple;
-pub mod waiting;
+pub(crate) use id_core::time;
+pub use id_core::tuple;
+pub use id_core::waiting;
 #[cfg(feature = "world")]
 pub mod world;
 #[cfg(feature = "world")]
-pub mod world_caps;
+pub use id_core::world_caps;
 #[cfg(feature = "world")]
 pub mod world_compile;
 #[cfg(feature = "world")]
@@ -233,7 +238,7 @@ pub mod world_fixture;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
-pub mod world_limits;
+pub use id_core::world_limits;
 pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub mod world_manifest;
@@ -242,7 +247,7 @@ pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
 #[cfg(feature = "world")]
-pub mod world_presentation;
+pub use id_core::world_presentation;
 #[cfg(feature = "world")]
 pub mod world_records;
 #[cfg(feature = "world")]
@@ -253,7 +258,7 @@ pub mod world_ssh;
 pub mod world_store;
 
 #[cfg(feature = "web")]
-pub mod qr;
+pub use id_core::qr;
 #[cfg(feature = "web")]
 pub mod web;
 

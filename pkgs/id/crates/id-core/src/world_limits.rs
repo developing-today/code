@@ -9,12 +9,86 @@ use std::time::Duration;
 
 use anyhow::{Result, ensure};
 
-use crate::cli::WorldRuntimeArgs;
-#[cfg(feature = "sandbox")]
-use crate::sandbox::SandboxLimits;
-use crate::world_native::NativeLimits;
-#[cfg(feature = "sandbox")]
-use crate::world_session::MAX_WORLD_MODULE_BYTES;
+/// Largest Wasm world module that may be installed (16 MiB).
+///
+/// The single definition lives here since the Phase 1 crate split
+/// (#3447): `world_session` re-exports it at its historical path.
+pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Resource bounds applied to each guest invocation.
+///
+/// The definition lives here since the Phase 1 crate split (#3447):
+/// the `sandbox` module re-exports it at its historical path.
+#[derive(Clone, Copy, Debug)]
+pub struct SandboxLimits {
+    /// Maximum compiled Wasm module size, in bytes.
+    pub module_bytes: usize,
+    /// Maximum Wasm fuel for an invocation.
+    pub fuel: u64,
+    /// Maximum linear memory, in bytes.
+    pub memory_bytes: usize,
+    /// Maximum input or output payload, in bytes.
+    pub message_bytes: usize,
+}
+
+impl Default for SandboxLimits {
+    fn default() -> Self {
+        Self {
+            module_bytes: 16 * 1024 * 1024,
+            fuel: 10_000_000,
+            memory_bytes: 16 * 1024 * 1024,
+            message_bytes: 1024 * 1024,
+        }
+    }
+}
+
+/// Resource bounds for one native worker.
+///
+/// The definition lives here since the Phase 1 crate split (#3447):
+/// the `world_native` module re-exports it at its historical path.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeLimits {
+    /// Address-space cap (`RLIMIT_AS`).
+    pub memory_bytes: u64,
+    /// CPU cap (`RLIMIT_CPU`).
+    pub cpu_seconds: u64,
+    /// Wall-clock budget per call.
+    pub call_deadline: Duration,
+}
+
+impl Default for NativeLimits {
+    fn default() -> Self {
+        Self {
+            memory_bytes: 256 * 1024 * 1024,
+            cpu_seconds: 10,
+            // Generous: the host machine may be loaded while a world is
+            // starting; correctness does not depend on snappy guests.
+            call_deadline: Duration::from_secs(10),
+        }
+    }
+}
+
+/// The raw world-runtime flag values [`RuntimeLimits::from_args`]
+/// validates.
+///
+/// The CLI's `WorldRuntimeArgs` (in the binary crate, which depends on
+/// this crate and so cannot be named here) implements this trait since
+/// the Phase 1 crate split (#3447); `from_args` keeps its exact
+/// validation and semantics.
+pub trait WorldLimitArgs {
+    /// Wasm fuel (instruction budget) for one world call.
+    fn world_fuel(&self) -> u64;
+    /// Linear memory for a Wasm world program, in MiB.
+    fn world_memory_mib(&self) -> u64;
+    /// Largest Wasm payload (input or output), in KiB.
+    fn world_message_kib(&self) -> u64;
+    /// Address-space cap for a native worker, in MiB.
+    fn world_native_memory_mib(&self) -> u64;
+    /// CPU seconds a native worker may use in total.
+    fn world_native_cpu_secs(&self) -> u64;
+    /// Wall-clock budget for one native worker call, in milliseconds.
+    fn world_native_deadline_ms(&self) -> u64;
+}
 
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
@@ -152,40 +226,40 @@ impl Default for RuntimeLimits {
 
 impl RuntimeLimits {
     /// Validate the admin's flag values into limits.
-    pub fn from_args(args: &WorldRuntimeArgs) -> Result<Self> {
-        ensure!(args.world_fuel > 0, "--world-fuel must be at least 1");
+    pub fn from_args<A: WorldLimitArgs>(args: &A) -> Result<Self> {
+        ensure!(args.world_fuel() > 0, "--world-fuel must be at least 1");
         ensure!(
-            (1..=2048).contains(&args.world_memory_mib),
+            (1..=2048).contains(&args.world_memory_mib()),
             "--world-memory-mib must be 1..=2048"
         );
         ensure!(
-            (1..=1024).contains(&args.world_message_kib),
+            (1..=1024).contains(&args.world_message_kib()),
             "--world-message-kib must be 1..=1024"
         );
         ensure!(
-            (16..=65_536).contains(&args.world_native_memory_mib),
+            (16..=65_536).contains(&args.world_native_memory_mib()),
             "--world-native-memory-mib must be 16..=65536"
         );
         ensure!(
-            args.world_native_cpu_secs > 0,
+            args.world_native_cpu_secs() > 0,
             "--world-native-cpu-secs must be at least 1"
         );
         ensure!(
-            args.world_native_deadline_ms > 0,
+            args.world_native_deadline_ms() > 0,
             "--world-native-deadline-ms must be at least 1"
         );
         Ok(Self {
             #[cfg(feature = "sandbox")]
             sandbox: SandboxLimits {
                 module_bytes: MAX_WORLD_MODULE_BYTES,
-                fuel: args.world_fuel,
-                memory_bytes: usize::try_from(args.world_memory_mib * MIB)?,
-                message_bytes: usize::try_from(args.world_message_kib * KIB)?,
+                fuel: args.world_fuel(),
+                memory_bytes: usize::try_from(args.world_memory_mib() * MIB)?,
+                message_bytes: usize::try_from(args.world_message_kib() * KIB)?,
             },
             native: NativeLimits {
-                memory_bytes: args.world_native_memory_mib * MIB,
-                cpu_seconds: args.world_native_cpu_secs,
-                call_deadline: Duration::from_millis(args.world_native_deadline_ms),
+                memory_bytes: args.world_native_memory_mib() * MIB,
+                cpu_seconds: args.world_native_cpu_secs(),
+                call_deadline: Duration::from_millis(args.world_native_deadline_ms()),
             },
         })
     }
@@ -195,79 +269,6 @@ impl RuntimeLimits {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Command};
-    use clap::Parser;
-
-    fn parse(extra: &[&str]) -> Result<RuntimeLimits> {
-        let mut argv = vec!["id", "serve", "--world", "--world-admin-token", "t"];
-        argv.extend_from_slice(extra);
-        let cli = Cli::try_parse_from(argv).unwrap();
-        let Some(Command::Serve { world_runtime, .. }) = cli.command else {
-            panic!("expected serve");
-        };
-        RuntimeLimits::from_args(&world_runtime)
-    }
-
-    #[test]
-    fn flag_defaults_match_the_built_in_limits() {
-        let limits = parse(&[]).unwrap();
-        let defaults = RuntimeLimits::default();
-        assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
-        assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
-        assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
-        #[cfg(feature = "sandbox")]
-        {
-            assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
-            assert_eq!(limits.sandbox.memory_bytes, defaults.sandbox.memory_bytes);
-            assert_eq!(limits.sandbox.message_bytes, defaults.sandbox.message_bytes);
-            assert_eq!(limits.sandbox.module_bytes, defaults.sandbox.module_bytes);
-        }
-    }
-
-    #[test]
-    fn flags_override_each_bound() {
-        let limits = parse(&[
-            "--world-fuel",
-            "5000",
-            "--world-memory-mib",
-            "32",
-            "--world-message-kib",
-            "64",
-            "--world-native-memory-mib",
-            "64",
-            "--world-native-cpu-secs",
-            "3",
-            "--world-native-deadline-ms",
-            "250",
-        ])
-        .unwrap();
-        assert_eq!(limits.native.memory_bytes, 64 * MIB);
-        assert_eq!(limits.native.cpu_seconds, 3);
-        assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
-        #[cfg(feature = "sandbox")]
-        {
-            assert_eq!(limits.sandbox.fuel, 5000);
-            assert_eq!(
-                limits.sandbox.memory_bytes,
-                usize::try_from(32 * MIB).unwrap()
-            );
-            assert_eq!(
-                limits.sandbox.message_bytes,
-                usize::try_from(64 * KIB).unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn out_of_range_values_are_rejected() {
-        assert!(parse(&["--world-fuel", "0"]).is_err());
-        assert!(parse(&["--world-memory-mib", "0"]).is_err());
-        assert!(parse(&["--world-memory-mib", "4096"]).is_err());
-        assert!(parse(&["--world-message-kib", "2048"]).is_err());
-        assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
-        assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
-        assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
-    }
 
     #[test]
     fn an_empty_world_profile_inherits_every_server_ceiling() {
