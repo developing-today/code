@@ -1838,8 +1838,10 @@ fn clean_name(name: &str) -> Result<String> {
         "name must be at most {MAX_NAME_CHARS} characters"
     );
     ensure!(
-        !name.chars().any(char::is_control),
-        "name must not contain control characters"
+        !name
+            .chars()
+            .any(|c| c.is_control() || crate::petname::is_format_char(c)),
+        "name must not contain control or format characters"
     );
     Ok(name.to_owned())
 }
@@ -1851,8 +1853,10 @@ fn clean_description(description: &str) -> Result<String> {
         "description must be at most {MAX_DESCRIPTION_CHARS} characters"
     );
     ensure!(
-        !description.chars().any(|c| c.is_control() && c != '\n'),
-        "description must not contain control characters"
+        !description
+            .chars()
+            .any(|c| { (c.is_control() && c != '\n') || crate::petname::is_format_char(c) }),
+        "description must not contain control or format characters"
     );
     Ok(description.to_owned())
 }
@@ -1889,6 +1893,19 @@ mod tests {
         let (credential, _) = directory.sign_up(name).unwrap();
         let id = directory.account_for(&credential).unwrap();
         (id, credential)
+    }
+
+    #[test]
+    fn cleaners_reject_format_characters_and_accept_plain_text() {
+        assert!(clean_name("Al\u{200B}ice").is_err());
+        assert!(clean_name("Alice\u{202E}Admin").is_err());
+        assert!(clean_description("Group\u{202E} description").is_err());
+
+        assert_eq!(clean_name("Alice").unwrap(), "Alice");
+        assert_eq!(
+            clean_description("Group description\nwith a newline").unwrap(),
+            "Group description\nwith a newline"
+        );
     }
 
     #[test]
