@@ -2604,8 +2604,22 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
 (function () {
   if (window.__dashBulk) return;
   window.__dashBulk = true;
+  // The reviewed batch, snapshotted at Review time (Codex review on
+  // PR #4053): Submit sends exactly this envelope — never a reread of
+  // live controls — and its per-item client tokens survive a lost
+  // response, so a retry dedupes against anything already recorded
+  // instead of appending duplicates. Any change to the picks or the
+  // action controls after review invalidates the snapshot.
+  var snapshot = null;
   function picks() { return Array.prototype.slice.call(document.querySelectorAll("input.bulkpick:checked:not(:disabled)")); }
   function bar() { return document.getElementById("bulkbar"); }
+  function invalidate() {
+    if (!snapshot) return;
+    snapshot = null;
+    var b = bar(); if (!b) return;
+    b.querySelector(".bulkreview").hidden = true;
+    b.querySelector(".bulkerr").textContent = "Selection or action changed after review \u2014 review the batch again before submitting.";
+  }
   function syncBar() {
     var b = bar(); if (!b) return;
     var n = picks().length;
@@ -2620,9 +2634,17 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
     var t = ev.target;
     if (!t || !t.classList) return;
     if (t.classList.contains("bulk-all")) {
+      invalidate();
       document.querySelectorAll("input.bulkpick:not(:disabled)").forEach(function (pk) { pk.checked = t.checked; });
       syncBar();
-    } else if (t.classList.contains("bulkpick") || t.name === "bulkVerb") syncBar();
+    } else if (t.classList.contains("bulkpick") || t.name === "bulkVerb" || t.name === "bulkUntil" || t.name === "bulkTier" || t.name === "bulkMode") {
+      invalidate();
+      syncBar();
+    }
+  });
+  document.addEventListener("input", function (ev) {
+    var t = ev.target;
+    if (t && t.name === "bulkReason") invalidate();
   });
   function describeAction(b) {
     var verb = b.querySelector("select[name=bulkVerb]").value;
@@ -2637,22 +2659,6 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
     var b = bar(); if (!b) return;
     if (t.classList.contains("bulk-review-btn")) {
       var sel = picks(); if (!sel.length) return;
-      var list = b.querySelector(".bulkreview-list");
-      list.replaceChildren();
-      sel.forEach(function (pk) {
-        var li = document.createElement("li");
-        li.textContent = (pk.dataset.title || pk.dataset.object) + " \\u2014 " + pk.dataset.object;
-        list.appendChild(li);
-      });
-      b.querySelector(".bulkreview-summary").textContent = "Apply \\u201c" + describeAction(b) + "\\u201d to " + sel.length + " item" + (sel.length === 1 ? "" : "s") + "? Nothing is submitted yet.";
-      b.querySelector(".bulkresults").replaceChildren();
-      b.querySelector(".bulkerr").textContent = "";
-      b.querySelector(".bulkreview").hidden = false;
-    }
-    if (t.classList.contains("bulk-cancel-btn")) b.querySelector(".bulkreview").hidden = true;
-    if (t.classList.contains("bulk-confirm-btn")) {
-      var sel2 = picks(); if (!sel2.length) return;
-      t.disabled = true;
       var verb = b.querySelector("select[name=bulkVerb]").value;
       var authorRaw = String((b.querySelector("select[name=author]") || {}).value || "drew|drew|");
       var parts = authorRaw.split("|");
@@ -2666,33 +2672,74 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       var reason = b.querySelector("input[name=bulkReason]").value.trim();
       if (reason) payload.reason = reason;
       var stamp = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-      var actions = sel2.map(function (pk, i) {
+      var actions = sel.map(function (pk, i) {
         var a = { clientToken: "ct-bulk-" + stamp + "-" + i, kind: "triage", verb: verb, objectRef: pk.dataset.object, author: author, payload: payload };
         if (pk.dataset.object.indexOf("gh:") === 0) a.targetRef = pk.dataset.object.slice(3);
         return a;
       });
+      snapshot = { actions: actions, text: describeAction(b) };
+      var list = b.querySelector(".bulkreview-list");
+      list.replaceChildren();
+      sel.forEach(function (pk) {
+        var li = document.createElement("li");
+        li.textContent = (pk.dataset.title || pk.dataset.object) + " \u2014 " + pk.dataset.object;
+        list.appendChild(li);
+      });
+      b.querySelector(".bulkreview-summary").textContent = "Apply \u201c" + snapshot.text + "\u201d to " + actions.length + " item" + (actions.length === 1 ? "" : "s") + "? Nothing is submitted yet \u2014 Submit sends exactly this reviewed list.";
+      b.querySelector(".bulkresults").replaceChildren();
+      b.querySelector(".bulkerr").textContent = "";
+      b.querySelector(".bulk-confirm-btn").disabled = false;
+      b.querySelector(".bulkreview").hidden = false;
+    }
+    if (t.classList.contains("bulk-cancel-btn")) {
+      snapshot = null;
+      b.querySelector(".bulkreview").hidden = true;
+    }
+    if (t.classList.contains("bulk-confirm-btn")) {
+      if (!snapshot) return;
+      var batch = snapshot;
+      t.disabled = true;
+      var resultsEl = b.querySelector(".bulkresults");
+      resultsEl.replaceChildren();
+      var allResults = [];
       try {
-        var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: actions }) });
-        var body = await res.json().catch(function () { return {}; });
-        if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
-        var resultsEl = b.querySelector(".bulkresults");
-        resultsEl.replaceChildren();
-        var failedRefs = {};
-        (body.results || []).forEach(function (r) {
-          var line = document.createElement("div");
-          if (r.ok) line.textContent = "\\u2713 " + r.objectRef + " \\u2014 recorded";
-          else { line.textContent = "\\u2717 " + (r.objectRef || "(unknown ref)") + " \\u2014 " + r.error + " (still in Needs-you)"; failedRefs[r.objectRef] = true; }
-          resultsEl.appendChild(line);
-        });
-        sel2.forEach(function (pk) { if (!failedRefs[pk.dataset.object]) pk.checked = false; });
-        syncBar();
-        if (!body.failed) {
-          window.dispatchEvent(new CustomEvent("dashrefresh"));
-          if (!document.querySelector("[data-frag]")) location.reload();
+        // The endpoint accepts at most 100 actions per request
+        // (server.ts); larger reviewed batches go in slices of the
+        // SAME snapshot, results aggregated across slices.
+        for (var off = 0; off < batch.actions.length; off += 100) {
+          var chunk = batch.actions.slice(off, off + 100);
+          var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunk }) });
+          var body = await res.json().catch(function () { return {}; });
+          if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+          (body.results || []).forEach(function (r) { allResults.push(r); });
         }
       } catch (e) {
-        b.querySelector(".bulkerr").textContent = "Batch not recorded: " + e.message;
-      } finally { t.disabled = false; }
+        // No definitive result: the snapshot (and its client tokens)
+        // is kept, so Submit retries the identical envelope and the
+        // endpoint dedupes anything a lost response had recorded.
+        b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        t.disabled = false;
+        return;
+      }
+      // Definitive results: the snapshot is spent. A further batch
+      // needs a fresh review, which mints fresh tokens.
+      snapshot = null;
+      var failedRefs = {};
+      var recorded = 0;
+      allResults.forEach(function (r) {
+        var line = document.createElement("div");
+        if (r.ok) { recorded++; line.textContent = "\u2713 " + r.objectRef + " \u2014 recorded"; }
+        else { line.textContent = "\u2717 " + (r.objectRef || "(unknown ref)") + " \u2014 " + r.error + " (still in Needs-you)"; failedRefs[r.objectRef] = true; }
+        resultsEl.appendChild(line);
+      });
+      var failed = allResults.length - recorded;
+      document.querySelectorAll("input.bulkpick:checked").forEach(function (pk) { if (!failedRefs[pk.dataset.object]) pk.checked = false; });
+      b.querySelector(".bulkreview-summary").textContent = "Batch submitted: " + recorded + " recorded, " + failed + " failed. Change the selection and Review again for another batch.";
+      syncBar();
+      if (!failed) {
+        window.dispatchEvent(new CustomEvent("dashrefresh"));
+        if (!document.querySelector("[data-frag]")) location.reload();
+      }
     }
   });
 })();
