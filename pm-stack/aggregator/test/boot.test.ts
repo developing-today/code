@@ -64,14 +64,30 @@ describe("server boots from fixtures", () => {
     expect(Array.isArray(api.projects)).toBe(true);
   });
 
-  test("sw.js serves the self-unregistering kill switch", async () => {
+  test("sw.js serves the real worker (#3676; design §6 step 2)", async () => {
+    // The kill switch was replaced by the real push worker under the
+    // design's §6 fallback (no probe data existed): the eviction job
+    // lives on in the worker's activate cache purge + the page-side
+    // probe script, so no release serves a /sw.js that neither
+    // evicts the stranded worker nor is the real worker.
     const res = await fetch(`http://127.0.0.1:${port}/sw.js`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("javascript");
     expect(res.headers.get("cache-control")).toBe("no-cache");
     const body = await res.text();
     expect(body).toContain("skipWaiting");
-    expect(body).toContain("registration.unregister()");
+    expect(body).toContain("addEventListener('push'");
+    expect(body).toContain("addEventListener('notificationclick'");
+    expect(body).toContain("caches.keys()");
+    expect(body).toContain("clients.claim()");
+  });
+
+  test("manifest serves the PWA manifest (#3676/#3315)", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { start_url: string; display: string };
+    expect(body.start_url).toBe("/attention");
+    expect(body.display).toBe("standalone");
   });
 
   test("roadmap page renders", async () => {
