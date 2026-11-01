@@ -265,6 +265,41 @@ cd grist
   `seed/roadmap.json` (the PM-stack phases, the cluster register
   headlines, the four-repo fleet).
 
+#### Reload a document after an external change
+
+Grist OSS **v1.7.21** provides the authenticated
+`POST /api/docs/{docId}/force-reload` endpoint. It closes and reopens
+the document inside the running Grist service; it does not restart the
+container. After an approved external document edit, verify the exact
+cell through the API while forcing the reload:
+
+```bash
+cd grist  # from pm-stack/
+./reload-doc.sh DOC_ID TABLE_ID ROW_ID COLUMN_ID EXPECTED_VALUE
+```
+
+The script reads `grist_api_key` from the same SOPS file and age key as
+`seed.sh`, sends the reload request, and exits non-zero if the selected
+cell does not read back with the expected text. It does not print the
+API key. For a simple API-supported text update that should be applied
+as part of the operation, append `--apply`; the script uses one
+`UpdateRecord` action, skips the write when the value is already equal,
+then force-reloads and verifies. Do not use `--apply` for schema
+changes or arbitrary actions.
+
+Before a live edit, choose a reversible, low-impact cell change and
+record its original value and restoration step. Check that no one is
+actively editing the document; Grist may reject the reload while a
+write is in progress. Inspect the aggregator's roadmap source chip or
+`/api/health` (`source.roadmap`) before, during, and after the operation:
+`live (Grist...)` means it is reading from Grist, while a
+`fixtures (...)` value explicitly signals fallback. If the roadmap
+source changes unexpectedly, stop and investigate rather than treating
+the fallback as live data. Confirm the container's `StartedAt` is
+unchanged to distinguish a document reload from a service restart.
+Direct SQLite editing is not the routine workflow; this wrapper only
+uses the Grist API.
+
 ## Day-2 operations
 
 - **Status:** `docker compose ps`, `docker compose logs -f kaneo`,
@@ -327,6 +362,7 @@ pm-stack/
 │   ├── deploy.sh
 │   ├── .env.example
 │   ├── seed.sh                # idempotent seed via the REST API
+│   ├── reload-doc.sh          # force-reload + API read-back verification
 │   └── seed/roadmap.json      # Roadmap rows
 └── ready-for-agent/           # Phase 2 dispatch layer (ready-for-agent 1.1.0)
     ├── install.sh             # pinned npm install + unit + clone helper
