@@ -117,6 +117,14 @@ interface TriageMessage {
 
 const AMOUNT_RE = /\$([\d,]+\.\d{2})/;
 
+export function amountFromBody(text: string): string | undefined {
+  return (
+    /\b(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    AMOUNT_RE.exec(text)?.[1]
+  );
+}
+
 /** "Oct 25, 2026" / "2026-10-25" as a merchant is a parse failure, not a merchant. */
 function isDateLike(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) || /^[A-Z][a-z]{2,8}\s+\d{1,2},\s*\d{4}$/.test(s);
@@ -204,10 +212,7 @@ async function gmailCandidates(
           maxBuffer: 16 * 1024 * 1024,
         });
         const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
-        amount ??=
-          /(?:amount paid|amount charged|total charged|transaction amount|total)[:\s]*\$([\d,]+\.\d{2})/i.exec(
-            text,
-          )?.[1] ?? AMOUNT_RE.exec(text)?.[1];
+        amount ??= amountFromBody(text);
         merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
       } catch {
         /* unreadable body: counted as skipped below */
@@ -257,4 +262,6 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
