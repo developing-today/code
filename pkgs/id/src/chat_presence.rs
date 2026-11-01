@@ -91,13 +91,14 @@ impl PresenceHeartbeat {
     /// claims for channels the heartbeat does not also claim presence in.
     #[must_use]
     pub fn new(node: AuthorKey, channels: Vec<Hash>, typing: Vec<Hash>, ts: u64) -> Self {
-        let mut channels: Vec<Hash> = Vec::new();
+        let mut unique: Vec<Hash> = Vec::new();
         for channel in channels {
-            if !channels.contains(&channel) {
-                channels.push(channel);
+            if !unique.contains(&channel) {
+                unique.push(channel);
             }
         }
-        channels.truncate(MAX_HEARTBEAT_CHANNELS);
+        unique.truncate(MAX_HEARTBEAT_CHANNELS);
+        let channels = unique;
         let typing: Vec<Hash> = typing
             .into_iter()
             .filter(|channel| channels.contains(channel))
@@ -397,15 +398,13 @@ impl PresenceTable {
 /// Encodes a heartbeat as a gossip frame: [`PRESENCE_FRAME_MAGIC`] plus the
 /// postcard-serialized heartbeat, the encoding the gossip plane carries.
 ///
-/// # Panics
-///
-/// Panics only if postcard cannot serialize a heartbeat, which its plain-data shape
-/// makes unreachable in practice; the serve loop's announcement path treats
-/// serialization failure the same way.
+/// A heartbeat is plain data and serializes infallibly in practice; if
+/// it ever failed, the frame degrades to the bare magic, which
+/// [`decode_frame`] refuses.
 #[must_use]
 pub fn encode_frame(heartbeat: &PresenceHeartbeat) -> Vec<u8> {
     let mut frame = PRESENCE_FRAME_MAGIC.to_vec();
-    let bytes = postcard::to_allocvec(heartbeat).expect("presence heartbeat serializes");
+    let bytes = postcard::to_allocvec(heartbeat).unwrap_or_default();
     frame.extend_from_slice(&bytes);
     frame
 }
