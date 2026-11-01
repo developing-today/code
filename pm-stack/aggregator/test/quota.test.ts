@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
 import { disabledProvidersFromConfig } from "../src/aa.ts";
-import { extractQuotaPools, poolProviderId, poolProviderIds } from "../src/quota-extract.ts";
+import { extractQuotaPools, poolProviderId, poolProviderIds, POOL_SPECS } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -198,6 +198,53 @@ describe("quota extractors", () => {
       expect(p.windows).toEqual([]);
       expect(p.note).toBeTruthy();
     }
+  });
+
+  test("extractor health distinguishes misses from intentional shell pools", () => {
+    const empty = new Map(extractQuotaPools("no reads here", NOW).map((p) => [p.id, p]));
+    for (const spec of POOL_SPECS) {
+      expect(empty.get(spec.id)?.extractionHealth).toEqual({
+        status: "gap",
+        matched: false,
+        reason: "section-missing",
+        count: 0,
+      });
+    }
+    for (const id of ["opendesign:go", "deepseek:api"]) {
+      expect(empty.get(id)?.extractionHealth).toEqual({
+        status: "intentional",
+        matched: null,
+        reason: "uninstrumented",
+        count: 0,
+      });
+    }
+  });
+
+  test("extractor health records parsed windows and distinguishes null/throw misses", () => {
+    expect(byId.get("anthropic:claude-pro")?.extractionHealth).toEqual({
+      status: "matched",
+      matched: true,
+      count: 1,
+    });
+    const nullResult = extractQuotaPools("### ChatGPT — main account plans\nno quota figures", NOW).find(
+      (p) => p.id === "openai:codex",
+    );
+    expect(nullResult?.extractionHealth).toEqual({
+      status: "gap",
+      matched: false,
+      reason: "extractor-null",
+      count: 0,
+    });
+    const thrown = extractQuotaPools(
+      "### ChatGPT — main account plans\n7-day 11% used, resets Zzz 30, 18:01 UTC",
+      NOW,
+    ).find((p) => p.id === "openai:codex");
+    expect(thrown?.extractionHealth).toEqual({
+      status: "gap",
+      matched: false,
+      reason: "extractor-threw",
+      count: 0,
+    });
   });
 });
 

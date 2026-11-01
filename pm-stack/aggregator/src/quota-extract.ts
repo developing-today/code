@@ -438,6 +438,7 @@ const SHELL_POOLS: QuotaPool[] = [
     state: "healthy",
     windows: [],
     note: "Usage uninstrumented — no current read. API route verified; a manual dashboard read is required for a percentage.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
   {
     id: "deepseek:api",
@@ -446,6 +447,7 @@ const SHELL_POOLS: QuotaPool[] = [
     state: "healthy",
     windows: [],
     note: "PAYG balance ¥44.63 (2026-10-25 read), parked. Not a plan pool — never a fallback for supervised sessions; plan-covered Flash routes are preferred.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
 ];
 
@@ -527,10 +529,24 @@ export function extractQuotaPools(
       continue;
     }
     const section = sectionOf(quotaViewText, spec.heading);
+    if (!section) {
+      pools.push({
+        id: spec.id,
+        provider: spec.provider,
+        plan: spec.plan,
+        state: "healthy",
+        windows: [],
+        note: spec.shellNote,
+        extractionHealth: { status: "gap", matched: false, reason: "section-missing", count: 0 },
+      });
+      continue;
+    }
     let raw: Raw | null = null;
+    let threw = false;
     try {
-      raw = section ? spec.extract(section, now) : null;
+      raw = spec.extract(section, now);
     } catch {
+      threw = true;
       raw = null;
     }
     if (!raw) {
@@ -541,6 +557,12 @@ export function extractQuotaPools(
         state: "healthy",
         windows: [],
         note: spec.shellNote,
+        extractionHealth: {
+          status: "gap",
+          matched: false,
+          reason: threw ? "extractor-threw" : "extractor-null",
+          count: 0,
+        },
       });
       continue;
     }
@@ -552,6 +574,7 @@ export function extractQuotaPools(
       windows: raw.windows,
       note: raw.note,
       wallLiftsAt: raw.wallLiftsAt,
+      extractionHealth: { status: "matched", matched: true, count: raw.windows.length },
     };
     pool.state = raw.wallLiftsAt ? "walled" : poolState(pool);
     if (pool.state === "walled" && !pool.wallLiftsAt) {

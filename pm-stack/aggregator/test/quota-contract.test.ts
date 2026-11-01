@@ -64,6 +64,17 @@ describe("/api/quota.json hub contract (#1119)", () => {
       expect(Array.isArray(doc[key])).toBe(true);
     }
     expect("domains" in doc).toBe(true); // object or null, never absent
+    expect(typeof doc.extractorHealth).toBe("object");
+    for (const rows of [doc.extractorHealth?.pools, doc.extractorHealth?.services]) {
+      expect(Array.isArray(rows)).toBe(true);
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        expect(typeof row.id).toBe("string");
+        expect(["matched", "gap", "intentional", "unavailable"]).toContain(row.status);
+        expect([true, false, null]).toContain(row.matched);
+        expect(typeof row.count).toBe("number");
+      }
+    }
     for (const pool of doc.pools) {
       expect(typeof pool.id).toBe("string");
       expect(Array.isArray(pool.windows)).toBe(true);

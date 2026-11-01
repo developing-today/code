@@ -109,6 +109,31 @@ describe("saas extraction (Part b)", () => {
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
   });
 
+  test("service extraction health reports missing sections and intentional uninstrumented services", () => {
+    const shells = new Map(extractSaasServices("nothing here").map((s) => [s.id, s]));
+    for (const id of ["cloudflare", "turso", "supabase", "github", "modal", "oci", "bitwarden"]) {
+      expect(shells.get(id)?.extractionHealth).toMatchObject({
+        status: "gap",
+        matched: false,
+        reason: "section-missing",
+        count: 0,
+      });
+    }
+    for (const id of ["vercel", "backblaze-b2", "fly-io", "baseten"]) {
+      expect(shells.get(id)?.extractionHealth).toMatchObject({ status: "intentional", matched: null, reason: "uninstrumented" });
+    }
+    expect(byId.get("cloudflare")?.extractionHealth?.status).toBe("matched");
+    const noMetrics = extractSaasServices("### Cloudflare — Workers platform\n- **Usage / dates:** no metrics").find(
+      (s) => s.id === "cloudflare",
+    );
+    expect(noMetrics?.extractionHealth).toMatchObject({
+      status: "gap",
+      matched: false,
+      reason: "extractor-null",
+      count: 0,
+    });
+  });
+
   test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
     for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
       const s = byId.get(id)!;
@@ -494,6 +519,24 @@ describe("hub renders", () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
+  });
+  test("quota and service cards show extraction gaps without changing their state", async () => {
+    const src = fixtureSource();
+    const quota = await src.quota();
+    quota.pools[0] = {
+      ...quota.pools[0],
+      extractionHealth: { status: "gap", matched: false, reason: "section-missing", count: 0 },
+    };
+    const usage = await src.usage();
+    usage.services[0] = {
+      ...usage.services[0],
+      extractionHealth: { status: "gap", matched: false, reason: "extractor-null", count: 0 },
+    };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html.match(/extraction gap/g)?.length).toBe(2);
+    expect(html).toContain('class="badge walled"');
+    expect(html).toContain('title="section-missing"');
+    expect(html).toContain('title="extractor-null"');
   });
   test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
     const src = fixtureSource();

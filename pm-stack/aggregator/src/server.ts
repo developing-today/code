@@ -897,7 +897,7 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
     // shape is unchanged for existing consumers (quota-guidance); the
-    // hub sections ride as additional top-level keys. Snapshot history
+    // hub sections and extractor health ride as additional top-level keys. Snapshot history
     // stays out of this twin — it is per-service, on the service twin.
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
     return json({
@@ -908,6 +908,16 @@ async function handler(req: Request): Promise<Response> {
       attention: usage.attention,
       domains: usage.domains,
       subscriptions: usage.subscriptions,
+      extractorHealth: {
+        pools: quota.pools.map((pool) => ({
+          id: pool.id,
+          ...(pool.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+        services: usage.services.map((service) => ({
+          id: service.id,
+          ...(service.extractionHealth ?? { status: "unavailable", matched: null, reason: "not-recorded", count: 0 }),
+        })),
+      },
     });
   }
   if (path === "/api/quota/service.json") {
