@@ -104,6 +104,9 @@ describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)"
       renderSource.indexOf("@media (max-width: 720px)"),
     );
     expect(light).toContain(".chart { background: #0d1117;");
+    // The in-chart toggle keeps a visible selected state (Codex round 2):
+    // the plain in-chart button rule would otherwise override .active.
+    expect(light).toContain(".chart .xpl-ctl button.active { background: #1f6feb;");
   });
 });
 

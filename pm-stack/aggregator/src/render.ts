@@ -341,6 +341,7 @@ body.xp-plan .xpl-costcol { display: none; }
   .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
   .chart .muted { color: #8b949e; }
   .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
+  .chart .xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
   .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
   .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
   .cform .kinds label { color: #1f2328; }
