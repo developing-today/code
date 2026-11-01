@@ -478,6 +478,41 @@ let
           user = { };
           # sara = { };
         };
+        # clanServices replacements for the clanModules.* imports that
+        # modules/shared.nix used to carry (clanModules was removed
+        # upstream; see #159). state-version is not listed here:
+        # clanCore enables it by default.
+        inventory.instances = {
+          # Runs the OpenSSH server with persistent host keys.
+          # Root's authorized keys stay in machines/user/configuration.nix.
+          sshd = {
+            roles.server.tags.all = { };
+            # The old sshd module only generated host keys; CA-signed host
+            # certificates are a new-service extra that would require
+            # shared openssh-ca vars this repo does not have.
+            roles.server.settings.certificate.enable = false;
+          };
+          # Generates the root password (was clanModules.root-password).
+          user-root = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "root";
+          };
+          # Zerotier network (was clan.core.networking.zerotier.controller
+          # in machines/user/configuration.nix; the direct option was
+          # removed upstream). This machine is the controller and a peer.
+          zerotier = {
+            module.name = "zerotier";
+            roles.controller.machines.user = { };
+            roles.peer.machines.user = { };
+          };
+          # Generates the "user" password (was clanModules.user-password).
+          user-user = {
+            module.name = "users";
+            roles.default.tags.all = { };
+            roles.default.settings.user = "user";
+          };
+        };
       };
     in
     {
@@ -608,7 +643,12 @@ let
     in
     {
       packages = {
-        inherit mcpx idMailDeploy pkarrDeploy developingTodayBackupDeploy;
+        inherit
+          mcpx
+          idMailDeploy
+          pkarrDeploy
+          developingTodayBackupDeploy
+          ;
         mcpx-docs = mcpxDocs;
       };
       checks = {
