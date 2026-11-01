@@ -1643,12 +1643,12 @@ mod tests {
     #[test]
     fn test_parse_find_args_invalid_format_is_error() {
         let rest = ["--format", "gorup", "hello"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.format_error, Some("gorup"));
         assert_eq!(args.format, "union");
 
         let rest = ["--format", "yaml", "hello"];
-        let args = parse_find_args(&rest, "tag");
+        let args = parse_find_args(&rest, "tag").unwrap();
         assert_eq!(args.format_error, Some("yaml"));
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
     fn test_parse_find_args_valid_format_is_stored() {
         for good in ["tag", "group", "union"] {
             let rest = ["--format", good, "hello"];
-            let args = parse_find_args(&rest, "union");
+            let args = parse_find_args(&rest, "union").unwrap();
             assert_eq!(args.format_error, None);
             assert_eq!(args.format, good);
         }
