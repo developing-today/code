@@ -196,6 +196,31 @@ mod tests {
             },
         };
         assert_eq!(journal_version_required_by(&plain), JOURNAL_VERSION);
+        // A checkpoint whose retained events include an EntityInput event
+        // requires version 3 even with no active handoff (PR #3922 Codex).
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            snapshot: "s".to_owned(),
+            events: vec![WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            }],
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
         // Coordinator records fix their wire shape in this packet too.
         let started = CoordinatorJournalEntry::HandoffStarted {
             handoff_id: "ab".repeat(16),

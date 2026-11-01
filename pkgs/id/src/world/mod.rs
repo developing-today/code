@@ -899,7 +899,7 @@ pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_REGION_HANDOFF;
 /// [`JOURNAL_VERSION_EXECUTION_PROFILE`] for the entry kinds a version-1
 /// binary cannot read, [`JOURNAL_VERSION`] for everything else.
 #[must_use]
-pub const fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
     match entry {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
@@ -908,10 +908,24 @@ pub const fn journal_version_required_by(entry: &JournalEntry) -> u32 {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
             _ => JOURNAL_VERSION,
         },
-        JournalEntry::Checkpoint { transfers, .. } => match transfers {
-            Some(_) => JOURNAL_VERSION_REGION_HANDOFF,
-            None => JOURNAL_VERSION,
-        },
+        // A checkpoint stands in for the entries it compacted, so it must
+        // require every version its contents require: its transfer list,
+        // and its retained events — a retained `EntityInput` event is a
+        // version-3 kind even when no handoff is active (Codex review on
+        // PR #3922).
+        JournalEntry::Checkpoint {
+            transfers, events, ..
+        } => {
+            if transfers.is_some()
+                || events
+                    .iter()
+                    .any(|event| matches!(event.kind, WorldEventKind::EntityInput { .. }))
+            {
+                JOURNAL_VERSION_REGION_HANDOFF
+            } else {
+                JOURNAL_VERSION
+            }
+        }
         JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
         _ => JOURNAL_VERSION,
     }
