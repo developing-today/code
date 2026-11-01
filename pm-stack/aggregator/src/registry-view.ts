@@ -43,6 +43,8 @@ export interface RegistryView {
   matched: number;
   /** matched - records shown for reasons other than the pin. */
   hiddenByPagination: number;
+  /** Records after the current page (0 on the final page). */
+  remainingAfterPage: number;
   /** True when the pinned id record was pulled into the page. */
   pinnedIncluded: boolean;
 }
@@ -167,6 +169,7 @@ export function queryRegistry(records: SessionRecord[], query: RegistryQuery, no
     hiddenByWindow,
     matched,
     hiddenByPagination: Math.max(0, matched - (page.length - (pinnedIncluded ? 1 : 0))),
+    remainingAfterPage: Math.max(0, matched - (query.offset + query.limit)),
     pinnedIncluded,
   };
 }

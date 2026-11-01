@@ -656,6 +656,7 @@ async function handler(req: Request): Promise<Response> {
       totalAll: view.totalAll,
       hiddenByWindow: view.hiddenByWindow,
       hiddenByPagination: view.hiddenByPagination,
+      remainingAfterPage: view.remainingAfterPage,
       windowDays: view.query.windowDays,
       limit: view.query.limit,
       offset: view.query.offset,

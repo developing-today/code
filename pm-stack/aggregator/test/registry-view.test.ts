@@ -8,7 +8,7 @@ import {
   registryQueryString,
   type RegistryQuery,
 } from "../src/registry-view.ts";
-import { renderSessions } from "../src/render.ts";
+import { authorBadge, renderSessions, sessionRecordLine } from "../src/render.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 import type { SessionRecord } from "../src/model.ts";
 
@@ -144,5 +144,33 @@ describe("/sessions render with a view", () => {
     expect(back.q).toBe("foo");
     expect(back.agent).toBe("jules");
     expect(back.offset).toBe(200);
+  });
+});
+
+describe("Codex findings on PR 3303 (regressions)", () => {
+  test("remainingAfterPage is 0 on the final page even though earlier pages are hidden", () => {
+    // Codex example shape: 5 matched, limit 2 — final page offset 4 shows 1.
+    const final = queryRegistry(RECORDS, q("window=all&limit=2&offset=4"), NOW);
+    expect(final.records.length).toBe(1);
+    expect(final.hiddenByPagination).toBe(4);
+    expect(final.remainingAfterPage).toBe(0);
+    const mid = queryRegistry(RECORDS, q("window=all&limit=2&offset=2"), NOW);
+    expect(mid.remainingAfterPage).toBe(1);
+    const first = queryRegistry(RECORDS, q("window=all&limit=2&offset=0"), NOW);
+    expect(first.remainingAfterPage).toBe(3);
+  });
+  test("rendered Next link follows remainingAfterPage, not hiddenByPagination", () => {
+    const final = queryRegistry(RECORDS, q("window=all&limit=2&offset=4"), NOW);
+    const finalHtml = renderSessions(final.records, fixtureSource().provenance(), undefined, undefined, final);
+    expect(finalHtml).not.toContain("next →");
+    const first = queryRegistry(RECORDS, q("window=all&limit=2&offset=0"), NOW);
+    const firstHtml = renderSessions(first.records, fixtureSource().provenance(), undefined, undefined, first);
+    expect(firstHtml).toContain("next →");
+  });
+  test("session deep links carry the ?id= pin as well as the fragment", () => {
+    const line = sessionRecordLine(rec("ses_child", { parentId: "ses_old" }));
+    expect(line).toContain('href="/sessions?id=ses_old#ses_old"');
+    const badge = authorBadge({ kind: "agent", id: "agent-x", label: "Agent X", sessionId: "ses_old" });
+    expect(badge).toContain('href="/sessions?id=ses_old#ses_old"');
   });
 });
