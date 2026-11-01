@@ -1861,7 +1861,7 @@ enum PumpLine {
     Quit,
 }
 
-const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines; `--json` also writes local responses there as JSONL.";
+const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
 
 /// Stable JSONL record for a response that the join client handles locally.
 fn local_transcript_record(level: &str, message: &str) -> serde_json::Value {
