@@ -94,9 +94,11 @@ model providers, and the credential/OAuth providers that hand out tokens.
   list. Harvest note, 2026-11-01: the three patch files the issue names are
   no longer at the repository root on `main`; the patches' current home
   needs naming here by whoever next touches the opencode patch set.)*
-- **Credential providers**: how mcpx holds credentials so generated code
-  and tool calls never see raw keys. *(read-from-source — `docs/story.md`,
-  "Credentials")*
+- **Credential placeholders keep secrets out of config files and descriptions, but
+  stdio servers receive them through the environment. Generated scripts inherit
+  that environment unless variables are unset or the run uses `-i`; do not
+  treat this as isolation from code you execute. *(read-from-source —
+  `docs/story.md`, "Credentials"; `internal/runner/dispatch.go:693–705`)*
 
 ## Cloudflare
 
@@ -211,7 +213,7 @@ model providers, and the credential/OAuth providers that hand out tokens.
   server with a command-line client, and should be designed like one.
   *(read-from-source — `docs/story.md`, "Command-line programs as servers")*
 - **Derived flag names surprise people**: `daemon.leaseTTL` becomes
-  `--daemon-lease-t-t-l`. *(read-from-source — `docs/configuration.md:216`)*
+  `--daemon-lease-ttl`. *(read-from-source — `docs/cli.md:142–146`)*
 - **Accepted-and-ignored flags are bugs**, even when accepting them is
   deliberate-looking (#74, fixed by #75). *(read-from-source — issues #74,
   #75)*
