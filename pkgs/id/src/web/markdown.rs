@@ -1180,9 +1180,22 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
                 // block, not paragraph content eligible for an
                 // unindented lazy continuation (Codex P2 on #1565's
                 // twenty-fifth cut).
+                // A setext underline under paragraph content ends
+                // that paragraph (it becomes a heading inside the
+                // definition), so it leaves no lazy-continuation
+                // eligibility either -- without this, `[^a]: Title`
+                // / `    ===` kept eligibility, the following
+                // unindented `<em>` was swallowed as a lazy
+                // continuation, and the definition-shaped line
+                // inside the HTML block was promoted to a real
+                // footnote (Codex P2 on #1565's twenty-sixth cut).
+                // A setext-shaped line with NO preceding paragraph
+                // is itself paragraph text and stays eligible,
+                // mirroring the outer scan's !at_block_start gate.
                 prev_is_content = indentation_columns(content) < 4
                     && !content.trim().is_empty()
-                    && !starts_new_block(content.trim_start_matches(' '));
+                    && !starts_new_block(content.trim_start_matches(' '))
+                    && !(prev_is_content && is_setext_underline(content));
                 j += 1;
                 continue;
             }
@@ -1196,6 +1209,11 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             if prev_is_content && !starts_new_block(next.trim_start_matches(' ')) {
                 source_lines.push(next);
                 last_content = source_lines.len() - 1;
+                // An unindented setext underline lazy-continued
+                // onto the definition's paragraph ends it the same
+                // way (twenty-sixth cut): the paragraph becomes a
+                // heading, so the next line starts fresh.
+                prev_is_content = !is_setext_underline(next);
                 j += 1;
                 continue;
             }
@@ -6049,6 +6067,35 @@ mod tests {
         assert!(first.contains("First."), "footnote body survives: {first:?}");
         assert!(first.contains("code"), "indented code survives: {first:?}");
         assert_eq!(first, second, "indented-code continuation is a fixpoint");
+    }
+
+    #[test]
+    fn test_setext_heading_in_footnote_ends_lazy_continuation() {
+        // #1565 twenty-sixth cut (Codex P2): an indented setext
+        // underline turns the footnote's first line into a heading
+        // inside the definition, so the following unindented
+        // `<em>` starts a top-level HTML block and the
+        // definition-shaped line inside it is literal. The inner
+        // continuation update ignored setext underlines, kept
+        // lazy eligibility, swallowed `<em>` into the footnote,
+        // and promoted the fake definition on save.
+        let original = "[^a]: Title\n    ===\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<_> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["type"] == "footnote_definition")
+            .filter_map(|node| node["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["a"],
+            "setext heading in footnote must not synthesize fake: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(first.contains("Title"), "footnote body survives: {first:?}");
+        assert_eq!(first, second, "setext-in-footnote round-trip is a fixpoint");
     }
 
     #[test]
