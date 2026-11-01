@@ -891,6 +891,22 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// read as an object literal, so the following
 			// regex read as division). An arrow body is a
 			// body too, never a heritage operand.
+			// Both frame-consumption checks below also require
+			// the brace to sit at the pending frame's own
+			// delimiter depth (len(stack) <= frame.stackDepth,
+			// the same scoping the ';' expiry uses): a '{' nested
+			// inside a body opened after the frame was pushed --
+			// a statement block inside a heritage operand's
+			// function body, a method body inside a heritage
+			// operand's class body -- belongs to that inner body,
+			// never to the pending outer frame (Codex P2 on
+			// #3354: class C extends {x:[class extends
+			// function(){ {} } {} /2]}.x {} and the class-method
+			// permutation {x:[class extends class {m(){}} {} /2]}
+			// -- the inner block/method brace consumed the
+			// containing class's pending frame, its real body
+			// then closed as a statement boundary and the slash
+			// opened a phantom regex).
 			topHeritageBrace := len(stack) > 0 && stack[len(stack)-1].char == '{' && stack[len(stack)-1].heritage
 			insideHeritageBrace := topHeritageBrace || heritageBraceDepth > 0
 			// A '{' immediately after 'extends' opens that class's
@@ -911,7 +927,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// 'new' reached through member access (obj.new) is a
 			// property name, not the keyword.
 			heritageKeyword := lastIdent == "extends" || (lastIdent == "new" && lastIdentPrev != '.' && lastIdentPrev != '#')
-			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && !heritageKeyword
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && len(stack) <= funcClassFrames[len(funcClassFrames)-1].stackDepth && !heritageKeyword
 			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
 			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
 				(topHeritageBrace ||
@@ -935,7 +951,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				heritageBraceDepth++
 				exprAfter = false
 			}
-			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
+			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && len(stack) <= funcClassFrames[len(funcClassFrames)-1].stackDepth && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}

@@ -248,6 +248,8 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after nested class with class-expression heritage in heritage array", "class C extends {x:[class extends class {} {} / 2]}.x {}\n"},
 		{"division after nested class with function-expression heritage in heritage array", "class C extends {x:[class extends function(){} {} / 2]}.x {}\n"},
 		{"division after nested class with named class-expression heritage in heritage array", "class C extends {x:[class extends class D {} {} / 2]}.x {}\n"},
+		{"division after nested class with nonempty function heritage body in heritage array", "class C extends {x:[class extends function(){ {} } {} / 2]}.x {}\n"},
+		{"division after nested class with class-method heritage in heritage array", "class C extends {x:[class extends class {m(){}} {} / 2]}.x {}\n"},
 		{"division after class expression with class-expression heritage", "const C = class extends class {} {} / 2;\n"},
 		{"division after class expression with function-expression heritage", "const C = class extends function() {} {} / 2;\n"},
 		{"division after instantiation with block comment before angle bracket", "const q = f1/*c*/<number> / 2;\n"},
