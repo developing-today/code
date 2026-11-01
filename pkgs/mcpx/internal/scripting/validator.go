@@ -836,7 +836,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}
-			if !heritageExprBrace {
+			if !heritageExprBrace && !insideHeritageBrace {
+				// A body brace ends the heritage only when it is
+				// not itself nested inside a heritage brace: an
+				// arrow/function body inside the heritage object
+				// leaves the heritage state for the tokens after
+				// it (Codex P2 on #3354: {C:()=>{const a={};}
+				// — resetting here let the inner {} consume the
+				// outer class frame).
 				inClassHeritage = false
 				heritageBraceDepth = 0
 			}
@@ -1308,8 +1315,27 @@ func prevTokenIsNumeric(chars []rune, lt int) bool {
 		break
 	}
 	start := end
-	for start > 0 && isIdentChar(chars[start-1]) {
-		start--
+	for start > 0 {
+		if isIdentChar(chars[start-1]) {
+			start--
+			continue
+		}
+		// A braced Unicode escape (\u{61}) belongs to the token
+		// even though its '}' is not an identifier character:
+		// jump over the whole escape and keep walking, so
+		// f\u{61}1 reads as one identifier, not as the number 1
+		// (Codex P2 on #3354).
+		if chars[start-1] == '}' {
+			open := start - 1
+			for open > 0 && chars[open] != '{' {
+				open--
+			}
+			if open >= 2 && chars[open] == '{' && chars[open-1] == 'u' && chars[open-2] == '\\' {
+				start = open - 2
+				continue
+			}
+		}
+		break
 	}
 	return start < end && unicode.IsDigit(chars[start])
 }
