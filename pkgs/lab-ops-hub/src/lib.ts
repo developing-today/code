@@ -413,6 +413,18 @@ export function validateMachineBody(body: Record<string, unknown>): Validated<{ 
   return { ok: true, values: { name: name.value } };
 }
 
+// True only for the machines.name UNIQUE violation (#2631). D1 surfaces
+// constraint failures in the error message (possibly wrapped, e.g.
+// "D1_ERROR: UNIQUE constraint failed: machines.name"); any other error —
+// including a UNIQUE violation on a different column — is not a machine
+// name conflict and must keep flowing to the 500 handler. Matching the
+// thrown constraint (rather than pre-checking the name) keeps concurrent
+// duplicate registrations from racing past validation.
+export function isMachineNameConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("UNIQUE constraint failed: machines.name");
+}
+
 // Notes check title before body, matching the order the fields are named
 // in the route's contract (and the triage note for #2480).
 export function validateNoteBody(body: Record<string, unknown>): Validated<{ title: string; text: string }> {
