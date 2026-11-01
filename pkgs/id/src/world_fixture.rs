@@ -118,6 +118,11 @@ impl From<&WorldEvent> for FixtureEvent {
                 participant_id: event.participant_id,
                 bytes: bytes.clone(),
             },
+            WorldEventKind::EntityInput { input, .. } => Self::Input {
+                sequence,
+                participant_id: event.participant_id,
+                bytes: input.clone(),
+            },
             WorldEventKind::System { event: text } => Self::System {
                 event: text.clone(),
             },
