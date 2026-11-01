@@ -8,6 +8,17 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
+
+const ROC_EXAMPLES: [&str; 7] = [
+    "lounge",
+    "roc-chat",
+    "roc-counter",
+    "roc-grid",
+    "roc-screen",
+    "territory",
+    "tic-tac-toe",
+];
 
 /// The Nix side of the pin: a literal version, or a value read from the file.
 #[derive(Debug, PartialEq, Eq)]
@@ -68,6 +79,78 @@ fn read_pin_files() -> (String, String) {
     let toml = fs::read_to_string(root.join("rust-toolchain.toml")).unwrap();
     let nix = fs::read_to_string(root.join("default.nix")).unwrap();
     (toml, nix)
+}
+
+#[test]
+fn test_roc_examples_and_nix_package_share_the_compiler_pin() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let pin = fs::read_to_string(root.join("nix/roc-version")).unwrap();
+    let pinned_version = pin.trim();
+    assert!(!pinned_version.is_empty(), "nix/roc-version is empty");
+
+    let roc_nix = fs::read_to_string(root.join("nix/roc.nix")).unwrap();
+    assert!(
+        roc_nix.contains("tag = lib.removeSuffix \"\\n\" (builtins.readFile ./roc-version);")
+            && roc_nix.contains("lib.removePrefix \"nightly-\" tag"),
+        "nix/roc.nix must derive its download tag from nix/roc-version"
+    );
+
+    for example in ROC_EXAMPLES {
+        let script = fs::read_to_string(root.join(format!("examples/{example}/build.sh"))).unwrap();
+        assert!(
+            script.contains("source ../roc-toolchain.sh"),
+            "examples/{example}/build.sh must check the shared Roc compiler pin"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_example_build_refuses_a_different_roc_before_building() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let temp = tempfile::tempdir().unwrap();
+    let bash = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|directory| directory.join("bash"))
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| fs::canonicalize(candidate).ok())
+        .expect("bash is available on PATH");
+    let roc_stub = temp.path().join("roc-stub");
+    let build_marker = temp.path().join("build-was-run");
+    fs::write(
+        &roc_stub,
+        format!(
+            "#!{}\nif [[ \"${{1:-}}\" == version ]]; then\n  echo 'Roc compiler version unpinned-test'\nelse\n  : > \"$ROC_BUILD_MARKER\"\nfi\n",
+            bash.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&roc_stub, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new("bash")
+        .arg("examples/territory/build.sh")
+        .current_dir(root)
+        .env("ROC", &roc_stub)
+        .env("ROC_BUILD_MARKER", &build_marker)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "an unpinned Roc compiler was accepted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let pinned_version = fs::read_to_string(root.join("nix/roc-version")).unwrap();
+    assert!(stderr.contains(pinned_version.trim()), "{stderr}");
+    assert!(
+        stderr.contains("Roc compiler version unpinned-test"),
+        "{stderr}"
+    );
+    assert!(
+        !build_marker.exists(),
+        "the build command ran before refusal"
+    );
 }
 
 #[test]
