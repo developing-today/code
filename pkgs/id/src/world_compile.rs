@@ -120,11 +120,19 @@ fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
 pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String]) -> Result<()> {
     for (name, content) in &spec.files {
         for line in content.lines() {
-            let Some(rest) = line.trim_start().strip_prefix("import ") else {
+            // Token-based recognition: any run of whitespace (spaces, tabs)
+            // between the import keyword and the path is the same import to
+            // Roc (roc fmt normalizes it), so a literal single-space prefix
+            // would let ungranted imports through (#2095).
+            let mut tokens = line.trim_start().split_whitespace();
+            if tokens.next() != Some("import") {
+                continue;
+            }
+            let Some(path_token) = tokens.next() else {
                 continue;
             };
-            let path = rest
-                .split(|c: char| c.is_whitespace() || matches!(c, '[' | '{' | '('))
+            let path = path_token
+                .split(|c: char| matches!(c, '[' | '{' | '('))
                 .next()
                 .unwrap_or_default();
             for segment in path.split('.') {
@@ -1380,6 +1388,37 @@ restore = |text| match U64.from_str(text) {
             ("Helper.roc", "module []\n"),
         ]);
         assert!(check_imports(&app, &modules, &[]).is_ok());
+    }
+
+    #[test]
+    fn an_ungranted_platform_import_with_extra_whitespace_is_refused_by_name() {
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        // Roc accepts every spelling below and roc fmt normalizes them to
+        // the single-space form, so the gate must recognize them all (#2095).
+        for spelling in [
+            "import  pf.Screen",
+            "import\tpf.Screen",
+            "import \t pf.Screen",
+            "  import  pf.Screen",
+        ] {
+            let app = spec(vec![("main.roc", &format!("{spelling}\napp [x] {{}}"))]);
+            let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
+            assert!(refused.contains("main.roc imports Screen"), "{spelling}: {refused}");
+            assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(), "{spelling}");
+            assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok(), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_sibling_file_cannot_smuggle_an_ungranted_import_with_extra_whitespace() {
+        let modules = vec!["Key".to_owned()];
+        for spelling in ["import  pf.Key", "import\tpf.Key"] {
+            let app = spec(vec![
+                ("main.roc", "app [x] {}"),
+                ("Helper.roc", &format!("{spelling}\n")),
+            ]);
+            assert!(check_imports(&app, &modules, &[]).is_err(), "{spelling}");
+        }
     }
 
     #[test]
