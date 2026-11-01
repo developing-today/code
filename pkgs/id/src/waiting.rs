@@ -168,6 +168,12 @@ pub struct WaitingPool<K, E> {
     arrived: HashSet<K>,
     /// Events whose dependencies had all arrived when they were inserted.
     ready: Vec<E>,
+    /// The keys of the events in `ready`. The ready queue is the one
+    /// state a key can be in that is neither held (`by_key`) nor
+    /// arrived, and without this index the duplicate guard in
+    /// `insert`/`park` could not see it: the same key inserted twice
+    /// before `take_ready` was handed out twice (#2001).
+    ready_keys: HashSet<K>,
     /// Events dropped by the age cap, for `expire` to return.
     expired: Vec<(AuthorKey, E)>,
 }
@@ -188,6 +194,7 @@ where
             held: HashMap::new(),
             arrived: HashSet::new(),
             ready: Vec::new(),
+            ready_keys: HashSet::new(),
             expired: Vec::new(),
         }
     }
@@ -213,8 +220,8 @@ where
     /// dependency that has already arrived is not waited for. If every dependency
     /// has arrived, the event is not held: it is returned by
     /// [`take_ready`](Self::take_ready), and it takes no slot under the cap. An
-    /// event whose key is already held or has arrived is a duplicate, and it is
-    /// ignored.
+    /// event whose key is already held, has arrived, or is ready is a duplicate,
+    /// and it is ignored.
     ///
     /// Events due at `now_ms` expire before the insert, so a refusal changes
     /// nothing except that expiry.
@@ -233,7 +240,10 @@ where
         now_ms: u64,
     ) -> Result<(), WaitRefusal> {
         self.expire_due(now_ms);
-        if self.arrived.contains(&key) || self.by_key.contains_key(&key) {
+        if self.arrived.contains(&key)
+            || self.by_key.contains_key(&key)
+            || self.ready_keys.contains(&key)
+        {
             return Ok(());
         }
         let missing: HashSet<K> = deps
@@ -241,6 +251,7 @@ where
             .filter(|dep| !self.arrived.contains(dep))
             .collect();
         if missing.is_empty() {
+            self.ready_keys.insert(key);
             self.ready.push(event);
             return Ok(());
         }
@@ -251,8 +262,8 @@ where
     /// and only the age cap drops it. The caller parks an event that can never be
     /// applied, but must still see when another event conflicts with it.
     ///
-    /// An event whose key is already held or has arrived is ignored, as for
-    /// [`insert`](Self::insert).
+    /// An event whose key is already held, has arrived, or is ready is ignored,
+    /// as for [`insert`](Self::insert).
     ///
     /// # Errors
     ///
@@ -267,7 +278,10 @@ where
         now_ms: u64,
     ) -> Result<(), WaitRefusal> {
         self.expire_due(now_ms);
-        if self.arrived.contains(&key) || self.by_key.contains_key(&key) {
+        if self.arrived.contains(&key)
+            || self.by_key.contains_key(&key)
+            || self.ready_keys.contains(&key)
+        {
             return Ok(());
         }
         self.hold(author, key, HashSet::new(), event, now_ms)
@@ -405,6 +419,7 @@ where
     /// The events whose dependencies had all arrived when they were inserted, in
     /// insert order. Take them right after each `insert`, before the next call.
     pub fn take_ready(&mut self) -> Vec<E> {
+        self.ready_keys.clear();
         std::mem::take(&mut self.ready)
     }
 
@@ -636,6 +651,31 @@ mod tests {
         pool.insert(author(1), 1, [10], "again", 0).unwrap();
         assert!(pool.take_ready().is_empty());
         assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn test_a_duplicate_key_in_the_ready_queue_is_ignored() {
+        // #2001: an event whose dependencies have all arrived sits
+        // in the ready queue, recorded in neither by_key nor
+        // arrived, so the duplicate guard missed it and a second
+        // insert pushed a second copy for take_ready to hand out.
+        let mut pool = pool();
+        pool.arrived(10, 0);
+        pool.insert(author(1), 1, [10], "first", 0).unwrap();
+        pool.insert(author(1), 1, [10], "second", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["first"]);
+
+        // The no-deps form is ready immediately and guards the same.
+        pool.insert(author(1), 2, [], "one", 0).unwrap();
+        pool.insert(author(1), 2, [], "two", 0).unwrap();
+        assert_eq!(pool.take_ready(), vec!["one"]);
+
+        // Parking a ready key is a duplicate too: it must not create
+        // a held copy of an event that is about to be applied.
+        pool.insert(author(1), 3, [], "ready", 0).unwrap();
+        pool.park(author(1), 3, "parked", 0).unwrap();
+        assert!(!pool.contains(&3));
+        assert_eq!(pool.take_ready(), vec!["ready"]);
     }
 
     #[test]
