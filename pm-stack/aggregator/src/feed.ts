@@ -41,6 +41,10 @@ export interface FleetFeed {
   /** Element drops loadFeed's quota sanitization made (#2429), set
    * only on feeds returned by loadFeed; absent on raw parsed feeds. */
   quotaDropped?: { pools: number; windows: number; burn: number };
+  /** Subscription rows loadFeed's sanitization dropped (#2446), set
+   * only when at least one row (or a non-array section) was dropped;
+   * absent on raw parsed feeds and on clean loads. */
+  subscriptionsDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -416,6 +420,38 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   );
 }
 
+export interface SubscriptionSanitization {
+  /** Sanitized rows, or undefined when the section is absent (or was
+   * dropped whole) — consumers already treat absence as an empty strip. */
+  rows?: { name: string; plan: string; renewsAt: string | null }[];
+  dropped: number;
+}
+
+/** One subscription row safe to hand to the renderers (#2446): the
+ * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
+ * a null row or a non-string field 500s /quota and is served verbatim
+ * by /api/quota.json. */
+export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    typeof v.plan === "string" &&
+    (typeof v.renewsAt === "string" || v.renewsAt === null)
+  );
+}
+
+/** Drop malformed subscription rows at the loadFeed boundary (#2446,
+ * the #2429 pattern): the section is optional and unvalidated by
+ * isFleetFeed, so element-level damage is dropped here rather than
+ * rejecting the whole feed for one bad row. A non-array section is
+ * dropped whole (treated as absent, counted as one drop). */
+export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
+}
+
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -425,10 +461,13 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // sees only renderer-safe pools/windows (#2429). Drop counts are
     // attached to the feed so they are visible, not swallowed.
     const san = sanitizeQuotaView(parsed.quota);
+    const subs = sanitizeSubscriptions(parsed.subscriptions);
     return {
       ...parsed,
       quota: san.view,
       quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      subscriptions: subs.rows,
+      ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
     };
   } catch {
     return null;
