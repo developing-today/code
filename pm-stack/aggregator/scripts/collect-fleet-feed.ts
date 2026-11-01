@@ -98,7 +98,13 @@ import { chargeServiceCatalog } from "../src/charges-catalog.ts";
 import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
+import {
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+  extractUninstrumentedServices,
+} from "../src/saas-extract.ts";
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
@@ -122,6 +128,9 @@ const quotaViewPath =
     HOME,
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
+const freeServicesTrackerPath =
+  process.env.PM_AGG_FREE_SERVICES_TRACKER ??
+  join(HOME, "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md");
 const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
@@ -505,6 +514,7 @@ async function main(): Promise<void> {
 
   // --- usage & billing hub sections (design §2.3: ride the same feed) ---
   let saas: SaasService[] | undefined;
+  let uninstrumentedServices: ReturnType<typeof extractUninstrumentedServices> | undefined;
   let payg: PaygLine[] | undefined;
   let charges: ChargeRow[] | undefined;
   let subscriptions: FleetFeed["subscriptions"];
@@ -519,6 +529,12 @@ async function main(): Promise<void> {
     payg = extractPaygLines(quotaViewText, registryText);
     charges = extractCharges(quotaViewText, registryText);
     subscriptions = extractSubscriptions(quotaViewText);
+  }
+  try {
+    const trackerText = await readFile(freeServicesTrackerPath, "utf8");
+    uninstrumentedServices = extractUninstrumentedServices(trackerText);
+  } catch {
+    console.error("collector: free-services tracker unreadable; quota registry omitted");
   }
 
   // --- charges auto-matching (#1057) -------------------------------------
@@ -776,6 +792,7 @@ async function main(): Promise<void> {
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
     ...(saas ? { saas } : {}),
+    ...(uninstrumentedServices ? { uninstrumentedServices } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
     ...(chargesAttention ? { chargesAttention } : {}),

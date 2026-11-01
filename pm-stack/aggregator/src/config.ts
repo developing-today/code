@@ -24,6 +24,8 @@ export interface Config {
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
+  /** Tracker of evaluated free services without automated quota cards (#1172). */
+  freeServicesTrackerFile: string;
   cloudflareExportFile: string;
   /** The Supabase usage exporter's document (#1050): the gathered live read
    * preferred over the quota view's Supabase prose when fresh. */
@@ -92,6 +94,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         homedir(),
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
+    ),
+    freeServicesTrackerFile: s(
+      env.PM_AGG_FREE_SERVICES_TRACKER,
+      join(homedir(), "hatch-personal/workspace/ai-subscriptions/free-services-to-check.md"),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
     supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
