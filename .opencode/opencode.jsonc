@@ -2803,6 +2803,69 @@
         },
         "gpt-oss-120b-medium": {
           "name": "GPT-OSS 120B Medium (direct)"
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
         }
       }
     },

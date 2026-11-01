@@ -602,10 +602,19 @@ struct FindArgs<'a> {
 }
 
 impl FindArgs<'_> {
-    /// Reject mutually exclusive result limits before any search work starts.
+    /// Reject mutually exclusive and zero result limits before any search work starts.
     fn validate_result_limits(&self) -> Result<()> {
         if self.first.is_some() && self.last.is_some() {
             anyhow::bail!("--first and --last cannot be used together");
+        }
+        // #3059: an explicit zero limit is an error, never a silent empty result. (A
+        // nonnumeric value keeps the #2009 behaviour: it falls back to the default of 1
+        // in the parsers, so only a parsed 0 reaches this check.)
+        if self.first == Some(0) {
+            anyhow::bail!("--first must be at least 1 (got 0)");
+        }
+        if self.last == Some(0) {
+            anyhow::bail!("--last must be at least 1 (got 0)");
         }
         Ok(())
     }
@@ -1296,6 +1305,10 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> Result<(FindArgs<'a>, PeekOptions)> 
     }
 
     find_args.validate_result_limits()?;
+    // #3059: `--lines 0` / `-n 0` would render a header/elision-only preview.
+    if peek_opts.lines == 0 {
+        anyhow::bail!("--lines must be at least 1 (got 0)");
+    }
     Ok((find_args, peek_opts))
 }
 
@@ -1549,6 +1562,33 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn test_parse_rejects_zero_result_limits() {
+        // #3059: explicit zero limits are errors at the REPL boundary.
+        assert!(parse_find_args(&["q", "--first", "0"], "tag").is_err());
+        assert!(parse_find_args(&["q", "--last", "0"], "tag").is_err());
+        assert!(parse_peek_args(&["q", "--lines", "0"]).is_err());
+        assert!(parse_peek_args(&["q", "-n", "0"]).is_err());
+        assert!(parse_peek_args(&["q", "--first", "0"]).is_err());
+        // Bare flags keep the default of 1; a nonnumeric value keeps the #2009 fallback.
+        assert_eq!(
+            parse_find_args(&["q", "--first"], "tag").unwrap().first,
+            Some(1)
+        );
+        assert_eq!(
+            parse_find_args(&["q", "--last"], "tag").unwrap().last,
+            Some(1)
+        );
+        assert_eq!(
+            parse_find_args(&["q", "--first", "abc"], "tag")
+                .unwrap()
+                .first,
+            Some(1)
+        );
+        // Peek without --lines keeps the default of 5.
+        assert_eq!(parse_peek_args(&["q"]).unwrap().1.lines, 5);
+    }
+
     fn test_parse_find_args_basic() {
         let rest = vec!["query1", "query2"];
         let args = parse_find_args(&rest, "union").unwrap();
@@ -1603,12 +1643,12 @@ mod tests {
     #[test]
     fn test_parse_find_args_invalid_format_is_error() {
         let rest = ["--format", "gorup", "hello"];
-        let args = parse_find_args(&rest, "union");
+        let args = parse_find_args(&rest, "union").unwrap();
         assert_eq!(args.format_error, Some("gorup"));
         assert_eq!(args.format, "union");
 
         let rest = ["--format", "yaml", "hello"];
-        let args = parse_find_args(&rest, "tag");
+        let args = parse_find_args(&rest, "tag").unwrap();
         assert_eq!(args.format_error, Some("yaml"));
     }
 
@@ -1616,7 +1656,7 @@ mod tests {
     fn test_parse_find_args_valid_format_is_stored() {
         for good in ["tag", "group", "union"] {
             let rest = ["--format", good, "hello"];
-            let args = parse_find_args(&rest, "union");
+            let args = parse_find_args(&rest, "union").unwrap();
             assert_eq!(args.format_error, None);
             assert_eq!(args.format, good);
         }

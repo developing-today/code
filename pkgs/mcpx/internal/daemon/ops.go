@@ -352,6 +352,37 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
+	cc := callContext(r, req.Context, req.Session)
+	// The completion rate limit (#2387, Phase 1 of #2386) is consulted
+	// here -- after shape validation, before any pool lookup -- so a
+	// refused request never acquires a pool lease or wakes an upstream.
+	// The caller is the identity callContext already resolved, never
+	// anything else the request reports.
+	// Both keys use the canonical (configured) server name: Pool also
+	// answers to the namespace spelling, and keying by the raw request
+	// spelling would give one server a budget per spelling (Codex
+	// review, PR #3730). CanonicalName is a registry map read -- it
+	// acquires no lease and wakes no upstream.
+	serverName := s.reg.CanonicalName(req.Server)
+	if refused := s.completeLimiter.admit([]limitCheck{
+		{
+			Name:  "completion.perMinute",
+			What:  "this caller and server",
+			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+			Limit: cs.Int("completion.perMinute"),
+		},
+		{
+			Name:  "completion.serverPerMinute",
+			What:  "this server",
+			Key:   "server\x00" + serverName,
+			Limit: cs.Int("completion.serverPerMinute"),
+		},
+	}); refused != nil {
+		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
+			"completion rate limit: %s allows %d per minute for %s",
+			refused.Name, refused.Limit, refused.What))
+		return
+	}
 	p, ok := s.reg.Pool(req.Server)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown server or namespace %q", req.Server))
@@ -366,7 +397,6 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	cc := callContext(r, req.Context, req.Session)
 	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -401,6 +431,24 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		"source":   "cache",
 		"because":  "this server did not declare the completions capability",
 	})
+}
+
+// completionCaller names the caller a completion rate-limit window
+// binds: the session the caller resolved to, else its PID, else its
+// per-call id. The per-call fallback means a caller with neither a
+// session nor a PID is effectively unwindowed per caller -- which is
+// honest, because there is nothing stable to bind -- and the per-server
+// window (completion.serverPerMinute) remains the backstop that does
+// not depend on caller identity at all.
+func completionCaller(cc config.CallContext) string {
+	switch {
+	case cc.SessionID != "":
+		return "session:" + cc.SessionID
+	case cc.PID > 0:
+		return "pid:" + strconv.Itoa(cc.PID)
+	default:
+		return "call:" + cc.CallID
+	}
 }
 
 // localCompletion answers from the schemas mcpx already holds.
