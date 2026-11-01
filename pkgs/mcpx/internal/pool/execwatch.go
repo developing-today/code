@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
@@ -192,7 +193,7 @@ func (p *Pool) replaceChild(in *Instance) {
 		p.mu.Unlock()
 		return
 	}
-	repl, err := p.startLane(context.Background(), in.legacyLane)
+	repl, err := p.startLane(context.Background(), in.legacyLane, config.ResolvedScope{Key: in.key, Root: in.root})
 
 	p.mu.Lock()
 	p.releaseSlotLocked(in)

@@ -70,7 +70,7 @@ func childPIDs(p *pool.Pool) []int {
 // servedPID asks the pool which child answers, through a real call.
 func servedPID(t *testing.T, p *pool.Pool) int {
 	t.Helper()
-	res, err := p.Call(context.Background(), "global", "state", map[string]any{})
+	res, err := p.Call(context.Background(), config.ResolvedScope{Key: "global"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatalf("state: %v", err)
 	}
@@ -113,7 +113,7 @@ func inFlight(t *testing.T, p *pool.Pool, ms int) <-chan struct {
 		err error
 	}, 1)
 	go func() {
-		raw, err := p.Call(context.Background(), "global", "slow", map[string]any{"ms": ms})
+		raw, err := p.Call(context.Background(), config.ResolvedScope{Key: "global"}, "slow", map[string]any{"ms": ms})
 		done <- struct {
 			raw json.RawMessage
 			err error

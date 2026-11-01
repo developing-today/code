@@ -22,6 +22,7 @@ type InstanceHandoff struct {
 	ID         string                  `json:"id"`
 	Trace      string                  `json:"trace"`
 	Key        string                  `json:"key"`
+	Root       string                  `json:"root,omitempty"`
 	StartedAt  time.Time               `json:"startedAt"`
 	LastUsed   time.Time               `json:"lastUsed"`
 	Calls      int64                   `json:"calls"`
@@ -173,6 +174,7 @@ func (in *Instance) describe() InstanceHandoff {
 		ID:         in.ID,
 		Trace:      in.trace,
 		Key:        in.key,
+		Root:       in.root,
 		StartedAt:  in.startedAt,
 		LastUsed:   in.lastUsed,
 		Calls:      in.calls.Load(),
@@ -224,7 +226,7 @@ func (p *Pool) AdoptSessions(hs []InstanceHandoff) ([]*Adopted, error) {
 		if h.HTTP == nil {
 			continue
 		}
-		tr, err := p.dial(context.Background())
+		tr, err := p.dial(context.Background(), "")
 		if err != nil {
 			abortAll(out)
 			return nil, fmt.Errorf("instance %s: %w", h.ID, err)
@@ -333,6 +335,7 @@ func (p *Pool) resumeInstance(a *Adopted) *Instance {
 		Client:     cl,
 		transport:  a.tr,
 		key:        h.Key,
+		root:       h.Root,
 		trace:      h.Trace,
 		startedAt:  h.StartedAt,
 		lastUsed:   h.LastUsed,
