@@ -10,8 +10,10 @@
 //! and is not a substitute for the event signature.
 //!
 //! Messages follow the existing event causal model: a message names its causal parents in
-//! `after`, and [`project`] folds delivered events into a timeline that respects those
-//! links. Concurrent messages from different authors acquire no bridge- or arrival-defined
+//! `after` — the other authors' frontier heads — and its own author's previous event in
+//! the header backlink (the store deliberately keeps the author's own head out of `after`;
+//! see `local_events`). [`project`] folds delivered events into a timeline that respects
+//! both kinds of parent link. Concurrent messages from different authors acquire no bridge- or arrival-defined
 //! order; the projection's tie-break between concurrent messages is their event IDs, a
 //! deterministic presentation order every replica computes identically from the events
 //! alone. Duplicate delivery of an event changes nothing.
@@ -222,8 +224,11 @@ pub struct ChatRecord {
     pub id: Hash,
     /// The key that signed the event.
     pub author: AuthorKey,
-    /// The event IDs this message causally follows.
+    /// The event IDs this message causally follows: the other authors' frontier heads.
     pub after: Vec<Hash>,
+    /// The author's own previous event, from the event header's backlink. A causal parent
+    /// like any `after` entry, kept in its own field because the store does.
+    pub backlink: Option<Hash>,
     /// The message the event carries.
     pub message: ChatMessage,
 }
@@ -244,8 +249,12 @@ pub fn project(records: impl IntoIterator<Item = ChatRecord>) -> Vec<ChatRecord>
     let mut pending: HashMap<[u8; 32], usize> = HashMap::new();
     for record in by_id.values() {
         let mut parents = 0;
-        for parent in &record.after {
-            let parent = *parent.as_bytes();
+        let mut parent_ids: Vec<[u8; 32]> =
+            record.after.iter().map(|parent| *parent.as_bytes()).collect();
+        if let Some(backlink) = &record.backlink {
+            parent_ids.push(*backlink.as_bytes());
+        }
+        for parent in parent_ids {
             if by_id.contains_key(&parent) {
                 children
                     .entry(parent)
@@ -311,6 +320,7 @@ mod tests {
             id: Hash::digest(&[id]),
             author: author(id),
             after: after.iter().map(|parent| Hash::digest(&[*parent])).collect(),
+            backlink: None,
             message: ChatMessage::new(text, Vec::new()).unwrap(),
         }
     }
@@ -399,5 +409,19 @@ mod tests {
         let again = project(redelivered);
         let again_texts: Vec<&str> = again.iter().map(|r| r.message.text.as_str()).collect();
         assert_eq!(texts, again_texts);
+    }
+
+    #[test]
+    fn test_projection_orders_same_author_chain_by_backlink() {
+        // Same author, successive messages: the second names the first only as its
+        // backlink, never in `after`. Delivered reversed, the chain still projects in
+        // author order.
+        let first = record(7, Vec::new(), "first from seven");
+        let mut second = record(8, Vec::new(), "second from seven");
+        second.author = first.author;
+        second.backlink = Some(first.id);
+        let timeline = project(vec![second, first]);
+        let texts: Vec<&str> = timeline.iter().map(|r| r.message.text.as_str()).collect();
+        assert_eq!(texts, vec!["first from seven", "second from seven"]);
     }
 }
