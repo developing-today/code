@@ -3,6 +3,8 @@ import {
   entryFromFileExport,
   entryFromTurso,
   entryFromResult,
+  lastKnownEntries,
+  mapWithConcurrency,
   normalizeResetAt,
   recordsFromEntries,
   serviceIdFor,
@@ -102,6 +104,67 @@ describe("entryFromResult", () => {
       "2026-10-27T05:00:00.000Z",
     );
     expect(un.state).toBe("unconfigured");
+  });
+});
+
+describe("mapWithConcurrency (#1268)", () => {
+  test("preserves order and never exceeds the in-flight bound", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(n % 3);
+      inFlight--;
+      return n * 10;
+    });
+    expect(out).toEqual([10, 20, 30, 40, 50, 60, 70]);
+    expect(maxInFlight).toBe(3);
+  });
+  test("a limit above the item count still completes; empty input maps to empty", async () => {
+    expect(await mapWithConcurrency([1, 2], 6, async (n) => n + 1)).toEqual([2, 3]);
+    expect(await mapWithConcurrency([], 6, async (n: number) => n)).toEqual([]);
+  });
+  test("a non-positive limit degrades to sequential, never unbounded", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const out = await mapWithConcurrency([1, 2, 3], 0, async (n) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Bun.sleep(1);
+      inFlight--;
+      return n;
+    });
+    expect(out).toEqual([1, 2, 3]);
+    expect(maxInFlight).toBe(1);
+  });
+  test("a worker rejection rejects the map", async () => {
+    await expect(
+      mapWithConcurrency([1, 2], 2, async (n) => {
+        if (n === 2) throw new Error("boom");
+        return n;
+      }),
+    ).rejects.toThrow("boom");
+  });
+});
+
+describe("lastKnownEntries (#1268)", () => {
+  const tick = "2026-10-27T05:00:00.000Z";
+  const okEntry = entryFromResult(OK_RESULT, tick);
+  const errEntry = entryFromResult(
+    { providerId: "cline-pass", ok: false, configured: true, error: "timed out", usage: null },
+    tick,
+  );
+  const otherOk = entryFromResult({ ...OK_RESULT, providerId: "claude" }, tick);
+  test("returns the provider's ok entries verbatim, original measuredAt kept", () => {
+    const kept = lastKnownEntries([okEntry, errEntry, otherOk], "cline-pass");
+    expect(kept).toEqual([okEntry]);
+    expect(kept[0].measuredAt).toBe(okEntry.measuredAt);
+  });
+  test("error-only history retains nothing; unknown providers retain nothing", () => {
+    expect(lastKnownEntries([errEntry], "cline-pass")).toEqual([]);
+    expect(lastKnownEntries([okEntry], "nope")).toEqual([]);
+    expect(lastKnownEntries([], "cline-pass")).toEqual([]);
   });
 });
 
