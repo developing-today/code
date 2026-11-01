@@ -1919,6 +1919,21 @@ mod tests {
     }
 
     #[test]
+    fn probe_decode_alpha_key_rejects_trailing_fourth_field() {
+        // PROBE (lane A, 2026-10-28): a 4-field key built with the crate's own
+        // encoder must be refused by decode_alpha_key/decode_omega_key, whose
+        // error message says "expected 3".
+        let mut enc = TupleEncoder::new();
+        enc.string("file.txt").string("tag").string("v1").string("EXTRA");
+        let raw4 = enc.build();
+        assert!(decode_alpha_key(&raw4).is_err(), "alpha accepted 4-field key: {:?}", decode_alpha_key(&raw4));
+        let mut enc2 = TupleEncoder::new();
+        enc2.string("v1").string("tag").string("file.txt").string("EXTRA");
+        let raw4o = enc2.build();
+        assert!(decode_omega_key(&raw4o).is_err(), "omega accepted 4-field key: {:?}", decode_omega_key(&raw4o));
+    }
+
+    #[test]
     fn test_decode_alpha_key_null_value() {
         let raw = encode_alpha_key(b"file.txt", b"pinned", None);
         let (subject, key, value) = decode_alpha_key(&raw).unwrap();
