@@ -1853,6 +1853,119 @@ mod tests {
         store.check_invariants().unwrap();
     }
 
+    /// Codex P1 on PR #3725: a manager's removal of the group's Admin creator is refused by
+    /// the fold, and the refused operation must be a no-op for authority too — the Admin's own
+    /// later operation still applies, because the membership layer no longer contains the
+    /// removal it was judged against.
+    #[test]
+    fn test_a_fold_refused_removal_does_not_strip_the_admins_authority() {
+        let (alice, bob) = (key(41), key(42));
+        let (_dir, mut store) = open();
+
+        // Alice (the creator, hence the Admin) creates the group with Bob as a manager.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::manage()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+        assert!(store.event_applied(&group).unwrap());
+
+        // Bob, a manager but not an Admin, removes Alice. The membership layer alone takes a
+        // manager's removal seriously; the fold refuses it (only an Admin removes an Admin),
+        // so the operation does not apply.
+        let bob_removes = GroupAction::Remove {
+            member: individual(&alice),
+        };
+        let (remove_event, remove_body) = group_op(
+            &bob,
+            0,
+            None,
+            vec![create_event.id],
+            Some(group),
+            &bob_removes,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(
+            !store.event_applied(&remove_event.id).unwrap(),
+            "a manager's removal of the Admin must not apply: the fold refuses it"
+        );
+
+        // Alice removes Bob, causally after Bob's refused removal. The fold accepts it (she
+        // is still the Admin) and the roster still lists her, so it must apply: the refused
+        // removal is a no-op, not a loss of her authority.
+        let alice_removes = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (answer_event, answer_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![remove_event.id],
+            Some(group),
+            &alice_removes,
+        );
+        ingest_op(&mut store, &answer_event, &answer_body);
+        assert!(
+            store.event_applied(&answer_event.id).unwrap(),
+            "the Admin's operation after a fold-refused removal of her must still apply"
+        );
+        assert_eq!(store.roster(&group).unwrap(), vec![author(&alice)]);
+        store.check_invariants().unwrap();
+    }
+
+    /// Codex P2 on PR #3725: a create that lists its author below Manage is not bridged (the
+    /// fold would silently upgrade the creator to Admin), so when the membership layer then
+    /// refuses the author's removal of a manager, the roster — which follows the applied
+    /// decisions — still lists that manager.
+    #[test]
+    fn test_a_create_listing_its_author_below_manage_keeps_the_membership_roster() {
+        let (alice, bob) = (key(43), key(44));
+        let (_dir, mut store) = open();
+
+        // Alice creates the group listing herself with Read and Bob with Manage.
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), p2panda_auth::Access::read()),
+                (individual(&bob), p2panda_auth::Access::manage()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(&mut store, &create_event, &create_body);
+
+        // Alice (Read in the membership layer) removes Bob: the layer refuses it for
+        // insufficient access, so it does not apply — and the roster must agree, listing Bob.
+        let alice_removes = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(create_event.id),
+            vec![create_event.id],
+            Some(group),
+            &alice_removes,
+        );
+        ingest_op(&mut store, &remove_event, &remove_body);
+        assert!(
+            !store.event_applied(&remove_event.id).unwrap(),
+            "a reader's removal of a manager must not apply"
+        );
+        let mut roster = store.roster(&group).unwrap();
+        roster.sort_unstable();
+        let mut expected = vec![author(&alice), author(&bob)];
+        expected.sort_unstable();
+        assert_eq!(
+            roster, expected,
+            "the roster must agree with the applied decisions: Bob was not removed"
+        );
+        store.check_invariants().unwrap();
+    }
+
     #[test]
     fn test_ingested_state_survives_a_reopen() {
         let dir = tempfile::tempdir().unwrap();

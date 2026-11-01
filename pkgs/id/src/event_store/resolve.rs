@@ -25,7 +25,13 @@
 //!    also gives the roster of a group it decided, so a refused operation's target never shows
 //!    as a member. Operations the bridge cannot represent (a create or an operation naming a
 //!    group as a member, friendship and policy bodies the body codec does not carry) keep the
-//!    membership verdict alone; the fold judges them when they travel as group events.
+//!    membership verdict alone; the fold judges them when they travel as group events. Two
+//!    reconciliations keep the layers in agreement: an operation the fold refuses with a
+//!    voiding reason is fed to the membership layer as a no-op, so its authority changes never
+//!    reach the descendants the layer judges; and a create that lists its author below Manage
+//!    does not bridge at all — the fold counts the creator as an Admin by construction while
+//!    the membership layer honours the listed access, so the two models name the creator's
+//!    role differently and the group keeps the membership verdict alone.
 //!
 //! A voided event stays stored. Its author's later events do not wait on it, and they are judged
 //! by the same rules. That is why an honest author never stalls on another author's removal.
@@ -126,6 +132,28 @@ pub(super) fn resolve(
 
     let order = causal_order(&nodes, &position)?;
 
+    // The group fold is judged first: it depends only on the stored set, never on the
+    // membership layer, and the operations it refuses with a voiding reason are known before
+    // the layer is built. Pass three below still removes them from `applied`; feeding them to
+    // the layer as no-ops here is what keeps their authority changes from reaching the
+    // descendants the layer judges in passes one and two (Codex P1 on PR #3725).
+    let projection = fold_projection(&nodes);
+    let voided: HashSet<Hash> = match &projection {
+        Some(projection) => nodes
+            .iter()
+            .filter(|node| {
+                node.action.is_some()
+                    && !node.excluded
+                    && projection
+                        .outcome(&node.id)
+                        .and_then(|outcome| outcome.reason())
+                        == Some(Reason::Voided)
+            })
+            .map(|node| node.id)
+            .collect(),
+        None => HashSet::new(),
+    };
+
     // Pass one: the membership layer over every node that is not excluded, in causal order. An
     // excluded node stays in the index with the dependencies it can name, so a dependent of a
     // fork proof header still has a causal past.
@@ -141,7 +169,7 @@ pub(super) fn resolve(
                 .copied()
                 .collect();
             let role = match (&node.action, node.excluded) {
-                (Some(action), false) => Role::Auth {
+                (Some(action), false) if !voided.contains(&node.id) => Role::Auth {
                     author: node.author,
                     group: node.group,
                     action: action.clone(),
@@ -177,21 +205,11 @@ pub(super) fn resolve(
 
     // Pass three: the group policy gate (#168). An operation the fold refuses with a voiding
     // reason does not apply, even when the membership layer let it through. The projection is
-    // kept on the result: it decides the roster of every group it folded.
-    let projection = fold_projection(&nodes);
-    if let Some(projection) = &projection {
-        for node in &nodes {
-            if node.action.is_none() || node.excluded {
-                continue;
-            }
-            if projection
-                .outcome(&node.id)
-                .and_then(|outcome| outcome.reason())
-                == Some(Reason::Voided)
-            {
-                applied.remove(&node.id);
-            }
-        }
+    // kept on the result: it decides the roster of every group it folded. The layer was built
+    // with these operations as no-ops, so this removal is the belt to that brace: it also
+    // covers an operation the layer never saw as an action at all.
+    for id in &voided {
+        applied.remove(id);
     }
 
     Ok(Resolved {
@@ -288,6 +306,14 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
             for (member, access) in initial_members {
                 let key = member_key(member)?;
                 if key == node.author {
+                    // The fold counts the creator as an Admin (Manage) by construction, so a
+                    // create listing its author below Manage names two different roles for the
+                    // creator in the two models. That mapping cannot be reconciled before
+                    // folding, so the create does not bridge and the group keeps the membership
+                    // verdict alone (Codex P2 on PR #3725).
+                    if !access.is_manage() {
+                        return None;
+                    }
                     author_listed = true;
                     continue;
                 }
