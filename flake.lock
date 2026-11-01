@@ -3169,11 +3169,11 @@
         "nixpkgs": "nixpkgs_20"
       },
       "locked": {
-        "lastModified": 1793506065,
-        "narHash": "sha256-4P6MGdGozgeD0AdjWX3H7rLQbZq/b72ypWt89FIz8no=",
+        "lastModified": 1793538554,
+        "narHash": "sha256-LeeMO+GHMSKLs03bMOMjNWJ+nrbVLEEnzqgYcQADdFw=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "855ec25f53e2b2a28ef2ffe2ceac396db2bfc753",
+        "rev": "6fb3bacf37a4c374bf2c26c2a3cd64a0e223606a",
         "type": "github"
       },
       "original": {
