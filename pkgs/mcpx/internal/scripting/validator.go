@@ -107,6 +107,11 @@ type delimToken struct {
 	heritage  bool
 }
 
+type blockCommentRange struct {
+	start int
+	end   int
+}
+
 // pendingBodyFrame tracks one not-yet-seen function/class
 // expression body: parenDepth counts '(' opened while the frame is
 // pending, stackDepth is len(stack) when the frame was pushed.
@@ -123,8 +128,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	closedExprAfter := false
 	inSingleLineComment := false
 	inMultiLineComment := false
+	blockCommentStart := -1
+	var blockComments []blockCommentRange
 	inString := rune(0)
 	isEscaped := false
+	templateIsTagged := false
 	inRegex := false
 	inCharClass := false
 	regexEscaped := false
@@ -572,6 +580,8 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		if inMultiLineComment {
 			if ch == '*' && i+1 < n && chars[i+1] == '/' {
 				inMultiLineComment = false
+				blockComments = append(blockComments, blockCommentRange{start: blockCommentStart, end: i + 2})
+				blockCommentStart = -1
 				i++
 			}
 			continue
@@ -587,6 +597,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				continue
 			}
 			if ch == inString {
+				wasTaggedTemplate := inString == '`' && templateIsTagged
 				inString = rune(0)
 				prevSig = 'x'
 				// The closing quote is the previous significant
@@ -596,6 +607,13 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// object literal instead of a statement block
 				// (Codex P2 on #1659: const x = "x"\n{} /a+/).
 				prevChar = ch
+				if wasTaggedTemplate {
+					// A tagged template is an expression operand just like
+					// a call result, so a following TypeScript
+					// instantiation can bind to it (`tag`x`<T>`).
+					prevChar = 'x'
+				}
+				templateIsTagged = false
 				if stringIsModuleSpec {
 					moduleSpecClosed = true
 					stringIsModuleSpec = false
@@ -676,6 +694,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			if chars[i+1] == '*' {
 				inMultiLineComment = true
+				blockCommentStart = i
 				if brokeLine {
 					lineBreakPending = true
 				}
@@ -707,6 +726,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// pinned blind spot, since it is indistinguishable from
 		// a relational chain by local inspection.
 		if ch == '/' {
+			// Slash is a significant token (division or a regex
+			// literal), so an earlier spread's dot run cannot leak
+			// through it into a later `.new` property.
+			dotRun = 0
 			if inTypeAssert && typeAngleDepth == 0 {
 				// The assertion carried no generic list
 				// (x as number / 2): it is already complete, and
@@ -734,7 +757,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 
 		// String starts
 		if ch == '\'' || ch == '"' || ch == '`' {
+			templateIsTagged = ch == '`' && prevSig == 'x'
 			inString = ch
+			// Literal tokens interrupt a preceding spread token.
+			dotRun = 0
 			// A string directly after 'import' (a side-effect
 			// import) or after a module declaration's 'from' is
 			// the module specifier: the declaration ends with
@@ -972,7 +998,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				instActive = false
 			}
 			prevSig = 'x'
-		case ch == '<' && !inTypeAssert && prevSig == 'x' && !prevTokenIsNumeric(chars, i) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
+		case ch == '<' && !inTypeAssert && prevSig == 'x' && !prevTokenIsNumeric(chars, i, blockComments) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
 			// A TypeScript instantiation expression
 			// (f<number> / 2): the generic list's closing '>'
 			// completes the operand, so the slash divides
@@ -1302,53 +1328,6 @@ func isHexDigit(ch rune) bool {
 	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
-// looksLikeInstantiation reports whether the '<' at index lt opens
-// a TypeScript instantiation-expression generic list whose operand
-// classification matters: the list must balance using only
-// type-shaped tokens, must contain at least one recognisable type
-// name (a primitive type or a capitalised identifier — the shapes
-// generic arguments actually take), and the token after the
-// closing '>' must be one that follows an operand (a '/', '(',
-// '.', operator, or delimiter) rather than another operand, which
-// would make the '<' a relational operator instead
-// (a < Foo > b is a comparison chain, f<Foo> / 2 is not).
-// blockCommentOpen returns the start index of the '/*' that opens
-// the block comment whose closing '*/' begins at closeStart (the
-// index of the '*'), or -1 if there is none. Block comments do
-// not nest, so the opener is not simply the nearest preceding
-// '/*': a '/*' inside the comment's own text (f /* 1 /* text */)
-// is content, and the true opener is the earliest '/*' reachable
-// backward without crossing another '*/' — crossing one means
-// that '/*' opened an earlier, separate comment (Codex P2 on
-// #3354: the backward scan stopped at the inner '/*', resumed
-// inside the comment, and mistook its '1' for the previous token).
-func blockCommentOpen(chars []rune, closeStart int) int {
-	candidate := -1
-	for j := closeStart - 1; j >= 1; j-- {
-		if chars[j-1] == '/' && chars[j] == '*' {
-			candidate = j - 1
-			break
-		}
-	}
-	for candidate > 0 {
-		earlier := -1
-		for j := candidate - 1; j >= 0; j-- {
-			if chars[j] == '*' && j+1 < len(chars) && chars[j+1] == '/' {
-				break
-			}
-			if j >= 1 && chars[j-1] == '/' && chars[j] == '*' {
-				earlier = j - 1
-				break
-			}
-		}
-		if earlier < 0 {
-			break
-		}
-		candidate = earlier
-	}
-	return candidate
-}
-
 // prevTokenIsNumeric reports whether the token immediately before
 // offset lt is a numeric literal: it walks back over identifier
 // characters and checks the token's FIRST character, so an
@@ -1356,7 +1335,7 @@ func blockCommentOpen(chars []rune, closeStart int) int {
 // a number (Codex P2 on #3354: f1<number> / 2 lost instantiation
 // recognition to a guard that looked only at the final character,
 // and the relational '>' left the slash to open a phantom regex).
-func prevTokenIsNumeric(chars []rune, lt int) bool {
+func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool {
 	end := lt
 	// Skip trailing trivia — whitespace and block comments — the
 	// way the scanner's prevChar already does: in "1 < x" the
@@ -1365,11 +1344,16 @@ func prevTokenIsNumeric(chars []rune, lt int) bool {
 		for end > 0 && isJSWhitespace(chars[end-1]) {
 			end--
 		}
-		if end >= 2 && chars[end-2] == '*' && chars[end-1] == '/' {
-			if open := blockCommentOpen(chars, end-2); open >= 0 {
-				end = open
-				continue
+		skippedComment := false
+		for j := len(comments) - 1; j >= 0; j-- {
+			if comments[j].end == end {
+				end = comments[j].start
+				skippedComment = true
+				break
 			}
+		}
+		if skippedComment {
+			continue
 		}
 		break
 	}
@@ -1399,6 +1383,16 @@ func prevTokenIsNumeric(chars []rune, lt int) bool {
 	return start < end && unicode.IsDigit(chars[start])
 }
 
+// looksLikeInstantiation reports whether the '<' at index lt opens
+// a TypeScript instantiation-expression generic list whose operand
+// classification matters: the list must balance using only
+// type-shaped tokens, must contain at least one recognisable type
+// name (a primitive type or a capitalised identifier — the shapes
+// generic arguments actually take), and the token after the
+// closing '>' must be one that follows an operand (a '/', '(',
+// '.', operator, or delimiter) rather than another operand, which
+// would make the '<' a relational operator instead
+// (a < Foo > b is a comparison chain, f<Foo> / 2 is not).
 func looksLikeInstantiation(chars []rune, lt int) bool {
 	n := len(chars)
 	depth := 0
