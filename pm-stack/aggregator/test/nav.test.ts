@@ -55,18 +55,19 @@ describe("the manifest groups every page (#1135)", () => {
 describe("the nav bar renders the groups (#1135)", () => {
   const html = navLinks("/quota");
 
-  test("every page except /pages has a link, once, in the bar", () => {
-    for (const page of PAGES.filter((p) => p.id !== "pages")) {
+  test("every page has a link in the bar, once each — /pages included (#1215)", () => {
+    for (const page of PAGES) {
       const hits = html.split(`href="${page.route}"`).length - 1;
       expect(hits).toBe(1);
     }
-    expect(html).not.toContain('href="/pages"');
+    expect(html).toContain('href="/pages"');
+    expect(html.match(/<a href=/g)?.length).toBe(PAGES.length);
   });
 
   test("each group with bar links renders its label, and the active page's section is marked", () => {
-    // /pages is the manifest index: it lives in the dropdown and on
-    // /pages itself, so its group needs no bar links (#1135).
-    const inBar = groupedPages().filter((g) => g.pages.some((p) => p.id !== "pages"));
+    // Every group renders in the bar — /pages too, under System (#1215:
+    // one navigation model, no bar-only exclusions).
+    const inBar = groupedPages();
     for (const { group } of inBar) expect(html).toContain(`>${group.title}</span>`);
     expect(html).toContain('data-current="true"');
     expect(html.match(/data-current="true"/g)?.length).toBe(1);

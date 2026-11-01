@@ -132,6 +132,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.acked { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
 .badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
@@ -144,6 +145,7 @@ a { color: #58a6ff; }
 .col h2 { margin: 2px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b949e; }
 .tblwrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { border-collapse: collapse; width: 100%; }
+caption { caption-side: top; text-align: left; font-weight: 600; font-size: 12.5px; padding: 6px 8px; color: #8b949e; }
 th, td { border: 1px solid #30363d; padding: 6px 8px; vertical-align: top; text-align: left; }
 th { background: #161b22; }
 .tl-cell { min-width: 110px; }
@@ -279,6 +281,81 @@ body.xp-plan .xpl-costcol { display: none; }
 .hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
 .hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 2px 4px; }
 .xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
+/* Non-colour cues (#1215): state badges also differ by icon prefix and
+   status dots by shape, so colour is never the only signal. */
+.badge.walled::before, .badge.blocked::before { content: "\\26d4  "; }
+.badge.drew::before { content: "\\26a0  "; }
+.badge.healthy::before, .badge.moving::before, .badge.merged::before, .badge.acked::before, .badge.act-applied::before { content: "\\2713  "; }
+.badge.near::before, .badge.implementing::before, .badge.stale::before, .badge.act-pending::before { content: "\\25f7  "; }
+.badge.review::before, .badge.conflict::before { content: "\\25c6  "; }
+.badge.act-rejected::before { content: "\\2715  "; }
+.badge.act-snoozed::before { content: "\\263e  "; }
+.badge.open::before { content: "\\25cf  "; }
+.dot.down, .dot.invalid { border-radius: 2px; }
+.dot.stale, .dot.absent { border-radius: 2px; transform: rotate(45deg); }
+.dot.fixtures { background: transparent; border: 2px solid #bc8cff; }
+/* Light theme (#1215): a real light palette under prefers-color-scheme;
+   the dark palette above stays the default for dark scheme. */
+@media (prefers-color-scheme: light) {
+  body { background: #ffffff; color: #1f2328; }
+  nav { background: #f6f8fa; border-bottom-color: #d1d9e0; }
+  .navgroup + .navgroup { border-left-color: #d1d9e0; }
+  .navlabel { color: #59636e; }
+  .navgroup[data-current="true"] .navlabel { color: #0969da; }
+  nav a { color: #0969da; }
+  nav a.active, nav a:hover { background: #eaeef2; }
+  nav a.active { background: #0969da26; color: #0550ae; box-shadow: inset 0 -2px 0 #0969da; }
+  a { color: #0969da; }
+  .card { background: #ffffff; border-color: #d1d9e0; }
+  .col { background: #f6f8fa; border-color: #d1d9e0; }
+  .col h2 { color: #59636e; }
+  .muted, .foot, caption { color: #59636e; }
+  .badge { border-color: #d1d9e0; }
+  .badge.open, .badge.orch, .badge.agent { color: #0969da; }
+  .badge.merged, .badge.healthy, .badge.moving, .badge.gh, .badge.acked, .badge.act-applied { color: #1a7f37; }
+  .badge.closed { color: #59636e; }
+  .badge.implementing, .badge.near, .badge.stalled, .badge.stale, .badge.msg, .badge.act-pending, .badge.whyuser { color: #9a6700; }
+  .badge.walled, .badge.drew, .badge.blocked, .badge.act-rejected { color: #cf222e; }
+  .badge.review, .badge.Muse, .badge.conflict, .badge.act-snoozed { color: #8250df; }
+  .badge.src { background: #eaeef2; color: #1f2328; }
+  th, td { border-color: #d1d9e0; }
+  th { background: #f6f8fa; }
+  .banner { color: #9a6700; }
+  .banner.drew { color: #cf222e; }
+  .chips a, .fchip, .qchip, .hchip, .xchip { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  .chips a.active { color: #0969da; }
+  .fchip.stale, .fchip.absent, .qblock .qremaining { color: #9a6700; }
+  .fchip.invalid, .cform .err, .aform .err { color: #cf222e; }
+  .dot { background: #59636e; }
+  .dot.up, .dot.self { background: #1a7f37; }
+  .dot.down, .dot.invalid { background: #cf222e; }
+  .dot.stale, .dot.absent { background: #9a6700; }
+  .dot.off, .dot.unknown { background: #59636e; }
+  .dot.fixtures { background: transparent; border-color: #8250df; }
+  .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
+  .cov, .cform, .actbox, .skel, .chart { background: #f6f8fa; border-color: #d1d9e0; }
+  .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
+  .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
+  .cform .kinds label { color: #1f2328; }
+  .aform button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  .aform button.danger { color: #cf222e; border-color: #cf222e; }
+  .xtabs { border-bottom-color: #d1d9e0; }
+  .xtab { color: #59636e; }
+  .xtab:hover, .xtab.active { color: #1f2328; }
+  .xtab.active { background: #f6f8fa; border-color: #d1d9e0; }
+  .xp-seg button { background: #f6f8fa; color: #59636e; }
+  .xpl-table tr:hover td { background: #f6f8fa; }
+  .xpl-ctl button { background: #f6f8fa; color: #1f2328; border-color: #d1d9e0; }
+  .card .sentline, .qblock .qanswered { color: #1a7f37; }
+  details.carddetail { border-top-color: #d1d9e0; }
+  details.carddetail dt { color: #59636e; }
+  details.carddetail summary, .cbox summary, .kids summary { color: #0969da; }
+  .kids { border-left-color: #d1d9e0; }
+  .obj .n { color: #0969da; }
+  .foot { border-top-color: #d1d9e0; }
+  .qblock { border-top-color: #d1d9e0; }
+  .cbox { border-top-color: #d1d9e0; }
+}
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
@@ -477,29 +554,52 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
 }
 
 /**
- * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
- * bar order, marking the active page's section. /pages itself stays out
- * of the bar (it is the full manifest) but is in the dropdown.
+ * The grouped nav links (#1135, #1215): one labelled section per
+ * PAGE_GROUP, in bar order, marking the active page's section. The bar
+ * and the Pages dropdown are ONE navigation model: both render every
+ * manifest page under the same sections — /pages included, no exclusions.
  */
 export function navLinks(active: string, activeGroup?: string): string {
   // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
   // reaches it, so the bar always shows where you are (#1135).
   const activeRoute = manifestRouteFor(active) ?? active;
   const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
+  let activeMarked = false;
   return groupedPages()
-    .filter((g) => g.pages.some((p) => p.id !== "pages"))
     .map(({ group, pages }) => {
       const anchors = pages
-        .filter((p) => p.id !== "pages")
-        .map(
-          (p) =>
-            `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
-        )
+        .map((p) => {
+          const isActive = p.route === activeRoute && !activeMarked;
+          if (isActive) activeMarked = true;
+          return `<a href="${p.route}"${isActive ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`;
+        })
         .join("");
       const current = group.id === groupOfActive ? ' data-current="true"' : "";
       return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
     })
     .join("");
+}
+
+/**
+ * The Pages dropdown (#906 §1, #1215): the same grouped model as the
+ * bar — one <optgroup> per manifest section, every page present — so
+ * the bar and the dropdown always list the identical destination set.
+ */
+export function pageDropdown(active: string): string {
+  let selectedMarked = false;
+  const groups = groupedPages()
+    .map(({ group, pages }) => {
+      const options = pages
+        .map((p) => {
+          const selected = p.route === active && !selectedMarked;
+          if (selected) selectedMarked = true;
+          return `<option value="${p.route}"${selected ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`;
+        })
+        .join("");
+      return `<optgroup label="${esc(group.title)}">${options}</optgroup>`;
+    })
+    .join("");
+  return `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${groups}</select>`;
 }
 
 function layout(
@@ -512,15 +612,12 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either. The bar groups its links by section (#1135) so ten pages
-  // wrap onto a second row at phone width instead of scrolling
-  // sideways, and the page's own section stays marked.
+  // in either. Both use the same grouped model (#1215): the bar groups
+  // its links by section (#1135) so pages wrap onto a second row at
+  // phone width instead of scrolling sideways, the dropdown mirrors
+  // the sections as <optgroup>s, and both list every page.
   const links = navLinks(active);
-  const options = PAGES.map(
-    (p) =>
-      `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
-  ).join("");
-  const dropdown = `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${options}</select>`;
+  const dropdown = pageDropdown(active);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
@@ -1548,7 +1645,7 @@ function timelineTable(
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number>,
 ): string {
-  const head = `<tr><th>Theme</th>${tl.lanes.map((l) => `<th>${esc(l.label)}</th>`).join("")}</tr>`;
+  const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
       const cells = tl.lanes
@@ -1557,10 +1654,10 @@ function timelineTable(
           return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts)).join("")}</td>`;
         })
         .join("");
-      return `<tr><th>${esc(theme)}</th>${cells}</tr>`;
+      return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
     })
     .join("");
-  return `<div class="tblwrap"><table>${head}${body}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Roadmap timeline by theme</caption>${head}${body}</table></div>`;
 }
 
 export function renderRoadmap(
@@ -1681,9 +1778,9 @@ export function renderItem(
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+<h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
-<h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${dashSection}`,
     provenance,
     "/board",
@@ -1839,7 +1936,7 @@ function chargesStripHtml(usage: UsageView): string {
     )
     .join("");
   const total = usage.charges.reduce((sum, c) => sum + c.amountUsd, 0);
-  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><tr><th>Date</th><th>Charge</th><th>Amount</th><th>Method</th><th>Evidence</th></tr>${rows}</table></div>`;
+  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><caption>Charges this period</caption><tr><th scope="col">Date</th><th scope="col">Charge</th><th scope="col">Amount</th><th scope="col">Method</th><th scope="col">Evidence</th></tr>${rows}</table></div>`;
 }
 
 export function renderQuota(
@@ -1887,8 +1984,8 @@ export function renderQuota(
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
-  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><tr><th>Provider</th><th>Pool</th><th>From</th><th>To</th><th>Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
-<h2>Model choice</h2><div class="tblwrap"><table><tr><th>Rule</th><th>Pools</th></tr>
+  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><caption>Burn between resets</caption><tr><th scope="col">Provider</th><th scope="col">Pool</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
+<h2>Model choice</h2><div class="tblwrap"><table><caption>Model choice rules</caption><tr><th scope="col">Rule</th><th scope="col">Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
 <tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
@@ -2029,7 +2126,7 @@ export function renderServiceDetail(
   const body = `<p class="muted"><a href="/quota">← Usage &amp; billing</a></p>
 <h1>${esc(svc.name)}</h1>
 <div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
-<h2>All metrics</h2><div class="tblwrap"><table><tr><th>Metric</th><th>Used</th><th>Limit</th><th>%</th><th>Note</th></tr>${metricRows}</table></div>
+<h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
 <h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
@@ -2105,7 +2202,7 @@ function sessionCard(
     act?.identities && act.commentOpts
       ? cardCommentHtml(objectRef, undefined, act.commentsByObject?.get(objectRef), act.commentOpts)
       : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><strong><a href="/sessions#${encodeURIComponent(e.sessionId)}">${esc(e.title ?? e.sessionId)}</a></strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${detail}${commentBox}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
@@ -2175,7 +2272,7 @@ function tierItemCard(
   const detail = `<details class="carddetail"><summary>Details &amp; history</summary><dl><dt>Source</dt><dd>${esc(item.source)} · ${esc(item.kind)}${item.state ? ` · state ${esc(item.state)}` : ""}</dd><dt>Since</dt><dd>${esc(fmtDate(item.since))}</dd><dt>Last seen</dt><dd>${esc(fmtDate(item.lastSeenAt))}</dd>${item.horizon ? `<dt>Horizon</dt><dd>${esc(item.horizon)}</dd>` : ""}<dt>Ref</dt><dd><code>${esc(objectRef)}</code>${item.ref ? ` · <a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : ""}</dd>${item.blockedBy?.length ? `<dt>Blocked by</dt><dd>${item.blockedBy.map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`)).join("; ")}</dd>` : ""}${questionPayload}</dl>${actionHistoryHtml(act?.actions)}</details>`;
   const commentBox =
     act?.identities && act.commentOpts ? cardCommentHtml(objectRef, item.ref, act.comments, act.commentOpts) : "";
-  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
+  return `<div class="card${cs.acked ? " acked" : ""}" id="${cardDomId(objectRef)}"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""}${cs.acked ? ` <span class="badge acked">Acknowledged</span>` : ""} <strong>${titleHtml}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}${detail}${commentBox}</div>`;
 }
 
 export interface AttentionAct {
@@ -2803,7 +2900,7 @@ function dnsTable(entries: DnsEntry[]): string {
         `<tr><td><strong>${esc(e.domain)}</strong></td><td>${esc(e.renewal)}</td><td>${e.priceUsd != null ? `$${e.priceUsd.toFixed(2)}` : "—"}</td><td>${esc(e.autoRenew)}</td><td>${esc(e.plan)}</td><td>${esc(e.review)}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Domain</th><th>Next renewal</th><th>Price (list)</th><th>Auto-renew</th><th>Plan / status</th><th>Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Domain register</caption><tr><th scope="col">Domain</th><th scope="col">Next renewal</th><th scope="col">Price (list)</th><th scope="col">Auto-renew</th><th scope="col">Plan / status</th><th scope="col">Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
 }
 
 export function renderDns(section: DnsSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
@@ -3802,7 +3899,7 @@ const AA_EXPLORER_SCRIPT = `<script>
         (band.priceCeil != null ? " · Relative price ceiling " + fmt$(band.priceCeil) + " · Relative time ceiling " + fmtT(band.timeCeil) : " · no candidate carries all three measures") + "</p>" +
         bandScatter(band) +
         '<div class="board">' + (cards || '<p class="muted">No recommendation survives the limits of this band.</p>') + "</div>" +
-        '<details><summary>Why these choices?</summary><p class="muted">' + whyCounts + '</p><div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th>Lab</th><th>Decision</th></tr></thead><tbody>' + whyRows + "</tbody></table></div></details>";
+        '<details><summary>Why these choices?</summary><p class="muted">' + whyCounts + '</p><div class="tblwrap"><table class="xpl-table"><caption>Why these choices — decisions by model and effort</caption><thead><tr><th scope="col">Model / effort</th><th scope="col">Lab</th><th scope="col">Decision</th></tr></thead><tbody>' + whyRows + "</tbody></table></div></details>";
     }).join("");
     wrap.querySelectorAll("[data-pick]").forEach(function (b) {
       b.addEventListener("click", function () { selectPoint(b.getAttribute("data-pick")); });
@@ -3872,10 +3969,10 @@ const AA_EXPLORER_SCRIPT = `<script>
   function bandGroup(title, blurb, bands) {
     var rowsHtml = bands.map(function (b) {
       var leader = b.choices.length ? b.choices[0] : null;
-      return "<tr><td><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></td><td>" +
+      return "<tr><th scope=\"row\"><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></th><td>" +
         (b.choices.length ? b.choices.map(function (p) { return chipFor(p, leader); }).join(" ") : '<span class="muted">No model meets the window of this band.</span>') + "</td></tr>";
     }).join("");
-    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><tbody>' + rowsHtml + "</tbody></table></div>";
+    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><caption>' + esc(title) + '</caption><tbody>' + rowsHtml + "</tbody></table></div>";
   }
   function renderBandComparisons() {
     var wrap = document.getElementById("xpl-bandgroups");
@@ -3961,10 +4058,10 @@ const AA_EXPLORER_SCRIPT = `<script>
           var near = qual.filter(function (p) { return p.cost <= cheapest.cost * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
           return near.map(function (p) { return chipFor(p, cheapest); }).join(" ");
         });
-        return "<tr><td><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></td>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+        return "<tr><th scope=\"row\"><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></th>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
       }).join("");
       var h6 = '<h3>Lowest price within each speed target</h3><p class="muted">Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within ' + Math.round(priceWin * 100) + "% of the tier's cheapest.</p>" +
-        '<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Speed target</th>' + tiers.map(function (ci) { return "<th>Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
+        '<div class="tblwrap"><table class="xpl-table"><caption>Lowest price within each speed target</caption><thead><tr><th scope="col">Speed target</th>' + tiers.map(function (ci) { return "<th scope="col">Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
     }
     html = (typeof h1 !== "undefined" ? h1 : "") + (typeof h2 !== "undefined" ? h2 : "") + (typeof h3 !== "undefined" ? h3 : "") + (typeof h4 !== "undefined" ? h4 : "") + (typeof h5 !== "undefined" ? h5 : "") + (typeof h6 !== "undefined" ? h6 : "");
     wrap.innerHTML = html || '<p class="muted">No banded comparisons can be built — the visible configurations lack the measures they need.</p>';
@@ -4441,7 +4538,7 @@ function aaTimingsTable(testRuns: AaTestRun[]): string {
         `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Configuration</th><th>Intelligence</th><th>$/task</th><th>TTFT</th><th>First answer</th><th>E2E (500 tok)</th><th>Time / task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Model configurations — intelligence and cost</caption><tr><th scope="col">Configuration</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">TTFT</th><th scope="col">First answer</th><th scope="col">E2E (500 tok)</th><th scope="col">Time / task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaConfigsTable(configs: AaConfig[]): string {
@@ -4451,7 +4548,7 @@ function aaConfigsTable(configs: AaConfig[]): string {
         `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Models — effort, intelligence, cost, and speed</caption><tr><th scope="col">Model</th><th scope="col">Effort (workbook label)</th><th scope="col">Intelligence</th><th scope="col">$/task</th><th scope="col">Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaCaiTable(rowsIn: AaCaiRow[]): string {
@@ -4464,7 +4561,7 @@ function aaCaiTable(rowsIn: AaCaiRow[]): string {
     .join("");
   return `<h2>Coding Agent Index observations</h2>
 <p class="muted">The workbook's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
-<div class="tblwrap"><table><tr><th>Model</th><th>Effort</th><th>Harness</th><th>Version</th><th>CAI score</th><th>DeepSWE v1.1</th><th>Terminal-Bench 4.0</th><th>SWE-Atlas-QnA</th><th>$/task</th><th>Agent wall time / task</th><th>Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+<div class="tblwrap"><table><caption>Model benchmark scores</caption><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col">Harness</th><th scope="col">Version</th><th scope="col">CAI score</th><th scope="col">DeepSWE v1.1</th><th scope="col">Terminal-Bench 4.0</th><th scope="col">SWE-Atlas-QnA</th><th scope="col">$/task</th><th scope="col">Agent wall time / task</th><th scope="col">Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaNameList(names: string[]): string {
@@ -4576,22 +4673,22 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; solid dots sit on it, gray are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only workbook measurements are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Score</th><th class="num">Score ×</th><th class="num xpl-costcol">Cost/task</th><th class="num xpl-costcol">Cost ×</th><th class="num">Time/task</th><th class="num">Time ×</th><th>Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num" id="xpl-scorehead">Intelligence</th><th class="num xpl-costcol">$/task</th><th class="num">Time/task</th><th class="num">TTFT</th><th class="num">Speed (t/s)</th><th class="num xpl-costcol">Score / $</th><th class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num" id="xpl-scorehead">Intelligence</th><th scope="col" class="num xpl-costcol">$/task</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">TTFT</th><th scope="col" class="num">Speed (t/s)</th><th scope="col" class="num xpl-costcol">Score / $</th><th scope="col" class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Pareto frontiers</h2>
 <p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
 <label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
 <p class="muted" id="xpl-pf-count"></p>
 <h3>Score first, with competitive time</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-score"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — score first, with competitive time</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-score"></tbody></table></div>
 <h3>Time first, with competitive score</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-speed"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — time first, with competitive score</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-speed"></tbody></table></div>
 <h3>Price first, strong in score and time</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-price"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — price first, strong in score and time</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Score · value / percentile</th><th scope="col" class="num">Time / task · value / percentile</th><th scope="col" class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-price"></tbody></table></div>
 <h3>Price–speed trade-offs</h3>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Time / task</th><th class="num xpl-costcol">Cost / task</th><th class="num">Score · context</th></tr></thead><tbody id="xpl-pf-ps"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Pareto frontier — price and speed trade-offs</caption><thead><tr><th scope="col">Model / effort</th><th scope="col" class="num">Time / task</th><th scope="col" class="num xpl-costcol">Cost / task</th><th scope="col" class="num">Score · context</th></tr></thead><tbody id="xpl-pf-ps"></tbody></table></div>
 <h2>Recommendations</h2>
 <p class="muted">Build a useful shortlist: first require a near-top score in each band, then trade price against speed and choose distinct labs. Score bands are non-overlapping and calculated from the filtered population before tradeoff limits; absolute limits apply first, then relative price/speed limits against the cheapest and fastest near-top models passing them. Unknown selected values cannot be recommended.</p>
 <div class="card xpl-filters">
@@ -4642,7 +4739,7 @@ ${modelCards}
 <span class="muted">The window applies to scheduled rates only (DeepSeek halves every token rate off-peak).</span>
 </div>
 <p class="muted" id="xpl-mcount"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th><th class="num xpl-costcol">Proj. $/task ~</th><th class="num">Proj. time/task ~</th><th class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Model catalog — providers, plans, and projected costs</caption><thead><tr><th scope="col">Model</th><th scope="col">Provider / plan</th><th scope="col" class="num">Context</th><th scope="col">Variants</th><th scope="col">Pool seats</th><th scope="col" class="num">AA score</th><th scope="col" class="num xpl-costcol">AA $/task</th><th scope="col" class="num xpl-costcol">Eff. $/task</th><th scope="col" class="num">AA time/task</th><th scope="col" class="num xpl-costcol">Proj. $/task ~</th><th scope="col" class="num">Proj. time/task ~</th><th scope="col" class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
 </section>
 ${coverageHtml}
 <script type="application/json" id="xpl-data">${explorerJson}</script>`;
@@ -4699,7 +4796,7 @@ export function renderPages(provenance: Provenance): string {
   ).join("");
   return layout(
     "All pages",
-    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar and the page dropdown render from the same list. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><tr><th>Page</th><th>Route</th><th>JSON twin</th><th>What it is</th></tr>${rows}</table></div>`,
+    `<h1>All pages</h1><p class="muted">Every registered page, from the manifest in <code>src/pages.ts</code> — the nav bar and the page dropdown render from the same list. Adding a page is one manifest entry + a render function + a route (recipe in the README).</p><div class="tblwrap"><table><caption>All registered pages</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">JSON twin</th><th scope="col">What it is</th></tr>${rows}</table></div>`,
     provenance,
     "/pages",
   );
@@ -4790,9 +4887,9 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
-<div class="tblwrap"><table><tr><th>Service</th><th>Port</th><th>Bind</th><th>Runs as</th><th>State</th><th>Consumed by</th><th>If it is down</th></tr>${serviceRows}</table></div>
+<div class="tblwrap"><table><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 <h2>Feed sections</h2>
-<div class="tblwrap"><table><tr><th>Section</th><th>Present</th><th>Age</th><th>Note</th></tr>${sectionRows}</table></div>
+<div class="tblwrap"><table><caption>Feed sections — presence and age</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
@@ -4804,7 +4901,7 @@ ${degraded}${modeNote}
 ${facets}
 <h2>Pages</h2>
 <p class="muted">Render history of this process — a page nobody has opened since boot is labelled unrendered, not green.</p>
-<div class="tblwrap"><table><tr><th>Page</th><th>Route</th><th>Last rendered</th></tr>${pageRows}</table></div>`;
+<div class="tblwrap"><table><caption>Pages — last rendered</caption><tr><th scope="col">Page</th><th scope="col">Route</th><th scope="col">Last rendered</th></tr>${pageRows}</table></div>`;
   return layout("Health", body, provenance, "/health");
 }
 
@@ -4971,7 +5068,7 @@ function trackedTable(tracked: TrackedIssue[]): string {
         : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
     )
     .join("");
-  return `<div class="tblwrap"><table><tr><th>Tracked issue</th><th>Title</th><th>State</th><th>Updated</th></tr>${rows}</table></div>`;
+  return `<div class="tblwrap"><table><caption>Tracked issues</caption><tr><th scope="col">Tracked issue</th><th scope="col">Title</th><th scope="col">State</th><th scope="col">Updated</th></tr>${rows}</table></div>`;
 }
 
 function poolSummaryHtml(live: ProgramLive): string {
