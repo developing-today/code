@@ -496,3 +496,88 @@ mod archive_name_tests {
         assert_eq!(name, "doc.archive.42");
     }
 }
+
+// PROBE (not for commit): appended to pkgs/id/src/fileops.rs in a laptop
+// worktree to verify that FileOps::delete misses archives created under a
+// previous name by FileOps::rename.
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod probe_delete_after_rename_tests {
+    use super::*;
+    use futures_lite::StreamExt as _;
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::store::mem::MemStore;
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use crate::tags::TagStore;
+
+    async fn harness() -> (TagStore, Store, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let blobs: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), blobs.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ts = TagStore::init_in(&docs, "test-node", dir.path().join(".iroh-meta"))
+            .await
+            .unwrap();
+        (ts, blobs, dir, endpoint, docs)
+    }
+
+    async fn tag_names(store: &Store) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut list = store.tags().list().await.unwrap();
+        while let Some(item) = list.next().await {
+            let item = item.unwrap();
+            names.push(String::from_utf8_lossy(item.name.as_ref()).into_owned());
+        }
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn probe_delete_after_rename_leaves_rename_archive() {
+        let (tags, blobs, _dir, _ep, _docs) = harness().await;
+        let ops = FileOps::new(&blobs, &tags);
+
+        // v1 at "doc", then v2 replaces it (creating doc.archive.<ts> via put? put does
+        // not archive; use rename-archive flow directly):
+        let h1 = blobs.blobs().add_bytes(b"v1".to_vec()).await.unwrap().hash;
+        ops.put("doc", h1).await.unwrap();
+
+        // Rename with archive=true (the meta-protocol path, protocol.rs:572):
+        // archives the original as doc.archive.<ts>.
+        let outcome = ops.rename("doc", "doc2", true).await.unwrap();
+        let rename_archive = outcome
+            .archived_original
+            .clone()
+            .expect("rename with archive=true must archive the original");
+        println!("rename archive tag: {rename_archive}");
+        assert!(tag_names(&blobs).await.contains(&rename_archive));
+
+        // Hard-delete the file under its current name.
+        let deleted = ops.delete("doc2").await.unwrap();
+        println!(
+            "delete outcome: existed={} archives_removed={}",
+            deleted.existed, deleted.archives_removed
+        );
+        let remaining = tag_names(&blobs).await;
+        println!("remaining blob tags after delete: {remaining:?}");
+
+        // The documented contract (fileops module docs): delete removes "the
+        // name, its metadata and its archive tags". The rename-created archive
+        // is one of the file's archive tags.
+        assert!(
+            !remaining.contains(&rename_archive),
+            "BUG REPRODUCED: rename-created archive {rename_archive} survives hard delete of doc2; remaining={remaining:?}"
+        );
+    }
+}
