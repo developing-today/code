@@ -7,7 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseProxyPortValue, parseAddressPortValue, parseProxyMillisValue } from './proxy-port.mjs';
+import { parseProxyPortValue, parseAddressPortValue, parseProxyIntValue, parseProxyMillisValue } from './proxy-port.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +19,18 @@ test('millisecond timeouts accept only decimal integers in the Node timer range'
   for (const raw of ['0', '-1', '+1', '1.5', '1e3', '0x10', ' 1', '1 ', 'abc', '2147483648', '999999999999999999999']) {
     assert.throws(() => parseProxyMillisValue('TIMEOUT', raw, 1200000), (err) =>
       err.message.includes('TIMEOUT') && err.message.includes(`"${raw}"`));
+  }
+});
+
+test('bounded proxy integers accept only decimal values inside their configured range', () => {
+  const limits = { min: 1, max: 10000, kind: 'worker count', unit: 'workers' };
+  for (const raw of [undefined, '']) assert.equal(parseProxyIntValue('MAX_WORKERS', raw, 32, limits), 32);
+  for (const [raw, value] of [['1', 1], ['32', 32], ['10000', 10000]]) {
+    assert.equal(parseProxyIntValue('MAX_WORKERS', raw, 32, limits), value);
+  }
+  for (const raw of ['abc', '-1', '+1', '1.5', '1e3', '0x10', ' 1', '1 ', '0', '10001', '999999999999999999999']) {
+    assert.throws(() => parseProxyIntValue('MAX_WORKERS', raw, 32, limits), (err) =>
+      err.message.includes('MAX_WORKERS') && err.message.includes(`"${raw}"`));
   }
 });
 

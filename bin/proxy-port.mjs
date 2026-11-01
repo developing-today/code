@@ -49,22 +49,29 @@ export const parseProxyPort = (name, fallback) => {
 
 const MAX_TIMEOUT_MS = 2147483647; // 2^31 - 1 (setTimeout 32-bit signed int limit)
 
-export const parseProxyMillisValue = (name, raw, fallback) => {
+export const parseProxyIntValue = (name, raw, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER, kind = 'integer', unit = '' } = {}) => {
   if (raw === undefined || raw === '') return fallback;
   if (/^[0-9]+$/.test(raw)) {
-    const millis = Number(raw);
-    if (millis >= 1 && millis <= MAX_TIMEOUT_MS) return millis;
+    const value = Number(raw);
+    if (Number.isSafeInteger(value) && value >= min && value <= max) return value;
   }
   throw new Error(
-    `${name}="${raw}" is not a valid timeout (expected an integer 1-${MAX_TIMEOUT_MS} ms)`
+    `${name}="${raw}" is not a valid ${kind} (expected an integer ${min}-${max}${unit ? ` ${unit}` : ''})`
   );
 };
 
-export const parseProxyMillis = (name, fallback) => {
+export const parseProxyInt = (name, fallback, limits) => {
   try {
-    return parseProxyMillisValue(name, process.env[name], fallback);
+    return parseProxyIntValue(name, process.env[name], fallback, limits);
   } catch (err) {
     console.error(err.message);
     process.exit(1);
   }
+};
+
+export const parseProxyMillisValue = (name, raw, fallback) =>
+  parseProxyIntValue(name, raw, fallback, { min: 1, max: MAX_TIMEOUT_MS, kind: 'timeout', unit: 'ms' });
+
+export const parseProxyMillis = (name, fallback) => {
+  return parseProxyInt(name, fallback, { min: 1, max: MAX_TIMEOUT_MS, kind: 'timeout', unit: 'ms' });
 };

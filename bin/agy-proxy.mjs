@@ -44,10 +44,19 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { parseProxyPort } from './proxy-port.mjs';
+import { parseProxyInt, parseProxyMillis, parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
+// Durations are positive Node-safe millisecond integers; worker capacity is
+// a bounded positive count. Parse before startup side effects so bad config
+// fails immediately and names the offending environment variable.
+const MODELS_TTL_MS = parseProxyMillis('AGY_PROXY_MODELS_TTL_MS', 300000);
+const TURN_TIMEOUT_MS = parseProxyMillis('AGY_PROXY_TURN_TIMEOUT_MS', 300000);
+const MAX_LIVE_WORKERS = parseProxyInt('AGY_PROXY_MAX_LIVE_WORKERS', 32, {
+  min: 1, max: 10000, kind: 'worker count', unit: 'workers'
+});
+const SESSION_IDLE_TTL_MS = parseProxyMillis('AGY_PROXY_SESSION_TTL_MS', 30 * 60 * 1000);
 
 // Publish the bound endpoint so other tools can find this proxy without
 // knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
@@ -179,7 +188,6 @@ ensureAgyEnvironment();
 // ---------------------------------------------------------------------------
 // Live model catalog (see the FALLBACK_MODELS comment above)
 // ---------------------------------------------------------------------------
-const MODELS_TTL_MS = Number(process.env.AGY_PROXY_MODELS_TTL_MS || 300000);
 const MODELS_PULL_TIMEOUT_MS = 30000;
 const modelsCacheFile = () => path.join(
   process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
@@ -464,11 +472,8 @@ const formatPrompt = (messages) => {
 // ---------------------------------------------------------------------------
 // Resident warm `agy` stream-json workers
 // ---------------------------------------------------------------------------
-const TURN_TIMEOUT_MS = Number(process.env.AGY_PROXY_TURN_TIMEOUT_MS || 300000);
 const INIT_TIMEOUT_MS = 60000;
 const SPARES_ENABLED = process.env.AGY_PROXY_WARM_SPARES !== '0';
-const MAX_LIVE_WORKERS = Number(process.env.AGY_PROXY_MAX_LIVE_WORKERS || 32);
-const SESSION_IDLE_TTL_MS = Number(process.env.AGY_PROXY_SESSION_TTL_MS || 30 * 60 * 1000);
 // Models pre-warmed at startup (one spare each, default effort). Every
 // other model warms its first spare after its first completed turn.
 const PREWARM_MODELS = (process.env.AGY_PROXY_PREWARM_MODELS || 'gemini-4-argon-medium,gemini-3.8-flash-medium')
@@ -730,7 +735,7 @@ const evictLiveWorkersIfNeeded = () => {
     }
   }
   const live = [...liveWorkers.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
-  while (live.length >= MAX_LIVE_WORKERS) {
+  while (live.length > 0 && live.length >= MAX_LIVE_WORKERS) {
     const [lk, w] = live.shift();
     w.kill();
     liveWorkers.delete(lk);
