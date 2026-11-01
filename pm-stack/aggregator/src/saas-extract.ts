@@ -7,9 +7,10 @@
 // inventing numbers. Manual/console reads are a first-class source
 // class (§2); nothing here pretends to be a live meter.
 //
-// Backblaze B2, Fly.io, and Baseten are deliberately NOT services
-// here: B2 is omitted until an account exists (§1.4), and Fly/Baseten
-// are unheld candidates with no meter and no renewal date.
+// Backblaze B2, Fly.io, and Baseten are candidate shells below
+// (#1058): no account exists (§1.4) and they have no meter and no
+// renewal date, but they render as explicit candidate cards — never
+// silently absent, never presented as held.
 
 import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 import { sectionOf } from "./quota-extract.ts";
@@ -633,6 +634,42 @@ const SERVICE_SPECS: ServiceSpec[] = [
     shellNote:
       "Counts only in this hub — secret names/values never enter it. No count recorded yet; plan/price unknown.",
   },
+  {
+    id: "backblaze-b2",
+    name: "Backblaze B2",
+    group: "object-storage",
+    heading: /^### Backblaze B2$/,
+    summaryKey: /^Backblaze B2/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account exists (§1.4); evaluated in free-services-to-check.md. Listed so it is never silently absent (#1058).",
+  },
+  {
+    id: "fly-io",
+    name: "Fly.io",
+    group: "compute",
+    heading: /^### Fly\.io$/,
+    summaryKey: /^Fly\.io/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+  },
+  {
+    id: "baseten",
+    name: "Baseten",
+    group: "compute",
+    heading: /^### Baseten$/,
+    summaryKey: /^Baseten/,
+    status: "candidate",
+    cadenceDays: 31,
+    metrics: () => [],
+    shellNote:
+      "Candidate — not held: no account, no meter, no renewal date. Listed so it is never silently absent (#1058).",
+  },
 ];
 
 /** Extract every family-2 service from quota-view.md Part (b). */
@@ -653,6 +690,11 @@ export function extractSaasServices(doc: string): SaasService[] {
       measuredAt: null,
       sourceClass: "manual",
       sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      sources: {
+        quotaViewSection: spec.heading.source.replace(/^\^/, "").replace(/\$$/, ""),
+        trackerRow: row?.[0] ?? null,
+        baselineDoc: "evidence-and-interpretation-baseline-2026-10-20.md (~/workspace/ai-subscriptions/)",
+      },
       nextDate: row?.[4] && row[4] !== "unknown" ? row[4] : null,
       cadenceDays: spec.cadenceDays,
       conflicts: [],

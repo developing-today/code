@@ -1188,6 +1188,15 @@ export interface DatedRead {
 }
 
 /** One family-2 service: a card on the hub, a page at /quota/service/<id>. */
+export interface ServiceSources {
+  /** The quota-view.md Part (b) section this card was built from, e.g. "### Turso". */
+  quotaViewSection: string;
+  /** The Summary (b) tracker row's first cell, or null when the service has no row. */
+  trackerRow: string | null;
+  /** The evidence-baseline research record behind the card's interpretation. */
+  baselineDoc: string;
+}
+
 export interface SaasService {
   id: string;
   name: string;
@@ -1207,6 +1216,8 @@ export interface SaasService {
   sourceClass: UsageSourceClass;
   /** Where the card's facts came from, human-readable. */
   sourceNote: string;
+  /** Research provenance behind the card (#1058): tracker row, baseline, quota-view section. */
+  sources?: ServiceSources;
   /** Renewal/reset as recorded (may be prose, e.g. "cycle ends 2026-10-31"). */
   nextDate?: string | null;
   /** Expected re-measure cadence in days; older reads render stale. */

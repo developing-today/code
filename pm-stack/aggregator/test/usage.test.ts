@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
-import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
+import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
 import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
@@ -105,8 +105,27 @@ describe("saas extraction (Part b)", () => {
 
   test("fail-soft on an empty document", () => {
     const shells = extractSaasServices("nothing here");
-    expect(shells.length).toBe(8);
+    expect(shells.length).toBe(11);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
+  });
+
+  test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
+    for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
+      const s = byId.get(id)!;
+      expect(s).toBeDefined();
+      expect(s.status).toBe("candidate");
+      expect(s.metrics).toEqual([]);
+      expect(s.measuredAt).toBeNull();
+      expect(s.plan).toContain("Candidate — not held");
+    }
+  });
+
+  test("sources provenance: tracker row, baseline, quota-view section (#1058)", () => {
+    const t = byId.get("turso")!;
+    expect(t.sources?.quotaViewSection).toBe("### Turso");
+    expect(t.sources?.trackerRow).toBe("Turso");
+    expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
   });
 
   test("modal: monthly console read carries a dated used-credits value", () => {
@@ -468,6 +487,45 @@ describe("hub renders", () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
+  });
+  test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
+    const src = fixtureSource();
+    const usage: UsageView = {
+      services: extractSaasServices(VIEW),
+      payg: extractPaygLines(VIEW, REGISTRY),
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: [],
+      history: {},
+    };
+    const quota: QuotaView = { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html).toContain("free-services-to-check.md");
+    expect(html).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(html).toContain("Backblaze B2");
+    expect(html).toContain("Fly.io");
+    expect(html).toContain("Baseten");
+    expect(html).toContain("candidate");
+    const turso = usage.services.find((s) => s.id === "turso")!;
+    const detail = renderServiceDetail(turso, [], src.provenance());
+    expect(detail).toContain("Sources");
+    expect(detail).toContain("Summary (b) — Turso");
+    expect(detail).toContain("### Turso");
+    expect(detail).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    const fly = usage.services.find((s) => s.id === "fly-io")!;
+    const flyDetail = renderServiceDetail(fly, [], src.provenance());
+    expect(flyDetail).toContain("candidate / not held");
+    // An active service with no Summary (b) row is not thereby a candidate:
+    // ownership is never inferred from a missing tracker row (Codex, PR #3677).
+    const rowless = {
+      ...turso,
+      sources: turso.sources ? { ...turso.sources, trackerRow: null } : turso.sources,
+    };
+    expect(rowless.status).toBe("active");
+    const rowlessDetail = renderServiceDetail(rowless, [], src.provenance());
+    expect(rowlessDetail).toContain("none — no Summary (b) row");
+    expect(rowlessDetail).not.toContain("candidate / not held");
   });
   test("service detail: full metrics, chart, reads, conflicts", async () => {
     const src = fixtureSource();
