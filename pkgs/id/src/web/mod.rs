@@ -44,6 +44,7 @@
 //! id serve --web
 //! ```
 
+mod app_interface;
 mod assets;
 mod collab;
 mod content_mode;

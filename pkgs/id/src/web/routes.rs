@@ -256,11 +256,27 @@ const fn is_leap_year(year: u64) -> bool {
 
 /// Create the main router with all web routes.
 pub fn create_router(state: AppState) -> Router {
-    Router::new()
+    create_router_for_app(state, &super::app_interface::WebInterface::world_app())
+}
+
+/// Create the main router for one packaged app, binding the world
+/// page at the app's [interfaces.web] route and the live channel at
+/// its socket (#2325, adapter mode). With the world app's own
+/// interface the result is byte-identical to create_router: same
+/// routes, same handlers, same state.
+pub fn create_router_for_app(
+    state: AppState,
+    interface: &super::app_interface::WebInterface,
+) -> Router {
+    create_router_inner(state, &interface.route, interface.socket.as_deref())
+}
+
+fn create_router_inner(state: AppState, world_route: &str, world_socket: Option<&str>) -> Router {
+    let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
         .route("/files", get(files_page_handler))
-        .route("/world", get(world_page_handler))
+        .route(world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
         .route("/edit/{*name}", get(file_by_name_handler))
@@ -309,13 +325,19 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
         // Static assets
         .route("/assets/{*path}", get(assets_handler))
-        // Optional authoritative in-memory world session bridge
-        .merge(
-            super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+        ;
+    // Optional authoritative in-memory world session bridge, bound
+    // at the app's socket when it declares one (#2325).
+    let router = match world_socket {
+        Some(socket) => router.merge(
+            super::world_ws::world_routes_at(socket).with_state(super::world_ws::WorldWebState {
                 hub: state.world.clone(),
                 cookie_secure: state.cookie_secure,
             }),
-        )
+        ),
+        None => router,
+    };
+    router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state)
 }
