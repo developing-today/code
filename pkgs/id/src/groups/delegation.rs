@@ -195,8 +195,15 @@ impl Engine {
         )?;
         if manages {
             Ok(Ok(decision))
-        } else {
+        } else if self.grants.values().any(|grant| {
+            grant.group == decision.group && grant.to == author && grant.scope >= Role::Manage
+        }) {
+            // A Manage grant reaches the author but its chain does not stand at this
+            // position (cut, vetoed, or its grantor lost the scope): that is a chain
+            // failure, not a missing manager role.
             Ok(Err(Refusal::NoChain))
+        } else {
+            Ok(Err(Refusal::NotManager))
         }
     }
 

@@ -530,6 +530,73 @@ fn test_a_non_manager_may_not_add_or_remove_a_member() {
 }
 
 #[test]
+fn test_a_delegated_manage_may_add_and_remove_a_member() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write), (3, Role::Read)],
+            Policy::default(),
+        ),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 4, Role::Read, &["d0"]),
+        remove("x0", 2, g, 3, &["a0"]),
+    ]);
+    assert_eq!(outcome(&p, "d0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, "a0"),
+        Outcome::Applied,
+        "a Write member holding a delegated Manage chain may add"
+    );
+    assert_eq!(
+        outcome(&p, "x0"),
+        Outcome::Applied,
+        "and may remove another non-Admin member"
+    );
+    assert_eq!(role_of(&p, g, 4), Some(Role::Read));
+    assert_eq!(role_of(&p, g, 3), None);
+}
+
+#[test]
+fn test_a_delegated_manage_may_not_add_or_remove_an_admin() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write), (3, Role::Admin)],
+            Policy::default(),
+        ),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        add("a0", 2, g, 4, Role::Admin, &["d0"]),
+        remove("x0", 2, g, 3, &["d0"]),
+    ]);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NotAdmin));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NotAdmin));
+}
+
+#[test]
+fn test_a_cut_manage_chain_refuses_the_add_as_no_chain() {
+    let g = id("g");
+    let p = project(&[
+        custom(
+            "g",
+            1,
+            &[(2, Role::Write), (3, Role::Read)],
+            Policy::default(),
+        ),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["g"]),
+        veto("v0", 1, g, "d0", &["d0"]),
+        add("a0", 2, g, 4, Role::Read, &["v0"]),
+        remove("x0", 2, g, 3, &["v0"]),
+    ]);
+    assert_eq!(outcome(&p, "v0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "a0"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "x0"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
 fn test_only_an_invitee_may_accept_a_friendship_request() {
     let g = pair_group(1, 2, 0);
     let p = project(&[

@@ -885,12 +885,12 @@ impl Engine {
             return Err(Refusal::NotActive);
         };
         let is_admin = author_role == Role::Admin;
-        let is_manager = author_role >= Role::Manage;
         match op {
             MemberOp::Add { member, role } => {
-                if !is_manager {
-                    return Err(Refusal::NotManager);
-                }
+                // No membership-role gate here: a delegated Manage chain authorizes the add
+                // just as a manager's role does, and only `manage_chain` (which runs on an Ok
+                // decision, design §7.2) can see the chain. It refuses there — NotManager for
+                // an author no Manage grant reaches, NoChain for a chain that does not stand.
                 if role == Role::Admin && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
@@ -917,9 +917,6 @@ impl Engine {
             MemberOp::Remove { member, successor } => {
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
-                }
-                if member != author && !is_manager {
-                    return Err(Refusal::NotManager);
                 }
                 // Manage removes members at or below its own level. Admin is above it (design §5.2).
                 if member != author && record.admins.contains(&member) && !is_admin {
