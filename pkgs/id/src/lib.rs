@@ -153,6 +153,7 @@
 //! ```
 
 pub use id_core::access;
+pub mod abuse;
 pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
