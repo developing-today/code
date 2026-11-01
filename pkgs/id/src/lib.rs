@@ -162,6 +162,7 @@ pub mod chain;
 pub mod cli;
 pub mod commands;
 pub mod connectivity;
+pub mod currency_poc;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
