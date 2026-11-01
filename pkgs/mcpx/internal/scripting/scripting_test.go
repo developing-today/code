@@ -206,6 +206,12 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after private keyword-named member", "class C { #return=4; f(){ return this.#return / 2; } }\n"},
 		{"division after object with import-named property", "const obj = { import: \"foo\"\n / 2 };\n"},
 		{"comparison chain with capitalised operand stays relational", "const ok = a < Foo > b;\nconst q = 4 / 2;\n"},
+		{"regex after relational chain with capitalised middle operand", "const yes = 1 < Number > /[)]/.source.length;\n"},
+		{"statement block inside function in heritage object", "class C extends {C: function(){ {} /[}]/.test('}'); }}.C {}\n"},
+		{"postfix increment after escaped identifier at line start", "let a=1;\n\\u0061++ / 2;\n"},
+		{"postfix decrement after escaped identifier at line start", "let a=1;\n\\u0061-- / 2;\n"},
+		{"regex after class declaration following property named new", "const obj={new:1}; obj.new\nclass C {} /[)]/.test(')');\n"},
+		{"regex after function declaration following property named new", "const obj={new:1}; obj.new\nfunction f() {} /[)]/.test(')');\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {

@@ -104,6 +104,7 @@ type delimToken struct {
 	char      rune
 	line      int
 	exprAfter bool
+	heritage  bool
 }
 
 // pendingBodyFrame tracks one not-yet-seen function/class
@@ -161,6 +162,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// spots expression keywords in front of function/class
 	// (return function() {} / 2 divides after the body closure).
 	prevIdent := ""
+	// prevIdentPrev is the significant character before prevIdent
+	// started (mirroring lastIdentPrev for lastIdent): it tells
+	// whether prevIdent was reached through member access, in
+	// which case it is a property name, not a keyword (Codex P2
+	// on #3346: obj.new\nclass C {} — the property named 'new'
+	// made isExprPositionStart treat the declaration as an
+	// expression).
+	prevIdentPrev := rune(0)
 	// funcClassFrames holds one frame per function or class
 	// EXPRESSION whose body '{' has not been seen yet: that
 	// brace closes an operand, not a statement block, so a '/'
@@ -322,6 +331,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					identPrev = prevChar
 					identPrevSig = prevSig
 					prevIdent = lastIdent
+					prevIdentPrev = lastIdentPrev
 				}
 				curIdent = append(curIdent, 'x')
 				// The escape is an identifier character: it
@@ -330,6 +340,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				prevSig = 'x'
 				prevChar = 'x'
 				dotRun = 0
+				// The escape is a significant character: it
+				// consumes a pending line break like an
+				// ordinary identifier character. Leaving the
+				// break pending made a following ++/-- read
+				// as a prefix instead of a postfix on this
+				// identifier (Codex P2 on #3346:
+				// \u0061++ / 2 at a line start).
+				lineBreakPending = false
 				i = end
 				continue
 			}
@@ -341,6 +359,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					identPrev = prevChar
 					identPrevSig = prevSig
 					prevIdent = lastIdent
+					prevIdentPrev = lastIdentPrev
 				}
 				curIdent = append(curIdent, ch)
 			} else if len(curIdent) > 0 {
@@ -396,7 +415,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					if lastIdent == "class" {
 						inClassHeritage = true
 					}
-					if isExprPositionStart(lastIdentPrev, prevIdent) {
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack)})
 					} else {
 						expectDeclBody = true
@@ -777,8 +796,24 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// a '{' cannot start another heritage operand —
 			// class C<T> {} and class C extends mixin() {} are
 			// bodies, not heritage objects.
-			heritageExprBrace := inClassHeritage && (heritageBraceDepth > 0 ||
-				(prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
+			// A pending function/class expression body (or a
+			// declaration body) that opens INSIDE an already
+			// open heritage brace is a body, not another
+			// heritage operand, and braces nested inside it
+			// classify by the ordinary rules (Codex P2 on
+			// #3346: class C extends {C: function(){ {}
+			// /[}]/.test('}'); }}.C {} — the heritage depth
+			// forced the function's inner statement block to
+			// read as an object literal, so the following
+			// regex read as division). An arrow body is a
+			// body too, never a heritage operand.
+			topHeritageBrace := len(stack) > 0 && stack[len(stack)-1].char == '{' && stack[len(stack)-1].heritage
+			insideHeritageBrace := topHeritageBrace || heritageBraceDepth > 0
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0
+			declBodyBrace := insideHeritageBrace && expectDeclBody && expectDeclParenDepth == 0
+			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
+				(topHeritageBrace ||
+					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
 			if heritageExprBrace {
 				heritageBraceDepth++
 				exprAfter = false
@@ -795,7 +830,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				exprAfter = true
 				expectDeclBody = false
 			}
-			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter})
+			stack = append(stack, delimToken{char: ch, line: line, exprAfter: exprAfter, heritage: heritageExprBrace})
 			lastIdent = ""
 			lastIdentPrev = 0
 		case '[':
@@ -812,7 +847,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			if ch == '}' && heritageBraceDepth > 0 {
+			if ch == '}' && top.heritage && heritageBraceDepth > 0 {
 				heritageBraceDepth--
 			}
 			if top.char == '(' {
@@ -890,7 +925,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				instActive = false
 			}
 			prevSig = 'x'
-		case ch == '<' && !inTypeAssert && prevSig == 'x' && looksLikeInstantiation(chars, i):
+		case ch == '<' && !inTypeAssert && prevSig == 'x' && !unicode.IsDigit(prevChar) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
 			// A TypeScript instantiation expression
 			// (f<number> / 2): the generic list's closing '>'
 			// completes the operand, so the slash divides
@@ -1076,13 +1111,16 @@ func isControlKeyword(kw string) bool {
 
 // isExprPositionStart reports whether a function/class keyword that
 // started right after the significant character prev (with prevIdent
-// the identifier completed before it) sits in expression position:
+// the identifier completed before it, and prevIdentPrev the
+// significant character before prevIdent — a '.' or '#' there makes
+// prevIdent a property name, not an expression keyword) sits in
+// expression position:
 // after an operator or opening delimiter, or after an expression
 // keyword (return function() {}). Statement position — start of
 // input, or after ';', '{' or '}' — makes the keyword a declaration
 // instead, whose closing brace returns to expression position.
-func isExprPositionStart(prev rune, prevIdent string) bool {
-	if isExprKeyword(prevIdent) {
+func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune) bool {
+	if prevIdentPrev != '.' && prevIdentPrev != '#' && isExprKeyword(prevIdent) {
 		return true
 	}
 	switch prev {
