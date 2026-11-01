@@ -194,7 +194,10 @@ export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
 // (FSL-1.1-MIT) is vendored — this is the data model only.
 // ---------------------------------------------------------------------------
 
-export type QuotaState = "healthy" | "near" | "walled";
+/** "error"/"stale" are gatherer-overlay states (#1151): the gatherer
+ * could not read the pool, or its read is past the freshness bound.
+ * They are never rendered as healthy, and never as zero usage. */
+export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale";
 
 /** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
 export interface QuotaWindow {
@@ -223,6 +226,40 @@ export interface QuotaPool {
   burnTokensPerMin?: number;
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
+  /** Gatherer freshness for this pool (#1151), set when
+   * quota-current.json carried an entry for it. */
+  freshness?: PoolFreshness;
+}
+
+/** Per-pool freshness from the quota gatherer (#1151). */
+export interface PoolFreshness {
+  measuredAt: string;
+  source: string;
+  state: "ok" | "stale" | "error";
+  /** Why the gatherer could not read the pool, when state is "error". */
+  error?: string;
+}
+
+/** One provider's freshness in the gatherer summary. */
+export interface GathererProviderFreshness {
+  providerId: string;
+  serviceId: string;
+  credentialLabel?: string;
+  state: "ok" | "stale" | "error";
+  measuredAt: string;
+  source: string;
+  error?: string;
+}
+
+/** The gatherer's presence in the quota payload (#1151): tick time,
+ * health, and every provider it read — including providers with no
+ * pool on the page (OpenCode Go workspaces, Antigravity models). */
+export interface GathererSummary {
+  generatedAt: string;
+  source: string;
+  tickAt: string | null;
+  ok: boolean;
+  providers: GathererProviderFreshness[];
 }
 
 /** Historical burn between resets, so headroom is projected, not observed. */
@@ -236,6 +273,9 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Gatherer overlay provenance (#1151); absent when no
+   * quota-current.json was read. Additive for existing consumers. */
+  gatherer?: GathererSummary;
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
