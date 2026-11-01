@@ -163,8 +163,9 @@ in
         };
       }
       {
-        # OpenChamber password sync (openchamber#894): oneshot at
-        # session start keeping the upstream password current.
+        # OpenChamber password sync (openchamber#894): a .path unit
+        # watches the prod OpenCode service file and triggers the
+        # sync oneshot when the password rotates.
         # Folded into the flake 2026-11-01 (code#3720).
         home-manager.users.user = {
           imports = [ ../home/oc-password-sync.nix ];
