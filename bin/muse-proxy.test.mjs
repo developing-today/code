@@ -57,6 +57,7 @@ if (args[0] === 'serve') {
   if (process.env.STUB_SERVE_FAIL === '1') process.exit(3);
   const log = (line) => { if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, line + '\\n'); };
   let buf = '';
+  let stubSessN = 0;
   process.stdin.on('data', (d) => {
     buf += d.toString('utf-8');
     let i;
@@ -71,7 +72,7 @@ if (args[0] === 'serve') {
         reply({ serverInfo: { name: 'stub-muse', version: '0' } });
       } else if (msg.method === 'session/start') {
         log('START ' + msg.params.modelId);
-        reply({ session: { sessionId: 'stub-session-1' } });
+        reply({ session: { sessionId: 'stub-session-' + (++stubSessN) } });
       } else if (msg.method === 'session/resume') {
         log('RESUME ' + msg.params.sessionId);
         reply({ session: { sessionId: msg.params.sessionId } });
@@ -369,6 +370,33 @@ test('warm serve path: streaming turn streams the MSP deltas (#480)', async (t) 
   }));
   assert.equal(content, 'RE:alpha one');
   assert.equal(finish, 'stop');
+});
+
+test('two concurrent conversations stay isolated: separate sessions, tail-only turns (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const convA = [{ role: 'user', content: 'alpha one' }];
+  const convB = [{ role: 'user', content: 'gamma one' }];
+  const [a1, b1] = await Promise.all([
+    chat(port, { model: 'muse-spark-1.3', messages: convA }).then(r => JSON.parse(r)),
+    chat(port, { model: 'muse-spark-1.3', messages: convB }).then(r => JSON.parse(r))
+  ]);
+  assert.equal(a1.choices[0].message.content, 'RE:alpha one');
+  assert.equal(b1.choices[0].message.content, 'RE:gamma one');
+  const a2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convA, { role: 'assistant', content: 'RE:alpha one' }, { role: 'user', content: 'alpha two' }]
+  }));
+  const b2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convB, { role: 'assistant', content: 'RE:gamma one' }, { role: 'user', content: 'gamma two' }]
+  }));
+  assert.equal(a2.choices[0].message.content, 'RE:alpha two');
+  assert.equal(b2.choices[0].message.content, 'RE:gamma two');
+  const log = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
+  assert.equal(log.filter(l => l.startsWith('START')).length, 2, 'each conversation key must own a separate MSP session');
+  const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5)).sort();
+  assert.deepEqual(turns, ['alpha one', 'alpha two', 'gamma one', 'gamma two'], 'every turn after the first must send only its own conversation\'s new tail — no cross-conversation history');
 });
 
 test('warm host killed mid-turn degrades to a successful cold exec request (#480)', async (t) => {
