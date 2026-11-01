@@ -1,4 +1,4 @@
-name = "hatch-repo-backup-webhook"
+name = "developing-today-backup"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
