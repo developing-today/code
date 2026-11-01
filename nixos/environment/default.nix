@@ -10,6 +10,50 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # TEMPORARY (developing-today/code#3906, found via #2715): the
+  # nixpkgs-master segment below takes haskellPackages.misfortune from
+  # this input's raw legacyPackages, and on the current master pin
+  # haskellPackages.regex-pcre (misfortune's dependency) no longer
+  # builds: nixpkgs' Haskell builder stopped adding the pkg-config
+  # wrapper and the pkgconfig-depends libraries to Haskell build
+  # environments, and nixpkgs removed the EOL pcre C library outright,
+  # while regex-pcre's Cabal configure hard-requires both. Extend the
+  # master set with an overlay that restores regex-pcre's old build
+  # environment: pkg-config plus a minimal vendored pcre 8.45 (the
+  # version the old pins shipped; test suite disabled). Remove this
+  # binding and use the raw legacyPackages again once stock
+  # regex-pcre builds on the master pin; tracked in #3906.
+  nixpkgs-master-fixed = inputs.nixpkgs-master.legacyPackages.${system}.extend (
+    final: prev:
+    let
+      pcre_8_45 = prev.stdenv.mkDerivation {
+        pname = "pcre";
+        version = "8.45";
+        src = prev.fetchurl {
+          url = "mirror://sourceforge/project/pcre/pcre/8.45/pcre-8.45.tar.bz2";
+          sha256 = "sha256-Ta5v3NK7C7bDe1+Xwzwr6VTadDmFNpzdrDVG4yGL/7g=";
+        };
+        nativeBuildInputs = [ prev.updateAutotoolsGnuConfigScriptsHook ];
+        configureFlags = [
+          "--enable-unicode-properties"
+          "--disable-cpp"
+          "--enable-jit=auto"
+        ];
+        hardeningDisable = [ "shadowstack" ];
+        doCheck = false;
+      };
+    in
+    {
+      haskellPackages = prev.haskellPackages.override {
+        overrides = self: super: {
+          regex-pcre = super.regex-pcre.overrideAttrs (old: {
+            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ prev.pkg-config ];
+            buildInputs = (old.buildInputs or [ ]) ++ [ pcre_8_45 ];
+          });
+        };
+      };
+    }
+  );
   espIdf5 = inputs.esp-dev.packages.${system}.esp-idf-full;
   espIdf6 = inputs.esp-dev-6.packages.${system}.esp-idf-full;
   mkEspIdfSystemPackage =
@@ -731,7 +775,7 @@ in
       zed-editor
       # opencode
     ])
-    ++ (with inputs.nixpkgs-master.legacyPackages.${system}; [
+    ++ (with nixpkgs-master-fixed; [
       # rclone   # fish completions broke 2025-04-03
       # rclone-browser   # fish completions broke 2025-04-03
       # rclone-ui   # fish completions broke 2025-04-03
