@@ -2556,9 +2556,7 @@ func TestScriptsReachTheDaemonOverItsSocketWhereTheRuntimeCan(t *testing.T) {
 		{"deno", "via unix"}, {"bun", "via unix"}, {"node", "via tcp"},
 	} {
 		t.Run(c.rt, func(t *testing.T) {
-			if _, err := exec.LookPath(c.rt); err != nil {
-				t.Skipf("%s not installed", c.rt)
-			}
+			testsupport.RequireBinary(t, c.rt)
 			e := newEnv(t, oneServer)
 			out := e.run("exec", "--runtime", c.rt, "--format", "bare",
 				`const r = await demo.echo({message:"x"}); console.log("via", transport());`)
