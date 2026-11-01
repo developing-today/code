@@ -161,7 +161,10 @@ jobs:
 
       - name: Verify build source copy against checkout snapshot
         run: |
-          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id\").outPath")"
+          # shallow=1 (#1569 round 3): actions/checkout is shallow and
+          # Determinate Nix refuses getFlake revCount on a shallow repo;
+          # the param copies the same tracked tree without revCount.
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id&shallow=1\").outPath")"
           if [ -z "$src" ] || [ ! -d "$src" ]; then
             echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
             exit 2
@@ -226,7 +229,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Verify build source copy against checkout snapshot
         run: |
-          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id\").outPath")"
+          # shallow=1 (#1569 round 3): actions/checkout is shallow and
+          # Determinate Nix refuses getFlake revCount on a shallow repo;
+          # the param copies the same tracked tree without revCount.
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id&shallow=1\").outPath")"
           if [ -z "$src" ] || [ ! -d "$src" ]; then
             echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
             exit 2
