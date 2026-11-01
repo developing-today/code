@@ -247,7 +247,8 @@ impl ReplayGuard {
             .into());
         }
         self.seen
-            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS > now);
+            // Keep nonces through the same inclusive boundary as `verify_signed`'s `window_ok` below.
+            .retain(|_, seen_at| *seen_at + SIGNED_WINDOW_MS >= now);
         let id = format!("{key}:{nonce}");
         if self.seen.contains_key(&id) {
             return Err(Refusal::Unauthenticated("request was already used".to_owned()).into());
@@ -324,6 +325,7 @@ pub fn verify_signed(
             "signature does not verify".to_owned(),
         ))
     };
+    // This inclusive window shares its boundary with `ReplayGuard::accept`'s retention above.
     let window_ok = signed.at.abs_diff(now) <= SIGNED_WINDOW_MS;
     if !window_ok {
         return Err(Refusal::Unauthenticated(
@@ -482,6 +484,40 @@ mod tests {
                 now()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_signed_request_replay_is_refused_through_the_inclusive_window_edge() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let at = now();
+        let target = "/api/world/directory?world=x";
+        let signed = sign_request(&key, "GET", target, b"", at, "edge");
+        let mut replays = ReplayGuard::default();
+
+        assert!(verify_signed(&mut replays, &signed, "GET", target, b"", at).is_ok());
+        for instant in [
+            at + SIGNED_WINDOW_MS - 1,
+            at + SIGNED_WINDOW_MS,
+            at + SIGNED_WINDOW_MS + 1,
+        ] {
+            assert!(
+                verify_signed(&mut replays, &signed, "GET", target, b"", instant).is_err(),
+                "replay accepted at {instant}"
+            );
+        }
+
+        let mut boundary_replays = ReplayGuard::default();
+        assert!(
+            verify_signed(
+                &mut boundary_replays,
+                &signed,
+                "GET",
+                target,
+                b"",
+                at + SIGNED_WINDOW_MS,
+            )
+            .is_ok()
         );
     }
 
