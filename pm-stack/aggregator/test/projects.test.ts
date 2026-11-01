@@ -4,7 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
+import {
+  derivedProjectState,
+  fetchProjectSnapshot,
+  isProjectAudit,
+  parseProjectAudit,
+  parseProjectItems,
+  poolItemToGhItem,
+  projectDisagreement,
+  PROJECT_QUERY,
+  resolveEpicRefs,
+} from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -17,6 +27,13 @@ const GQL = {
       title: "Developing Today",
       number: 4,
       url: "https://github.com/orgs/developing-today/projects/4",
+      fields: {
+        nodes: [
+          { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "todo", name: "Todo" }] },
+          { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "lab", name: "lab-cluster" }] },
+        ],
+      },
+      views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
       items: {
         totalCount: 3,
         pageInfo: { hasNextPage: false, endCursor: null },
@@ -124,6 +141,22 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
     expect(derivedProjectState(pool[0], section)).toBe("In Progress");
     expect(projectDisagreement(pool[0], section)).toBeNull();
   });
+
+  test("scheduled fetch keeps the full item total and publishes one-page audit metadata", async () => {
+    const mockFetch = (async () => new Response(JSON.stringify(GQL), { status: 200 })) as unknown as typeof fetch;
+    const snapshot = await fetchProjectSnapshot(
+      "test-token",
+      mockFetch,
+      "2026-11-01T21:00:00.000Z",
+    );
+    expect(snapshot.items).toHaveLength(2);
+    expect(snapshot.audit.totalItems).toBe(3);
+    expect(snapshot.audit.fields.map((field) => field.name)).toEqual(["Status", "Area"]);
+    expect(snapshot.audit.views).toEqual([{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }]);
+    expect(snapshot.audit.counts.status).toEqual({ "(unset)": 1, Done: 1, "In Progress": 1 });
+    expect(snapshot.audit.counts.area).toEqual({ "(unset)": 2, "lab-cluster": 1 });
+    expect(snapshot.audit.counts.repo).toEqual({ "(unlinked)": 1, "developing-today/code": 1, "dezren39/nix": 1 });
+  });
 });
 
 describe("items-from-pool resolution", () => {
@@ -140,6 +173,7 @@ describe("items-from-pool resolution", () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-projects-"));
     const feedFile = join(dir, "fleet-feed.json");
     const pool = parseProjectItems(GQL);
+    const projectAudit = parseProjectAudit(GQL, GQL.data.node.items.nodes, new Date().toISOString());
     await writeFile(
       feedFile,
       JSON.stringify({
@@ -148,6 +182,7 @@ describe("items-from-pool resolution", () => {
         quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
         attention: [],
         projects: pool,
+        projectAudit,
       }),
     );
     const cfg = loadConfig({
@@ -162,6 +197,7 @@ describe("items-from-pool resolution", () => {
     expect(src.provenance().items).toContain("live (project pool");
     const served = await src.projects();
     expect(served.length).toBe(2);
+    expect(await src.projectAudit?.()).toEqual(projectAudit);
   });
 });
 
@@ -406,6 +442,72 @@ describe("collector graph edges (#2399 contract)", () => {
     ]);
     expect(loop[0]?.epicRef).toBeUndefined();
     expect(loop[1]?.epicRef).toBeUndefined();
+  });
+});
+
+describe("Project #4 audit snapshot (#1218)", () => {
+  test("exports field definitions, views, total items, and distributions including drafts/unlinked items", () => {
+    const page = {
+      data: {
+        node: {
+          title: "Developing Today",
+          number: 4,
+          url: "https://github.com/orgs/developing-today/projects/4",
+          fields: {
+            nodes: [
+              {
+                id: "PVTSSF_status",
+                name: "Status",
+                dataType: "SINGLE_SELECT",
+                options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }],
+              },
+              { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT", options: [{ id: "opt_lab", name: "lab" }] },
+            ],
+          },
+          views: { nodes: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }] },
+          items: { totalCount: 3 },
+        },
+      },
+    };
+    const audit = parseProjectAudit(
+      page,
+      [
+        {
+          content: { repository: { nameWithOwner: "developing-today/code" } },
+          fieldValues: { nodes: [{ name: "In Progress", field: { name: "Status" } }, { name: "lab", field: { name: "Area" } }] },
+        },
+        {
+          content: { repository: { nameWithOwner: "dezren39/nix" } },
+          fieldValues: { nodes: [{ name: "Done", field: { name: "Status" } }] },
+        },
+        { content: null, fieldValues: { nodes: [{ name: "ops", field: { name: "Area" } }] } },
+      ],
+      "2026-11-01T21:00:00.000Z",
+    );
+
+    expect(audit).toMatchObject({
+      totalItems: 3,
+      fields: [
+        { id: "PVTSSF_status", name: "Status", dataType: "SINGLE_SELECT", options: [{ id: "opt_open", name: "In Progress" }, { id: "opt_done", name: "Done" }] },
+        { id: "PVTSSF_area", name: "Area", dataType: "SINGLE_SELECT" },
+      ],
+      views: [{ id: "PVTV_board", name: "Board", layout: "BOARD_LAYOUT", filter: "Status:open" }],
+      counts: {
+        status: { Done: 1, "In Progress": 1, "(unset)": 1 },
+        area: { "(unset)": 1, lab: 1, ops: 1 },
+        repo: { "(unlinked)": 1, "developing-today/code": 1, "dezren39/nix": 1 },
+      },
+    });
+    expect(isProjectAudit(audit)).toBe(true);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, status: { Done: -1 } } })).toBe(false);
+    expect(isProjectAudit({ ...audit, counts: { ...audit.counts, area: { lab: 2 } } })).toBe(false);
+  });
+
+  test("query requests board schema, views, and all item field values", () => {
+    expect(PROJECT_QUERY).toContain("fields(first: 100)");
+    expect(PROJECT_QUERY).toContain("ProjectV2SingleSelectField { options { id name } }");
+    expect(PROJECT_QUERY).toContain("views(first: 100) { nodes { id name layout filter } }");
+    expect(PROJECT_QUERY).toContain("fieldValues(first: 100)");
   });
 });
 

@@ -109,7 +109,7 @@ import { extractCharges, extractPaygLines, extractSaasServices, extractSubscript
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectPool } from "../src/projects.ts";
+import { fetchProjectSnapshot } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import type { RepoCensus } from "../src/coverage.ts";
@@ -691,17 +691,16 @@ async function main(): Promise<void> {
   // other section: no token / read failure = section omitted, and the
   // aggregator's items() falls back to its previous chain.
   let projects: ProjectPoolItem[] | undefined;
+  let projectAudit: FleetFeed["projectAudit"];
   try {
     const token = await resolveProjectToken();
     if (!token) {
       console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
       markSection("projects", "skipped");
     } else {
-      projects = await fetchProjectPool(token);
-      if (!projects.length) {
-        console.error("collector: GitHub Project read returned zero items; projects section omitted");
-        projects = undefined;
-      }
+      const snapshot = await fetchProjectSnapshot(token, fetch, now.toISOString());
+      projects = snapshot.items;
+      projectAudit = snapshot.audit;
       markSection("projects", "ok");
     }
   } catch (err) {
@@ -842,6 +841,7 @@ async function main(): Promise<void> {
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
+    ...(projectAudit ? { projectAudit } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
   };
@@ -855,7 +855,7 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
-      (projects ? `, projects ${projects.length} items` : ", no projects section") +
+      (projectAudit ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable` : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`

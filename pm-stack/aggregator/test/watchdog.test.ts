@@ -3,9 +3,11 @@ import { buildAttention } from "../src/derive.ts";
 import { attentionSections, tierItemObjectRef } from "../src/render.ts";
 import type { SectionDiagnosis } from "../src/feed.ts";
 import type { OrchestrationSection, TierItem } from "../src/model.ts";
+import type { ProjectAudit } from "../src/model.ts";
 import {
   watchdogTierItems,
   WATCHDOG_FEED_STALE_MS,
+  WATCHDOG_PROJECT_AUDIT_STALE_MS,
   WATCHDOG_REGISTRY_STALE_MS,
   type WatchdogInputs,
 } from "../src/watchdog.ts";
@@ -18,6 +20,16 @@ import {
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
+const freshProjectAudit: ProjectAudit = {
+  title: "Developing Today",
+  number: 4,
+  url: "https://github.com/orgs/developing-today/projects/4",
+  generatedAt: iso(NOW),
+  totalItems: 1,
+  fields: [],
+  views: [],
+  counts: { status: { Todo: 1 }, area: { "(unset)": 1 }, repo: { "developing-today/code": 1 } },
+};
 
 function healthy(over: Partial<WatchdogInputs> = {}): WatchdogInputs {
   return {
@@ -26,6 +38,7 @@ function healthy(over: Partial<WatchdogInputs> = {}): WatchdogInputs {
     feedGeneratedAt: iso(NOW - 5 * 60_000),
     orchestration: { state: "live", generatedAt: iso(NOW - 30 * 60_000), ageMs: 30 * 60_000, runId: "orch-1" },
     registryAgeMs: 5 * 60_000,
+    projectAudit: freshProjectAudit,
     probes: [
       { id: "kaneo", name: "Kaneo", ok: true, detail: "HTTP 200", probedAt: iso(NOW) },
       { id: "grist", name: "Grist", ok: true, detail: "HTTP 200", probedAt: iso(NOW) },
@@ -173,5 +186,35 @@ describe("watchdog derivation (#1148)", () => {
     // observation — does not.
     expect(queues.slice(pubAt, wdAt)).toContain("<fieldset disabled>");
     expect(queues.slice(wdAt)).not.toContain("<fieldset disabled>");
+  });
+});
+
+describe("Project #4 audit watchdog (#1218)", () => {
+  test("a fresh populated audit is healthy; absent and empty audits produce visible items", () => {
+    expect(watchdogTierItems(healthy()).map((item) => item.id)).toEqual([]);
+
+    const absent = watchdogTierItems(healthy({ projectAudit: null }));
+    expect(absent.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(absent[0]!.state).toBe("watchdog: projects absent");
+
+    const empty = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, totalItems: 0, counts: { status: {}, area: {}, repo: {} } } }),
+    );
+    expect(empty.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(empty[0]!.state).toBe("watchdog: projects empty");
+  });
+
+  test("stale and malformed audit snapshots produce visible diagnoses", () => {
+    const stale = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, generatedAt: iso(NOW - WATCHDOG_PROJECT_AUDIT_STALE_MS - 1) } }),
+    );
+    expect(stale.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(stale[0]!.state).toBe("watchdog: projects stale");
+
+    const invalid = watchdogTierItems(
+      healthy({ projectAudit: { ...freshProjectAudit, generatedAt: "not-a-date" } as ProjectAudit }),
+    );
+    expect(invalid.map((item) => item.id)).toEqual(["watchdog:projects"]);
+    expect(invalid[0]!.state).toBe("watchdog: projects invalid");
   });
 });

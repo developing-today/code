@@ -109,6 +109,38 @@ export interface ProjectPoolItem {
   epicRef?: RefKey;
 }
 
+/** One configured field on Project #4, exported for repository-readable audits. */
+export interface ProjectAuditField {
+  id: string;
+  name: string;
+  dataType: string;
+  options?: { id: string; name: string }[];
+}
+
+/** One saved view on Project #4. */
+export interface ProjectAuditView {
+  id: string;
+  name: string;
+  layout: string;
+  filter: string | null;
+}
+
+/** Scheduled, read-only Project #4 audit snapshot carried by the fleet feed. */
+export interface ProjectAudit {
+  title: string;
+  number: number;
+  url: string;
+  generatedAt: string;
+  totalItems: number;
+  fields: ProjectAuditField[];
+  views: ProjectAuditView[];
+  counts: {
+    status: Record<string, number>;
+    area: Record<string, number>;
+    repo: Record<string, number>;
+  };
+}
+
 export type CommentKind = "issue_comment" | "review" | "review_comment";
 
 /** One entry of the comment projection, PR-interior comments included. */

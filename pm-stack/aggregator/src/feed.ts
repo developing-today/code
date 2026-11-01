@@ -9,7 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
-import { isProjectPoolItem } from "./projects.ts";
+import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
 import type {
@@ -23,6 +23,7 @@ import type {
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
+  ProjectAudit,
   QuotaPool,
   QuotaView,
   QuotaWindow,
@@ -91,6 +92,8 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
+  projectAudit?: ProjectAudit;
   /** Project #4 coverage census (#1220): per-repo open-issue and
    * gate-label counts from the collector's Search API reads, embedded
    * beside the projects section. Absent when the collector had no
@@ -346,6 +349,11 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
  * individual malformed items drop in poolFromFeed. */
 export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
   return Array.isArray(feed?.projects);
+}
+
+/** Fail-soft read of the scheduled Project #4 audit snapshot. */
+export function projectAuditFromFeed(feed: Partial<FleetFeed> | null | undefined): ProjectAudit | null {
+  return isProjectAudit(feed?.projectAudit) ? feed.projectAudit : null;
 }
 
 /** Fail-soft read of the coverage census from a parsed feed: absent
