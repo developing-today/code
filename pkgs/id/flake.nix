@@ -158,14 +158,15 @@
           '';
         };
 
-        # Helper to create a check that runs a just command, with an optional
-        # pre-check step and check-specific native tools.
+        # Helper to create a check that runs a just command or direct test
+        # command, with an optional pre-check step and check-specific tools.
         mkCheck = name: justCmd: mkCheckWith { inherit name justCmd; };
 
         mkCheckWith =
           {
             name,
-            justCmd,
+            justCmd ? null,
+            checkCommand ? null,
             extraNativeBuildInputs ? [ ],
             beforeCheck ? "",
           }:
@@ -216,7 +217,7 @@
 
               ${beforeCheck}
 
-              just ${justCmd}
+              ${if checkCommand != null then checkCommand else "just ${justCmd}"}
             '';
             installPhase = ''
               mkdir -p $out
@@ -349,10 +350,13 @@
           # expect — the world_compile.rs skip path is not reused here.
           roc-test = mkCheck "roc-test" "roc-test";
           # Rebuild all checked-in Roc examples with the pinned compiler, then
-          # run the unit/sandbox suite against those rebuilt modules.
+          # run the sandbox behavior and fuel-budget tests against them.
           roc-examples = mkCheckWith {
             name = "roc-examples";
-            justCmd = "test-unit";
+            checkCommand = ''
+              cargo test --no-default-features --features sandbox,world --lib sandbox
+              cargo test --test toolchain_pin
+            '';
             extraNativeBuildInputs = [
               pkgs.binaryen
               pkgs.wasm-tools

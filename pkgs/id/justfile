@@ -275,7 +275,6 @@ crash-gate-ingest:
 [group('test')]
 test-unit:
     cargo test --all-features --lib
-    cargo test --test toolchain_pin
 alias test-lib := test-unit
 
 # Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out
