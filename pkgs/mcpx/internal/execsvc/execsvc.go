@@ -684,13 +684,16 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if opts.Deps != nil && opts.Deps.Manifest != "" && len(opts.Deps.Packages) > 0 {
 		var man struct {
 			Dependencies         map[string]any `json:"dependencies"`
+			DevDependencies      map[string]any `json:"devDependencies"`
 			OptionalDependencies map[string]any `json:"optionalDependencies"`
 		}
 		if err := json.Unmarshal([]byte(opts.Deps.Manifest), &man); err != nil {
 			return nil, fmt.Errorf("deps: parse transported manifest: %w", err)
 		}
 		want := map[string]string{}
-		for _, sec := range []map[string]any{man.Dependencies, man.OptionalDependencies} {
+		// Match deps.Load: production overrides development, and optional
+		// requirements override both.
+		for _, sec := range []map[string]any{man.DevDependencies, man.Dependencies, man.OptionalDependencies} {
 			for name, v := range sec {
 				if s, ok := v.(string); ok {
 					want[name] = s

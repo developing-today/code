@@ -82,3 +82,24 @@ func TestRunWithRejectsPinsThatContradictTheManifest(t *testing.T) {
 		t.Fatalf("a contradicting pin must be rejected naming both versions, got %v", err)
 	}
 }
+
+func TestRunWithManifestConflictSectionPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, want string
+	}{
+		{"dev", `{"devDependencies":{"foo":"1.0.0"}}`, "1.0.0"},
+		{"production overrides dev", `{"devDependencies":{"foo":"1.0.0"},"dependencies":{"foo":"1.1.0"}}`, "1.1.0"},
+		{"optional overrides both", `{"devDependencies":{"foo":"1.0.0"},"dependencies":{"foo":"1.1.0"},"optionalDependencies":{"foo":"1.2.0"}}`, "1.2.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := service(t, store(t))
+			_, err := svc.RunWith(context.Background(), runner.Options{}, execsvc.Options{
+				Deps: &execsvc.DepsOptions{Packages: []string{"foo@2.0.0"}, Manifest: tc.manifest},
+			}, nil)
+			want := "foo: explicit 2.0.0 contradicts manifest " + tc.want
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("expected %q, got %v", want, err)
+			}
+		})
+	}
+}
