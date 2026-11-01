@@ -82,6 +82,9 @@ pub(crate) enum ClientFrame {
     Join {
         capability: String,
         after: Option<u64>,
+        /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
+        #[serde(default)]
+        screen_patches: bool,
     },
     Info {
         capability: String,
@@ -286,6 +289,14 @@ pub(crate) enum ServerFrame<'a> {
         /// Optional typed screen surface. Older clients can continue using `data`.
         #[serde(skip_serializing_if = "Option::is_none")]
         surface: Option<&'a crate::world_presentation::WorldSurface>,
+        /// Monotonic within this session; independent of the world event cursor.
+        view_revision: u64,
+        /// Present only when `patch` applies to this exact prior view revision.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_view_revision: Option<u64>,
+        /// A negotiated screen delta. `data` is empty and `surface` omitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        patch: Option<&'a crate::world_presentation::ScreenPatch>,
     },
     ModuleInfo {
         world_id: String,
