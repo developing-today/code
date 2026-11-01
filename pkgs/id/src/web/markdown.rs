@@ -1031,8 +1031,22 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             i += 1;
             continue;
         }
-        if fence.in_fence() || html.in_html() || indent > 3 {
+        if fence.in_fence() || html.in_html() {
             at_block_start = true;
+            i += 1;
+            continue;
+        }
+        if indent > 3 {
+            // An indented line is indented code at a block start,
+            // but indented code cannot interrupt a paragraph: when
+            // the previous line was paragraph text this line is
+            // its continuation and the paragraph state survives --
+            // resetting eligibility here let a following type-7
+            // tag open an HTML block mid-paragraph and swallow
+            // the heading and the genuine definition after it
+            // (Codex P2 on #1565's twenty-second cut). At a block
+            // start the state is already eligible, so either way
+            // it is left untouched.
             i += 1;
             continue;
         }
@@ -1235,8 +1249,21 @@ fn link_reference_definition_is_valid(after: &str) -> bool {
     if title.is_empty() {
         return true;
     }
-    matches!(title.as_bytes()[0], b'"' | 0x27 | b'(')
-        && !link_reference_definition_needs_more(after)
+    // A complete title must END the definition: text after the
+    // closing delimiter (`[bad]: /bad "title" extra`) is not a
+    // title at all, and accepting it collected the next line as
+    // its own definition out of what is really one paragraph
+    // (Codex P2 on #1565's twenty-second cut).
+    let closer = match title.as_bytes()[0] {
+        b'"' => '"',
+        0x27 => '\'',
+        b'(' => ')',
+        _ => return false,
+    };
+    match find_unescaped(&title[1..], closer) {
+        Some(end) => title[end + 2..].trim().is_empty(),
+        None => false,
+    }
 }
 
 /// Whether anything follows the destination in the accumulated
@@ -5845,6 +5872,56 @@ mod tests {
             "reference after overpadded-marker code resolves: {first:?}"
         );
         assert_eq!(first, second, "overpadded-marker round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_indented_continuation_preserves_paragraph_context() {
+        // #1565 twenty-second cut (Codex P2): an indented line
+        // continuing a paragraph is not indented code (code
+        // cannot interrupt a paragraph), so the paragraph state
+        // survives it and `<em>` on the next line cannot open a
+        // type-7 HTML block. Resetting eligibility at the
+        // indented line let the tracker swallow the heading and
+        // the genuine definition, and recovery lost `real`.
+        let original = "Body\n    continuation\n<em>\n# Heading\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        assert!(
+            doc["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["type"] == "footnote_definition"),
+            "the genuine definition after the paragraph is recovered: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:"),
+            "recovered definition survives the save: {first:?}"
+        );
+        assert_eq!(first, second, "indented-continuation round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_trailing_text_after_title_invalidates_reference() {
+        // #1565 twenty-second cut (Codex P2): a title must END
+        // a reference definition -- `[bad]: /bad "title" extra`
+        // is no definition, so `[url]: /target` stays inside the
+        // same paragraph and is no definition either. Accepting
+        // any title with a closing delimiter collected both
+        // lines separately, and synthesis then resolved the
+        // recovered footnote's `[target][url]` into a hyperlink
+        // the document never had.
+        let original = "[bad]: /bad \"title\" extra\n[url]: /target\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[target\\]\\[url\\]"),
+            "unresolved reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target]("),
+            "trailing-text reference is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "trailing-text-after-title round-trip is a fixpoint");
     }
 
     #[test]
