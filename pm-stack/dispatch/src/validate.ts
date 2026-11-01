@@ -170,9 +170,10 @@ export function resolveSessionDirectory(
   if (scoped === undefined) {
     throw new ValidationError(`directory: no repo directory is configured for ${repo}`);
   }
-  const root = canonicalizeDirectory(scoped);
+  const budget: SymlinkBudget = { expansions: 0 };
+  const root = canonicalizeDirectory(scoped, budget);
   if (directory === undefined || directory.trim() === "") return root;
-  const resolved = canonicalizeDirectory(directory);
+  const resolved = canonicalizeDirectory(directory, budget);
   if (resolved === root || resolved.startsWith(`${root}/`)) return resolved;
   throw new ValidationError(
     `directory: ${callerType} callers may only run inside the target repo clone (${root}) or a directory within it`,
@@ -188,7 +189,11 @@ export function resolveSessionDirectory(
  * link pointing outside the clone is judged by where it points, not by
  * whether its target happens to exist on this machine. Relative paths
  * are rejected. */
-function canonicalizeDirectory(d: string, depth = 0): string {
+interface SymlinkBudget {
+  expansions: number;
+}
+
+function canonicalizeDirectory(d: string, budget: SymlinkBudget, depth = 0): string {
   if (!d.startsWith("/")) {
     throw new ValidationError(`directory: must be an absolute path, got "${d}"`);
   }
@@ -203,12 +208,12 @@ function canonicalizeDirectory(d: string, depth = 0): string {
       continue;
     }
     const next = resolved === "/" ? `/${seg}` : `${resolved}/${seg}`;
-    resolved = resolveComponent(next, depth);
+    resolved = resolveComponent(next, budget, depth);
   }
   return resolved;
 }
 
-function resolveComponent(path: string, depth: number): string {
+function resolveComponent(path: string, budget: SymlinkBudget, depth: number): string {
   try {
     return realpathSync(path);
   } catch {
@@ -223,7 +228,20 @@ function resolveComponent(path: string, depth: number): string {
         : parent === "/"
           ? `/${target}`
           : `${parent}/${target}`;
-      return canonicalizeDirectory(absolute, depth + 1);
+      // The budget is shared across the WHOLE resolution, not per
+      // recursion: a chain of dangling links shaped
+      // lN -> l(N-1)/../l(N-1) doubles the expansions per level while
+      // every individual recursion stays under the depth limit, so
+      // only a global cap keeps total work linear (Codex review
+      // round 2 of PR #4032). The kernel's per-syscall MAXSYMLINKS
+      // bound inside realpathSync has the same shape.
+      budget.expansions += 1;
+      if (budget.expansions > 40) {
+        throw new ValidationError(
+          `directory: too many symlink expansions resolving "${path}"`,
+        );
+      }
+      return canonicalizeDirectory(absolute, budget, depth + 1);
     }
   } catch (e) {
     // Our own depth-limit error must terminate traversal, not be

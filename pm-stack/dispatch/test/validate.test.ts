@@ -382,6 +382,19 @@ describe("session directory symlink confinement (issue #3999)", () => {
     ).toThrow(ValidationError);
   });
 
+  test("a dangling-link expansion chain is bounded by the shared budget", () => {
+    // l0 dangles; each lN names l(N-1) twice, so a per-recursion
+    // depth limit alone permits exponential expansions (Codex round
+    // 2). The shared budget must reject the chain outright.
+    symlinkSync("missing-target", join(clone, "l0"), "dir");
+    for (let n = 1; n <= 17; n++) {
+      symlinkSync(`l${n - 1}/../l${n - 1}`, join(clone, `l${n}`), "dir");
+    }
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "l17"), repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
   test("the clone root reached through a symlink is the same root", () => {
     const alias = join(base, "clone-alias");
     symlinkSync(clone, alias, "dir");
