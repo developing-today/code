@@ -134,6 +134,38 @@ describe("saas extraction (Part b)", () => {
     });
   });
 
+  test("extractor-null keeps parsed service evidence while marking the gap", () => {
+    const section = `### Cloudflare — Workers platform
+- **Plan / price / allowance:** renamed format
+- **Usage / dates:** new format, read 2026-10-24.
+- **PAYG estimate:** low $1 / high $5 per month; counted as used = 1.2 × high = $6.
+- **Last checked:** dashboard 2026-10-25.
+- **Conflict/stale earlier evidence:** dashboard and tracker disagree about the current plan.
+`;
+    const cloudflare = extractSaasServices(section).find((s) => s.id === "cloudflare")!;
+    expect(cloudflare.extractionHealth).toMatchObject({ status: "gap", matched: false, reason: "extractor-null" });
+    expect(cloudflare.metrics).toEqual([]);
+    expect(cloudflare.paygEstimate).toMatchObject({ low: 1, high: 5 });
+    expect(cloudflare.reads.some((read) => read.at === "2026-10-24")).toBe(true);
+    expect(cloudflare.conflicts).toHaveLength(1);
+    expect(cloudflare.measuredAt).toBe("2026-10-25");
+  });
+
+  test("instrumented SaaS extractors report null when their patterns match no values", () => {
+    const fixtures: [string, string][] = [
+      ["turso", "### Turso\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["github", "### GitHub\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["modal", "### Modal\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["oci", "### OCI Always Free\n- **Plan / price / allowance:** renamed format\n- **Usage / dates:** unknown"],
+      ["bitwarden", "### Bitwarden\n- **Usage / dates:** count not recorded"],
+    ];
+    for (const [id, fixture] of fixtures) {
+      const service = extractSaasServices(fixture).find((s) => s.id === id)!;
+      expect(service.extractionHealth, id).toMatchObject({ status: "gap", matched: false, reason: "extractor-null" });
+      expect(service.metrics, id).toEqual([]);
+    }
+  });
+
   test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
     for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
       const s = byId.get(id)!;

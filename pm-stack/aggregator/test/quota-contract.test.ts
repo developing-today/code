@@ -75,6 +75,12 @@ describe("/api/quota.json hub contract (#1119)", () => {
         expect(typeof row.count).toBe("number");
       }
     }
+    expect(doc.extractorHealth.pools.map((row: { id: string }) => row.id)).toEqual(
+      doc.pools.map((pool: { id: string }) => pool.id),
+    );
+    expect(doc.extractorHealth.services.map((row: { id: string }) => row.id)).toEqual(
+      doc.saas.map((service: { id: string }) => service.id),
+    );
     for (const pool of doc.pools) {
       expect(typeof pool.id).toBe("string");
       expect(Array.isArray(pool.windows)).toBe(true);

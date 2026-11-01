@@ -453,6 +453,7 @@ const githubMetrics: MetricExtractor = (section) => {
       }),
     );
   }
+  if (!out.some((m) => m.used != null || m.limit != null)) return null;
   return out.filter((m) => m.used != null || m.limit != null || m.id === "actions-billable-minutes");
 };
 
@@ -472,6 +473,7 @@ const modalMetrics: MetricExtractor = (section) => {
     /used[:\s]+\$(\d+(?:\.\d+)?)/i.exec(usage) ??
     /used[:\s]+(\d+(?:\.\d+)?)\s*credits?\b/i.exec(usage);
   const used = usedMatch ? Number(usedMatch[1]) : null;
+  if (!credits && used == null) return null;
   return [
     metric({
       id: "compute-credits",
@@ -496,7 +498,7 @@ const bitwardenMetrics: MetricExtractor = (section) => {
   const usage = bullet(section, /\*\*Usage \/ dates:\*\*/);
   const secrets = /(\d+)\s*secrets?/i.exec(usage);
   const projects = /(\d+)\s*projects?/i.exec(usage);
-  return [
+  const metrics = [
     metric({
       id: "secrets-count",
       label: "Secrets",
@@ -514,11 +516,12 @@ const bitwardenMetrics: MetricExtractor = (section) => {
       note: "bws count-only read (§2.2); names/values never enter the hub.",
     }),
   ].filter((m) => m.used != null);
+  return metrics.length ? metrics : null;
 };
 
 const ociMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
-  return [
+  const metrics = [
     metric({
       id: "ocpu-hours",
       label: "A1 OCPU-hours / month",
@@ -545,6 +548,7 @@ const ociMetrics: MetricExtractor = (section) => {
       limit: allowance(plan, /([\d,.]+) GB object storage/),
     }),
   ].filter((m) => m.limit != null);
+  return metrics.length ? metrics : null;
 };
 
 // --- service table ----------------------------------------------------------
@@ -742,13 +746,6 @@ export function extractSaasServices(doc: string): SaasService[] {
     try {
       const payg = paygOf(section);
       const metrics = spec.metrics(section, doc);
-      if (metrics === null) {
-        services.push({
-          ...shell,
-          extractionHealth: { status: "gap", matched: false, reason: "extractor-null", count: 0 },
-        });
-        continue;
-      }
       const usageText = bullet(section, /\*\*Usage \/ dates:\*\*/).replace(/^\*\*Usage \/ dates:\*\*\s*/, "");
       // measuredAt = the freshest date in the section's own "Last
       // checked" record — NOT the freshest date anywhere in the
@@ -757,11 +754,13 @@ export function extractSaasServices(doc: string): SaasService[] {
       const measuredAt = freshestDate(bullet(section, /\*\*Last checked:\*\*/)) ?? freshestDate(section);
       services.push({
         ...shell,
-        metrics,
+        metrics: metrics ?? [],
         extractionHealth:
-          spec.instrumented === false
-            ? intentional
-            : { status: "matched", matched: true, count: metrics.length },
+          metrics === null
+            ? { status: "gap", matched: false, reason: "extractor-null", count: 0 }
+            : spec.instrumented === false
+              ? intentional
+              : { status: "matched", matched: true, count: metrics.length },
         paygEstimate: payg.estimate,
         paygNote: payg.note,
         measuredAt,
