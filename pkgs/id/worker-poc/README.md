@@ -24,6 +24,21 @@ evolution only, never on execution-budget behaviour.
   is the source of truth. `POST /step` applies + journals (snapshot, view,
   records, hash); `POST /cold-start` drops the in-memory guest so the next
   request restores from the journal via `plaza_restore`.
+- `compare/` — the journal-equality harness. `isolate-runner.mjs` runs
+  both scripted sequences through `PlazaGuest` (each also with a forced
+  cold start mid-sequence; the two runs must agree), and `compare.mjs`
+  diffs the per-step lines against the native reference
+  (`../../tests/worker_poc_reference.rs`, which drives the same sequences
+  through the native wasmtime host and likewise asserts its own
+  cold-start equality). Regenerate the reference and compare:
+
+  ```sh
+  cd pkgs/id
+  WORKER_POC_REFERENCE_OUT=worker-poc/compare/native-reference.jsonl \
+    cargo test --test worker_poc_reference -- --nocapture
+  cd worker-poc && npm run compare
+  ```
+
 - `smoke/counter-smoke.mjs` — Node smoke over the prebuilt
   `../examples/roc-counter/counter.wasm`: seed + `inc`×3 with per-step
   view/records/snapshot-hash, a guest-level cold start (restore the step-2
@@ -47,14 +62,24 @@ evolution only, never on execution-budget behaviour.
       mutation with the guest discarded on journal failure, guest output
       pointers normalized unsigned, wrangler declared in nix-common.nix.
       Smoke PASS + tsc clean after the fixes.
-- [ ] Counter sequence compared against the native reference runner
-      (native runner over the same scripted sequence via the existing
-      sandbox/world_fixture machinery — next increment).
-- [ ] tic-tac-toe scripted sequence (0,4,1,4-occupied,9-not-a-move,8,
-      2-X-wins,3-after-win) equal on isolate and native hosts per step.
-- [ ] Durable Object forced cold start mid-sequence under workerd
-      (`wrangler dev`), equality across it (guest-level restore is proven
-      by the smoke; DO-level is the next increment).
+- [x] Counter sequence compared against the native reference runner
+      (2026-11-01): `compare/compare.mjs` diffs the isolate host against
+      `tests/worker_poc_reference.rs` (native `Sandbox` over the same
+      scripted sequence) — all steps equal in (view, records, snapshot
+      sha256).
+- [x] tic-tac-toe scripted sequence (0,4,1,4-occupied,9-not-a-move,8,
+      2-X-wins,3-after-win) equal on isolate and native hosts per step
+      (2026-11-01, same harness): final records
+      `{"board":"XXX-O---O","plays":5,"winner":"X"}` on both hosts; each
+      host also asserts its own forced cold start mid-sequence (native
+      after step 5, isolate after step 5) changes nothing.
+- [x] Durable Object forced cold start mid-sequence under workerd
+      (2026-11-01): `compare/do-cold-start.mjs` drives the counter
+      through the real DO host — `/cold-start` after step 2 restores
+      step 2 from the SQLite journal, a full `wrangler dev` restart
+      (fresh DO instance) restores it again, and step 3's snapshot hash
+      equals the native reference hash. Full harness run:
+      `compare: PASS (13 steps equal)`, `do-cold-start: PASS`.
 - [x] Hosted-loader refusals: `portability=native` and >64MB declared
       memory, each with the reason named (asserted in the smoke).
 - [x] Findings note with the pre-registered differences posted on #2271.
