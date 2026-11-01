@@ -1615,7 +1615,37 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     };
     let is_blank_line = |line: &str| line.trim_start_matches(['>', ' ']).trim().is_empty();
     let lines: Vec<&str> = output.lines().collect();
-    let found = lines.iter().filter(|l| is_separator_line(l)).count();
+    // Codex review, PR #3258: a separator-looking line inside a fenced
+    // code block is authored content, not renderer markup - it must
+    // neither count toward the boundary correspondence nor be dropped.
+    // Track fence state (``` / ~~~, optionally blockquote-prefixed) and
+    // only treat lines outside fences as separators.
+    let mut in_fence = false;
+    let mut fence_char = '`';
+    let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let trimmed = line.trim_start_matches(['>', ' ']).trim_start();
+        let fence_marker = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        match fence_marker {
+            Some(c) if !in_fence => {
+                in_fence = true;
+                fence_char = c;
+                is_separator.push(false);
+            }
+            Some(c) if c == fence_char => {
+                in_fence = false;
+                is_separator.push(false);
+            }
+            _ => is_separator.push(!in_fence && is_separator_line(line)),
+        }
+    }
+    let found = is_separator.iter().filter(|b| **b).count();
     if found != kinds.len() {
         return output.to_string();
     }
@@ -1624,7 +1654,7 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     let mut idx = 0;
     while idx < lines.len() {
         let line = lines[idx];
-        if is_separator_line(line) {
+        if is_separator[idx] {
             match boundary.next() {
                 Some((a, b, tight_pair, merge_safe)) if a != b && *merge_safe => {
                     // Drop the separator. The renderer also puts a blank
@@ -1680,13 +1710,28 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             // lossless only when the second list starts exactly where
             // the first list's numbering ends (start + item count), so
             // convert_list_runs recomputes the same run orders.
-            let merge_safe = match (ordered_start(prev), ordered_start(child)) {
+            let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
                 (Some(prev_start), Some(next_start)) => {
                     let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
                     next_start == prev_start + prev_count
                 }
                 _ => true,
             };
+            // Codex review, PR #3258: two lists that render as the same
+            // Markdown list family (bullet-rendering: bullet_list and
+            // order-less task_list; ordered-rendering: ordered_list and
+            // ordered task_list) merge into ONE list on reparse when the
+            // separator drops, and convert_list_runs then copies one
+            // run's tight onto both. When their tight attributes differ
+            // that silently loosens/tightens a run and breaks the save
+            // fixpoint, so the separator stays. Different families split
+            // on reparse by marker type and keep their own tightness.
+            let renders_ordered = |n: &Value| ordered_start(n).is_some();
+            let tight_differs =
+                prev["attrs"]["tight"].as_bool() != child["attrs"]["tight"].as_bool();
+            let tight_merge_safe =
+                !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
+            let merge_safe = ordered_merge_safe && tight_merge_safe;
             out.push((
                 list_kind(prev).unwrap_or_default().to_string(),
                 kind.to_string(),
@@ -1707,7 +1752,13 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
         {
             out.push((String::new(), String::new(), false, false));
         }
-        collect_boundary_kinds(child, out);
+        // Codex review, PR #3258: lists inside a table cell are
+        // flattened to text by append_table_cell_child and emit no
+        // separator, so boundaries collected there have no line in
+        // the output to correspond to - skip the cell's subtree.
+        if !matches!(child["type"].as_str(), Some("table_header" | "table_cell")) {
+            collect_boundary_kinds(child, out);
+        }
         if kind.is_some() {
             prev_list = Some(child);
         } else {
@@ -3294,6 +3345,110 @@ mod tests {
             assert_eq!(content.len(), 2, "two lists for {original:?}");
             assert_eq!(content[1]["attrs"]["order"], 1, "second list restarts at 1 for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_adjacent_task_plain_tight_mismatch_keeps_separator() {
+        // Codex review on PR #3258 (P2): a tight bullet list next to a
+        // loose task list renders as the SAME Markdown list family.
+        // Dropping the separator merges them on reparse and
+        // convert_list_runs copies tight:false onto both runs, so the
+        // next save inserts a blank line inside the first list - the
+        // separator stays when tight differs within one render family.
+        let original = "- a\n- aa\n\n<!-- end list -->\n\n- [ ] b\n\n- [ ] c\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator preserved for tight-mismatched pair: {first:?}"
+        );
+        assert_eq!(first, second, "tight-mismatch shape is a fixpoint");
+        assert_eq!(
+            markdown_to_prosemirror(&first),
+            markdown_to_prosemirror(original),
+            "reparse preserves both lists and their tightness"
+        );
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists");
+        assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
+        assert_eq!(content[1]["attrs"]["tight"], false, "second list stays loose");
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_code_fence_is_not_a_separator() {
+        // Codex review on PR #3258 (P2): a fenced code block whose
+        // literal content is the separator text is authored content.
+        // It must not satisfy the boundary count, and must survive
+        // while the real boundary separator drops. (Unit-level: the
+        // markdown-text roundtrip of a bare HTML-comment fence hits
+        // the parse-side htmlBlock handling, a different mechanism.)
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- a\n\n<!-- end list -->\n\n1. b\n\n```\n<!-- end list -->\n```\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```\n<!-- end list -->\n```"),
+            "code fence content survives verbatim: {out:?}"
+        );
+        assert!(
+            out.starts_with("- a\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_table_cell_list_boundaries_do_not_consume_separator() {
+        // Codex review on PR #3258 (P2): lists inside a table cell are
+        // flattened to text and emit no separator. Their boundaries
+        // must not consume the correspondence of a real top-level
+        // boundary - here the doc has one real boundary (bullet ->
+        // ordered at top level) and one cell-internal pair; the saved
+        // text drops exactly the real separator.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "table", "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": [
+                            {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]}
+                            ]},
+                            {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "y"}]}]}
+                            ]}
+                        ]}
+                    ]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let mut kinds = Vec::new();
+        collect_boundary_kinds(&doc, &mut kinds);
+        assert_eq!(kinds.len(), 1, "only the top-level boundary is collected: {kinds:?}");
+        let out = strip_end_list_separators(&doc, "- a\n\n<!-- end list -->\n\n1. b\n");
+        assert!(!out.contains("end list"), "real separator dropped: {out:?}");
     }
 
     #[test]
