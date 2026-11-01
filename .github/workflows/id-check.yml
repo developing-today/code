@@ -161,8 +161,12 @@ jobs:
 
       - name: Verify build source copy against checkout snapshot
         run: |
-          src="$(nix flake metadata --json ./pkgs/id | jq -r .path)"
-          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src/pkgs/id"
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id\").outPath")"
+          if [ -z "$src" ] || [ ! -d "$src" ]; then
+            echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
+            exit 2
+          fi
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
 
       - name: Run PR check
         run: nix build -L --no-link "./pkgs/id#checks.x86_64-linux.${{ matrix.check }}"
@@ -222,7 +226,11 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Verify build source copy against checkout snapshot
         run: |
-          src="$(nix flake metadata --json ./pkgs/id | jq -r .path)"
-          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src/pkgs/id"
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id\").outPath")"
+          if [ -z "$src" ] || [ ! -d "$src" ]; then
+            echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
+            exit 2
+          fi
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
       - name: Run full nix flake check
         run: nix flake check ./pkgs/id/ -L --keep-going
