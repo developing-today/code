@@ -27,6 +27,44 @@ let
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
   latestCli = pkgs.callPackage ../../pkgs/latest-cli { };
+  # TEMPORARY (developing-today/code#4005, found via #2715): the
+  # activitywatch service below takes its package from this input's
+  # raw legacyPackages, and on the current stable pin (086873f3)
+  # activitywatch is broken exactly as on the nixpkgs-25 pin: aw-core
+  # 0.5.17 needs peewee 3 (peewee 4 removed SqliteExtDatabase, which
+  # aw_datastore imports) while the tree ships peewee 4.4.0, and
+  # aw-qt's makeWrapperArgs use the single-string form the tree's C
+  # makeWrapper rejects. Extend the stable set with the same
+  # overrides as nixpkgs-25-fixed in nixos/environment/default.nix
+  # (peewee pinned to 3.17.9 without cython; aw-qt wrapper args in
+  # split form). Remove once stock activitywatch builds on the pin;
+  # tracked in #4005.
+  nixpkgs-stable-fixed = inputs.nixpkgs-stable.legacyPackages.${system}.extend (
+    final: prev: {
+      python314 = prev.python314.override {
+        packageOverrides = self: super: {
+          peewee = super.peewee.overridePythonAttrs (old: {
+            version = "3.17.9";
+            src = prev.fetchPypi {
+              pname = "peewee";
+              version = "3.17.9";
+              hash = "sha256-/hXNABdY4yTI48qMjtkA5zl8KQcpF4nh78OD5mubx6g=";
+            };
+            buildInputs = [ prev.sqlite ];
+          });
+        };
+      };
+      python3Packages = final.python314.pkgs;
+      aw-qt = prev.aw-qt.overridePythonAttrs (old: {
+        makeWrapperArgs = [
+          "--suffix"
+          "PATH"
+          ":"
+          (prev.lib.makeBinPath [ prev.xdg-utils ])
+        ];
+      });
+    }
+  );
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
@@ -424,7 +462,7 @@ in
     # };
     activitywatch = {
       enable = true;
-      package = inputs.nixpkgs-stable.legacyPackages.${pkgs.system}.activitywatch;
+      package = nixpkgs-stable-fixed.activitywatch;
     };
   };
   # OpenChamber rewrites opencode's config on every launch, migrating the v1
@@ -1043,7 +1081,12 @@ in
   # the link and reloads OpenChamber, which hands its OpenCode over in place.
   home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${deployKey "openchamber" [ openchamberStart openchamberUnitStart ]}'
+    key='${
+      deployKey "openchamber" [
+        openchamberStart
+        openchamberUnitStart
+      ]
+    }'
     link="$HOME/.local/state/openchamber/bin/opencode"
     target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
     previous="$(readlink "$link" 2>/dev/null || true)"
