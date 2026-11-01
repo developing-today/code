@@ -28,8 +28,8 @@ use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
 use id::attestation::{
-    author_id, compute_state, player_id, sign_claim, sign_genesis, GenesisAgreement, MatchState,
-    ResultClaim,
+    GenesisAgreement, MatchState, ResultClaim, author_id, compute_state, player_id, sign_claim,
+    sign_genesis,
 };
 use id::chain;
 use id::event_store::{EventStore, Ingest};
