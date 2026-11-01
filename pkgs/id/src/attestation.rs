@@ -218,7 +218,9 @@ pub fn sign_claim(
 /// final-state hash are `Agreed`; two claims that differ in either are
 /// `Disputed`. A player claiming twice with different claims is a
 /// fork of position and computes `Disputed`, never `Agreed`. Claims
-/// answering a different agreement, or from non-players, are ignored.
+/// answering a different agreement, from non-players, or with an outcome
+/// other than `"draw"` or a seated player's lowercase 64-character hex id
+/// are ignored.
 #[must_use]
 pub fn compute_state(
     agreement: &GenesisAgreement,
@@ -236,10 +238,20 @@ pub fn compute_state(
     let Ok(agreement_hash) = agreement.agreement_hash() else {
         return MatchState::Proposed;
     };
+    let player_outcomes = agreement.players.map(|player| {
+        player
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    });
     let mut per_player: [Option<&ResultClaim>; 2] = [None, None];
     for (index, player) in agreement.players.iter().enumerate() {
         for (author, claim) in claims {
-            if author == player && claim.agreement == agreement_hash {
+            let valid_outcome = claim.outcome == "draw"
+                || player_outcomes
+                    .iter()
+                    .any(|player_outcome| player_outcome == &claim.outcome);
+            if author == player && claim.agreement == agreement_hash && valid_outcome {
                 match per_player[index] {
                     None => per_player[index] = Some(claim),
                     Some(first) if first != claim => return MatchState::Disputed,

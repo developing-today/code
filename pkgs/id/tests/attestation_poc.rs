@@ -28,8 +28,8 @@ use p2panda_core::{Hash, SigningKey};
 use tempfile::TempDir;
 
 use id::attestation::{
-    author_id, compute_state, player_id, sign_claim, sign_genesis, GenesisAgreement, MatchState,
-    ResultClaim,
+    GenesisAgreement, MatchState, ResultClaim, author_id, compute_state, player_id, sign_claim,
+    sign_genesis,
 };
 use id::chain;
 use id::event_store::{EventStore, Ingest};
@@ -112,6 +112,30 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
             (claim_event_o, claim_o.body().unwrap()),
         ],
     }
+}
+
+fn decoded_objects(
+    played: &Match,
+) -> (
+    Vec<(id::attestation::PlayerId, GenesisAgreement)>,
+    Vec<(id::attestation::PlayerId, ResultClaim)>,
+) {
+    let genesis = played
+        .genesis
+        .iter()
+        .map(|(event, _)| (author_id(event), played.agreement.clone()))
+        .collect();
+    let claims = played
+        .claims
+        .iter()
+        .map(|(event, body)| (author_id(event), ResultClaim::from_body(body).unwrap()))
+        .collect();
+    (genesis, claims)
+}
+
+fn computed_state(played: &Match) -> MatchState {
+    let (genesis, claims) = decoded_objects(played);
+    compute_state(&played.agreement, &genesis, &claims)
 }
 
 /// Ingests every match event into a store, in chain order per author.
@@ -216,5 +240,61 @@ fn one_claim_only_stays_proposed() {
     assert_eq!(
         compute_state(&played.agreement, &genesis, &claims),
         MatchState::Proposed
+    );
+}
+
+#[test]
+fn out_of_domain_outcomes_are_ignored() {
+    let x = key(0);
+    let third_party = key(200);
+    let seat_id = hex(&player_id(&x));
+    let uppercase_seat_id = seat_id.to_uppercase();
+    assert_ne!(uppercase_seat_id, seat_id);
+
+    for outcome in [
+        hex(&player_id(&third_party)),
+        "banana".to_owned(),
+        uppercase_seat_id,
+    ] {
+        let played = play_match(&outcome, &outcome);
+        assert_eq!(
+            computed_state(&played),
+            MatchState::Proposed,
+            "outcome: {outcome}"
+        );
+    }
+}
+
+#[test]
+fn one_in_domain_and_one_out_of_domain_claim_stays_proposed() {
+    let x = key(0);
+    let played = play_match(&hex(&player_id(&x)), "banana");
+    assert_eq!(computed_state(&played), MatchState::Proposed);
+}
+
+#[test]
+fn draw_is_a_valid_concurring_outcome() {
+    let played = play_match("draw", "draw");
+    assert_eq!(computed_state(&played), MatchState::Agreed);
+}
+
+#[test]
+fn out_of_domain_claim_from_a_player_does_not_create_a_fork() {
+    let x = key(0);
+    let played = play_match(&hex(&player_id(&x)), &hex(&player_id(&x)));
+    let (genesis, mut claims) = decoded_objects(&played);
+    let valid_claim = claims
+        .iter()
+        .find(|(author, _)| author == &player_id(&x))
+        .expect("X's valid claim is present")
+        .1
+        .clone();
+    let mut invalid_claim = valid_claim;
+    invalid_claim.outcome = "banana".to_owned();
+    claims.push((player_id(&x), invalid_claim));
+
+    assert_eq!(
+        compute_state(&played.agreement, &genesis, &claims),
+        MatchState::Agreed,
     );
 }
