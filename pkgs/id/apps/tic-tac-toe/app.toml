@@ -1,0 +1,13 @@
+[app]
+id = "tic-tac-toe"
+name = "Tic Tac Toe"
+version = "0.1.0"
+description = "A two-player Roc world game."
+
+[program]
+kind = "roc-world"
+source = "program/"
+
+[interfaces.web]
+mode = "adapter"
+route = "/tic-tac-toe"

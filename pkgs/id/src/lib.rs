@@ -155,6 +155,7 @@
 pub use id_core::access;
 pub mod abuse;
 pub mod aliases;
+pub mod app_manifest;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod attestation;
