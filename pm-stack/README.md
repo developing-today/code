@@ -50,6 +50,32 @@ everything else is host-independent so the stack can move to the
 Kubernetes cluster later (the same values map onto a Secret + the
 upstream Helm chart's env).
 
+## GitHub Project #4 conventions
+
+The org Project **Developing Today** (#4) is the portfolio map; issues and
+their native GitHub relations remain the work record. For items in its pool:
+
+- **Project `Kind=Epic` is canonical.** The aggregator reads this field and
+  resolves `epicRef` through native sub-issue parents; it does not infer epic
+  membership from labels. The GitHub `epic` label is the maintained gate and
+  mirror: every pool item with `Kind=Epic` carries `epic`, and no other pool
+  item does. When adding a new epic, set both consistently.
+- **`meta/epic` is retired.** It has no consumer and must not be used as an
+  epic marker. Remove it rather than treating it as an alias. Keep the
+  separate `epic` label where the Project auto-add gate needs it.
+- **Hierarchy and dependencies are different edges.** Native sub-issue
+  parents establish epic membership; native `blockedBy`/`blocking` relations
+  express dependencies. Prose descriptions are not a substitute for either.
+- **The orchestrator is the Project's single writer.** Agents and the
+  dashboard do not edit Project fields directly; the aggregator reads the
+  pool through the fleet feed.
+
+This repository copy records the reconciled convention from #1265 because
+the private Project README is not readable with the fleet's current GitHub
+scope. Source/design records: [#910](https://github.com/developing-today/code/issues/910),
+[#1122](https://github.com/developing-today/code/issues/1122), and
+[#1265](https://github.com/developing-today/code/issues/1265).
+
 ## Secrets
 
 All secrets live in [`../secrets/pm-stack.sops.yaml`](../secrets/pm-stack.sops.yaml)
