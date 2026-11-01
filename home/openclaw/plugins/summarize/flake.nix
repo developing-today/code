@@ -1,18 +1,17 @@
 {
   description = "openclaw plugin: summarize (vendored from openclaw/nix-openclaw-tools)";
 
-  # Vendored because the bundled plugin's pnpm deps hash, pinned in
-  # nix-openclaw-tools at the rev hardcoded in nix-openclaw's module
-  # (e1a2eb89), does not reproduce under that repo's own locked toolchain
-  # in this build environment: the fixed-output fetch produces
-  # sha256-55jIaqsVM6elegihK16TWxj7BRHb8kqvHEHw4fRZjPE= instead of the
-  # pinned sha256-wj/XNTJHSgINkL3lMNrhurFdfAUavaVargB3w7+UP88=, which
-  # broke the laptop NixOS switch (hash mismatch in summarize-pnpm-deps,
-  # 2026-10-30). Here the package is the upstream expression verbatim,
-  # the deps hash is pinned under THIS flake's locked nixpkgs, and this
-  # repo owns the pin. Re-lock deliberately when nixpkgs moves.
+  # Vendored from openclaw/nix-openclaw-tools (rev e1a2eb89,
+  # hardcoded in nix-openclaw's module). The pnpm deps hash in
+  # summarize.nix is the value the upstream toolchain actually
+  # produces -- sha256-55jIaqsVM6elegihK16TWxj7BRHb8kqvHEHw4fRZjPE=,
+  # taken from the 2026-10-30 switch error -- so this flake locks
+  # nixpkgs to the tools repo's own locked rev (aff8a0b2,
+  # pnpm 11.25.0) to reproduce that output exactly. Upstream's
+  # summarize.nix pins sha256-wj/XNTJHSgINkL3lMNrhurFdfAUavaVargB3w7+UP88=;
+  # do not change the pin without changing this lock to match.
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/6510408d147d8c5e6d76043e899e9251756f6a75";
+    nixpkgs.url = "github:NixOS/nixpkgs/aff8a0b28396750446e5537a96461bc4facdb287";
   };
 
   outputs =

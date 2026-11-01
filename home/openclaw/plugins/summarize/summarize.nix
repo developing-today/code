@@ -29,7 +29,7 @@ let
 
   pnpmDeps = fetchPnpmDeps {
     inherit pname version src pnpm;
-    hash = "sha256-wj/XNTJHSgINkL3lMNrhurFdfAUavaVargB3w7+UP88=";
+    hash = "sha256-55jIaqsVM6elegihK16TWxj7BRHb8kqvHEHw4fRZjPE=";
     fetcherVersion = 4;
   };
 
