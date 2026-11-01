@@ -211,6 +211,40 @@ no_upload() { # $1 scenario name — true when no copyto was attempted
     || ! grep -q '^copyto' "$TMP_ROOT/$1/rclone-calls.log"
 }
 
+# Missing source DB must fail without uploading or advancing the marker.
+setup_home missing-db
+rm "$RUN_HOME/.openclaw/state/openclaw.sqlite"
+run_backup missing-db
+if [[ "$RC" -ne 0 ]] && grep -q 'required state/openclaw.sqlite is missing' "$TMP_ROOT/missing-db.log" \
+    && no_upload missing-db && [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+  ok "missing-db: failed before upload with marker unchanged"
+else
+  fail "missing-db: expected missing DB failure, no upload and unchanged marker; log: $(cat "$TMP_ROOT/missing-db.log")"
+fi
+
+# A successful but broken sqlite snapshot can omit the DB from the manifest;
+# archive verification must independently require it.
+SNAPBIN="$TMP_ROOT/snapshot-stub-bin"
+mkdir -p "$SNAPBIN"
+{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+dest="${2#.backup }"
+dest="${dest#\'}"
+dest="${dest%\'}"
+rm -f "$dest"
+STUB
+} >"$SNAPBIN/sqlite3"
+chmod +x "$SNAPBIN/sqlite3"
+setup_home missing-snapshot
+TAR_OVERLAY="$SNAPBIN"
+run_backup missing-snapshot
+TAR_OVERLAY=""
+if [[ "$RC" -ne 0 ]] && grep -q 'MISSING REQUIRED state/openclaw.sqlite' "$TMP_ROOT/missing-snapshot.log" \
+    && no_upload missing-snapshot && [[ "$MARKER_AFTER" == "$PRESET" ]]; then
+  ok "missing-snapshot: verify failed before upload with marker unchanged"
+else
+  fail "missing-snapshot: expected required member failure, no upload and unchanged marker; log: $(cat "$TMP_ROOT/missing-snapshot.log")"
+fi
+
 # --- staging source-tar failure fails the run (#1034) ---------------------
 setup_home staging-fail
 TAR_OVERLAY="$TARBIN"
