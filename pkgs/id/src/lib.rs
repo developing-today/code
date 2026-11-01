@@ -168,6 +168,7 @@ pub mod chat_presence;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
+pub mod currency;
 pub mod dht;
 #[cfg(feature = "world")]
 pub mod directory;
