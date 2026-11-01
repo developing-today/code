@@ -26,8 +26,9 @@ use crate::world_limits::WorldExecutionProfile;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct WorldManifest {
-    /// A content hash of an already-installed module (`blake3:<hex>`). Mutually
-    /// exclusive with `module_source`.
+    /// A content hash of an already-installed module, encoded as 1 to 64 plain
+    /// hexadecimal digits (no `blake3:` prefix). Mutually exclusive with
+    /// `module_source`.
     pub module_hash: Option<String>,
     /// A source file or directory to compile on the host before install.
     /// Mutually exclusive with `module_hash`.
@@ -601,6 +602,16 @@ wasm_fuel = 5_000_000
                 .iter()
                 .any(|s| matches!(s, ApplyStep::ScheduleAt { id, .. } | ApplyStep::CancelSchedule { id } if id == "keep"))
         );
+    }
+
+    #[test]
+    fn module_hash_uses_plain_hex_without_a_blake3_prefix() {
+        let full_hash = "a".repeat(64);
+        let manifest = parse(&format!("module_hash = \"{full_hash}\"")).unwrap();
+        assert_eq!(manifest.module_hash.as_deref(), Some(full_hash.as_str()));
+
+        assert!(parse("module_hash = \"blake3:abc123\"").is_err());
+        assert!(parse(&format!("module_hash = \"blake3:{full_hash}\"")).is_err());
     }
 
     #[test]
