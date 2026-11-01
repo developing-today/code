@@ -786,6 +786,7 @@ mod tests {
             tag: None,
             document: None,
             removes: None,
+            chat: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }

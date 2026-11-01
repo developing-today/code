@@ -148,6 +148,7 @@ fn signed(
         tag: None,
         document: None,
         removes: None,
+        chat: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -335,6 +336,7 @@ fn present_event(
         tag: None,
         document: None,
         removes: None,
+        chat: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -755,7 +757,7 @@ proptest! {
                 ChainExt {
                     kind: "m".to_owned(),
                     group: None,
-                    after: Vec::new(), tag: None, document: None, removes: None,
+                    after: Vec::new(), tag: None, document: None, removes: None, chat: None,
                 },
             )
             .encode();
@@ -799,6 +801,7 @@ fn print_ingest_seeds() {
                 tag: None,
                 document: None,
                 removes: None,
+                chat: None,
             };
             sign(key, seq, backlink, None, ext).unwrap()
         };
