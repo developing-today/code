@@ -340,6 +340,40 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     ).toBeNull();
   });
 
+  test("yes/no answers are limited to yes or no; text answers must be strings", () => {
+    const raw = extendedRaw();
+    raw.questions = [
+      ...(raw.questions as unknown[]),
+      { id: "go", prompt: "Proceed?", type: "yesno", required: true, covers: "go/no-go" },
+      {
+        id: "tags",
+        prompt: "Which tags?",
+        type: "multi",
+        options: [
+          { id: "one", label: "One" },
+          { id: "two", label: "Two" },
+        ],
+        required: true,
+        covers: "selected tags",
+      },
+    ];
+    const surveyItem = sanitizeTierItemExtensions(raw as unknown as TierItem);
+    const answer = (questionId: string, value: string | string[]) =>
+      checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId, value }] } }), surveyItem, NOW);
+
+    expect(answer("go", "banana")).toBe('answer for "go" must be "yes" or "no"');
+    expect(answer("go", ["yes", "no"])).toBe('answer for "go" must be "yes" or "no"');
+    expect(answer("notes", ["not", "text"])).toBe('answer for "notes" must be text');
+    expect(answer("audience", ["internal"])).toBe('answer for "audience" must be one of its options');
+    expect(answer("tags", "one")).toBe('answers for "tags" must be chosen from its options');
+    expect(answer("tags", ["unknown"])).toBe('answers for "tags" must be chosen from its options');
+    expect(answer("go", "yes")).toBeNull();
+    expect(answer("go", "no")).toBeNull();
+    expect(answer("audience", "internal")).toBeNull();
+    expect(answer("notes", "more detail")).toBeNull();
+    expect(answer("tags", ["one", "two"])).toBeNull();
+  });
+
   test("a bare text answer cannot bypass required survey questions", () => {
     expect(checkActionAgainstItem(actionInput({ payload: { text: "just do it" } }), item, NOW)).toContain(
       "survey questions",

@@ -348,16 +348,25 @@ export function checkActionAgainstItem(input: NewAction, item: TierItem | undefi
       for (const a of p.answers) {
         const q = byId.get(a.questionId);
         if (!q) return `unknown question id "${a.questionId}" for this item`;
-        if ((q.type === "single" || q.type === "yesno") && q.options) {
-          if (typeof a.value !== "string" || !q.options.some((o) => o.id === a.value))
-            return `answer for "${q.id}" must be one of its options`;
-        }
-        if (q.type === "multi" && q.options) {
-          if (
-            !Array.isArray(a.value) ||
-            a.value.some((v) => typeof v !== "string" || !q.options?.some((o) => o.id === v))
-          )
-            return `answers for "${q.id}" must be chosen from its options`;
+        switch (q.type) {
+          case "yesno":
+            if (a.value !== "yes" && a.value !== "no")
+              return `answer for "${q.id}" must be "yes" or "no"`;
+            break;
+          case "single":
+            if (typeof a.value !== "string" || !q.options?.some((o) => o.id === a.value))
+              return `answer for "${q.id}" must be one of its options`;
+            break;
+          case "text":
+            if (typeof a.value !== "string") return `answer for "${q.id}" must be text`;
+            break;
+          case "multi":
+            if (
+              !Array.isArray(a.value) ||
+              a.value.some((v) => typeof v !== "string" || !q.options?.some((o) => o.id === v))
+            )
+              return `answers for "${q.id}" must be chosen from its options`;
+            break;
         }
       }
       // #1451 (Drew, 2026-10-27): partial survey submits are allowed —
