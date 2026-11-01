@@ -1598,6 +1598,12 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
     let hash = outcome.hash;
     let hash_str = hash.to_string();
 
+    // #2363: Keep the check, unconditional tag set and filename-keyed
+    // metadata writes in one critical section across concurrent uploads.
+    // This only coordinates handlers sharing this AppState, not independent
+    // states/processes or other code that writes blob tags directly.
+    let _upload_name_guard = state.upload_name_lock.lock().await;
+
     // #1549: resolve the stored name before tagging anything. The
     // intended name is kept when free or already naming this blob; a
     // name owned by a different blob is uniquified (stem-N.ext), and
@@ -2443,6 +2449,11 @@ mod upload_router_tests {
     const BOUNDARY: &str = "----id-upload-test-boundary";
 
     async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let (router, _, dir, endpoint, docs) = router_with_state().await;
+        (router, dir, endpoint, docs)
+    }
+
+    async fn router_with_state() -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -2470,7 +2481,7 @@ mod upload_router_tests {
         )
         .await
         .unwrap();
-        (create_router(state), dir, endpoint, docs)
+        (create_router(state.clone()), state, dir, endpoint, docs)
     }
 
     fn multipart_body(file_bytes: &[u8]) -> Vec<u8> {
@@ -2569,6 +2580,62 @@ mod upload_router_tests {
         body.extend_from_slice(file_bytes);
         body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
         body
+    }
+
+    #[tokio::test]
+    async fn concurrent_uploads_keep_names_and_metadata_consistent() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        // Hold the same lock used at the resolve/claim boundary while both
+        // requests start; neither may complete its claim until it is released.
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for bytes in [b"first-bytes".as_slice(), b"second-bytes".as_slice()] {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            let body = multipart_body_named("image.png", "image/png", bytes);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                upload(router, body).await
+            }));
+        }
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(tasks.iter().all(|task| !task.is_finished()));
+        drop(guard);
+
+        let images = {
+            let mut results = Vec::new();
+            for task in tasks {
+                let (status, body) = task.await.unwrap();
+                assert_eq!(status, StatusCode::OK, "{body}");
+                results.push(serde_json::from_str::<serde_json::Value>(&body).unwrap());
+            }
+            results
+        };
+        assert_ne!(images[0]["name"], images[1]["name"]);
+        assert_ne!(images[0]["hash"], images[1]["hash"]);
+        let listed = list_images(router.clone()).await;
+        for (image, bytes) in images.iter().zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()]) {
+            let name = image["name"].as_str().unwrap();
+            let hash = image["hash"].as_str().unwrap();
+            assert_eq!(upload_name_owner(&state.store, name).await.unwrap().unwrap().to_string(), hash);
+            assert!(listed.iter().any(|entry| entry["name"] == name && entry["hash"] == hash));
+            let url = image["url"].as_str().unwrap();
+            assert!(url.contains(&format!("filename={name}")));
+            let (status, _, actual) = get_blob(router.clone(), url).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(actual, bytes);
+            for (key, expected) in [(b"content-type".as_slice(), Some("image/png")), (b"created".as_slice(), None)] {
+                let tags = state.tag_store.get_by_key(&state.tag_store.global, name.as_bytes(), key).await.unwrap();
+                let value = tags.first().and_then(|tag| tag.value.as_ref()).and_then(|value| value.as_str()).unwrap();
+                if let Some(expected) = expected {
+                    assert_eq!(value, expected);
+                } else {
+                    assert!(value.parse::<u64>().is_ok(), "invalid creation timestamp: {value}");
+                }
+            }
+        }
     }
 
     // #1549: a second upload under the same filename with different
