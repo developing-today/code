@@ -2986,3 +2986,68 @@ class TestD1ResponseShapes(ColdStoreTestBase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestResumableUploadStalls(ColdStoreTestBase):
+    """#2797: a 308 whose Range stops advancing must not loop forever,
+    and a Range-less 308 must not count unacknowledged bytes as sent."""
+
+    def _upload_with_puts(self, put_behavior, data=b"x" * 1000):
+        blob = Path(self.tmp.name) / "blob.bin"
+        blob.write_bytes(data)
+        puts = []
+
+        def fake_http(method, url, headers=None, data=None, timeout=120):
+            if method == "POST" and "uploadType=resumable" in url:
+                return 200, {"Location": "https://upload.example/session"}, b""
+            if method == "POST":
+                # the OAuth token refresh _auth_headers performs first
+                body = json.dumps({"access_token": "tok", "expires_in": 3600})
+                return 200, {}, body.encode()
+            puts.append(headers.get("Content-Range", ""))
+            return put_behavior(len(puts), headers, data)
+
+        with mock.patch.object(cold_store, "http_request", fake_http):
+            try:
+                return puts, self.store._resumable_upload(blob, "blob.bin", "parent")
+            except cold_store.ColdStoreError as e:
+                return puts, e
+
+    def test_fixed_range_308_raises_after_bounded_puts(self):
+        puts, result = self._upload_with_puts(
+            lambda n, h, d: (308, {"Range": "bytes=0-0"}, b"")
+        )
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        # 1 advancing PUT (0 -> 1) + 3 consecutive non-advancing 308s.
+        self.assertEqual(len(puts), 4)
+
+    def test_missing_range_308_never_advances_sent(self):
+        puts, result = self._upload_with_puts(lambda n, h, d: (308, {}, b""))
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        self.assertEqual(len(puts), 3)
+        # Every PUT resends from the acknowledged offset 0: nothing the
+        # server did not acknowledge is ever skipped.
+        self.assertTrue(all(p.startswith("bytes 0-") for p in puts))
+
+    def test_advancing_range_308s_complete_upload(self):
+        received = {"acked": 0}
+
+        def advancing(n, h, d):
+            start = int(h["Content-Range"].split(" ")[1].split("-")[0])
+            end = start + len(d)
+            if end >= 1000:
+                return 201, {}, json.dumps({"id": "file-x"}).encode()
+            received["acked"] = min(end, received["acked"] + 100)
+            return 308, {"Range": f"bytes=0-{received['acked'] - 1}"}, b""
+
+        old_chunk = cold_store.UPLOAD_CHUNK_BYTES
+        cold_store.UPLOAD_CHUNK_BYTES = 100
+        try:
+            puts, result = self._upload_with_puts(advancing)
+        finally:
+            cold_store.UPLOAD_CHUNK_BYTES = old_chunk
+        self.assertEqual(result, "file-x")
+        starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
+        self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])
