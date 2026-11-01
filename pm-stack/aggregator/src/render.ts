@@ -248,6 +248,13 @@ details.carddetail dd { margin: 0; overflow-wrap: anywhere; }
 .qblock .qremaining { color: #e3b341; font-size: 12px; }
 .skel { border: 1px dashed #30363d; border-radius: 8px; padding: 14px 12px; margin: 8px 0; color: #8b949e; background: #0d1117; }
 .orderctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; font-size: 12.5px; color: #8b949e; }
+.bulkbar { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: #0d1117; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bulkbar select, .bulkbar input[type="text"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
+.bulkpickline { margin: 8px 0 -4px; font-size: 12.5px; color: #8b949e; }
+.bulkpickline input { width: 18px; height: 18px; vertical-align: -3px; }
+.bulkreview { flex-basis: 100%; border-top: 1px dashed #30363d; padding-top: 8px; }
+.bulkreview ul { margin: 6px 0; padding-left: 20px; max-height: 240px; overflow: auto; }
+.bulkresults { flex-basis: 100%; font-size: 13px; }
 .orderctl .aform { margin: 0; }
 .stripcard .restore-note { font-size: 12.5px; }
 .badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
@@ -2547,6 +2554,310 @@ function needsOrderHtml(act: AttentionAct | undefined): string {
   return `<div class="orderctl">Needs-you list order: <strong>${esc(labels[order])}</strong>${actboxHtml({ identities: act.identities }, form)}</div>`;
 }
 
+
+/** #1277: the per-card bulk-triage pick for one queue card. Renders
+ * only when the action surface is up (identities present); a card
+ * whose own controls are disabled (stale tier source) gets a disabled
+ * pick, so it cannot be submitted against an unconfirmed item. */
+function bulkPickHtml(
+  objectRef: string,
+  title: string,
+  act: AttentionAct | undefined,
+  disabledReason?: string,
+): string {
+  if (!act?.identities) return "";
+  return `<div class="bulkpickline"><label><input type="checkbox" class="bulkpick" data-object="${esc(objectRef)}" data-title="${esc(title)}"${disabledReason ? " disabled" : ""}> Select for bulk triage</label></div>`;
+}
+
+function bulkSnoozeOptions(): string {
+  const now = new Date();
+  const tonight = new Date(now);
+  tonight.setHours(23, 59, 0, 0);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(9, 0, 0, 0);
+  const nextWeek = new Date(now);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  nextWeek.setHours(9, 0, 0, 0);
+  return `<option value="${tonight.toISOString()}">until tonight</option><option value="${tomorrow.toISOString()}">until tomorrow 9:00</option><option value="${nextWeek.toISOString()}">until next week</option>`;
+}
+
+/** #1277: the bulk triage bar for the Needs-you queues — one verb
+ * applied to every picked card, with a review step that lists every
+ * selected item + the chosen action before anything is submitted.
+ * Submission goes to POST /api/actions/batch (BULK_SCRIPT below);
+ * each item lands as its own attributed action record. */
+function bulkBarHtml(act: AttentionAct | undefined): string {
+  if (!act?.identities) return "";
+  return `<div class="bulkbar" id="bulkbar"><strong>Bulk triage</strong>${authorSelectHtml(act.identities)}<label>Action <select name="bulkVerb"><option value="acknowledge">acknowledge</option><option value="snooze">snooze</option><option value="escalate">escalate</option><option value="delegate">delegate</option></select></label><span class="bulk-snooze-fields" hidden><label>Snooze <select name="bulkUntil">${bulkSnoozeOptions()}</select></label></span><span class="bulk-tier-fields" hidden><label>Move to <select name="bulkTier"><option value="needs-drew">Needs User</option><option value="needs-orchestrator">Needs Orchestrator</option></select></label></span><span class="bulk-mode-fields" hidden><label>Delegation <select name="bulkMode"><option value="first-pass">first-pass</option><option value="auto">auto</option><option value="user">user (take it back)</option></select></label></span><label>Reason (optional) <input type="text" name="bulkReason"></label><label><input type="checkbox" class="bulk-all"> Select all visible</label><span class="bulkcount">0 selected</span><button type="button" class="bulk-review-btn" disabled>Review batch</button><div class="bulkreview" hidden><p class="bulkreview-summary"></p><ul class="bulkreview-list"></ul><button type="button" class="bulk-confirm-btn">Submit batch</button> <button type="button" class="bulk-cancel-btn">Back</button><div class="bulkresults"></div><div class="err bulkerr"></div></div></div>`;
+}
+
+/**
+ * The client side of bulk triage (#1277): delegated listeners in the
+ * COMMENT_SCRIPT/ACTION_SCRIPT pattern, so Datastar fragment swaps
+ * keep working. Review builds nothing server-side; confirm POSTs one
+ * action object per picked card to /api/actions/batch and renders
+ * the per-item results — succeeded picks clear, failed picks stay
+ * checked (their items remain in Needs-you) with the error named.
+ */
+const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
+(function () {
+  if (window.__dashBulk) return;
+  window.__dashBulk = true;
+  // The reviewed batch, snapshotted at Review time (Codex review on
+  // PR #4053): Submit sends exactly this envelope — never a reread of
+  // live controls — and its per-item client tokens survive a lost
+  // response, so a retry dedupes against anything already recorded
+  // instead of appending duplicates. Any change to the picks or the
+  // action controls after review invalidates the snapshot.
+  var snapshot = null;
+  var submitting = false;
+  var boundBar = null;
+  function picks() { return Array.prototype.slice.call(document.querySelectorAll("input.bulkpick:checked:not(:disabled)")); }
+  function bar() { return document.getElementById("bulkbar"); }
+  function invalidate() {
+    if (submitting || !snapshot) return;
+    snapshot = null;
+    var b = bar(); if (!b) return;
+    b.querySelector(".bulkreview").hidden = true;
+    b.querySelector(".bulkerr").textContent = "Selection or action changed after review \u2014 review the batch again before submitting.";
+  }
+  function showReview(b, opts) {
+    if (!snapshot) return;
+    boundBar = b;
+    var list = b.querySelector(".bulkreview-list");
+    list.replaceChildren();
+    snapshot.items.forEach(function (it) {
+      var li = document.createElement("li");
+      li.textContent = it.title + " \u2014 " + it.object;
+      list.appendChild(li);
+    });
+    // Re-check the reviewed picks on the live cards (a fragment
+    // refresh re-renders them unchecked; the snapshot is the truth).
+    snapshot.items.forEach(function (it) {
+      var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(it.object) + '"]');
+      if (pk && !pk.disabled) pk.checked = true;
+    });
+    var summary = b.querySelector(".bulkreview-summary");
+    if (submitting) summary.textContent = "Submitting \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + " \u2014 waiting for the result\u2026";
+    else if (opts && opts.restored) summary.textContent = "Review restored after a page refresh: \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + ". Submit retries exactly this reviewed batch.";
+    else summary.textContent = "Apply \u201c" + snapshot.text + "\u201d to " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + "? Nothing is submitted yet \u2014 Submit sends exactly this reviewed list.";
+    if (!opts || !opts.keepResults) b.querySelector(".bulkresults").replaceChildren();
+    if (!opts || !opts.restored) b.querySelector(".bulkerr").textContent = "";
+    b.querySelector(".bulk-confirm-btn").disabled = submitting;
+    b.querySelector(".bulkreview").hidden = false;
+    syncBar();
+  }
+  function syncBar() {
+    var b = bar(); if (!b) return;
+    var n = picks().length;
+    b.querySelector(".bulkcount").textContent = n + " selected";
+    b.querySelector(".bulk-review-btn").disabled = submitting || n === 0;
+    var verb = b.querySelector("select[name=bulkVerb]").value;
+    b.querySelector(".bulk-snooze-fields").hidden = verb !== "snooze";
+    b.querySelector(".bulk-tier-fields").hidden = verb !== "escalate";
+    b.querySelector(".bulk-mode-fields").hidden = verb !== "delegate";
+  }
+  document.addEventListener("change", function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList) return;
+    if (t.classList.contains("bulk-all")) {
+      invalidate();
+      document.querySelectorAll("input.bulkpick:not(:disabled)").forEach(function (pk) { pk.checked = t.checked; });
+      syncBar();
+    } else if (t.classList.contains("bulkpick") || t.name === "bulkVerb" || t.name === "bulkUntil" || t.name === "bulkTier" || t.name === "bulkMode") {
+      invalidate();
+      syncBar();
+    }
+  });
+  document.addEventListener("input", function (ev) {
+    var t = ev.target;
+    if (t && t.name === "bulkReason") invalidate();
+  });
+  function describeAction(b) {
+    var verb = b.querySelector("select[name=bulkVerb]").value;
+    if (verb === "snooze") return "snooze until " + new Date(b.querySelector("select[name=bulkUntil]").value).toLocaleString();
+    if (verb === "escalate") return "escalate to " + b.querySelector("select[name=bulkTier]").value;
+    if (verb === "delegate") return "delegate (" + b.querySelector("select[name=bulkMode]").value + ")";
+    return verb;
+  }
+  document.addEventListener("click", async function (ev) {
+    var t = ev.target;
+    if (!t || !t.classList) return;
+    var b = bar(); if (!b) return;
+    if (t.classList.contains("bulk-review-btn")) {
+      if (submitting) return;
+      var sel = picks(); if (!sel.length) return;
+      var verb = b.querySelector("select[name=bulkVerb]").value;
+      var authorRaw = String((b.querySelector("select[name=author]") || {}).value || "drew|drew|");
+      var parts = authorRaw.split("|");
+      var labelEl = b.querySelector('option[value="' + CSS.escape(authorRaw) + '"]');
+      var author = { kind: parts[0], id: parts[1], label: labelEl ? labelEl.textContent : parts[1] };
+      if (parts[2]) author.sessionId = parts[2];
+      var payload = {};
+      if (verb === "snooze") payload.until = b.querySelector("select[name=bulkUntil]").value;
+      if (verb === "escalate") payload.tier = b.querySelector("select[name=bulkTier]").value;
+      if (verb === "delegate") payload.mode = b.querySelector("select[name=bulkMode]").value;
+      var reason = b.querySelector("input[name=bulkReason]").value.trim();
+      if (reason) payload.reason = reason;
+      var stamp = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+      var actions = sel.map(function (pk, i) {
+        var a = { clientToken: "ct-bulk-" + stamp + "-" + i, kind: "triage", verb: verb, objectRef: pk.dataset.object, author: author, payload: payload };
+        if (pk.dataset.object.indexOf("gh:") === 0) a.targetRef = pk.dataset.object.slice(3);
+        return a;
+      });
+      snapshot = {
+        actions: actions,
+        text: describeAction(b),
+        items: sel.map(function (pk) { return { object: pk.dataset.object, title: pk.dataset.title || pk.dataset.object }; }),
+      };
+      showReview(b, {});
+    }
+    if (t.classList.contains("bulk-cancel-btn")) {
+      if (submitting) return;
+      snapshot = null;
+      b.querySelector(".bulkreview").hidden = true;
+    }
+    if (t.classList.contains("bulk-confirm-btn")) {
+      if (submitting || !snapshot) return;
+      var batch = snapshot;
+      submitting = true;
+      t.disabled = true;
+      b.querySelector(".bulk-review-btn").disabled = true;
+      var resultsEl = b.querySelector(".bulkresults");
+      resultsEl.replaceChildren();
+      var allResults = [];
+      try {
+        // The endpoint accepts at most 100 actions per request and
+        // readJsonBody rejects bodies over 100,000 chars (server.ts),
+        // so the SAME snapshot is packed greedily under BOTH limits
+        // and the slices' per-item results are aggregated.
+        var chunks = [];
+        var cur = [];
+        var curLen = 16; // the {"actions":[]} envelope
+        batch.actions.forEach(function (a) {
+          var len = JSON.stringify(a).length + 1;
+          if (cur.length && (cur.length >= 100 || curLen + len > 90000)) {
+            chunks.push(cur);
+            cur = [];
+            curLen = 16;
+          }
+          cur.push(a);
+          curLen += len;
+        });
+        if (cur.length) chunks.push(cur);
+        for (var ci = 0; ci < chunks.length; ci++) {
+          var res = await fetch("/api/actions/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actions: chunks[ci] }) });
+          var body;
+          try {
+            body = await res.json();
+          } catch (e) {
+            // A 200 whose body never finished is an UNKNOWN outcome,
+            // not an empty success: rethrow so the outer handler
+            // keeps the snapshot (and its tokens) for an exact retry.
+            if (res.ok) throw e;
+            body = {};
+          }
+          if (!res.ok) throw new Error((body && body.error) || ("HTTP " + res.status));
+          if (!body || !Array.isArray(body.results) || body.results.length !== chunks[ci].length) {
+            throw new Error("batch response did not include per-item results for every action");
+          }
+          body.results.forEach(function (r) { allResults.push(r); });
+        }
+      } catch (e) {
+        // No definitive result: the snapshot (and its client tokens)
+        // is kept, so Submit retries the identical envelope and the
+        // endpoint dedupes anything a lost response had recorded. If
+        // a fragment refresh swapped the bar mid-flight, restore the
+        // review UI on the LIVE bar first \u2014 the retry must never
+        // be stranded on a detached element.
+        var bLive = bar();
+        if (bLive && bLive !== b) {
+          showReview(bLive, { restored: true, keepResults: true });
+          b = bLive;
+        }
+        submitting = false;
+        b.querySelector(".bulkreview-summary").textContent = "Batch result unknown for \u201c" + batch.text + "\u201d \u2014 Submit retries exactly this reviewed batch.";
+        b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        var cf = b.querySelector(".bulk-confirm-btn");
+        if (cf) cf.disabled = false;
+        b.querySelector(".bulk-review-btn").disabled = picks().length === 0;
+        return;
+      }
+      // Definitive results: the snapshot is spent. A further batch
+      // needs a fresh review, which mints fresh tokens.
+      snapshot = null;
+      submitting = false;
+      var bNow = bar();
+      if (bNow && bNow !== b) {
+        // The queues fragment was re-rendered mid-flight (e.g. a
+        // single-card action refreshed it): write the results into
+        // the LIVE bar, not the detached one.
+        b = bNow;
+        boundBar = bNow;
+        resultsEl = b.querySelector(".bulkresults");
+        resultsEl.replaceChildren();
+        b.querySelector(".bulkreview").hidden = false;
+        var cf2 = b.querySelector(".bulk-confirm-btn");
+        if (cf2) cf2.disabled = true;
+      }
+      var failedRefs = {};
+      var recorded = 0;
+      var verb0 = batch.actions.length ? batch.actions[0].verb : "";
+      allResults.forEach(function (r) {
+        var line = document.createElement("div");
+        if (r.ok) {
+          recorded++;
+          line.textContent = "\u2713 " + r.objectRef + " \u2014 recorded";
+          // Update the accepted card in place (the __dashAfter
+          // pattern): uncheck its pick, stamp the sent line, and
+          // tombstone it for a snooze. This runs even when other
+          // items failed \u2014 a partial batch gets no fragment
+          // refresh, so failed picks and errors below stay put.
+          var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(r.objectRef) + '"]');
+          if (pk) {
+            pk.checked = false;
+            var pickLine = pk.closest(".bulkpickline");
+            var card = pickLine ? pickLine.nextElementSibling : null;
+            if (card && card.classList.contains("card")) {
+              var sent = document.createElement("div");
+              sent.className = "sentline";
+              sent.textContent = "\u2713 " + verb0 + " sent \u00b7 pending \u2014 the fleet applies it on its next pass";
+              card.appendChild(sent);
+              if (verb0 === "snooze") card.classList.add("tombstone");
+            }
+          }
+        } else {
+          line.textContent = "\u2717 " + (r.objectRef || "(unknown ref)") + " \u2014 " + r.error + " (still in Needs-you)";
+          failedRefs[r.objectRef] = true;
+        }
+        resultsEl.appendChild(line);
+      });
+      var failed = allResults.length - recorded;
+      b.querySelector(".bulkreview-summary").textContent = "Batch submitted: " + recorded + " recorded, " + failed + " failed. Change the selection and Review again for another batch.";
+      syncBar();
+      if (!failed) {
+        window.dispatchEvent(new CustomEvent("dashrefresh"));
+        if (!document.querySelector("[data-frag]")) location.reload();
+      }
+    }
+  });
+  // A queue fragment refresh (a Datastar swap \u2014 e.g. a single-card
+  // action while a bulk batch is in flight or awaiting retry)
+  // replaces #bulkbar wholesale. When a reviewed snapshot exists,
+  // rebuild its review UI on the new bar, so the batch and its exact
+  // retry survive the refresh instead of stranding on detached nodes.
+  boundBar = bar();
+  new MutationObserver(function () {
+    var bNow2 = bar();
+    if (!bNow2 || bNow2 === boundBar) return;
+    boundBar = bNow2;
+    if (snapshot) showReview(bNow2, { restored: true, keepResults: true });
+    else syncBar();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
+</script>`;
+
 export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
@@ -2562,7 +2873,7 @@ export function renderAttention(
 ${sections.header}${sections.queues}${sections.sessions}`,
     provenance,
     "/attention",
-    act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT : "",
+    act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -2669,7 +2980,7 @@ export function attentionSections(
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
     drewCardsList.push({
-      html: sessionCard(e, children, 0, counts, sessionAct),
+      html: bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct),
       sinceMs: Date.parse(e.lastActivityAt ?? "") || 0,
       seenMs: Date.parse(e.lastActivityAt ?? "") || 0,
       rank: 5,
@@ -2679,8 +2990,9 @@ export function attentionSections(
     const objectRef = tierItemObjectRef(item);
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
+    const drewAct = tierAct(item);
     drewCardsList.push({
-      html: tierItemCard(item, "Why you", counts, tierAct(item)),
+      html: bulkPickHtml(objectRef, item.title, act, drewAct.disabledReason) + tierItemCard(item, "Why you", counts, drewAct),
       sinceMs: Date.parse(item.since) || 0,
       seenMs: Date.parse(item.lastSeenAt) || 0,
       rank: item.horizon ? (HORIZON_RANK[item.horizon] ?? 5) : 5,
@@ -2702,13 +3014,14 @@ export function attentionSections(
     const objectRef = sessionObjectRef(e.sessionId);
     const cs = partition(objectRef, e.title ?? e.sessionId, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(sessionCard(e, children, 0, counts, sessionAct));
+    orchCardsList.push(bulkPickHtml(objectRef, e.title ?? e.sessionId, act) + sessionCard(e, children, 0, counts, sessionAct));
   }
   for (const item of view.orchestratorExtra) {
     const objectRef = tierItemObjectRef(item);
     const cs = partition(objectRef, item.title, act?.actionsByObject?.get(objectRef));
     if (cs.suppressed) continue;
-    orchCardsList.push(tierItemCard(item, "Why the fleet", counts, tierAct(item)));
+    const orchAct = tierAct(item);
+    orchCardsList.push(bulkPickHtml(objectRef, item.title, act, orchAct.disabledReason) + tierItemCard(item, "Why the fleet", counts, orchAct));
   }
   // Store-only suppressed refs: items the publisher no longer lists
   // (their dismissal was applied and they left the tiers) stay visible
@@ -2753,7 +3066,7 @@ ${delegationDefault}`;
   const hiddenStrip = hiddenList.length
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
-  const queues = `${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+  const queues = `${bulkBarHtml(act)}${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
 ${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
@@ -2786,7 +3099,7 @@ ${attentionFragment("sessions", skel("sessions"))}`;
     body,
     provenance,
     "/attention",
-    ACTION_SCRIPT + COMMENT_SCRIPT,
+    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
