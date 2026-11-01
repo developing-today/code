@@ -890,6 +890,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // first-time unmatched SaaS/AI charges (the collector's
       // surfaced-state guarantees exactly-once), so each becomes
       // an attention flag here and never repeats on later feeds.
+      // Charges sanitization loss (#2445): rows loadFeed dropped are
+      // counted on the feed; surface that count in the usage
+      // provenance on every return path below, never swallow it.
+      const chargesDroppedNote = feed?.chargesDropped
+        ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
+        : "";
       const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
         kind: "unmatched-charge",
         label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -898,7 +904,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         severity: u.amountUsd,
       }));
       if (feed?.saas && feed.saas.length) {
-        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -944,7 +950,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           subscriptions: extractSubscriptions(doc),
         };
         partial.services = await tursoOverlay(cfg, partial.services);
-        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
+        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" + chargesDroppedNote;
         return {
           ...partial,
           chargesNote: partial.charges.length
@@ -955,7 +961,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)";
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
         const fallback = await fix.usage();
         // #3124: even the fixtures fallback keeps the feed's charge
         // evidence when a feed exists — fixtures stand in for the

@@ -49,6 +49,9 @@ export interface FleetFeed {
    * only when at least one row (or a non-array section) was dropped;
    * absent on raw parsed feeds and on clean loads. */
   subscriptionsDropped?: number;
+  /** Rows loadFeed's charges sanitization dropped (#2445), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  chargesDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -347,6 +350,20 @@ export function isBurnSegment(v: unknown): v is BurnSegment {
 export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
   if (!isRecord(v)) return false;
   return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+
+/** One charges-evidence row as the /quota charges strip renders it
+ * (#2445): a record with string at/label/method/source and a
+ * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
+ * validate.ts primitives, like the quota element validators above. */
+export function isChargeRow(v: unknown): v is ChargeRow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.at === "string" &&
+    typeof v.label === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    typeof v.method === "string" &&
+    typeof v.source === "string"
+  );
 }
 
 /** The choices block renderQuota dereferences (hasHeadroom et al.). */
@@ -488,6 +505,21 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // drop individually and well-formed siblings still surface.
     const charges = parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
+    // Charges rows get the same drop-and-count treatment at this same
+    // shared gate (#2445): the section is optional, so absence stays
+    // absent; a non-array section drops whole (counted as one dropped
+    // section) instead of silently emptying the charges strip or
+    // crashing a consumer; malformed rows drop individually. The
+    // count rides out on the feed when drops occur, never swallowed.
+    let chargesPart: { charges?: ChargeRow[]; chargesDropped?: number } = {};
+    if (parsed.charges !== undefined) {
+      const rows = arrayOf(isChargeRow)(parsed.charges);
+      if (rows === null) {
+        chargesPart = { charges: [], chargesDropped: 1 };
+      } else {
+        chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
+      }
+    }
     return {
       ...parsed,
       quota: san.view,
@@ -496,6 +528,7 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
       ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
       subscriptions: subs.rows,
       ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...chargesPart,
     };
   } catch {
     return null;
