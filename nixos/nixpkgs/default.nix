@@ -49,6 +49,54 @@
           ];
         });
       })
+      # TEMPORARY (code#3906, found via code#2715): the nixpkgs bump
+      # broke haskellPackages.regex-pcre (in the amd closure via
+      # misfortune -> man-paths -> system-path) twice over. Between
+      # the old and new unstable pins (6510408d -> 31ecbaca), the
+      # Haskell builder stopped adding the pkg-config wrapper and
+      # the pkgconfig-depends libraries to Haskell build
+      # environments, and nixpkgs removed the EOL pcre C library
+      # outright; regex-pcre's Cabal configure hard-requires both
+      # the pkg-config program and libpcre.pc, so its build fails
+      # deterministically. Restore the old build environment for
+      # this one package: pkg-config in nativeBuildInputs, plus a
+      # minimal vendored pcre 8.45 (the version the old pin shipped;
+      # upstream's two patches are omitted -- one is PowerPC-only,
+      # the other only matters to pcre's own test suite, which is
+      # disabled here) in buildInputs. Remove once regex-pcre
+      # builds stock again or misfortune leaves the closure; the
+      # removal test is in code#3906.
+      (
+        final: prev:
+        let
+          pcre_8_45 = prev.stdenv.mkDerivation {
+            pname = "pcre";
+            version = "8.45";
+            src = prev.fetchurl {
+              url = "mirror://sourceforge/project/pcre/pcre/8.45/pcre-8.45.tar.bz2";
+              sha256 = "sha256-Ta5v3NK7C7bDe1+Xwzwr6VTadDmFNpzdrDVG4yGL/7g=";
+            };
+            nativeBuildInputs = [ prev.updateAutotoolsGnuConfigScriptsHook ];
+            configureFlags = [
+              "--enable-unicode-properties"
+              "--disable-cpp"
+              "--enable-jit=auto"
+            ];
+            hardeningDisable = [ "shadowstack" ];
+            doCheck = false;
+          };
+        in
+        {
+          haskellPackages = prev.haskellPackages.override {
+            overrides = self: super: {
+              regex-pcre = super.regex-pcre.overrideAttrs (old: {
+                nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ prev.pkg-config ];
+                buildInputs = (old.buildInputs or [ ]) ++ [ pcre_8_45 ];
+              });
+            };
+          };
+        }
+      )
       # Provides pkgs.openclaw + pkgs.openclawPackages for home/openclaw.
       inputs.nix-openclaw.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css
