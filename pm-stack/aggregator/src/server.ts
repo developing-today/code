@@ -10,7 +10,7 @@ import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
-import { CommentsStore, validateNewComment } from "./comments.ts";
+import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -66,6 +66,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderCommentsQueue,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -435,7 +436,7 @@ async function boardRender() {
     source.projects().catch(() => []),
     commentFormOpts(),
     actionsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
   ]);
   const act = {
     actionsByObject,
@@ -454,7 +455,7 @@ async function attentionRender() {
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
@@ -680,7 +681,7 @@ async function handler(req: Request): Promise<Response> {
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     return html(
-      renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill),
     );
   }
 
@@ -868,6 +869,15 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/pages") {
     return html(renderPages(prov(), pageRenderHealth()));
+  }
+
+  if (path === "/comments") {
+    return html(renderCommentsQueue(await commentsStore.all(), prov()));
+  }
+
+  if (path === "/api/comments/queue.json") {
+    const all = await commentsStore.all();
+    return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
   }
 
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
