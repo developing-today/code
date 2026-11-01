@@ -29,6 +29,26 @@ pub struct Mail {
     pub body: String,
 }
 
+impl Mail {
+    /// Validate fields that sinks serialize into mail headers.
+    fn validate_header_fields(&self) -> Result<()> {
+        ensure!(
+            self.to.is_ascii(),
+            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
+            self.to
+        );
+        ensure!(
+            plain_address(&self.to),
+            "the recipient is not a plain address"
+        );
+        ensure!(
+            !self.subject.chars().any(char::is_control),
+            "the subject has a line break or control character"
+        );
+        Ok(())
+    }
+}
+
 /// Something that takes a message out of the world.
 pub trait MailSink: Debug + Send + Sync {
     /// Hand the message off.
@@ -56,6 +76,7 @@ impl OutboxSink {
 
 impl MailSink for OutboxSink {
     fn send(&self, mail: &Mail) -> Result<()> {
+        mail.validate_header_fields()?;
         use std::os::unix::fs::OpenOptionsExt as _;
         let mut name = [0_u8; 8];
         rand::rng().fill(&mut name);
@@ -146,19 +167,7 @@ impl SmtpSink {
 
 impl MailSink for SmtpSink {
     fn send(&self, mail: &Mail) -> Result<()> {
-        ensure!(
-            mail.to.is_ascii(),
-            "cannot mail {}: it is internationalised (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the message was not sent",
-            mail.to
-        );
-        ensure!(
-            plain_address(&mail.to),
-            "the recipient is not a plain address"
-        );
-        ensure!(
-            !mail.subject.chars().any(char::is_control),
-            "the subject has a line break or control character"
-        );
+        mail.validate_header_fields()?;
         let stream = TcpStream::connect_timeout(&self.relay, RELAY_TIMEOUT)
             .context("connect to the mail relay")?;
         stream.set_read_timeout(Some(RELAY_TIMEOUT))?;
@@ -292,6 +301,28 @@ mod tests {
         let mode = std::fs::metadata(&entries[0]).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn assert_outbox_refuses_without_file(mail: &Mail, expected_error: &str) {
+        let dir = scratch("outbox-invalid");
+        let error = OutboxSink::new(dir.clone()).send(mail).unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error:#}");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_outbox_refuses_subject_header_injection_before_creating_file() {
+        let mut mail = sample();
+        mail.subject = "Your code\nBcc: attacker@evil.example".to_owned();
+        assert_outbox_refuses_without_file(&mail, "subject");
+    }
+
+    #[test]
+    fn the_outbox_refuses_crlf_recipient_before_creating_file() {
+        let mut mail = sample();
+        mail.to = "a@b.co>\r\nRCPT TO:<x@y.z".to_owned();
+        assert_outbox_refuses_without_file(&mail, "recipient");
     }
 
     #[test]
