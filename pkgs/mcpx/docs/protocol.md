@@ -611,7 +611,7 @@ What mcpx sends upstream, and what it will accept from a server.
 | per-server override | `protocol: prefer-discover \| prefer-initialize \| force-discover \| force-initialize \| follow`, over `upstream.protocol` (default `prefer-discover`); the old names `modern`, `legacy`, `force-modern`, `force-legacy` and others are accepted as aliases ([spec/era-probe.md](spec/era-probe.md#values)); `follow` adds a legacy session for legacy callers ([spec/era-probe.md](spec/era-probe.md#follow)) |
 | legacy version | `2025-11-25` offered; `2024-11-05` .. `2025-11-25` accepted; anything else and mcpx disconnects |
 | modern version | `2026-07-28` |
-| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` when a handler is installed — which in the daemon is always (#210) |
+| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` only when the corresponding handler is installed |
 | transports | stdio, Streamable HTTP, and HTTP+SSE (2024-11-05) as the last fallback of the HTTP probe, remembered in the era record |
 | stdio shutdown | close stdin, wait `stdioShutdown.stdinGrace` (2s, a built-in default) for the server to exit, then `SIGTERM` the process group, wait `stdioShutdown.termGrace` (3s), then `SIGKILL` — every revision's stdio SHOULD (#203 LV-39; it used to `SIGTERM` at once) |
 | headers | legacy: `MCP-Protocol-Version` is the negotiated version, omitted on `initialize` and up to 2025-03-26; modern: `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*` for `x-mcp-header` parameters, never a session id |
@@ -632,7 +632,7 @@ passed every test.
 | request | mcpx answers | regardless of era |
 | --- | --- | --- |
 | `ping` | `{}` | yes |
-| `roots/list` | the daemon's roots, before consulting any handler — and the daemon passes none, so the list is empty (#210) | yes |
+| `roots/list` | relayed to the associated host when it declared roots and the relay applies; otherwise the daemon's configured roots (empty only when none are configured) | yes |
 | `elicitation/create` | through the broker, or `{"action":"cancel"}` when nothing can answer; a mode that was not declared for the revision in use is refused | yes |
 | `sampling/createMessage` | through the broker; a decline becomes an error, since the specification has no decline result for sampling | yes |
 | anything else | `-32601`, but **always answered** — silence is indistinguishable from a hung server | yes |
