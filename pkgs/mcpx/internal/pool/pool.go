@@ -86,6 +86,12 @@ type Instance struct {
 	// config cwd, read from the instance at every (re)start and never
 	// re-resolved at redial. "" when the scope has no root.
 	root string
+	// execStamp and execIdentity identify the executable actually used by
+	// this instance. Scope-rooted relative commands can differ per instance,
+	// so their exec watch cannot use one pool-wide identity.
+	execStamp    config.ExecStamp
+	execIdentity string
+	execMissing  bool
 	// holders counts current callers. Exclusive sharing admits one; shared
 	// sharing admits any number.
 	holders   int
@@ -606,6 +612,14 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	defer cancel()
 	launched := time.Now()
 
+	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
+	if !p.cfg.Stdio() {
+		// No process, no cwd: the root is recorded, but nothing spawns
+		// anywhere, so the daemon-cwd source is the honest one.
+		spawnCwd, cwdSource = "", "daemon"
+	}
+	execStamp, execIdentity, _ := p.cfg.ExecStateAt(spawnCwd)
+
 	tr, err := p.dial(sctx, rs.Root)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
@@ -726,23 +740,19 @@ func (p *Pool) startLane(ctx context.Context, legacy bool, rs config.ResolvedSco
 	id := fmt.Sprintf("%s#%d", p.cfg.Name, p.seq)
 	p.mu.Unlock()
 
-	spawnCwd, cwdSource := SpawnCwd(p.cfg.Cwd, rs.Root)
-	if !p.cfg.Stdio() {
-		// No process, no cwd: the root is recorded, but nothing spawns
-		// anywhere, so the daemon-cwd source is the honest one.
-		spawnCwd, cwdSource = "", "daemon"
-	}
 	in := &Instance{
-		ID:         id,
-		Client:     cl,
-		transport:  tr,
-		key:        rs.Key,
-		root:       rs.Root,
-		trace:      newTraceID("srv"),
-		startedAt:  time.Now(),
-		lastUsed:   time.Now(),
-		eraSource:  source,
-		legacyLane: legacy,
+		ID:           id,
+		Client:       cl,
+		transport:    tr,
+		key:          rs.Key,
+		root:         rs.Root,
+		execStamp:    execStamp,
+		execIdentity: execIdentity,
+		trace:        newTraceID("srv"),
+		startedAt:    time.Now(),
+		lastUsed:     time.Now(),
+		eraSource:    source,
+		legacyLane:   legacy,
 	}
 	ref.set(in)
 	// One line per spawn (decision 0004 §6): which server, serving

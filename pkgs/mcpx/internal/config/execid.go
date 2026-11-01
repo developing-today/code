@@ -63,10 +63,17 @@ func (r *Resolved) ExecIdentity() string {
 // lands in between leaves a stamp that differs from the file and the next
 // check sees it.
 func (r *Resolved) ExecState() (st ExecStamp, identity string, ok bool) {
+	return r.ExecStateAt(r.Cwd)
+}
+
+// ExecStateAt is ExecState for a child whose effective spawn cwd is cwd.
+// Scope-rooted instances use this instead of resolving a relative command
+// against the daemon's cwd (decision 0004, review of #958).
+func (r *Resolved) ExecStateAt(cwd string) (st ExecStamp, identity string, ok bool) {
 	if !r.Stdio() {
 		return ExecStamp{}, "", false
 	}
-	st, found := r.ExecStamp()
+	st, found := r.ExecStampAt(cwd)
 	if found {
 		if id, err := st.Identity(); err == nil {
 			return st, id, true
@@ -91,10 +98,15 @@ type ExecStamp struct {
 // server that is not a child process, and for a command that does not
 // resolve to a file it can stat.
 func (r *Resolved) ExecStamp() (ExecStamp, bool) {
+	return r.ExecStampAt(r.Cwd)
+}
+
+// ExecStampAt is ExecStamp for a child with effective spawn cwd cwd.
+func (r *Resolved) ExecStampAt(cwd string) (ExecStamp, bool) {
 	if !r.Stdio() {
 		return ExecStamp{}, false
 	}
-	path := r.resolveExec()
+	path := r.resolveExecAt(cwd)
 	if path == "" {
 		return ExecStamp{}, false
 	}
@@ -168,10 +180,22 @@ func (r *Resolved) ProcessID() string {
 // child will see -- the server's own env if it sets one, else the daemon's --
 // rather than the daemon's PATH alone, since a server can set its own.
 func (r *Resolved) resolveExec() string {
+	return r.resolveExecAt(r.Cwd)
+}
+
+// ExecUsesScopeRoot reports whether resolving the configured executable can
+// depend on a scope root. A relative command containing a path separator is
+// resolved by the child relative to its effective spawn cwd when no config
+// cwd is set.
+func (r *Resolved) ExecUsesScopeRoot() bool {
+	return r.Cwd == "" && strings.Contains(r.Command, string(filepath.Separator)) && !filepath.IsAbs(r.Command)
+}
+
+func (r *Resolved) resolveExecAt(cwd string) string {
 	if strings.Contains(r.Command, string(filepath.Separator)) {
 		p := r.Command
-		if !filepath.IsAbs(p) && r.Cwd != "" {
-			p = filepath.Join(r.Cwd, p)
+		if !filepath.IsAbs(p) && cwd != "" {
+			p = filepath.Join(cwd, p)
 		}
 		if isExecutable(p) {
 			return p

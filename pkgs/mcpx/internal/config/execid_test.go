@@ -66,6 +66,24 @@ func TestExecIdentityResolvesAgainstTheServersOwnPath(t *testing.T) {
 	}
 }
 
+func TestExecStampAtResolvesRelativeCommandFromEffectiveSpawnCwd(t *testing.T) {
+	root := testsupport.TempDir(t)
+	bin := filepath.Join(root, "server")
+	writeExec(t, bin, "#!/bin/sh\n")
+	r := &Resolved{Server: &Server{Command: "./server"}}
+	st, ok := r.ExecStampAt(root)
+	if !ok || st.Path != bin {
+		t.Fatalf("stamp at scope root = %+v, %v; want %s", st, ok, bin)
+	}
+	if !r.ExecUsesScopeRoot() {
+		t.Fatal("relative command without config cwd was not marked scope-root-dependent")
+	}
+	r.Cwd = root
+	if r.ExecUsesScopeRoot() {
+		t.Fatal("explicit config cwd should keep executable resolution pool-wide")
+	}
+}
+
 // A symlink re-pointed at a byte-identical file runs the same program, so it
 // keeps its identity; the stamp still moves, which is what makes the check
 // look again.

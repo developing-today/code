@@ -1256,12 +1256,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 	rs := r.resolvedFor(p, cc)
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
-	if key := r.disambiguate(ctx, p, cc, rs.Key); key != rs.Key {
-		// Disambiguation chooses among live instances, so the chosen
-		// instance already carries its own root; a root resolved for
-		// the pre-disambiguation key must not be handed to it.
-		rs = config.ResolvedScope{Key: key}
-	}
+	rs = r.disambiguate(ctx, p, cc, rs)
 	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return config.ResolvedScope{}, err
