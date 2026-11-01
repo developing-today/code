@@ -3155,11 +3155,11 @@ mod tests {
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
-        assert!(initial.windows(4).any(|window| window == b"[2J"));
+        assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
         let update = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
         assert!(
-            !update.windows(4).any(|window| window == b"[2J"),
+            !update.windows(3).any(|window| window == b"[2J"),
             "subsequent screen update should not clear and repaint the terminal"
         );
         assert!(
