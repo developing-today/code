@@ -123,6 +123,20 @@ impl WorldHandle {
             .await
             .context("world actor dropped metrics response")
     }
+
+    /// Capture journal-order event history and its records for an admin export.
+    /// The session layer must authorize the admin token before calling this.
+    pub(crate) async fn admin_event_history(&self) -> Result<AdminEventHistory> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminEventHistory { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped admin history response")?
+    }
+
     /// The latest `(sequence, records)` published by the world program.
     /// Callers must authorize the reader first (see [`Self::participant_id`]).
     #[must_use]

@@ -43,6 +43,7 @@ impl WorldCommand {
             Self::SetFileScope { .. } => "SetFileScope",
             Self::PolicyInfo { .. } => "PolicyInfo",
             Self::Metrics { .. } => "Metrics",
+            Self::AdminEventHistory { .. } => "AdminEventHistory",
             Self::Shutdown { .. } => "Shutdown",
         }
     }
@@ -218,6 +219,10 @@ pub(crate) enum WorldCommand {
     /// recorded by the actor, the journal path, and the session layer.
     Metrics {
         reply: oneshot::Sender<MetricsSnapshot>,
+    },
+    /// Admin-only consistent snapshot for replayable fixture export.
+    AdminEventHistory {
+        reply: oneshot::Sender<Result<AdminEventHistory>>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -431,8 +436,13 @@ impl WorldActor {
                 return false;
             }
         }
-        let journaled = self.persist(JournalEntry::System { event }).is_ok();
+        let journaled = self
+            .persist(JournalEntry::System {
+                event: event.clone(),
+            })
+            .is_ok();
         if journaled {
+            self.core.record_admin_history(event);
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);
@@ -722,7 +732,7 @@ impl WorldActor {
         let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
             return Err(CapError::bad_args());
         };
-        match self.core.system_chat(text) {
+        match self.core.prepare_system_chat(text) {
             Ok(event) => {
                 if self
                     .persist(JournalEntry::Committed {
@@ -730,6 +740,9 @@ impl WorldActor {
                     })
                     .is_err()
                 {
+                    return Err(CapError::failed());
+                }
+                if self.core.commit_prepared(event.clone()).is_err() {
                     return Err(CapError::failed());
                 }
                 let _ = self.event_sender.send(event.clone());
@@ -1117,11 +1130,11 @@ impl WorldActor {
                         "world storage failed; the world is read-only"
                     ))
                 } else {
-                    self.core.chat(&token, &text).and_then(|event| {
+                    self.core.prepare_chat(&token, &text).and_then(|event| {
                         self.persist(JournalEntry::Committed {
                             event: event.clone(),
                         })?;
-                        Ok(event)
+                        self.core.commit_prepared(event)
                     })
                 };
                 if let Ok(event) = &result {
@@ -1470,6 +1483,24 @@ impl WorldActor {
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
                 let _ = reply.send(self.metrics.snapshot(sessions));
+            }
+            WorldCommand::AdminEventHistory { reply } => {
+                let result = (|| -> Result<AdminEventHistory> {
+                    ensure!(
+                        !self.storage_failed,
+                        "world storage failed; admin history is unavailable"
+                    );
+                    let records = self.records_sender.borrow().1.as_ref().clone();
+                    Ok(AdminEventHistory {
+                        world_id: self.core.world_id.clone(),
+                        module_hash: self.core.active_module_hash.clone(),
+                        current_sequence: self.core.sequence,
+                        complete: self.core.admin_history_complete,
+                        events: self.core.admin_history.iter().cloned().collect(),
+                        records,
+                    })
+                })();
+                let _ = reply.send(result);
             }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());

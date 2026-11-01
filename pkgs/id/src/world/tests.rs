@@ -106,12 +106,17 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
+    fn restore_accepts_v1_through_v4_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
         // which is exactly where a version-1 binary refuses a version-2
         // journal, before any entry is applied.
-        for version in [JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE] {
+        for version in [
+            JOURNAL_VERSION,
+            JOURNAL_VERSION_EXECUTION_PROFILE,
+            JOURNAL_VERSION_REGION_HANDOFF,
+            JOURNAL_VERSION_OPEN_PRESENCE,
+        ] {
             let restored = WorldCore::restore(
                 "w",
                 WorldLimits::default(),
@@ -207,6 +212,8 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             transfers: None,
+            admin_history: None,
+            open_presence: None,
             snapshot: "s".to_owned(),
             events: vec![WorldEvent {
                 sequence: 1,
@@ -269,15 +276,16 @@ mod tests {
         assert_eq!(transfers[1].direction, HandoffDirection::Import);
         assert_eq!(transfers[1].new_owner_epoch, Some(2));
 
-        // Compaction must preserve the active handoffs (fence, payload,
-        // receipt, epochs) and mark the compacted header version 3.
+        // Compaction must preserve active handoffs (fence, payload, receipt,
+        // epochs). New checkpoints also carry known-empty presence metadata,
+        // so their header uses version 4, above the handoff version 3.
         let mut core = restored.core;
         core.active_module_hash = Some("h".to_owned());
         let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
         assert!(matches!(
             compacted[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_REGION_HANDOFF,
+                version: JOURNAL_VERSION_OPEN_PRESENCE,
                 ..
             }
         ));
@@ -310,12 +318,13 @@ mod tests {
         core.execution_profile = profile;
         core.active_module_hash = Some("h".to_owned());
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
-        // The checkpoint re-emits the profile entry, so the compacted
-        // journal's header must carry the version it requires (#227).
+        // The checkpoint re-emits the profile and known-empty open-presence
+        // metadata, so its journal header must carry the newest required
+        // format version (#227).
         assert!(matches!(
             entries[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                version: JOURNAL_VERSION_OPEN_PRESENCE,
                 ..
             }
         ));
@@ -681,6 +690,83 @@ mod tests {
     }
 
     #[test]
+    fn host_system_events_cannot_enter_participant_history() {
+        let system = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event:
+                    r#"{"cap":"result","id":"private","ok":true,"value":{"secret":"host-only"}}"#
+                        .to_owned(),
+            },
+        };
+        let committed_system = vec![
+            JournalEntry::Created {
+                world_id: "system-history".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Committed {
+                event: system.clone(),
+            },
+        ];
+        assert!(
+            WorldCore::restore("system-history", WorldLimits::default(), committed_system).is_err(),
+            "a host event cannot be restored as a sequenced participant event"
+        );
+
+        let malformed_system = vec![
+            JournalEntry::Created {
+                world_id: "system-history".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::System {
+                event: WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::Chat("not a system event".to_owned()),
+                },
+            },
+        ];
+        assert!(
+            WorldCore::restore("system-history", WorldLimits::default(), malformed_system).is_err(),
+            "a journal System entry must carry a System event payload"
+        );
+
+        let mut checkpoint_core = WorldCore::new("system-history", WorldLimits::default()).unwrap();
+        checkpoint_core.active_module_hash = Some("h".to_owned());
+        let mut checkpoint = checkpoint_core
+            .checkpoint_entries("snapshot".to_owned())
+            .unwrap();
+        if let Some(JournalEntry::Checkpoint {
+            sequence, events, ..
+        }) = checkpoint.last_mut()
+        {
+            *sequence = 1;
+            *events = vec![system.clone()];
+        }
+        assert!(
+            WorldCore::restore("system-history", WorldLimits::default(), checkpoint).is_err(),
+            "a host event cannot be restored in sequenced checkpoint history"
+        );
+
+        let mut core = WorldCore::new("system-history", WorldLimits::default()).unwrap();
+        let (_, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.sequence = system.sequence;
+        core.events.push_back(system);
+
+        assert!(
+            core.snapshot(&token).unwrap().events.is_empty(),
+            "a snapshot must filter even a malformed retained host event"
+        );
+        assert!(
+            core.events_after(&token, 0).unwrap().events.is_empty(),
+            "catch-up pages must filter even a malformed retained host event"
+        );
+    }
+
+    #[test]
     fn a_restore_closes_presence_the_journal_left_open() {
         let secret = "cd".repeat(32);
         let digest = hex_encode(&token_digest(&format!("1.{secret}")));
@@ -748,6 +834,429 @@ mod tests {
         // A compacted journal restores with the grant intact.
         let restored = WorldCore::restore("caps", WorldLimits::default(), entries).unwrap();
         assert!(restored.core.ledger.is_granted("time.now"));
+    }
+
+    #[test]
+    fn a_checkpoint_preserves_ordered_admin_history_across_host_events() {
+        let mut core = WorldCore::new("history", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let (participant, _) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let install = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 7,
+                provenance: None,
+            },
+        };
+        core.commit_prepared(install.clone()).unwrap();
+        let joined = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", true),
+            },
+        };
+        core.record_admin_history(joined.clone());
+        let input = WorldEvent {
+            sequence: 2,
+            participant_id: 1,
+            kind: WorldEventKind::Input(b"move".to_vec()),
+        };
+        core.commit_prepared(input.clone()).unwrap();
+        let tick = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: r#"{"cap":"time.tick","interval_ms":1000}"#.to_owned(),
+            },
+        };
+        core.record_admin_history(tick.clone());
+        let schedule = WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: schedule_fired_event("wake", false),
+            },
+        };
+        core.record_admin_history(schedule.clone());
+
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored = WorldCore::restore("history", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.admin_history_complete);
+        assert_eq!(
+            restored
+                .core
+                .admin_history
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                install,
+                joined,
+                input,
+                tick,
+                schedule,
+                WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: presence_event(participant.id, "ann", false),
+                    },
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_preserves_open_presence_and_restore_closes_it_once() {
+        let mut core = WorldCore::new("presence-checkpoint", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let (participant, _) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let presence = |joined| WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(participant.id, "ann", joined),
+            },
+        };
+        core.record_admin_history(presence(true));
+
+        let checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        assert!(matches!(
+            checkpoint.first(),
+            Some(JournalEntry::Created {
+                version: JOURNAL_VERSION_OPEN_PRESENCE,
+                ..
+            })
+        ));
+        assert!(matches!(
+            checkpoint.last(),
+            Some(JournalEntry::Checkpoint {
+                open_presence: Some(participants),
+                ..
+            }) if participants == &vec![participant.id]
+        ));
+        let mut mislabeled = checkpoint.clone();
+        if let Some(JournalEntry::Created { version, .. }) = mislabeled.first_mut() {
+            *version = JOURNAL_VERSION_REGION_HANDOFF;
+        }
+        assert!(
+            WorldCore::restore("presence-checkpoint", WorldLimits::default(), mislabeled).is_err(),
+            "a v3 header cannot silently carry v4 presence semantics"
+        );
+
+        let reopened = WorldCore::restore(
+            "presence-checkpoint",
+            WorldLimits::default(),
+            checkpoint.clone(),
+        )
+        .unwrap();
+        assert_eq!(reopened.replay.len(), 1);
+        assert_eq!(
+            reopened.replay[0].kind,
+            WorldEventKind::System {
+                event: presence_event(participant.id, "ann", false),
+            }
+        );
+        assert!(reopened.core.open_presence.is_empty());
+
+        let mut already_closed = checkpoint.clone();
+        already_closed.push(JournalEntry::System {
+            event: presence(false),
+        });
+        let reopened = WorldCore::restore(
+            "presence-checkpoint",
+            WorldLimits::default(),
+            already_closed,
+        )
+        .unwrap();
+        assert_eq!(reopened.replay, vec![presence(false)]);
+
+        let mut reopened_then_joined = checkpoint.clone();
+        reopened_then_joined.extend([
+            JournalEntry::System {
+                event: presence(false),
+            },
+            JournalEntry::System {
+                event: presence(true),
+            },
+        ]);
+        let reopened = WorldCore::restore(
+            "presence-checkpoint",
+            WorldLimits::default(),
+            reopened_then_joined,
+        )
+        .unwrap();
+        assert_eq!(reopened.replay.len(), 3);
+        assert_eq!(
+            reopened.replay.last().unwrap().kind,
+            WorldEventKind::System {
+                event: presence_event(participant.id, "ann", false),
+            }
+        );
+
+        // A legacy v3 checkpoint has no dedicated presence field; if its
+        // complete admin history is available, the open join remains
+        // recoverable. Older checkpoints without complete history still load
+        // as before, without guessing about truncated joins.
+        let mut legacy = checkpoint;
+        if let Some(JournalEntry::Created { version, .. }) = legacy.first_mut() {
+            *version = JOURNAL_VERSION_REGION_HANDOFF;
+        }
+        if let Some(JournalEntry::Checkpoint { open_presence, .. }) = legacy.last_mut() {
+            *open_presence = None;
+        }
+        let reopened =
+            WorldCore::restore("presence-checkpoint", WorldLimits::default(), legacy).unwrap();
+        assert_eq!(reopened.replay.len(), 1);
+        assert_eq!(
+            reopened.replay[0].kind,
+            WorldEventKind::System {
+                event: presence_event(participant.id, "ann", false),
+            }
+        );
+    }
+
+    #[test]
+    fn a_legacy_checkpoint_with_unknown_presence_clears_stale_guest_state_and_stays_partial() {
+        let mut core = WorldCore::new("legacy-presence", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let (ann, _) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let (bob, _) = core
+            .issue_capability("bob", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.commit_prepared(WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 7,
+                provenance: None,
+            },
+        })
+        .unwrap();
+        core.record_admin_history(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(ann.id, "ann", true),
+            },
+        });
+        let checkpoint = core
+            .checkpoint_entries("snapshot-with-ann-online".to_owned())
+            .unwrap();
+
+        for legacy_history in [
+            None,
+            Some(JournalAdminHistory {
+                events: Vec::new(),
+                complete: false,
+            }),
+        ] {
+            let mut legacy = checkpoint.clone();
+            if let Some(JournalEntry::Created { version, .. }) = legacy.first_mut() {
+                *version = JOURNAL_VERSION_REGION_HANDOFF;
+            }
+            if let Some(JournalEntry::Checkpoint {
+                admin_history,
+                open_presence,
+                ..
+            }) = legacy.last_mut()
+            {
+                *admin_history = legacy_history;
+                *open_presence = None;
+            }
+
+            let restored =
+                WorldCore::restore("legacy-presence", WorldLimits::default(), legacy).unwrap();
+            assert_eq!(
+                restored
+                    .program
+                    .as_ref()
+                    .and_then(|program| program.snapshot.as_deref()),
+                Some("snapshot-with-ann-online"),
+                "the legacy snapshot itself still contains Ann's stale online state"
+            );
+            assert!(
+                !restored.core.admin_history_complete,
+                "synthetic cleanup must never promote missing or partial history"
+            );
+
+            let changes: Vec<_> = restored
+                .replay
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    WorldEventKind::System { event } => presence_change(event),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(changes, vec![(ann.id, false), (bob.id, false)]);
+
+            // Model the guest-visible set loaded from the opaque snapshot,
+            // then apply the host-only replay events that follow that snapshot.
+            let mut visible_online = std::collections::BTreeSet::from([ann.id]);
+            for (participant, joined) in changes {
+                if joined {
+                    visible_online.insert(participant);
+                } else {
+                    visible_online.remove(&participant);
+                }
+            }
+            assert!(
+                visible_online.is_empty(),
+                "legacy recovery cannot leave stale guest-visible presence"
+            );
+            assert!(
+                !restored.core.admin_history_complete,
+                "recording cleanup events must preserve partial-history status"
+            );
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_persists_known_empty_presence_with_the_new_format_version() {
+        let mut core = WorldCore::new("empty-presence", WorldLimits::default()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        assert!(matches!(
+            entries.first(),
+            Some(JournalEntry::Created {
+                version: JOURNAL_VERSION_OPEN_PRESENCE,
+                ..
+            })
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::Checkpoint {
+                open_presence: Some(participants),
+                ..
+            }) if participants.is_empty()
+        ));
+        let restored =
+            WorldCore::restore("empty-presence", WorldLimits::default(), entries).unwrap();
+        assert!(restored.replay.is_empty());
+        assert!(restored.core.open_presence.is_empty());
+    }
+
+    #[test]
+    fn a_revoked_connected_guest_over_the_quota_still_writes_a_restorable_checkpoint() {
+        let limits = WorldLimits {
+            participants: 1,
+            ..WorldLimits::default()
+        };
+        let mut core = WorldCore::new("revoked-presence", limits.clone()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        let (ann, _) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.record_admin_history(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(ann.id, "ann", true),
+            },
+        });
+
+        // Revocation is durable immediately, but Ann's session may not have
+        // processed the revocation signal and emitted `left` yet.
+        assert_eq!(core.revoke_tree(ann.id), vec![ann.id]);
+        let (bob, _) = core
+            .issue_capability("bob", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        core.record_admin_history(WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: presence_event(bob.id, "bob", true),
+            },
+        });
+        assert_eq!(core.open_presence.len(), 2);
+        assert_eq!(limits.participants, 1);
+
+        // Presence has its own stable journal bound, not the configurable
+        // active-capability quota. Every checkpoint the writer emits must be
+        // accepted under the same limits, even before Ann's leave arrives.
+        let entries = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::Checkpoint {
+                open_presence: Some(participants),
+                ..
+            }) if participants == &vec![ann.id, bob.id]
+        ));
+        let restored = WorldCore::restore("revoked-presence", limits.clone(), entries.clone())
+            .expect("the checkpoint written while revoked Ann is connected must restore");
+        assert_eq!(restored.replay.len(), 2);
+        assert!(restored.core.open_presence.is_empty());
+
+        // Both directions enforce the same hard format bound. A live world
+        // beyond it keeps its full journal instead of producing a checkpoint
+        // that a later process cannot load.
+        let mut unrepresentable = WorldCore::new("too-many-presences", limits.clone()).unwrap();
+        unrepresentable.active_module_hash = Some("h".to_owned());
+        unrepresentable.open_presence = (0..=MAX_CHECKPOINT_OPEN_PRESENCE as u64).collect();
+        assert!(
+            unrepresentable
+                .checkpoint_entries("snapshot".to_owned())
+                .is_err()
+        );
+
+        let mut oversized_checkpoint = entries;
+        if let Some(JournalEntry::Checkpoint { open_presence, .. }) =
+            oversized_checkpoint.last_mut()
+        {
+            *open_presence = Some((0..=MAX_CHECKPOINT_OPEN_PRESENCE as u64).collect());
+        }
+        assert!(WorldCore::restore("revoked-presence", limits, oversized_checkpoint).is_err());
+    }
+
+    #[test]
+    fn admin_history_system_tail_after_trim_restores_as_partial() {
+        let limits = WorldLimits {
+            retained_events: 2,
+            ..WorldLimits::default()
+        };
+        let mut core = WorldCore::new("partial-history", limits.clone()).unwrap();
+        core.active_module_hash = Some("h".to_owned());
+        core.commit_prepared(WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 7,
+                provenance: None,
+            },
+        })
+        .unwrap();
+        for event in ["tick", "schedule", "presence"] {
+            core.record_admin_history(WorldEvent {
+                sequence: 0,
+                participant_id: 0,
+                kind: WorldEventKind::System {
+                    event: format!(r#"{{"cap":"host","event":"{event}"}}"#),
+                },
+            });
+        }
+        assert!(!core.admin_history_complete);
+        assert!(
+            core.admin_history
+                .iter()
+                .all(|event| matches!(&event.kind, WorldEventKind::System { .. }))
+        );
+
+        let checkpoint = core.checkpoint_entries("snapshot".to_owned()).unwrap();
+        let restored = WorldCore::restore("partial-history", limits, checkpoint).unwrap();
+        assert_eq!(restored.core.sequence, 1);
+        assert!(!restored.core.admin_history_complete);
+        assert_eq!(restored.core.admin_history.len(), 2);
     }
 
     #[tokio::test]
@@ -4115,6 +4624,8 @@ mod schedule_tests {
             transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
         };
         let agreed = [header(), set(), checkpoint(Some(vec![("a".to_owned(), 5)]))];
         assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());

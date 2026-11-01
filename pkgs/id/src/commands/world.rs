@@ -641,7 +641,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         }
         WorldCommand::Record {
             node,
-            capability,
+            admin_token,
             out,
             world,
             addrs,
@@ -651,7 +651,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // grow by the recording's futures.
             Box::pin(record_command(
                 &node,
-                &capability,
+                &admin_token,
                 out.as_deref(),
                 world.as_deref(),
                 &addrs,
@@ -1304,14 +1304,14 @@ fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)
 /// be written.
 async fn record_command(
     node: &str,
-    capability: &str,
+    admin_token: &str,
     out: Option<&std::path::Path>,
     world: Option<&str>,
     addrs: &[SocketAddr],
     no_relay: bool,
 ) -> Result<()> {
     let (endpoint, mut client) = connect(node, addrs, no_relay, world).await?;
-    let result = crate::world_fixture::record(&mut client, capability).await;
+    let result = crate::world_fixture::record(&mut client, admin_token).await;
     client.close();
     endpoint.close().await;
     let fixture = result?;
@@ -2102,7 +2102,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.3"
+            "3 frames conform to shell contract v1.4"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
