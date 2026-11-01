@@ -1260,6 +1260,59 @@ class TestPruneBackups(ColdStoreTestBase):
         # after applying, the folder's visible set is exactly the keepers
         self.assertEqual(len(self.store.list_backups("d1")), 32)
 
+    def test_prune_apply_mid_run_failure_keeps_completed_rows(self):
+        """#2550: a failing PATCH mid-series must not roll back the
+        ledger rows of files already trashed — Drive and ledger stay
+        consistent for completed work, and a retry sees the rest."""
+        ids = self._seed_series()
+        real_http = cold_store.http_request
+        patch_count = {"n": 0}
+
+        def flaky_http(method, url, headers=None, data=None, timeout=120):
+            if method == "PATCH":
+                patch_count["n"] += 1
+                if patch_count["n"] == 2:
+                    return 500, {}, b"boom"
+            return real_http(method, url, headers=headers, data=data, timeout=timeout)
+
+        with mock.patch.object(cold_store, "http_request", flaky_http):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.prune_backups("d1", apply=True)
+
+        # exactly one file was trashed in Drive, and exactly that
+        # file's ledger row survived the failure (committed per-file)
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+        trashed_id = self.fake.trashed_calls[0]["id"]
+        trashed_name = {v: k for k, v in ids.items()}[trashed_id]
+        self.assertIn(trashed_name, self.EXPECTED_PRUNE)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual([r["ref"] for r in rows], [trashed_name])
+
+        # the unattempted candidates are still visible to a retry plan
+        plan = self.store.prune_backups("d1")[0]
+        self.assertEqual(
+            {f["name"] for f in plan["prune"]},
+            self.EXPECTED_PRUNE - {trashed_name},
+        )
+
+        # retry with a healthy Drive completes the set, no duplicates
+        self.store.prune_backups("d1", apply=True)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), len(self.EXPECTED_PRUNE))
+        self.assertEqual({r["ref"] for r in rows}, self.EXPECTED_PRUNE)
+        self.assertEqual(
+            {c["id"] for c in self.fake.trashed_calls},
+            {ids[name] for name in self.EXPECTED_PRUNE},
+        )
+
     def test_prune_long_history_oldest_pruned(self):
         end = date(2026, 3, 31)
         for i in range(400):
