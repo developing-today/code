@@ -240,9 +240,11 @@ fn parse_xtgettcap(body: &[u8], evidence: &mut Evidence) -> bool {
     };
     let mut recognized = false;
     for pair in rest.split(|byte| *byte == b';') {
-        let Some((name, value)) = pair.split_once(|byte| *byte == b'=') else {
+        let Some(separator) = pair.iter().position(|byte| *byte == b'=') else {
             continue;
         };
+        let (name, value) = pair.split_at(separator);
+        let value = &value[1..];
         let Some(name) = decode_hex(name) else {
             continue;
         };
