@@ -22,7 +22,18 @@ import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
 import { isFiniteNumber, isIsoDate, isNonEmptyString, isNonNegative } from "./validate.ts";
 
 const SOURCES: ReadonlySet<string> = new Set(["api", "console", "manual", "estimate", "invoice"]);
-const UNITS: ReadonlySet<string> = new Set(["pct", "usd", "cny", "count", "gb", "tokens", "usd-est", "minutes", "hours", "gb-hours"]);
+const UNITS: ReadonlySet<string> = new Set([
+  "pct",
+  "usd",
+  "cny",
+  "count",
+  "gb",
+  "tokens",
+  "usd-est",
+  "minutes",
+  "hours",
+  "gb-hours",
+]);
 const FILE_RE = /^usage-(\d{4}-\d{2})\.jsonl$/;
 
 const ROLLUP_RE = /^usage-(\d{4}-\d{2})\.rollup\.jsonl$/;
@@ -314,7 +325,13 @@ export function isSnapshotRecord(v: unknown): v is SnapshotRecord {
   // refuse the record here, at the boundary.
   if (r.limit !== undefined && r.limit !== null && !isNonNegative(r.limit)) return false;
   if (r.resetsAt !== undefined && r.resetsAt !== null && !isIsoDate(r.resetsAt)) return false;
-  if (typeof r.value === "number") return isFiniteNumber(r.value);
+  if (typeof r.value === "number") {
+    // Negative percent-of-limit is never legitimate (#2346): refuse new
+    // negative numeric pct records at the boundary. Other units and
+    // estimate pairs are unchanged.
+    if (r.unit === "pct" && r.value < 0) return false;
+    return isFiniteNumber(r.value);
+  }
   if (typeof r.value === "object" && r.value !== null) {
     const p = r.value as { low?: unknown; high?: unknown };
     // Pairs must round-trip: non-finite endpoints serialize to null
@@ -368,8 +385,7 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
   // whose owner has tombstoned its release. A guard is only ever
   // deleted under its owner's token, and a tombstone is only ever
   // written by that token's owner at release time.
-  const releasedPathFor = (t: string): string =>
-    `${guardPath}.released-${t.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
+  const releasedPathFor = (t: string): string => `${guardPath}.released-${t.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
   const restoreGuard = async (reclaimPath: string): Promise<void> => {
     const movedToken = await readFile(reclaimPath, "utf8").catch(() => "");
     try {
@@ -653,7 +669,11 @@ export class SnapshotStore {
     return withSnapshotStoreLock(this.dir, () => this.compactInner(opts));
   }
 
-  private async compactInner(opts: { now?: Date; retentionMonths?: number; dryRun?: boolean }): Promise<CompactionReport> {
+  private async compactInner(opts: {
+    now?: Date;
+    retentionMonths?: number;
+    dryRun?: boolean;
+  }): Promise<CompactionReport> {
     const now = opts.now ?? new Date();
     const retentionMonths = opts.retentionMonths ?? 13;
     const dryRun = opts.dryRun ?? false;
@@ -695,9 +715,7 @@ export class SnapshotStore {
           if ((err as NodeJS.ErrnoException).code === "ENOENT") {
             rollText = "";
           } else {
-            throw new Error(
-              `compaction aborted: cannot read existing rollup ${rollupName}: ${(err as Error).message}`,
-            );
+            throw new Error(`compaction aborted: cannot read existing rollup ${rollupName}: ${(err as Error).message}`);
           }
         }
         for (const line of rollText.split("\n")) {

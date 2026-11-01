@@ -344,7 +344,16 @@ describe("overlayTursoUsage (#1049)", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
       [tursoSvc()],
-      file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", state: "error", measuredAt: at, error: "turso /usage HTTP 401" })]),
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          state: "error",
+          measuredAt: at,
+          error: "turso /usage HTTP 401",
+        }),
+      ]),
       NOW,
     );
     expect(out[0].measuredAt).toBe("2026-10-20T00:00:00.000Z");
@@ -359,7 +368,19 @@ describe("overlayTursoUsage (#1049)", () => {
     const arr = [other];
     const at = iso(5 * 60_000);
     expect(
-      overlayTursoUsage(arr, file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", measuredAt: at, windows: [tursoWin("databases", 3, 3, at)] })]), NOW),
+      overlayTursoUsage(
+        arr,
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [tursoWin("databases", 3, 3, at)],
+          }),
+        ]),
+        NOW,
+      ),
     ).toBe(arr);
   });
 });
@@ -448,8 +469,17 @@ describe("per-credential quota rows (#1113)", () => {
     const { renderQuota } = await import("../src/render.ts");
     const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
     const prov = {
-      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "",
-      attention: "", orchestration: "", dns: "", registry: "", aa: "",
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "",
+      registry: "",
+      aa: "",
     };
     const html = renderQuota(out, prov);
     expect(html).toContain("credential OpenAI:");
@@ -564,5 +594,32 @@ describe("stale-path newest pick is finite-gated (#2253)", () => {
   test("parseQuotaCurrent still accepts a document carrying a garbage entry (lenient parse)", () => {
     const doc = file([garbageRead(), staleRead()]);
     expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
+  });
+});
+
+describe("overlay: alternate ChatGPT pool (openai.alternate)", () => {
+  test("gatherer windows land on the alternate pool, never on the main pool", () => {
+    const view = baseView();
+    view.pools.push(pool("openai.alternate", []));
+    const out = overlayQuotaCurrent(
+      view,
+      file([
+        entry({
+          providerId: "openai.alternate",
+          serviceId: "openai.alternate",
+          credentialLabel: "OpenAI Alternate (Student - popesdrew)",
+          windows: [win("5h", 100, iso(5 * 60_000)), win("weekly", 42, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const alt = out.pools.find((p) => p.id === "openai.alternate")!;
+    expect(alt.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 100],
+      ["weekly", 42],
+    ]);
+    // The main account's pool keeps its own read, untouched.
+    const main = out.pools.find((p) => p.id === "openai:codex")!;
+    expect(main.windows[0].percent).toBe(11);
   });
 });

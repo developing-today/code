@@ -82,3 +82,38 @@ describe("POST /v1/sessions directory scoping (issue #2903)", () => {
     expect(res.status).toBe(502);
   });
 });
+
+describe("POST /v1/sessions body cap is measured in UTF-8 bytes (issue #3010)", () => {
+  test("multibyte body under the cap in code units but over in bytes is rejected as too large", async () => {
+    const token = signOidc("developing-today/code");
+    // 100,000 CJK chars = 100,000 UTF-16 code units (under the 262,144 cap)
+    // but 300,000 UTF-8 bytes (over it).
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "界".repeat(100_000) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+  });
+
+  test("multibyte body just under the cap in bytes passes the size gate", async () => {
+    const token = signOidc("developing-today/code");
+    // 87,000 CJK chars = 261,000 UTF-8 bytes plus JSON overhead: under the
+    // 262,144-byte cap, so the request clears the size gate and validation
+    // and reaches the unconfigured queue (502), like the small-body tests.
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "界".repeat(87_000) }));
+    expect(res.status).toBe(502);
+  });
+
+  test("ASCII body over the cap is rejected as too large, as before", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "a".repeat(262_144) }));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/too large/);
+  });
+
+  test("ASCII body under the cap passes the size gate, as before", async () => {
+    const token = signOidc("developing-today/code");
+    const res = await handler(sessionsRequest(token, { ...base, prompt: "a".repeat(260_000) }));
+    expect(res.status).toBe(502);
+  });
+});

@@ -11,6 +11,11 @@
 // via the `meta` provider. There is no "muse plan" pool and the
 // assistant's Power subscription is never a pool, so no extractor here
 // emits either.
+// exactly TWO ChatGPT pools — the main account (drewrypope) reached
+// through the `codex` gatherer door (pool openai:codex) and the
+// alternate account (popesdrew) through the `openai.alternate` door
+// (pool openai.alternate). Separate accounts, separate allowances:
+// never collapse them into one pool.
 import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 
@@ -112,6 +117,28 @@ const extractCodex: Extractor = (s, now) => {
   };
 };
 
+/**
+ * The alternate ChatGPT account (popesdrew). It has no dated-read
+ * section in the stewardship view yet — its live windows arrive
+ * through the quota gatherer (the openai.alternate credential) and
+ * are overlaid onto this pool by overlayQuotaCurrent. The extractor
+ * exists so a future "### ChatGPT (Alternate)" section is picked up
+ * like every other pool's dated read; until then it fail-softs to
+ * the shell, like any extractor whose pattern stops matching.
+ */
+const extractChatGptAlternate: Extractor = (s) => {
+  const fiveHour = first(s, /5-hour\s+(\d+(?:\.\d+)?)%\s+used/i);
+  const weekly = first(s, /7-day\s+(\d+(?:\.\d+)?)%\s+used/i);
+  if (!fiveHour && !weekly) return null;
+  const windows: QuotaWindow[] = [];
+  if (fiveHour) windows.push(pctWindow("5-hour", Number(fiveHour[1]), null));
+  if (weekly) windows.push(pctWindow("7-day", Number(weekly[1]), null));
+  return {
+    windows,
+    note: "Alternate ChatGPT account (popesdrew) — a separate pool from the main account; the two are never combined.",
+  };
+};
+
 const extractMeta: Extractor = (s, now) => {
   // A dated billing-blocked read (402 billing_not_configured — the
   // billing-verification wall) outranks every window/reset read: the
@@ -199,25 +226,93 @@ const extractClinePass: Extractor = (s) => {
 };
 
 const extractCommandCode: Extractor = (s, now) => {
-  const bal = first(s, /\$(\d+(?:\.\d+)?) of \$(\d+(?:\.\d+)?) used/i);
-  if (!bal) return null;
-  const end = first(s, /period ends (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
-  const windows: QuotaWindow[] = [
-    usdWindow(
-      "monthly credits",
-      Number(bal[1]),
-      Number(bal[2]),
-      end ? monthDayTime(end[1], end[2], end[3], now) : null,
-    ),
-  ];
-  const short = first(s, /5h (\d+(?:\.\d+)?)%, weekly (\d+(?:\.\d+)?)%/i);
-  if (short) {
-    windows.push(pctWindow("5-hour", Number(short[1]), null));
-    windows.push(pctWindow("weekly", Number(short[2]), null));
+  // Drew's ruling (2026-11-01, #3410): Command Code quota reads report
+  // the PLAN windows only (monthly limit, weekly, 5-hour) — never the
+  // extra/top-up credit balance. The section preserves several dated
+  // reads by design, so select the LATEST dated read instead of the
+  // first pattern that matches anywhere: the old first-match on
+  // "$X of $Y used" rendered the 2026-10-25 read as current because
+  // the freshest (2026-10-27) console read is percentage-only.
+  //
+  // Split the section into segments at each ISO date stamp (the text
+  // before the first stamp is one undated segment). A segment is a
+  // parseable read when one of the recorded formats matches:
+  //   - percentage-only console format: "monthly limit N% used",
+  //     "weekly limit N%", "5-hour limit N%"
+  //   - its compact restatement: "monthly N%, weekly N%, 5h N%"
+  //   - the dollar format: "$X of $Y used" (the $ used of the $10
+  //     included credits is a monthly-limit figure per the ruling)
+  //     plus the "5h A%, weekly B%" short windows.
+  const stamps = [...s.matchAll(/\d{4}-\d{2}-\d{2}/g)];
+  const segments: { date: string; index: number; text: string }[] = [];
+  if (stamps.length === 0) {
+    segments.push({ date: "", index: 0, text: s });
+  } else {
+    if (stamps[0].index > 0) segments.push({ date: "", index: 0, text: s.slice(0, stamps[0].index) });
+    for (let i = 0; i < stamps.length; i++) {
+      const start = stamps[i].index;
+      const end = i + 1 < stamps.length ? stamps[i + 1].index : s.length;
+      segments.push({ date: stamps[i][0], index: start, text: s.slice(start, end) });
+    }
   }
+  const parseRead = (text: string): QuotaWindow[] | null => {
+    const monthly = first(text, /monthly limit (\d+(?:\.\d+)?)% used/i);
+    if (monthly) {
+      const windows = [pctWindow("monthly", Number(monthly[1]), null)];
+      const weekly = first(text, /weekly limit (\d+(?:\.\d+)?)%/i);
+      if (weekly) windows.push(pctWindow("weekly", Number(weekly[1]), null));
+      const fiveHour = first(text, /5-hour limit (\d+(?:\.\d+)?)%/i);
+      if (fiveHour) windows.push(pctWindow("5-hour", Number(fiveHour[1]), null));
+      return windows;
+    }
+    const compact = first(text, /monthly (\d+(?:\.\d+)?)%, weekly (\d+(?:\.\d+)?)%, 5h (\d+(?:\.\d+)?)%/i);
+    if (compact) {
+      return [
+        pctWindow("monthly", Number(compact[1]), null),
+        pctWindow("weekly", Number(compact[2]), null),
+        pctWindow("5-hour", Number(compact[3]), null),
+      ];
+    }
+    const bal = first(text, /\$(\d+(?:\.\d+)?) of \$(\d+(?:\.\d+)?) used/i);
+    if (bal) {
+      const end = first(text, /period ends (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
+      const windows: QuotaWindow[] = [
+        usdWindow(
+          "monthly credits",
+          Number(bal[1]),
+          Number(bal[2]),
+          end ? monthDayTime(end[1], end[2], end[3], now) : null,
+        ),
+      ];
+      const short = first(text, /5h (\d+(?:\.\d+)?)%, weekly (\d+(?:\.\d+)?)%/i);
+      if (short) {
+        windows.push(pctWindow("5-hour", Number(short[1]), null));
+        windows.push(pctWindow("weekly", Number(short[2]), null));
+      }
+      return windows;
+    }
+    return null;
+  };
+  const parsed = segments
+    .map((seg) => ({ ...seg, windows: parseRead(seg.text) }))
+    .filter((seg) => seg.windows !== null);
+  if (parsed.length === 0) return null;
+  parsed.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.index - b.index));
+  const latest = parsed[parsed.length - 1];
+  // A newer dated segment that carries a monthly figure none of the
+  // formats could parse is a fresher read we cannot read: render no
+  // windows rather than presenting the older read as current (#3410).
+  const stale = segments.some(
+    (seg) =>
+      (seg.date > latest.date || (seg.date === latest.date && seg.index > latest.index)) &&
+      parseRead(seg.text) === null &&
+      /monthly/i.test(seg.text) &&
+      /\d+(?:\.\d+)?\s*(%|percent)/i.test(seg.text),
+  );
+  if (stale) return null;
   return {
-    windows,
-    note: "Registry: the Go plan does not include API access — wiring activates if the plan tier is upgraded.",
+    windows: latest.windows!,
+    note: "Plan windows only (Drew's 2026-11-01 ruling, #3410): freshest dated read in the quota view; the top-up credit balance is never reported as quota. Registry: the Go plan does not include API access — wiring activates if the plan tier is upgraded.",
   };
 };
 
@@ -274,6 +369,15 @@ export const POOL_SPECS: PoolSpec[] = [
     heading: /^### ChatGPT/,
     extract: extractCodex,
     shellNote: "No current read. OpenAI is the fleet's final reserve pool.",
+  },
+  {
+    id: "openai.alternate",
+    provider: "OpenAI",
+    plan: "ChatGPT (Alternate — popesdrew)",
+    heading: /^### ChatGPT \(Alternate\)/,
+    extract: extractChatGptAlternate,
+    shellNote:
+      "No dated read. The fleet's second ChatGPT account (popesdrew), measured live by the quota gatherer through the openai.alternate credential — a separate pool from the main account (openai:codex); the two are never combined.",
   },
   {
     id: "opencode-go:personal",

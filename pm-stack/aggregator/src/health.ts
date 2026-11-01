@@ -202,6 +202,13 @@ export function renderRegistrySize(): number {
   return renderLog.size;
 }
 
+/** The render registry as PageHealth rows (#1497: the /pages live
+ * index renders exactly this — last-rendered + ok per manifest page,
+ * straight from the same registry /health reports). */
+export function pageRenderHealth(now = Date.now()): PageHealth[] {
+  return pageHealth(now);
+}
+
 function pageHealth(now: number): PageHealth[] {
   return PAGES.map((p) => {
     const mark = renderLog.get(p.route);

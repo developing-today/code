@@ -196,9 +196,28 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
+/// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
+/// rejected with a clear error instead of silently producing an empty result
+/// or a header-only preview (#3059). Clap names the flag in its error prefix,
+/// so the message stays flag-specific at the boundary.
+fn parse_result_limit(raw: &str) -> Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(0) => Err("zero is not a valid limit: use at least 1".to_owned()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
+    ///
+    /// This is the only command that hosts a world or serves stored
+    /// content (F13.8 client-only boundary): every other command —
+    /// including all `id world ...` subcommands — is a client that
+    /// connects out to a host and never hosts or serves a world. SSH
+    /// world serving is likewise opt-in here, via the
+    /// `--world-ssh-port` family of flags.
     ///
     /// The server runs indefinitely, hosting stored blobs and accepting
     /// new content from remote nodes. Automatically discovers other
@@ -723,10 +742,22 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<String>,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -780,7 +811,7 @@ pub enum Command {
         #[arg(long)]
         name: bool,
         /// Number of lines to show from head and tail (default: 5).
-        #[arg(short = 'n', long, default_value = "5")]
+        #[arg(short = 'n', long, default_value = "5", value_parser = parse_result_limit)]
         lines: usize,
         /// Show only head lines (no tail).
         #[arg(long, conflicts_with = "tail_only")]
@@ -804,10 +835,22 @@ pub enum Command {
         #[arg(long)]
         all: bool,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -887,13 +930,25 @@ pub enum Command {
         /// - `tag`: each match with its query
         /// - `group`: matches grouped by query
         /// - `union`: deduplicated by hash
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -954,13 +1009,25 @@ pub enum Command {
         #[arg(long)]
         dir: Option<String>,
         /// Output format: tag, group, or union.
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -1032,6 +1099,20 @@ pub enum Command {
     /// the admin token mints a guest capability with `id world invite`; a guest
     /// presents it with `id world join`. Reaching a node proves only which node
     /// you are, never what you may do: the capability is the authority.
+    ///
+    /// Every `world` subcommand is a client command (F13.8 client-only
+    /// boundary): it connects out to a host, and opening further world
+    /// sessions starts no world host or authority on this node. Hosting
+    /// begins only through the explicit top-level `id serve` command;
+    /// there is no `--client-only` flag because no world subcommand has
+    /// a hosting mode to switch off. Two subcommands do open local
+    /// listeners without hosting a world: `world ssh-tunnel` without
+    /// `--stdio` listens on a local address (loopback by default) to
+    /// proxy an SSH client to the host, and `world mirror` runs a
+    /// replica endpoint that accepts sync connections for the replica.
+    /// Neither grants any world authority: node connectivity is not
+    /// world authority, and a valid world capability is still required
+    /// for every world operation.
     ///
     /// # Examples
     ///
@@ -1274,6 +1355,31 @@ pub struct WorldRuntimeArgs {
     /// Wall-clock budget for one native worker call, in milliseconds.
     #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
     pub world_native_deadline_ms: u64,
+}
+
+/// Phase 1 of the crate split (#3447): `RuntimeLimits::from_args` lives in
+/// `id-core`'s `world_limits` and validates through this trait, which the
+/// CLI argument struct implements here in its own crate.
+#[cfg(feature = "world")]
+impl crate::world_limits::WorldLimitArgs for WorldRuntimeArgs {
+    fn world_fuel(&self) -> u64 {
+        self.world_fuel
+    }
+    fn world_memory_mib(&self) -> u64 {
+        self.world_memory_mib
+    }
+    fn world_message_kib(&self) -> u64 {
+        self.world_message_kib
+    }
+    fn world_native_memory_mib(&self) -> u64 {
+        self.world_native_memory_mib
+    }
+    fn world_native_cpu_secs(&self) -> u64 {
+        self.world_native_cpu_secs
+    }
+    fn world_native_deadline_ms(&self) -> u64 {
+        self.world_native_deadline_ms
+    }
 }
 
 /// Subcommands for `id group`. Accounts and groups are 64 hex characters.
@@ -2654,6 +2760,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_find_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", bad, "query"]).is_err(),
+                "find --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", good, "query"]).is_ok(),
+                "find --format {good:?} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", bad, "query"]).is_err(),
+                "search --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", good, "query"]).is_ok(),
+                "search --format {good:?} must parse"
+            );
+        }
+    }
+
+    #[test]
     fn test_cli_parse_search() {
         let cli = Cli::parse_from(["id", "search", "query"]);
         match cli.command {
@@ -2848,6 +2986,62 @@ mod tests {
     fn test_cli_verify() {
         // Verify CLI structure is valid
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    #[test]
+    fn test_cli_rejects_zero_result_limits() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                // #3059: an explicit zero limit is an error at the CLI boundary, never a
+                // silent empty result (find/search/show/peek share the flag pair).
+                for cmd in ["find", "search", "show", "peek"] {
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--first", "0", "query"]).is_err(),
+                        "{cmd} --first 0 must be rejected"
+                    );
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--last", "0", "query"]).is_err(),
+                        "{cmd} --last 0 must be rejected"
+                    );
+                }
+                assert!(Cli::try_parse_from(["id", "peek", "--lines", "0", "query"]).is_err());
+                assert!(Cli::try_parse_from(["id", "peek", "-n", "0", "query"]).is_err());
+                // Bare flags keep their defaults (1 / 1 / 5 lines).
+                assert!(Cli::try_parse_from(["id", "find", "query", "--first"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "find", "query", "--last"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "peek", "query"]).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn test_cli_rejects_first_and_last_together() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                assert!(
+                    Cli::try_parse_from(["id", "show", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "peek", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "find", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "search", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     // Tests for Show command
@@ -4054,6 +4248,45 @@ mod tests {
     }
 
     #[test]
+    fn test_world_client_commands_never_dispatch_serve() {
+        // F13.8 client-only boundary (#3846): every `id world ...`
+        // subcommand is a client command. It must parse to
+        // `Command::World`, never to `Command::Serve` — `main` only
+        // dispatches server startup from the `Serve` arm, so a client
+        // argv reaching this parse can never start a listener, and
+        // opening further world sessions starts no host or authority.
+        let node = "a".repeat(64);
+        let client_argvs: Vec<Vec<&str>> = vec![
+            vec!["id", "world", "join", &node, "--capability", "c"],
+            vec![
+                "id", "world", "invite", &node, "--admin-token", "t", "--name", "ann",
+            ],
+            vec!["id", "world", "records", &node, "--capability", "c"],
+            vec!["id", "world", "list", &node, "--admin-token", "t"],
+        ];
+        for argv in client_argvs {
+            let cli = Cli::parse_from(argv.iter().copied());
+            assert!(
+                matches!(cli.command, Some(Command::World(_))),
+                "client argv {argv:?} must parse as a world client command"
+            );
+            assert!(
+                !matches!(cli.command, Some(Command::Serve { .. })),
+                "client argv {argv:?} must never dispatch server startup"
+            );
+        }
+        // Explicit `id serve` remains the only server entry point.
+        let cli = Cli::parse_from(["id", "serve"]);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+        // There is deliberately no `--client-only` flag (#3846): no
+        // world subcommand has a server mode such a flag could disable.
+        assert!(Cli::try_parse_from([
+            "id", "world", "join", &node, "--capability", "c", "--client-only",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn test_cli_parse_world_roles_and_list_json() {
         let node = "a".repeat(64);
         let cli = Cli::parse_from([
@@ -4398,4 +4631,94 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
     }
+}
+
+/// The `RuntimeLimits::from_args` flag tests, re-homed here from
+/// `world_limits` in the Phase 1 crate split (#3447): they parse this
+/// crate's CLI, so they live with it; the profile/resolve tests stayed
+/// in `id-core`'s `world_limits`.
+#[cfg(all(test, feature = "world"))]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod world_limits_args_tests {
+    use std::time::Duration;
+
+    use anyhow::Result;
+    use clap::Parser;
+
+    use super::{Cli, Command};
+    use crate::world_limits::RuntimeLimits;
+
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+
+        fn parse(extra: &[&str]) -> Result<RuntimeLimits> {
+            let mut argv = vec!["id", "serve", "--world", "--world-admin-token", "t"];
+            argv.extend_from_slice(extra);
+            let cli = Cli::try_parse_from(argv).unwrap();
+            let Some(Command::Serve { world_runtime, .. }) = cli.command else {
+                panic!("expected serve");
+            };
+            RuntimeLimits::from_args(&world_runtime)
+        }
+
+        #[test]
+        fn flag_defaults_match_the_built_in_limits() {
+            let limits = parse(&[]).unwrap();
+            let defaults = RuntimeLimits::default();
+            assert_eq!(limits.native.memory_bytes, defaults.native.memory_bytes);
+            assert_eq!(limits.native.cpu_seconds, defaults.native.cpu_seconds);
+            assert_eq!(limits.native.call_deadline, defaults.native.call_deadline);
+            #[cfg(feature = "sandbox")]
+            {
+                assert_eq!(limits.sandbox.fuel, defaults.sandbox.fuel);
+                assert_eq!(limits.sandbox.memory_bytes, defaults.sandbox.memory_bytes);
+                assert_eq!(limits.sandbox.message_bytes, defaults.sandbox.message_bytes);
+                assert_eq!(limits.sandbox.module_bytes, defaults.sandbox.module_bytes);
+            }
+        }
+
+        #[test]
+        fn flags_override_each_bound() {
+            let limits = parse(&[
+                "--world-fuel",
+                "5000",
+                "--world-memory-mib",
+                "32",
+                "--world-message-kib",
+                "64",
+                "--world-native-memory-mib",
+                "64",
+                "--world-native-cpu-secs",
+                "3",
+                "--world-native-deadline-ms",
+                "250",
+            ])
+            .unwrap();
+            assert_eq!(limits.native.memory_bytes, 64 * MIB);
+            assert_eq!(limits.native.cpu_seconds, 3);
+            assert_eq!(limits.native.call_deadline, Duration::from_millis(250));
+            #[cfg(feature = "sandbox")]
+            {
+                assert_eq!(limits.sandbox.fuel, 5000);
+                assert_eq!(
+                    limits.sandbox.memory_bytes,
+                    usize::try_from(32 * MIB).unwrap()
+                );
+                assert_eq!(
+                    limits.sandbox.message_bytes,
+                    usize::try_from(64 * KIB).unwrap()
+                );
+            }
+        }
+
+        #[test]
+        fn out_of_range_values_are_rejected() {
+            assert!(parse(&["--world-fuel", "0"]).is_err());
+            assert!(parse(&["--world-memory-mib", "0"]).is_err());
+            assert!(parse(&["--world-memory-mib", "4096"]).is_err());
+            assert!(parse(&["--world-message-kib", "2048"]).is_err());
+            assert!(parse(&["--world-native-memory-mib", "8"]).is_err());
+            assert!(parse(&["--world-native-cpu-secs", "0"]).is_err());
+            assert!(parse(&["--world-native-deadline-ms", "0"]).is_err());
+        }
 }

@@ -114,7 +114,14 @@ describe("model parsing", () => {
 
 describe("request validation", () => {
   test("action-shaped priority strings resolve for both request types", () => {
-    for (const [priority, expected] of [["10", 10], ["45", 40], ["50", 50], ["90", 90], ["high", 20], [undefined, 40]] as const) {
+    for (const [priority, expected] of [
+      ["10", 10],
+      ["45", 40],
+      ["50", 50],
+      ["90", 90],
+      ["high", 20],
+      [undefined, 40],
+    ] as const) {
       // Both actions use jq --arg, which serializes priority as a JSON string.
       const payload = JSON.parse(JSON.stringify({ repo: "developing-today/code", title: "t", prompt: "p", priority }));
       expect(parseTaskRequest(payload).priority).toBe(expected);
@@ -132,12 +139,12 @@ describe("request validation", () => {
   });
 
   test("a prototype-spelling priority 400s at parse time, so no non-number reaches the packet (#2757)", () => {
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" }),
-    ).toThrow(ValidationError);
-    expect(() =>
-      parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" }),
-    ).toThrow(ValidationError);
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" })).toThrow(
+      ValidationError,
+    );
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" })).toThrow(
+      ValidationError,
+    );
     expect(() =>
       parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "constructor" }),
     ).toThrow(ValidationError);
@@ -221,7 +228,76 @@ describe("session directory scoping (issue #2903)", () => {
     expect(resolveSessionDirectory("bearer", code, undefined, repoDirs)).toBe("/home/user/git/code");
   });
 
-  test("bearer + foreign directory is the documented deliberate choice", () => {
-    expect(resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toBe("/tmp/ops-scratch");
+  test("bearer foreign directory is rejected too (issue #2664: one rule for both caller types)", () => {
+    expect(() => resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/etc", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/opencode", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("blank directory resolves to the repo clone for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "", repoDirs)).toBe("/home/user/git/code");
+    expect(resolveSessionDirectory("bearer", code, "   ", repoDirs)).toBe("/home/user/git/code");
+  });
+
+  test("a directory inside the repo clone is accepted for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(resolveSessionDirectory("bearer", code, "/home/user/git/code/pkgs/", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+  });
+
+  test("paths are normalized before the containment check (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/./pkgs/../pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code/../opencode", repoDirs)).toThrow(
+      ValidationError,
+    );
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/code/../../etc", repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("relative directories are rejected for both caller types (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "pkgs/id", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "./pkgs", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("a sibling whose name shares the clone prefix is not inside it (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code-evil", repoDirs)).toThrow(ValidationError);
+  });
+});
+
+describe("session blank title/directory parsing (issue #2664)", () => {
+  test("empty and whitespace-only title/directory parse as omitted", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  ",
+      directory: "",
+    });
+    expect(r.title).toBeUndefined();
+    expect(r.directory).toBeUndefined();
+    const r2 = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "",
+      directory: " \t ",
+    });
+    expect(r2.title).toBeUndefined();
+    expect(r2.directory).toBeUndefined();
+  });
+
+  test("nonblank title and directory are preserved verbatim", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "My session",
+      directory: "/home/user/git/code/pkgs",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
   });
 });

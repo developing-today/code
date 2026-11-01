@@ -50,6 +50,7 @@ on:
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
+      - ".github/scripts/check-id-source-snapshot.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -128,6 +129,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Source-snapshot integrity guard (#1569): manifest the pkgs/id
+      # tree at checkout; the verify step below compares the nix store
+      # flake-source copy (what the build actually receives) against it
+      # and fails fast by name on any divergence.
+      - name: Snapshot pkgs/id source at checkout
+        run: .github/scripts/check-id-source-snapshot.sh snapshot "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt"
+
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
@@ -150,6 +158,18 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+
+      - name: Verify build source copy against checkout snapshot
+        run: |
+          # shallow=1 (#1569 round 3): actions/checkout is shallow and
+          # Determinate Nix refuses getFlake revCount on a shallow repo;
+          # the param copies the same tracked tree without revCount.
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id&shallow=1\").outPath")"
+          if [ -z "$src" ] || [ ! -d "$src" ]; then
+            echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
+            exit 2
+          fi
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
 
       - name: Run PR check
         run: nix build -L --no-link "./pkgs/id#checks.x86_64-linux.${{ matrix.check }}"
@@ -187,6 +207,9 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
+      # Source-snapshot integrity guard (#1569): see check_each above.
+      - name: Snapshot pkgs/id source at checkout
+        run: .github/scripts/check-id-source-snapshot.sh snapshot "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt"
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           extra-conf: |
@@ -204,5 +227,16 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: Verify build source copy against checkout snapshot
+        run: |
+          # shallow=1 (#1569 round 3): actions/checkout is shallow and
+          # Determinate Nix refuses getFlake revCount on a shallow repo;
+          # the param copies the same tracked tree without revCount.
+          src="$(nix eval --impure --raw --expr "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE?dir=pkgs/id&shallow=1\").outPath")"
+          if [ -z "$src" ] || [ ! -d "$src" ]; then
+            echo "::error::source snapshot guard: could not derive the flake source copy path (nix eval getFlake outPath returned '$src') — the guard cannot verify the build source; see #1569."
+            exit 2
+          fi
+          .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
       - name: Run full nix flake check
         run: nix flake check ./pkgs/id/ -L --keep-going

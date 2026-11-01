@@ -341,13 +341,10 @@ func (s *Store) Put(r io.Reader, p PutOptions) (Meta, error) {
 
 // PutFile registers a file that is already on this machine's disk.
 //
-// A hardlink where the filesystem allows one, a copy where it does not. This
-// is the local case the issue singles out: a screenshot already written to
-// disk should not be read, hashed into memory and written again just to be
-// handed to a caller who can see the same disk.
-//
-// It is still hashed, because the store is content addressed and because a
-// caller comparing hashes is how a transfer gets skipped.
+// The file is read, hashed, and copied into the content-addressed store even
+// when it is already on disk the caller can see. The blob gets its own inode
+// (#1660), so in-place edits to the source cannot rewrite the stored bytes.
+// The hash also lets a caller skip a later transfer when it already has them.
 func (s *Store) PutFile(path string, p PutOptions) (Meta, error) {
 	f, err := os.Open(path)
 	if err != nil {

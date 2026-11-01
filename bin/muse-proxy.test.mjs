@@ -57,6 +57,7 @@ if (args[0] === 'serve') {
   if (process.env.STUB_SERVE_FAIL === '1') process.exit(3);
   const log = (line) => { if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, line + '\\n'); };
   let buf = '';
+  let stubSessN = 0;
   process.stdin.on('data', (d) => {
     buf += d.toString('utf-8');
     let i;
@@ -71,12 +72,13 @@ if (args[0] === 'serve') {
         reply({ serverInfo: { name: 'stub-muse', version: '0' } });
       } else if (msg.method === 'session/start') {
         log('START ' + msg.params.modelId);
-        reply({ session: { sessionId: 'stub-session-1' } });
+        reply({ session: { sessionId: 'stub-session-' + (++stubSessN) } });
       } else if (msg.method === 'session/resume') {
         log('RESUME ' + msg.params.sessionId);
         reply({ session: { sessionId: msg.params.sessionId } });
       } else if (msg.method === 'turn/start') {
         const text = (msg.params.input || []).map(p => p.text || '').join('');
+        if (text.includes('KILLHOST')) { log('KILLED ' + text); process.kill(process.pid, 'SIGKILL'); }
         log('TURN ' + text);
         const sid = msg.params.sessionId;
         const turnId = msg.params.commandId;
@@ -368,6 +370,58 @@ test('warm serve path: streaming turn streams the MSP deltas (#480)', async (t) 
   }));
   assert.equal(content, 'RE:alpha one');
   assert.equal(finish, 'stop');
+});
+
+test('two concurrent conversations stay isolated: separate sessions, tail-only turns (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const convA = [{ role: 'user', content: 'alpha one' }];
+  const convB = [{ role: 'user', content: 'gamma one' }];
+  const [a1, b1] = await Promise.all([
+    chat(port, { model: 'muse-spark-1.3', messages: convA }).then(r => JSON.parse(r)),
+    chat(port, { model: 'muse-spark-1.3', messages: convB }).then(r => JSON.parse(r))
+  ]);
+  assert.equal(a1.choices[0].message.content, 'RE:alpha one');
+  assert.equal(b1.choices[0].message.content, 'RE:gamma one');
+  const a2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convA, { role: 'assistant', content: 'RE:alpha one' }, { role: 'user', content: 'alpha two' }]
+  }));
+  const b2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [...convB, { role: 'assistant', content: 'RE:gamma one' }, { role: 'user', content: 'gamma two' }]
+  }));
+  assert.equal(a2.choices[0].message.content, 'RE:alpha two');
+  assert.equal(b2.choices[0].message.content, 'RE:gamma two');
+  const log = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
+  assert.equal(log.filter(l => l.startsWith('START')).length, 2, 'each conversation key must own a separate MSP session');
+  const turns = log.filter(l => l.startsWith('TURN')).map(l => l.slice(5)).sort();
+  assert.deepEqual(turns, ['alpha one', 'alpha two', 'gamma one', 'gamma two'], 'every turn after the first must send only its own conversation\'s new tail — no cross-conversation history');
+});
+
+test('warm host killed mid-turn degrades to a successful cold exec request (#480)', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const turn1 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'alpha one' }]
+  }));
+  assert.equal(turn1.choices[0].message.content, 'RE:alpha one', 'turn 1 must be served warm');
+  // Turn 2's new message kills the warm serve host mid-turn (before any
+  // delta is committed); the request must degrade to the cold exec path
+  // and still answer, not surface a client-visible error (#480 spike
+  // criterion 4).
+  const turn2 = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [
+      { role: 'user', content: 'alpha one' },
+      { role: 'assistant', content: 'RE:alpha one' },
+      { role: 'user', content: 'KILLHOST now' }
+    ]
+  }));
+  assert.equal(turn2.choices[0].message.content, 'Hello world', 'exec stub answer proves the cold fallback ran after the warm host died');
+  const log = fs.readFileSync(logFile, 'utf-8');
+  assert.match(log, /KILLED KILLHOST now/, 'the warm host must actually have been killed mid-turn');
 });
 
 test('warm serve failure falls back to the exec path (#480)', async (t) => {
@@ -886,4 +940,21 @@ test('direct mode: contributor ids reach upstream verbatim, effort suffix parses
   assert.equal(sent[1].model, 'muse-spark-1.3-contributor');
   assert.deepEqual(sent[1].reasoning, { effort: 'high' });
   assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

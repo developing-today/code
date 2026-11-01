@@ -90,24 +90,11 @@ pub struct Account {
 
 /// A request the directory refuses, carried in the error so transports can
 /// choose a status without parsing messages.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Refusal {
-    /// No valid credential, session or key was presented.
-    #[error("{0}")]
-    Unauthenticated(String),
-    /// The caller is known but may not do this.
-    #[error("{0}")]
-    Forbidden(String),
-    /// The named account, group or member does not exist.
-    #[error("{0}")]
-    NotFound(String),
-    /// The change clashes with what already exists.
-    #[error("{0}")]
-    Conflict(String),
-    /// Too many requests for the same thing in a short time.
-    #[error("{0}")]
-    RateLimited(String),
-}
+///
+/// The definition lives in `id-core` since the Phase 1 crate split
+/// (#3447) — leaf modules there (petname) produce it too — and it is
+/// re-exported here at its historical path.
+pub use id_core::Refusal;
 
 macro_rules! refuse {
     ($kind:ident, $($arg:tt)*) => {
@@ -1871,7 +1858,11 @@ fn clean_description(description: &str) -> Result<String> {
 }
 
 pub(crate) fn hex_to_array<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') and key strings stop
+    // being canonical.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -2774,6 +2765,25 @@ mod tests {
     fn malformed_hex_is_refused() {
         assert!(hex_to_array::<32>("zz").is_none());
         assert!(hex_to_array::<32>(&"0".repeat(63)).is_none());
+    }
+
+    #[test]
+    fn plus_encoded_hex_is_refused() {
+        // #2517: '+' pairs decode identically to '0' pairs under
+        // from_str_radix, so they must be refused at the gate — the same
+        // bytes must have exactly one accepted spelling.
+        assert!(hex_to_array::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_to_array::<32>(&"+7".repeat(32)).is_none());
+        // A single '+' pair anywhere poisons the whole input.
+        let mut mixed = "0a".repeat(32);
+        mixed.replace_range(10..12, "+b");
+        assert!(hex_to_array::<32>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_to_array::<32>(&"0a0b0c0d".repeat(8)),
+            hex_to_array::<32>(&"0A0B0C0D".repeat(8))
+        );
+        assert!(hex_to_array::<32>(&"0a0b0c0d".repeat(8)).is_some());
     }
 
     fn public_key(seed: u8) -> String {

@@ -387,6 +387,15 @@ const moduleRuntime = `function env(name: string): string {
   return "";
 }
 
+// fetch header values must be ByteStrings: a settings JSON carrying a
+// non-ASCII value (a Unicode path in artifacts.dir, say) throws a
+// TypeError before the request leaves the script. Escape non-ASCII
+// characters as JSON unicode escapes -- the daemon's JSON parser turns
+// them back into the same characters, so the settings survive intact.
+function asciiHeader(v: string): string {
+  return v.replace(/[^\x00-\x7F]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+
 // The session and endpoint are read at run time rather than baked in, so that
 // concurrent runs sharing one generated client file still get their own
 // session. That isolation is what gives each run its own browser in
@@ -714,6 +723,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
         "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
         "x-mcpx-ephemeral": env("MCPX_EPHEMERAL"),
         "x-mcpx-run": env("MCPX_RUN"),
+        "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
         "x-mcpx-input": env("MCPX_INPUT"),
       },
       body: JSON.stringify({ server, tool, args: args ?? {} }),
@@ -1437,6 +1447,7 @@ export async function batch(
       "x-mcpx-pid": env("MCPX_PID"),
       "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
       "x-mcpx-run": env("MCPX_RUN"),
+      "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
     },
     body: JSON.stringify({
       calls: calls.map((c) => ({
@@ -1504,7 +1515,7 @@ export interface ArtifactOptions {
  * a tool result.
  *
  * This behaves identically wherever the script runs, and that is the whole
- * point of it. Locally the daemon hardlinks the file it was pointed at.
+ * point of it. Locally the daemon reads and copies the file into its store.
  * Remotely the bytes travel once, to the daemon, and the caller fetches them
  * only if it wants them. The script does not ask which case it is in, because
  * a script that has to ask is a script with two code paths and one of them is
@@ -1531,8 +1542,8 @@ export async function artifact(
   if (declared) headers["content-type"] = declared;
   let body: BodyInit | undefined;
   if (norm.path !== undefined && env("MCPX_ARTIFACTS_LOCAL") === "1") {
-    // The daemon can see this file. Naming it lets the store hardlink rather
-    // than read, hash into memory and write again.
+    // The daemon can see this file. Naming it avoids uploading the body over
+    // the client transport; the store still reads, hashes, and copies it.
     headers["x-mcpx-path"] = norm.path;
   } else if (norm.path !== undefined) {
     body = await readFileBytes(norm.path) as unknown as BodyInit;

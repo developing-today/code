@@ -11,7 +11,9 @@
 // $HOME/.local/bin/agy (the proxy's binary resolution reaches it when
 // no system agy exists) that speaks that protocol AND answers
 // `agy models` with a TSV list including a test-only model no static
-// array could contain: it emits an `init` event at spawn, then one
+// array could contain (startProxy also pins the stub via
+// AGY_PROXY_AGY_BIN so a host-installed agy can never shadow it,
+// #3355): it emits an `init` event at spawn, then one
 // reply per stdin line, keyed on markers in the prompt — a run that
 // dies non-zero must be reported as an error, never as a successful
 // 'stop' (in stream mode always, in non-stream mode also when the run
@@ -80,7 +82,7 @@ while IFS= read -r line; do
       kill -9 $$ ;;
   esac
   printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103,"cache_read_tokens":77}}}'
 done
 `;
 
@@ -105,6 +107,7 @@ const startProxy = async (extraEnv = {}) => {
       HOME: home,
       XDG_STATE_HOME: path.join(tmp, 'state'),
       AGY_PROXY_PORT: String(port),
+      AGY_PROXY_AGY_BIN: path.join(home, ".local", "bin", "agy"),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -166,6 +169,19 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.match(sse, /Hello world/);
   assert.match(sse, /"finish_reason":"stop"/);
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
+});
+
+test('agy cache_read_tokens surfaces as prompt_tokens_details.cached_tokens in both shapes (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'hi' }];
+  const plain = JSON.parse(await (await post(port, { messages })).text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 77, 'non-streaming usage must surface the agy cache_read_tokens delta (opencode #394)');
+  const streamRes = await post(port, { messages, stream: true });
+  const events = parseSse(await streamRes.text());
+  const finish = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+  assert.ok(finish, 'stream must carry a finish chunk');
+  assert.equal(finish.usage.prompt_tokens_details.cached_tokens, 77, 'streaming finish chunk must surface cached_tokens');
 });
 
 test('execution failure with no output: 502 non-stream, SSE error + [DONE] stream (#678)', async (t) => {
@@ -393,4 +409,21 @@ test('live pull failure falls back to the last-known-good catalog; unknowns stil
   const badRes = await post(port, { model: 'gemini-9-nonexistent', messages });
   assert.equal(badRes.status, 400, 'unknown ids are 400 against the fallback list too');
   await badRes.text();
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

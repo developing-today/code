@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -832,6 +833,26 @@ func (r *Registry) Pool(nameOrNS string) (*pool.Pool, bool) {
 	return nil, false
 }
 
+// CanonicalName resolves a name-or-namespace the way Pool does and
+// returns the configured server name, or the input unchanged when it
+// names nothing. It is a map read only -- no lease, no upstream -- so
+// callers that must key by server identity before touching the pool
+// (the completion rate limiter, #2387) can share one spelling per
+// server instead of one budget per spelling.
+func (r *Registry) CanonicalName(nameOrNS string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if _, ok := r.pools[nameOrNS]; ok {
+		return nameOrNS
+	}
+	for _, name := range r.order {
+		if r.views[name].Namespace == nameOrNS {
+			return name
+		}
+	}
+	return nameOrNS
+}
+
 func (r *Registry) loadCache() {
 	b, err := os.ReadFile(r.paths.SchemaCachePath(r.hash))
 	if err != nil {
@@ -1170,6 +1191,13 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 	if err != nil || len(queryVec) == 0 {
 		queryVec = catalog.Embed(query)
 	}
+	if len(queryVec) != catalog.VectorDim {
+		// The configured embedder's dimension does not match the index
+		// dimension: CosineSimilarity would silently score every stored
+		// vector 0. Log the mismatch and fall back to the local embedder.
+		log.Printf("mcpx: semantic search: embedder returned a %d-dimensional query vector, index dimension is %d; falling back to local embedder", len(queryVec), catalog.VectorDim)
+		queryVec = catalog.Embed(query)
+	}
 
 	keywordScores := make(map[string]int)
 	for _, t := range rank(all, terms, false) {
@@ -1189,8 +1217,16 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 			if err != nil || len(tVec) == 0 {
 				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
 			}
+			if len(tVec) != 0 && len(tVec) != catalog.VectorDim {
+				// Dimension mismatch: do not cache or score this vector
+				// silently; fall back to the local embedder.
+				log.Printf("mcpx: semantic search: embedder returned a %d-dimensional vector for %s, index dimension is %d; falling back to local embedder", len(tVec), t.Function, catalog.VectorDim)
+				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
+			}
 			if vIdx != nil && len(tVec) > 0 {
-				_ = vIdx.Put(t.Function, tVec)
+				if err := vIdx.Put(t.Function, tVec); err != nil {
+					log.Printf("mcpx: semantic search: cache vector for %s: %v", t.Function, err)
+				}
 			}
 		}
 		sim := queryVec.CosineSimilarity(tVec)
@@ -1617,7 +1653,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 		return nil, err
 	}
 	defer r.joinAsk(ctx, server, key)()
-	res, err := p.Call(ctx, key, effTool, effArgs)
+	res, err := p.Call(withRequestedCallTimeout(ctx), key, effTool, effArgs)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}

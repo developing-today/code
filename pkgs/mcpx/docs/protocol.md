@@ -24,7 +24,7 @@ beyond what the negotiated revision defines is not violating anything — it
 withholds nothing the revision requires, and a client that reached for the
 method would otherwise be told mcpx cannot do a thing it can. Sending is the
 opposite: a field, a notification or a server-initiated request that the peer
-did not negotiate *and* did not declare is a lie about what was agreed, and
+did not negotiate _and_ did not declare is a lie about what was agreed, and
 the failure is silent. Either the peer ignores it, or it rejects the frame,
 and nothing says which.
 
@@ -34,7 +34,7 @@ from a legacy one — and it will not put `structuredContent` in front of a
 2026-07-28, and will never send `elicitation/create` to a client that did not
 declare `elicitation`.
 
-**The rule stops at removal** (§2.1): a method a revision *removed* is
+**The rule stops at removal** (§2.1): a method a revision _removed_ is
 method-not-found to a peer on that revision.
 
 Since the first version of this page, every sentence in it has been checked
@@ -47,13 +47,13 @@ the corrections are why this is increment 3.
 
 ## 1. The revisions
 
-| | era | handshake | version carried | mcpx serves | mcpx speaks upstream |
-| --- | --- | --- | --- | --- | --- |
-| `2024-11-05` | legacy | `initialize` | once | yes, over stdio and Streamable HTTP; its HTTP+SSE server transport is not hosted | when the server answers with it; HTTP+SSE as the last fallback |
-| `2025-03-26` | legacy | `initialize` | once | yes | when the server answers with it |
-| `2025-06-18` | legacy | `initialize` | once | yes | when the server answers with it |
-| `2025-11-25` | legacy | `initialize` | once | yes | offered on every `initialize` |
-| `2026-07-28` | modern | none | `_meta`, every request | yes | **probed first** |
+|              | era    | handshake    | version carried        | mcpx serves                                                                      | mcpx speaks upstream                                           |
+| ------------ | ------ | ------------ | ---------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `2024-11-05` | legacy | `initialize` | once                   | yes, over stdio and Streamable HTTP; its HTTP+SSE server transport is not hosted | when the server answers with it; HTTP+SSE as the last fallback |
+| `2025-03-26` | legacy | `initialize` | once                   | yes                                                                              | when the server answers with it                                |
+| `2025-06-18` | legacy | `initialize` | once                   | yes                                                                              | when the server answers with it                                |
+| `2025-11-25` | legacy | `initialize` | once                   | yes                                                                              | offered on every `initialize`                                  |
+| `2026-07-28` | modern | none         | `_meta`, every request | yes                                                                              | **probed first**                                               |
 
 The split is the thing everything else follows from. A legacy implementation
 negotiates once and can send its peer a request at any time afterwards. A
@@ -75,7 +75,7 @@ order, the fallbacks and the cache.
 Downstream, `Oldest` is 2024-11-05: what a request that declared nothing is
 spelled for, because every shape that revision defines is understood by
 everything newer. Guessing downward is recoverable; guessing upward hands a
-peer a frame it cannot parse. A *headerless* Streamable HTTP request, though,
+peer a frame it cannot parse. A _headerless_ Streamable HTTP request, though,
 is judged as 2025-03-26 (`Headerless`): 2024-11-05 has no Streamable HTTP, so
 nothing arriving on `/mcp` can be a 2024-11-05 request that omitted the
 header, and the later transport pages say to assume 2025-03-26.
@@ -103,10 +103,10 @@ predicates `AtOrAfter`, `Before`, `Only`, `Between`).
 
 Two behaviours consult it today:
 
-| behaviour | default | changed by |
-| --- | --- | --- |
-| progress `message` relayed to a 2024-11-05 client (whose schema has no such field) | **sent** | stripped only when 2024-11-05 is first *and* strict: `--mcp-spec 2024-11-05` |
-| a request from a 2026-07-28 upstream server (that revision has none; its stdio page says the client MUST NOT answer) | **dropped** | answered when `spec.lenient` includes `2026-07-28` |
+| behaviour                                                                                                            | default     | changed by                                                                   |
+| -------------------------------------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------- |
+| progress `message` relayed to a 2024-11-05 client (whose schema has no such field)                                   | **sent**    | stripped only when 2024-11-05 is first _and_ strict: `--mcp-spec 2024-11-05` |
+| a request from a 2026-07-28 upstream server (that revision has none; its stdio page says the client MUST NOT answer) | **dropped** | answered when `spec.lenient` includes `2026-07-28`                           |
 
 Each other conflict in [`spec/revision-conflicts.md`](spec/revision-conflicts.md)
 carries a disposition there — peer-settled, precedence-governed, a recorded
@@ -127,24 +127,24 @@ What a host connected to mcpx gets, over `mcpx serve` (stdio) or the daemon's
 
 ### 2.1 Methods
 
-| method | defined in | mcpx accepts | mcpx answers |
-| --- | --- | --- | --- |
-| `initialize` | legacy | legacy peers | the version asked for if mcpx speaks it, otherwise the latest legacy version it speaks — a result, not an error, as every legacy lifecycle page requires |
-| `server/discover` | 2026-07-28 | always | `supportedVersions` (newest first), `capabilities`, `instructions`; `serverInfo` in `_meta`; `ttlMs`/`cacheScope` |
-| `ping` | legacy | legacy peers | `{}` |
-| `tools/list` | all | always | paginated (`mcp.pageSize`), opaque cursor, a deterministic order |
-| `tools/call` | all | always | §2.3 and §3; an unknown tool is `-32602` |
-| `prompts/list`, `prompts/get` | all | always | not found is `-32602`; an upstream failure `-32603` |
-| `resources/list`, `resources/read`, `resources/templates/list` | all | always | binary contents as `blob`; not found is `-32002` (legacy) or `-32602` (2026), both with `data.uri` |
-| `resources/subscribe`, `resources/unsubscribe` | legacy | legacy peers | `{}`, always; subscribes upstream where the owning server can deliver, and otherwise publishes a warning event (§4.3) |
-| `subscriptions/listen` | 2026-07-28 | **any** era | an acknowledgement, then only the notifications the filter asked for, each tagged with the subscription id |
-| `completion/complete` | all | always | forwarded to the server that owns the `ref`, as `/v1/complete` does, with `context.arguments`; a 2024-11-05 upstream is asked without a capability (that revision had none); unknown ref `-32602`, upstream failure `-32603` |
-| `logging/setLevel` | legacy | legacy peers | `{}`; sets the level of upstream log messages relayed to this connection (§4.4) |
-| `tasks/get`, `tasks/list`, `tasks/result`, `tasks/cancel` | 2025-11-25 core | **any** legacy peer | the core shapes; a task is visible only to the connection that started it |
-| `tasks/get`, `tasks/update`, `tasks/cancel` | 2026-07-28 extension | modern peers that declared `io.modelcontextprotocol/tasks` on the request; `-32021` with `data.requiredCapabilities` (HTTP 400) otherwise | the extension's shapes; `tasks/list` and `tasks/result` are `-32601`, as the extension says |
-| `skills/list`, `skills/get` | skills extension (SEP-2640) | always, unless the server offers only contributed tools | mcpx's own skills (`plugin/opencode/skills`, embedded at build), each file at `skill://mcpx/<name>/<file>` and also listed and readable as a resource; an unknown URI is `-32602`. Upstreams' skills are not relayed: [in-name-only.md](in-name-only.md#skills-extension) |
-| `resources/directory/read` | skills extension, `directoryRead` | wherever `skills/list` is | the direct children of a directory inside one of mcpx's skills: files as `resources/list` lists them, subdirectories as `inode/directory`; paginated. A file or an unknown URI is `-32602` |
-| `notifications/cancelled` | all | always | cancels the request it names — its context, and so its upstream call — and withholds the reply |
+| method                                                         | defined in                        | mcpx accepts                                                                                                                              | mcpx answers                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initialize`                                                   | legacy                            | legacy peers                                                                                                                              | the version asked for if mcpx speaks it, otherwise the latest legacy version it speaks — a result, not an error, as every legacy lifecycle page requires                                                                                                                  |
+| `server/discover`                                              | 2026-07-28                        | always                                                                                                                                    | `supportedVersions` (newest first), `capabilities`, `instructions`; `serverInfo` in `_meta`; `ttlMs`/`cacheScope`                                                                                                                                                         |
+| `ping`                                                         | legacy                            | legacy peers                                                                                                                              | `{}`                                                                                                                                                                                                                                                                      |
+| `tools/list`                                                   | all                               | always                                                                                                                                    | paginated (`mcp.pageSize`), opaque cursor, a deterministic order                                                                                                                                                                                                          |
+| `tools/call`                                                   | all                               | always                                                                                                                                    | §2.3 and §3; an unknown tool is `-32602`                                                                                                                                                                                                                                  |
+| `prompts/list`, `prompts/get`                                  | all                               | always                                                                                                                                    | not found is `-32602`; an upstream failure `-32603`                                                                                                                                                                                                                       |
+| `resources/list`, `resources/read`, `resources/templates/list` | all                               | always                                                                                                                                    | binary contents as `blob`; not found is `-32002` (legacy) or `-32602` (2026), both with `data.uri`                                                                                                                                                                        |
+| `resources/subscribe`, `resources/unsubscribe`                 | legacy                            | legacy peers                                                                                                                              | `{}`, always; subscribes upstream where the owning server can deliver, and otherwise publishes a warning event (§4.3)                                                                                                                                                     |
+| `subscriptions/listen`                                         | 2026-07-28                        | **any** era                                                                                                                               | an acknowledgement, then only the notifications the filter asked for, each tagged with the subscription id                                                                                                                                                                |
+| `completion/complete`                                          | all                               | always                                                                                                                                    | forwarded to the server that owns the `ref`, as `/v1/complete` does, with `context.arguments`; a 2024-11-05 upstream is asked without a capability (that revision had none); unknown ref `-32602`, upstream failure `-32603`                                              |
+| `logging/setLevel`                                             | legacy                            | legacy peers                                                                                                                              | `{}`; sets the level of upstream log messages relayed to this connection (§4.4)                                                                                                                                                                                           |
+| `tasks/get`, `tasks/list`, `tasks/result`, `tasks/cancel`      | 2025-11-25 core                   | **any** legacy peer                                                                                                                       | the core shapes; a task is visible only to the connection that started it                                                                                                                                                                                                 |
+| `tasks/get`, `tasks/update`, `tasks/cancel`                    | 2026-07-28 extension              | modern peers that declared `io.modelcontextprotocol/tasks` on the request; `-32021` with `data.requiredCapabilities` (HTTP 400) otherwise | the extension's shapes; `tasks/list` and `tasks/result` are `-32601`, as the extension says                                                                                                                                                                               |
+| `skills/list`, `skills/get`                                    | skills extension (SEP-2640)       | always, unless the server offers only contributed tools                                                                                   | mcpx's own skills (`plugin/opencode/skills`, embedded at build), each file at `skill://mcpx/<name>/<file>` and also listed and readable as a resource; an unknown URI is `-32602`. Upstreams' skills are not relayed: [in-name-only.md](in-name-only.md#skills-extension) |
+| `resources/directory/read`                                     | skills extension, `directoryRead` | wherever `skills/list` is                                                                                                                 | the direct children of a directory inside one of mcpx's skills: files as `resources/list` lists them, subdirectories as `inode/directory`; paginated. A file or an unknown URI is `-32602`                                                                                |
+| `notifications/cancelled`                                      | all                               | always                                                                                                                                    | cancels the request it names — its context, and so its upstream call — and withholds the reply                                                                                                                                                                            |
 
 Two rows are the "accept liberally" rule doing visible work:
 `subscriptions/listen` from a legacy client and core `tasks/*` from any legacy
@@ -152,7 +152,7 @@ client. mcpx answers both. It **declares** neither outside the revision that
 defines it, because a declaration is a promise about the revision in force.
 
 **The rule stops at removal.** Offering a client a method its revision never
-had withholds nothing. Answering one its revision *removed* is different: the
+had withholds nothing. Answering one its revision _removed_ is different: the
 removal is the specification naming a replacement, and 2026-07-28 requires
 method-not-found — "If the server does not implement the requested RPC method,
 it MUST respond with `404 Not Found` and a JSON-RPC error with code `-32601`".
@@ -198,22 +198,22 @@ that could never work (#284).
 
 ### 2.2 Capabilities mcpx declares
 
-| capability | 2024-11-05 | 2025-03-26 | 2025-06-18 | 2025-11-25 | 2026-07-28 |
-| --- | --- | --- | --- | --- | --- |
-| `tools.listChanged` | true in pass-through mode when the connection can push, else false | same | same | same | same |
-| `resources.subscribe`, `.listChanged` | when the connection can push | same | same | same | same |
-| `prompts.listChanged` | when the connection can push | same | same | same | same |
-| `completions` | — (the revision has no such capability; the method is answered anyway) | ✓ | ✓ | ✓ | ✓ |
-| `logging` | ✓ | ✓ | ✓ | ✓ | — (the level travels in each request's `_meta`) |
-| `tasks` (core) | — | — | — | ✓ | — |
-| `extensions["io.modelcontextprotocol/tasks"]` | — | — | — | — | ✓ |
-| `extensions["io.modelcontextprotocol/skills"]` | — | — | — | — | `{"directoryRead": true}` |
+| capability                                     | 2024-11-05                                                             | 2025-03-26 | 2025-06-18 | 2025-11-25 | 2026-07-28                                      |
+| ---------------------------------------------- | ---------------------------------------------------------------------- | ---------- | ---------- | ---------- | ----------------------------------------------- |
+| `tools.listChanged`                            | true in pass-through mode when the connection can push, else false     | same       | same       | same       | same                                            |
+| `resources.subscribe`, `.listChanged`          | when the connection can push                                           | same       | same       | same       | same                                            |
+| `prompts.listChanged`                          | when the connection can push                                           | same       | same       | same       | same                                            |
+| `completions`                                  | — (the revision has no such capability; the method is answered anyway) | ✓          | ✓          | ✓          | ✓                                               |
+| `logging`                                      | ✓                                                                      | ✓          | ✓          | ✓          | — (the level travels in each request's `_meta`) |
+| `tasks` (core)                                 | —                                                                      | —          | —          | ✓          | —                                               |
+| `extensions["io.modelcontextprotocol/tasks"]`  | —                                                                      | —          | —          | —          | ✓                                               |
+| `extensions["io.modelcontextprotocol/skills"]` | —                                                                      | —          | —          | —          | `{"directoryRead": true}`                       |
 
 - **`tools.listChanged` is false unless mcpx passes tools through.** mcpx's
   own tool list is fixed when its server is built. It used to be declared and
-  fed by upstream tool changes, which are not changes to *this* list: a client
+  fed by upstream tool changes, which are not changes to _this_ list: a client
   re-listed on every one and got the same tools back. In pass-through mode
-  (`--passthrough`) the list *is* the upstreams', so an upstream's
+  (`--passthrough`) the list _is_ the upstreams', so an upstream's
   `tools/list_changed` is relayed -- unsolicited to a legacy client, and on a
   `subscriptions/listen` that asked for `toolsListChanged` to a modern one.
 - **`logging` is declared to legacy clients.** The capability means "this
@@ -241,19 +241,19 @@ resource URIs rewritten to ones `/mcp` can read; listed tools, resources,
 templates and prompts keep their optional fields. Building several shapes and choosing between them is how the
 shapes drift apart.
 
-| carried | defined from | to an older client |
-| --- | --- | --- |
-| `structuredContent` | 2025-06-18 | removed, and rendered into the `content` array as text — the data survives, in a vocabulary the client has |
-| `resource_link` block | 2025-06-18 | becomes an embedded `resource` with a `text/plain` label naming the URI, which keeps the URI machine-readable where text would not |
-| `audio` block | 2025-03-26 | a text block describing it, for 2024-11-05 |
-| `_meta` on listed tools, resources, templates, prompts and read contents; `annotations.lastModified` | 2025-06-18 | stripped |
-| tool `annotations`, the `completions` capability | 2025-03-26 | stripped for 2024-11-05 |
-| `title` | 2025-06-18 | stripped |
-| `icons` | 2025-11-25 | stripped |
-| `resultType` | 2026-07-28 | removed — sending it says mcpx is speaking a revision it is not |
-| `ttlMs`, `cacheScope`, `serverInfo` in `_meta` | 2026-07-28 | removed; `serverInfo` travels in the `initialize` result instead |
-| `inputRequests` / `requestState` | 2026-07-28 | never sent; a legacy client is asked on the wire instead |
-| `elicitationId` | 2025-11-25 | never sent to 2026-07-28 (it used to leak through `inputRequests`); minted for a 2025-11-25 url-mode question an upstream sent without one |
+| carried                                                                                              | defined from | to an older client                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `structuredContent`                                                                                  | 2025-06-18   | removed, and rendered into the `content` array as text — the data survives, in a vocabulary the client has                                 |
+| `resource_link` block                                                                                | 2025-06-18   | becomes an embedded `resource` with a `text/plain` label naming the URI, which keeps the URI machine-readable where text would not         |
+| `audio` block                                                                                        | 2025-03-26   | a text block describing it, for 2024-11-05                                                                                                 |
+| `_meta` on listed tools, resources, templates, prompts and read contents; `annotations.lastModified` | 2025-06-18   | stripped                                                                                                                                   |
+| tool `annotations`, the `completions` capability                                                     | 2025-03-26   | stripped for 2024-11-05                                                                                                                    |
+| `title`                                                                                              | 2025-06-18   | stripped                                                                                                                                   |
+| `icons`                                                                                              | 2025-11-25   | stripped                                                                                                                                   |
+| `resultType`                                                                                         | 2026-07-28   | removed — sending it says mcpx is speaking a revision it is not                                                                            |
+| `ttlMs`, `cacheScope`, `serverInfo` in `_meta`                                                       | 2026-07-28   | removed; `serverInfo` travels in the `initialize` result instead                                                                           |
+| `inputRequests` / `requestState`                                                                     | 2026-07-28   | never sent; a legacy client is asked on the wire instead                                                                                   |
+| `elicitationId`                                                                                      | 2025-11-25   | never sent to 2026-07-28 (it used to leak through `inputRequests`); minted for a 2025-11-25 url-mode question an upstream sent without one |
 
 A revision that defines all of them pays nothing: the function returns the
 result untouched. An older one gets a copy, never an edit, because a task's
@@ -313,7 +313,7 @@ the CLI does: with ssh as the transport and no streamable-HTTP endpoint to
 configure.
 
 ```json
-{"mcpServers":{"mcpx":{"command":"ssh","args":["buildbox","mcpx","serve","--transport","stdio"]}}}
+{ "mcpServers": { "mcpx": { "command": "ssh", "args": ["buildbox", "mcpx", "serve", "--transport", "stdio"] } } }
 ```
 
 `mcpx serve` on the remote host is a stdio shim over the daemon **there**, so
@@ -396,14 +396,14 @@ could answer.
 
 ### 3.1 Which client gets asked
 
-| the client declared | version | what happens |
-| --- | --- | --- |
-| nothing | any | broker only |
-| `elicitation` | 2024-11-05, 2025-03-26 | broker only; those revisions have no elicitation |
-| `elicitation` | 2025-06-18 | asked, form mode only, `mode` and `elicitationId` stripped |
+| the client declared       | version                | what happens                                                  |
+| ------------------------- | ---------------------- | ------------------------------------------------------------- |
+| nothing                   | any                    | broker only                                                   |
+| `elicitation`             | 2024-11-05, 2025-03-26 | broker only; those revisions have no elicitation              |
+| `elicitation`             | 2025-06-18             | asked, form mode only, `mode` and `elicitationId` stripped    |
 | `elicitation` (any shape) | 2025-11-25, 2026-07-28 | asked in form mode; a url-mode question stays with the broker |
-| `elicitation.url` | 2025-11-25, 2026-07-28 | asked in either mode |
-| `sampling` | any | asked for `sampling/createMessage` only |
+| `elicitation.url`         | 2025-11-25, 2026-07-28 | asked in either mode                                          |
+| `sampling`                | any                    | asked for `sampling/createMessage` only                       |
 
 Declaring one is not declaring the other. A sampling-only client is never sent
 an elicitation, and vice versa. Anything mcpx may not send this client is left
@@ -418,7 +418,7 @@ asks.** 2026-07-28 `basic/index` says a server "MUST NOT rely on capabilities
 the client has not declared" and "if processing a request requires a
 capability the client did not include ... MUST return" `-32021`
 (`MissingRequiredClientCapabilityError`). The error is conditional on
-*requiring* the capability, and mcpx never does: a question it may not send
+_requiring_ the capability, and mcpx never does: a question it may not send
 the client goes to the broker, which is a durable queue answerable by any
 consumer (`mcpx elicit`, `/v1`, the plugin, a human) whether or not one is
 listening when it is asked -- there is no state in which the broker has no
@@ -435,8 +435,8 @@ declare `io.modelcontextprotocol/tasks` answer `-32021` with
 whole request; so does a `subscriptions/listen` asking for task notifications
 without it.
 
-The message is rewritten to name the originator: *"github (via mcpx) asks:
-which repository?"*. A client asked "are you sure?" with no idea who is asking
+The message is rewritten to name the originator: _"github (via mcpx) asks:
+which repository?"_. A client asked "are you sure?" with no idea who is asking
 cannot answer it.
 
 ### 3.2 Legacy: a request on the wire
@@ -476,7 +476,7 @@ arrive on a POST nothing can route back. Its questions stay with the broker.
 That is the reason `Conn` exists: a subscription filter, a push function and a
 client's declared capabilities used to live on the `Server`, which was correct
 while stdio was the only transport and wrong the moment one server answered
-several HTTP clients — those fields decide *whose* client gets asked a
+several HTTP clients — those fields decide _whose_ client gets asked a
 question.
 
 Server ids are negative on the wire. JSON-RPC only requires uniqueness within
@@ -523,7 +523,7 @@ within its TTL.
 
 ### 3.4 Correlation: which call asked?
 
-A question arrives on a *connection*, not on a call. The server sends
+A question arrives on a _connection_, not on a call. The server sends
 `elicitation/create` down the same pipe it is answering `tools/call` on, and
 nothing in the frame says which call it belongs to.
 
@@ -538,7 +538,7 @@ Guessing would hand one client's credential prompt to another client, and that
 is not a trade worth making for a convenience.
 
 The rule is one comparison. The ask table holds the upstream requests a
-call *owns*; the pool counts every upstream request in flight on the key,
+call _owns_; the pool counts every upstream request in flight on the key,
 whoever made it (`/v1/call`, exec, the CLI, the plugin). A call owns a question
 when all the table's entries on the key are its own **and** their number equals
 the pool's count — nobody else is on the connection. Until #229 the table
@@ -549,7 +549,7 @@ question arriving in exactly that instant can still be misattributed.
 
 **A script** (`mcpx_exec`) is one call that makes many. It runs as an
 interruptible call too (`/v1/ask` kind `exec`), and its run id is chosen and
-registered *before* the script starts. The generated client sends that id as
+registered _before_ the script starts. The generated client sends that id as
 `X-Mcpx-Run` on every `/v1/call`, so each upstream call the script makes joins
 the table as a member of the run. A question on a key whose in-flight calls all
 belong to one run is that run's — including calls the script makes in
@@ -580,6 +580,15 @@ the tool call for a script that expects to ask.
   (#229). It used to kill a call while a person was answering it, which made
   the three settings above promises the pool did not keep. The precedence of
   all five timeouts is written down in `internal/pool/budget.go`.
+  A caller may request a shorter value for a single call
+  (`--pool-call-timeout`, carried as a call setting): the daemon clamps the
+  request to its own configured value, so a call may lower the bound but
+  never raise it (#1864). Against `exec.timeout`: that bounds a whole
+  script run, this bounds one upstream call inside it -- the run's total
+  work is capped by `exec.timeout`, each call within it by the (possibly
+  per-call) `pool.callTimeout`, and whichever is tighter for a given call
+  is the one that fires. The pool's execution watch keeps the configured
+  value; the per-call request bounds the call it was made on only.
 - The question's own deadline is `elicit.ttl` in `defaults.json` (120s; a
   built-in, not a user setting). Expiry answers `cancel`, never `decline`:
   dismissed without choosing is not the same as refused.
@@ -596,16 +605,16 @@ why cancellation does not reach an interruptible call (§6).
 
 What mcpx sends upstream, and what it will accept from a server.
 
-| | |
-| --- | --- |
-| era | modern probed first (`server/discover`), legacy on fallback; the answer cached per server configuration ([spec/era-probe.md](spec/era-probe.md)) |
+|                     |                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| era                 | modern probed first (`server/discover`), legacy on fallback; the answer cached per server configuration ([spec/era-probe.md](spec/era-probe.md))                                                                                                                                                                                                                                                               |
 | per-server override | `protocol: prefer-discover \| prefer-initialize \| force-discover \| force-initialize \| follow`, over `upstream.protocol` (default `prefer-discover`); the old names `modern`, `legacy`, `force-modern`, `force-legacy` and others are accepted as aliases ([spec/era-probe.md](spec/era-probe.md#values)); `follow` adds a legacy session for legacy callers ([spec/era-probe.md](spec/era-probe.md#follow)) |
-| legacy version | `2025-11-25` offered; `2024-11-05` .. `2025-11-25` accepted; anything else and mcpx disconnects |
-| modern version | `2026-07-28` |
-| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` when a handler is installed — which in the daemon is always (#210) |
-| transports | stdio, Streamable HTTP, and HTTP+SSE (2024-11-05) as the last fallback of the HTTP probe, remembered in the era record |
-| stdio shutdown | close stdin, wait `stdioShutdown.stdinGrace` (2s, a built-in default) for the server to exit, then `SIGTERM` the process group, wait `stdioShutdown.termGrace` (3s), then `SIGKILL` — every revision's stdio SHOULD (#203 LV-39; it used to `SIGTERM` at once) |
-| headers | legacy: `MCP-Protocol-Version` is the negotiated version, omitted on `initialize` and up to 2025-03-26; modern: `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*` for `x-mcp-header` parameters, never a session id |
+| legacy version      | `2025-11-25` offered; `2024-11-05` .. `2025-11-25` accepted; anything else and mcpx disconnects                                                                                                                                                                                                                                                                                                                |
+| modern version      | `2026-07-28`                                                                                                                                                                                                                                                                                                                                                                                                   |
+| declared to servers | `elicitation.form` and `roots` always; `elicitation.url` and `sampling` when a handler is installed — which in the daemon is always (#210)                                                                                                                                                                                                                                                                     |
+| transports          | stdio, Streamable HTTP, and HTTP+SSE (2024-11-05) as the last fallback of the HTTP probe, remembered in the era record                                                                                                                                                                                                                                                                                         |
+| stdio shutdown      | close stdin, wait `stdioShutdown.stdinGrace` (2s, a built-in default) for the server to exit, then `SIGTERM` the process group, wait `stdioShutdown.termGrace` (3s), then `SIGKILL` — every revision's stdio SHOULD (#203 LV-39; it used to `SIGTERM` at once)                                                                                                                                                 |
+| headers             | legacy: `MCP-Protocol-Version` is the negotiated version, omitted on `initialize` and up to 2025-03-26; modern: `Mcp-Method`, `Mcp-Name`, `Mcp-Param-*` for `x-mcp-header` parameters, never a session id                                                                                                                                                                                                      |
 
 The per-revision rules — headers, `x-mcp-header`, `resultType`, cancellation,
 pagination, `subscriptions/listen`, resumption, the GET stream — are in
@@ -620,13 +629,13 @@ passed every test.
 
 ### 4.1 Server-initiated requests mcpx answers
 
-| request | mcpx answers | regardless of era |
-| --- | --- | --- |
-| `ping` | `{}` | yes |
-| `roots/list` | the daemon's roots, before consulting any handler — and the daemon passes none, so the list is empty (#210) | yes |
-| `elicitation/create` | through the broker, or `{"action":"cancel"}` when nothing can answer; a mode that was not declared for the revision in use is refused | yes |
-| `sampling/createMessage` | through the broker; a decline becomes an error, since the specification has no decline result for sampling | yes |
-| anything else | `-32601`, but **always answered** — silence is indistinguishable from a hung server | yes |
+| request                  | mcpx answers                                                                                                                          | regardless of era |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| `ping`                   | `{}`                                                                                                                                  | yes               |
+| `roots/list`             | the daemon's roots, before consulting any handler — and the daemon passes none, so the list is empty (#210)                           | yes               |
+| `elicitation/create`     | through the broker, or `{"action":"cancel"}` when nothing can answer; a mode that was not declared for the revision in use is refused | yes               |
+| `sampling/createMessage` | through the broker; a decline becomes an error, since the specification has no decline result for sampling                            | yes               |
+| anything else            | `-32601`, but **always answered** — silence is indistinguishable from a hung server                                                   | yes               |
 
 Always answered, unless the server withdraws the question first: a
 `notifications/cancelled` naming a request still being answered ends the
@@ -634,7 +643,7 @@ handler's context (so a question relayed to the host is withdrawn too) and no
 response is sent. The reason, if given, goes to the daemon log as a
 `server.warning`. A cancellation naming anything else is ignored.
 
-A modern server asks the same three things by *answering* `input_required`,
+A modern server asks the same three things by _answering_ `input_required`,
 and mcpx resolves them through the identical function. One function is what
 stops the two eras answering the same question differently.
 
@@ -708,7 +717,7 @@ era has.
 
 - **The lifetime is a `/v1/events` stream.** `mcpx serve` hears the daemon's
   events over `GET /v1/events?uri=mcpx://...`; a stream naming a resource in
-  mcpx:// form (or bare with `server=`) *is* a subscription to it, held until
+  mcpx:// form (or bare with `server=`) _is_ a subscription to it, held until
   the stream closes. So a listen stream ending, a connection ending, a legacy
   unsubscribe (which replaces the connection's stream), or `mcpx serve`
   crashing all release it without a separate call that could be missed, and a
@@ -758,7 +767,7 @@ path at all — which is why `POST /v1/complete` answered from cache with
 nothing could ask it.
 
 `Complete` now forwards `completion/complete` to the server, which knows the
-*values* an argument may take where mcpx knows only the names it has cached. A
+_values_ an argument may take where mcpx knows only the names it has cached. A
 server that never declared `completions` is not asked — a well-behaved one
 answers method-not-found and the rest answer something unpredictable, so the
 declaration is the only thing worth trusting — and the reply says `"source":
@@ -776,14 +785,14 @@ of the API existed — with no way to tell from the outside.
 
 Now:
 
-| was | is |
-| --- | --- |
-| `serve --transport http` → `/mcp` | the daemon mounts `/mcp` on its own listeners (`proto.mcpPath`, `proto.serveMCP`) |
-| `serve --transport http` → `/v1/tools/<tool>` | `POST /v1/tools/{tool}` in the ops table |
-| `serve --transport http` → `/v1/call/<ns>/<tool>` | `POST /v1/call/{server}/{tool}` in the ops table |
-| `serve --transport http` → `/health` | `GET /v1/health`, which already existed |
-| `serve --transport http` → `/openapi.json` | `GET /v1/openapi.json`, which already existed, and which now describes the per-tool paths the second server used to publish alone |
-| `serve --transport stdio` | unchanged |
+| was                                               | is                                                                                                                                |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `serve --transport http` → `/mcp`                 | the daemon mounts `/mcp` on its own listeners (`proto.mcpPath`, `proto.serveMCP`)                                                 |
+| `serve --transport http` → `/v1/tools/<tool>`     | `POST /v1/tools/{tool}` in the ops table                                                                                          |
+| `serve --transport http` → `/v1/call/<ns>/<tool>` | `POST /v1/call/{server}/{tool}` in the ops table                                                                                  |
+| `serve --transport http` → `/health`              | `GET /v1/health`, which already existed                                                                                           |
+| `serve --transport http` → `/openapi.json`        | `GET /v1/openapi.json`, which already existed, and which now describes the per-tool paths the second server used to publish alone |
+| `serve --transport stdio`                         | unchanged                                                                                                                         |
 
 `serve --transport http` is **removed**, and asking for it fails with the
 address to use instead. A command that fails without saying where the thing
@@ -810,7 +819,7 @@ same reason: whatever can route to the port can run tools as you.
 An `--mcp-addr` on the daemon was the obvious alternative, and it is one
 address away from what `--port` already does. The reason not to is that the
 two surfaces are not separable: `/mcp` calls `/v1` for everything, the MCP
-tools are *generated* from the `/v1` ops table, and a deployment that exposed
+tools are _generated_ from the `/v1` ops table, and a deployment that exposed
 one without the other would be exposing half a program. One listener, one
 access-control decision.
 

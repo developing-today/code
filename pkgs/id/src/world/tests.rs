@@ -752,15 +752,15 @@ mod tests {
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -805,15 +805,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_follow_the_world_grant_not_a_participant_capability() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            ).unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -883,16 +883,15 @@ mod tests {
     #[tokio::test]
     async fn ticks_speak_for_the_world_not_for_a_present_participant() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "tick-attribution",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "tick-attribution",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger.set_granted(BTreeSet::from([
             "time.tick".to_owned(),
             "chat.say".to_owned(),
@@ -1127,16 +1126,15 @@ mod tests {
     #[tokio::test]
     async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
         let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
-        let mut core =
-            WorldCore::new_with_clock(
-                "ceiling-ticks",
-                WorldLimits {
-                    min_tick_ms: 20,
-                    ..WorldLimits::default()
-                },
-                clock.clone(),
-            )
-                .unwrap();
+        let mut core = WorldCore::new_with_clock(
+            "ceiling-ticks",
+            WorldLimits {
+                min_tick_ms: 20,
+                ..WorldLimits::default()
+            },
+            clock.clone(),
+        )
+        .unwrap();
         core.ledger
             .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let (_, _token) = core
@@ -1522,6 +1520,58 @@ mod tests {
             },
         ];
         assert!(WorldCore::restore("test-world", WorldLimits::default(), entries).is_err());
+    }
+
+    #[test]
+    fn restore_refuses_an_issued_participant_zero() {
+        // #2972: participant 0 is the reserved host/system identity —
+        // mint can never issue it, so a journal issuing it to itself
+        // (with a self-chosen digest) must be refused outright, whether
+        // the forged entry stands alone or follows legitimate entries.
+        let mut source = world(8);
+        let (owner, owner_token) = source
+            .issue_capability("Ada", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let legitimate = JournalEntry::Issued {
+            participant: owner,
+            digest: hex_encode(&token_digest(owner_token.expose())),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let forged = JournalEntry::Issued {
+            participant: Participant {
+                id: 0,
+                display_name: "host".to_owned(),
+            },
+            digest: "ab".repeat(32),
+            scopes: WorldScopes::GUEST.bits(),
+            parent: None,
+            expires_at: None,
+            uses: None,
+            used: 0,
+            subject: None,
+        };
+        let header = JournalEntry::Created {
+            world_id: "test-world".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        for entries in [
+            vec![header.clone(), forged.clone()],
+            vec![header, legitimate, forged],
+        ] {
+            let err = match WorldCore::restore("test-world", WorldLimits::default(), entries) {
+                Ok(_) => panic!("restore must refuse an Issued participant 0"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("reserved host identity"),
+                "error must name the reserved id: {err}"
+            );
+        }
     }
 
     #[test]

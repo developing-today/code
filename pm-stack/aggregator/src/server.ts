@@ -11,14 +11,33 @@ import { decodePathSegment } from "./path-segment.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
+import {
+  computeCoverage,
+  CoverageSnapshotStore,
+  nextCoverageSnapshot,
+  type CoverageSnapshotFile,
+  type RepoCensus,
+} from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import {
+  buildHealth,
+  pageRenderHealth,
+  recordRender,
+  summarizeItemCoverage,
+  type HealthView,
+  type ItemsCoverage,
+} from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
-import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import {
+  reconcileRoadmap,
+  roadmapDriftReport,
+  unavailableRoadmapReconciliation,
+  type RoadmapReconciliation,
+} from "./roadmap-reconcile.ts";
 import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -49,7 +68,6 @@ import {
   renderPages,
   renderProgram,
   renderProgramProject,
-  renderProjects,
   renderQuota,
   renderRoadmap,
   renderServiceDetail,
@@ -59,12 +77,51 @@ import {
   renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
+import { timingSafeEqual } from "node:crypto";
+import {
+  getAlertsStore,
+  sendTestPush,
+  startAlertEngine,
+  validateNewIncident,
+  validateNewSubscription,
+} from "./alerts.ts";
+import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { resolveBwsSecret } from "./secrets.ts";
+import { SW_SOURCE } from "./sw-source.ts";
+import { renderAlerts } from "./render.ts";
+import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+
+/** #1220: the coverage snapshot behind the /projects panel — computed
+ * from the feed's items + the Project pool, rotated weekly by
+ * nextCoverageSnapshot, persisted only when it actually changes. */
+async function coverageSnapshot(
+  census: RepoCensus[] | null,
+  pool: ProjectPoolItem[],
+  poolAvailable: boolean,
+): Promise<CoverageSnapshotFile> {
+  const stored = await coverageStore.read();
+  const next = nextCoverageSnapshot(stored, computeCoverage(census, poolAvailable ? pool : null));
+  const strip = (s: CoverageSnapshotFile | null): string =>
+    s
+      ? JSON.stringify({
+          baseline: s.baseline,
+          weekly: s.weekly ?? null,
+          anchorAt: s.anchorAt ?? "",
+          current: { ...s.current, generatedAt: "" },
+        })
+      : "";
+  if (strip(next) !== strip(stored)) {
+    await coverageStore.write(next).catch(() => {});
+  }
+  return next;
+}
 const actionsStore = new ActionsStore(cfg.actionsFile);
 
 function pickSource(): Source {
@@ -216,27 +273,52 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
-// Self-unregistering service worker, served at /sw.js on purpose. Until
-// 2026-10-27 this origin (the laptop's tailnet-serve address) fronted the
-// opencode web app, which registered a Workbox service worker that keeps
-// serving the opencode shell from cache even though the origin now serves
-// the dashboard. Browsers holding that registration pick this script up
-// on their next update check: it installs, unregisters itself, and
-// reloads open tabs into the dashboard. Harmless for fresh browsers --
-// it removes itself immediately.
-const SW_KILL_SWITCH = `self.addEventListener('install', () => { self.skipWaiting(); });
-self.addEventListener('activate', async () => {
-  try { await self.registration.unregister(); } catch {}
-  const cs = await self.clients.matchAll({ type: 'window' });
-  for (const c of cs) { try { c.navigate(c.url); } catch {} }
-});
-`;
-
-function serviceWorkerKillSwitch(): Response {
-  return new Response(SW_KILL_SWITCH, {
+// The real service worker (#3676 — design 2026-11-01T03-54-00Z §6
+// step 2): push + notificationclick handlers, with the kill switch's
+// eviction job carried forward per the §6 fallback (cache purge on
+// activate in the worker; foreign-registration unregister in the
+// page-side probe script). Worker source + history: src/sw-source.ts.
+function serviceWorkerResponse(): Response {
+  return new Response(SW_SOURCE, {
     headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
   });
 }
+
+// --- Alert throat (#3676) -------------------------------------------------
+
+/** Bearer check for POST /api/alerts: the intake token is resolved
+ * by name from Bitwarden (pm-aggregator.alerts-intake-token) and
+ * compared in constant time; its value is never logged. */
+async function alertsIntakeAuthorized(req: Request): Promise<boolean> {
+  const header = req.headers.get("authorization") ?? "";
+  const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+  if (!presented) return false;
+  const expected = await resolveBwsSecret("pm-aggregator.alerts-intake-token");
+  if (!expected) return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The PWA manifest (#3315 slice a, landed with #3676): start_url is
+ * the attention view per the design; icons incl. maskable + iOS. */
+const PWA_MANIFEST = {
+  name: "PM Aggregator",
+  short_name: "PM Stack",
+  description: "The PM-stack aggregator: needs-you queues, quotas, health \u2014 and the alert throat.",
+  start_url: "/attention",
+  scope: "/",
+  display: "standalone",
+  background_color: "#0e1117",
+  theme_color: "#161b22",
+  icons: [
+    { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icons/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ],
+};
 
 async function boardContext() {
   const board = await source.board();
@@ -270,8 +352,11 @@ async function roadmapContext() {
     if (poolResult.failed) reasons.push("Project pool read failed");
     const feed = await loadFeed(cfg.feedFile).catch(() => null);
     if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
-    else if (feed.projects === undefined) reasons.push("fleet feed carries no projects section — Project pool availability unknown");
-    reconciliation = reasons.length ? unavailableRoadmapReconciliation(reasons.join("; ")) : reconcileRoadmap(rows, poolResult.pool);
+    else if (feed.projects === undefined)
+      reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length
+      ? unavailableRoadmapReconciliation(reasons.join("; "))
+      : reconcileRoadmap(rows, poolResult.pool);
   } else {
     reconciliation = reconcileRoadmap(rows, poolResult.pool);
   }
@@ -298,7 +383,13 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
     ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
     probes: health.services
       .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
-      .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+      .map((s) => ({
+        id: s.def.id,
+        name: s.def.name,
+        ok: s.ok,
+        detail: s.detail,
+        ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+      })),
   });
 }
 
@@ -405,6 +496,14 @@ async function handler(req: Request): Promise<Response> {
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  // --- Author identities for the on-demand picker (#1179) ------------------
+  // List pages render author pickers with the standing identities only;
+  // the full standing + per-session list is fetched once, on first use.
+  if (req.method === "GET" && path === "/api/author-identities") {
+    const records = await source.registry().catch(() => []);
+    return json({ identities: identitiesFromRecords(records) });
+  }
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/comments") {
@@ -548,7 +647,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
-    return html(renderBoard(board, items, prov(), counts, provDetail(), act));
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
@@ -635,38 +734,60 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/sessions") {
     const records = await source.registry();
+    // #1209: window/filter/pagination, shared with the JSON twin.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
     return html(
-      renderSessions(records, prov(), provDetail(), {
-        actionsByObject: await actionsStore.byObject(),
-        identities: identitiesFromRecords(records),
-      }),
+      renderSessions(
+        view.records,
+        prov(),
+        provDetail(),
+        {
+          actionsByObject: await actionsStore.byObject(),
+          identities: identitiesFromRecords(records),
+        },
+        view,
+      ),
     );
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
-    return json({ records, identities: identitiesFromRecords(records) });
+    // #1209: same query pipeline as /sessions — same params, same page.
+    const view = queryRegistry(records, parseRegistryQuery(url.searchParams));
+    return json({
+      records: view.records,
+      identities: identitiesFromRecords(records),
+      total: view.matched,
+      totalAll: view.totalAll,
+      hiddenByWindow: view.hiddenByWindow,
+      hiddenByPagination: view.hiddenByPagination,
+      remainingAfterPage: view.remainingAfterPage,
+      windowDays: view.query.windowDays,
+      limit: view.query.limit,
+      offset: view.query.offset,
+    });
   }
 
   if (path === "/projects") {
-    const [pool, orchestration, formOpts, actionsByObject] = await Promise.all([
-      source.projects().catch(() => []),
-      source.orchestration().catch(() => null),
-      commentFormOpts(),
-      actionsStore.byObject(),
-    ]);
-    return html(
-      renderProjects(pool, prov(), {
-        area: url.searchParams.get("area"),
-        orchestration,
-        detail: provDetail(),
-        actionsByObject,
-        identities: formOpts.identities,
-      }),
-    );
+    // #1497: Projects merged into Program status — the pool view is
+    // the #projects-pool section of /program now. The route redirects
+    // (area filter preserved); /api/projects.json below is unchanged.
+    const area = url.searchParams.get("area");
+    const target = area ? `/program?area=${encodeURIComponent(area)}#projects-pool` : "/program#projects-pool";
+    return new Response(null, { status: 302, headers: { Location: target } });
   }
   if (path === "/api/projects.json") {
-    const pool = await source.projects().catch(() => []);
-    return json({ project: "developing-today#4", items: pool });
+    const [pool, census, poolAvailable] = await Promise.all([
+      source.projects().catch(() => []),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+    ]);
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    return json({
+      project: "developing-today#4",
+      items: pool,
+      coverage: coverage.current,
+      coverageBaseline: coverage.baseline,
+    });
   }
 
   if (path === "/program" || path === "/api/program.json") {
@@ -675,18 +796,32 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
       source.items(programRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
       source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const data = {
       ...buildProgramData(items, pool, orchestration),
       projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
     };
     if (path === "/api/program.json") return json(data);
-    return html(renderProgram(data, items, prov(), provDetail()));
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    return html(
+      renderProgram(data, items, prov(), provDetail(), {
+        pool,
+        area: url.searchParams.get("area"),
+        orchestration,
+        coverage,
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
@@ -723,7 +858,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/pages") {
-    return html(renderPages(prov()));
+    return html(renderPages(prov(), pageRenderHealth()));
   }
 
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
@@ -813,9 +948,138 @@ async function handler(req: Request): Promise<Response> {
     );
   }
   if (path === "/sw.js") {
-    // Kill switch for the opencode service worker stranded on this
-    // origin (see SW_KILL_SWITCH above) -- never a real worker here.
-    return serviceWorkerKillSwitch();
+    // The real worker (#3676; source + §6 history in src/sw-source.ts).
+    return serviceWorkerResponse();
+  }
+  if (path === "/manifest.webmanifest") {
+    return new Response(JSON.stringify(PWA_MANIFEST, null, 2), {
+      headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "no-cache" },
+    });
+  }
+  const iconMatch = /^\/icons\/(icon-192\.png|icon-512\.png|icon-maskable-512\.png|apple-touch-icon\.png)$/.exec(path);
+  if (iconMatch) {
+    const file = Bun.file(new URL(`./assets/icons/${iconMatch[1]}`, import.meta.url));
+    if (!(await file.exists())) return json({ error: "icon missing" }, 404);
+    return new Response(file, { headers: { "content-type": "image/png", "cache-control": "public, max-age=86400" } });
+  }
+  if (path === "/assets/push-client.js") {
+    const file = Bun.file(new URL("./assets/push-client.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
+  if (path === "/api/sw-probe") {
+    // Design §6 step 2: pages report the registrations they see
+    // (counted, no content); GET exposes the running summary.
+    if (req.method === "POST") {
+      try {
+        const body = (await readJsonBody(req)) as { registrations?: unknown; evicted?: unknown };
+        return json(recordSwProbe(body));
+      } catch (err) {
+        return json({ error: `invalid probe: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json(swProbeSummary());
+  }
+
+  // --- Alert throat (#3676): subscription API -------------------------
+  if (path === "/api/push/subscriptions") {
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    if (req.method === "GET") return json({ subscriptions: await store.listSubscriptions() });
+    if (req.method === "POST") {
+      try {
+        const parsed = validateNewSubscription(await readJsonBody(req));
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        return json({ subscription: await store.upsertSubscription(parsed.value) }, 201);
+      } catch (err) {
+        return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    if (req.method === "DELETE") {
+      try {
+        const body = (await readJsonBody(req)) as { endpoint?: unknown };
+        if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
+        const deleted = await store.deleteSubscription(body.endpoint);
+        return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
+      } catch (err) {
+        return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
+      }
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  if (path === "/api/push/test") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendTestPush(store, cfg.publicOrigin);
+    return json(summary);
+  }
+
+  // --- Alert throat (#3676): incident intake + ack/close --------------
+  if (req.method === "POST" && path === "/api/alerts") {
+    if (!(await alertsIntakeAuthorized(req))) return json({ error: "unauthorized" }, 401);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    try {
+      const parsed = validateNewIncident(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const { incident, created } = await store.postIncident(parsed.value);
+      return json({ incident, created }, created ? 201 : 200);
+    } catch (err) {
+      return json({ error: `invalid incident: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  const alertActionMatch = /^\/api\/alerts\/([\w-]+)\/(ack|close)$/.exec(path);
+  if (req.method === "POST" && alertActionMatch) {
+    const id = alertActionMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const result = alertActionMatch[2] === "ack" ? await store.ackIncident(id) : await store.closeIncident(id);
+    if (!result.incident) return json({ error: "no such incident", id }, 404);
+    return json({ incident: result.incident, transitioned: result.transitioned });
+  }
+  if (path === "/alerts" || path === "/api/alerts.json") {
+    const store = await getAlertsStore();
+    if (!store) {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
+    try {
+      const [incidents, events, subscriptions] = await Promise.all([
+        store.listIncidents(),
+        store.recentEvents(),
+        store.listSubscriptions(),
+      ]);
+      if (path === "/api/alerts.json") return json({ incidents, events });
+      return html(
+        renderAlerts(
+          { available: true, incidents, events, subscriptions, ackWindowMin: cfg.alerts.ackWindowMin },
+          prov(),
+          VAPID_PUBLIC_KEY,
+        ),
+      );
+    } catch {
+      return path === "/alerts"
+        ? html(
+            renderAlerts(
+              { available: false, incidents: [], events: [], subscriptions: [], ackWindowMin: cfg.alerts.ackWindowMin },
+              prov(),
+              VAPID_PUBLIC_KEY,
+            ),
+          )
+        : json({ error: "alerts store unavailable" }, 503);
+    }
   }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
@@ -932,3 +1196,7 @@ const servers = cfg.hosts.map((hostname) =>
 for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
+
+// The alert throat's engine (#3676): the ~60s delivery/escalation
+// tick (live mode only, fail-soft — see src/alerts.ts).
+startAlertEngine(cfg);

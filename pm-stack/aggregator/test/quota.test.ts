@@ -50,6 +50,17 @@ describe("quota extractors", () => {
     expect(p.windows[0].resetsAt).toBe("2026-10-30T18:01:00.000Z");
   });
 
+  test("alternate ChatGPT account is its own pool — never merged into the main pool", () => {
+    const p = byId.get("openai.alternate")!;
+    expect(p).toBeDefined();
+    expect(p.provider).toBe("OpenAI");
+    // This view has no "### ChatGPT (Alternate)" dated-read section, so
+    // the pool renders as a shell; the gatherer overlay supplies the
+    // live windows (see quota-current.test.ts).
+    expect(p.windows).toEqual([]);
+    expect(poolProviderId("openai.alternate")).toBe("openai.alternate");
+  });
+
   test("meta is walled until the weekly reset — and it is the only Meta pool", () => {
     const p = byId.get("meta:high-usage")!;
     expect(p.state).toBe("walled");
@@ -133,6 +144,48 @@ describe("quota extractors", () => {
     expect(p.windows[2].percent).toBe(8.8);
   });
 
+  test("command code takes the latest dated read, percentage-only format (#3410)", () => {
+    const multi = `
+### Command Code
+- **Usage / dates:** **Newer dated read (model-efficiency plan, freshest reads 2026-10-25 morning): $6.57 of $10 used ($3.43 left); 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (console, 2026-10-27 10:05 CDT, commandcode.ai Settings): monthly limit 69% used, resets Nov 2; weekly limit 14% (resets in 4d); 5-hour limit 0% ("No usage in this window yet"); extra/top-up credits $0.00 balance.**
+`;
+    const p = extractQuotaPools(multi, NOW).find((x) => x.id === "commandcode:go")!;
+    expect(p.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["monthly", 69],
+      ["weekly", 14],
+      ["5-hour", 0],
+    ]);
+    // No window is a dollar/balance figure: the top-up balance is not quota.
+    expect(p.windows.some((w) => w.unit === "usd")).toBe(false);
+  });
+
+  test("command code renders no windows when the freshest dated read is unparseable (#3410)", () => {
+    const stale = `
+### Command Code
+- **Usage / dates:** **Dated read (2026-10-25): $6.57 of $10 used; 5h 1.2%, weekly 8.8%; period ends Nov 2, 23:04 UTC.** **Freshest dated read (2026-10-30): monthly limit 55 percent used (the console printed the figure in words this cycle).**
+`;
+    const p = extractQuotaPools(stale, NOW).find((x) => x.id === "commandcode:go")!;
+    expect(p.windows).toEqual([]);
+  });
+
+  test("command code: a later same-day unparseable read also invalidates the earlier one (#3410)", () => {
+    const sameDay = `
+### Command Code
+- **Usage / dates:** **Dated read (2026-10-30 09:00 CDT): monthly limit 55% used; weekly limit 20%; 5-hour limit 3%.** **Dated update (2026-10-30 12:00 CDT): monthly limit 100 percent used (the console printed the figure in words).**
+`;
+    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "commandcode:go")!;
+    expect(p.windows).toEqual([]);
+  });
+
+  test("command code never emits the top-up balance as quota (#3410)", () => {
+    const balanceOnly = `
+### Command Code
+- **Usage / dates:** **Dated read (2026-10-30): extra/top-up credits $0.10 balance; hub credits 0.1 flat.**
+`;
+    const p = extractQuotaPools(balanceOnly, NOW).find((x) => x.id === "commandcode:go")!;
+    expect(p.windows).toEqual([]);
+  });
+
   test("antigravity pools are independent, remaining -> used", () => {
     expect(byId.get("antigravity:gemini")!.windows[0].percent).toBeCloseTo(0.9);
     expect(byId.get("antigravity:claude-gpt")!.windows[0].percent).toBe(0);
@@ -202,9 +255,7 @@ describe("disabled_providers enforcement (#1114)", () => {
   test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
     expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
     const filtered: Array<[string, string]> = [];
-    const disabled = disabledProvidersFromConfig(
-      JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }),
-    );
+    const disabled = disabledProvidersFromConfig(JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }));
     const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
     expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
     expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);

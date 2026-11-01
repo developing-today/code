@@ -8,9 +8,15 @@ describe("charge service catalog", () => {
   test("matches quota providers and merchant aliases alongside SaaS services", () => {
     const catalog = chargeServiceCatalog(extractSaasServices(""), extractQuotaPools(""));
     const merchants = ["ANTHROPIC", "OPENAI", "CLAUDE", "CHATGPT", "VERCEL", "PADDLE MYSTERY"];
-    const result = matchCharges(merchants.map((merchant, i) => ({
-      source: "plaid" as const, at: "2026-10-01", merchant, amountUsd: i + 1,
-    })), catalog);
+    const result = matchCharges(
+      merchants.map((merchant, i) => ({
+        source: "plaid" as const,
+        at: "2026-10-01",
+        merchant,
+        amountUsd: i + 1,
+      })),
+      catalog,
+    );
     expect(result.rows.map((row) => row.label)).toEqual(expect.arrayContaining(["Anthropic", "OpenAI", "Vercel"]));
     expect(result.rows.filter((row) => row.label === "Anthropic")).toHaveLength(2);
     expect(result.rows.filter((row) => row.label === "OpenAI")).toHaveLength(2);

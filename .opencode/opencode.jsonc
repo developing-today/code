@@ -123,6 +123,13 @@
   // retry-looping on "insufficient credits". Per the switchboard
   // rule the definition and every seat stay in place; deleting
   // this line re-enables Command Code if it is ever refilled.
+  // 2026-11-01 (Drew, direct order): "muse-direct" joins the list.
+  // The Meta pool is quota-exhausted until 2026-11-02T00:00:00Z and
+  // sessions dealt its muse-spark leg die on the 429 with no local
+  // fall (code#3325; 46 dead by 06:03 CST, incl. two full waves).
+  // Drew: disable the provider, do NOT change the routes - every
+  // seat and definition stays in place per the switchboard rule.
+  // To re-enable after the pool resets: delete this one line.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -147,7 +154,8 @@
     "muse",
     "antigravity-ls",
     "antigravity-agy",
-    "commandcode"
+    "commandcode",
+    "muse-direct"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
@@ -155,7 +163,6 @@
   // when claude-code is re-enabled is an optional preference, not part of
   // enabling it (see the PROVIDER SWITCHBOARD above).
   // claude-code is re-enabled.
-  "default": "opencode-route/workhorse",
   // The v2 default-model key is "model" (config normalize.ts reads only
   // input.model; the "default" key above is not consumed by the 2.x schema
   // and the server otherwise falls back to its first-available model —
@@ -2796,6 +2803,69 @@
         },
         "gpt-oss-120b-medium": {
           "name": "GPT-OSS 120B Medium (direct)"
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (direct)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
         }
       }
     },
@@ -6477,6 +6547,18 @@
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
   ],
   "experimental": {
+    "provider_routes": {
+      // openai-plan (2026-11-01): the ChatGPT pair as ONE provider
+      // route - openai.alternate (popesdrew) attempted first on every
+      // dispatch, openai (drewrypope) the reserve; main serves only
+      // when alternate fails or is demoted. Consumed by terra-plan,
+      // sol-plan and luna-plan as openai-plan/<model>. Change the
+      // account order HERE, in this providers list, and nowhere else.
+      "openai-plan": {
+        "providers": ["openai.alternate", "openai"],
+        "selection": "ordered"
+      }
+    },
     "model_routes": {
       // Route pools built 2026-10-25. Design: doc/2026-10-25T21-11-31Z_design_route-pools/
       // Per-model pools join every plan provider serving a model; tier pools nest them.
@@ -6619,51 +6701,15 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
-      // openai-plan (2026-10-31, Drew): the GPT account burn order,
-      // defined ONCE, here. The ChatGPT pair - openai.alternate
-      // (popesdrew) first, openai (drewrypope) the reserve - is an
-      // ORDERED pair: alternate is attempted first on every dispatch
-      // and main serves only when alternate fails or is demoted.
-      // Grammar note: route leaves are concrete provider/model refs
-      // and expand() passes no model context into a nested route, so
-      // one model-agnostic route cannot serve Terra, Sol and Luna;
-      // the construct is therefore instantiated per model as
-      // openai-plan-<model>, and every pool that seats the pair
-      // (terra-plan, sol-plan, luna-plan) consumes its model's
-      // instance instead of naming the doors itself. Change the
-      // account order HERE, in these three sibling definitions, and
-      // nowhere else. Supersedes the per-pool pair orderings and
-      // weights landed earlier today in b53ba7951. (A fork-side
-      // tiered round-robin is planned; for a two-account pair,
-      // ordered and tiered are behaviorally identical, so these
-      // definitions stand as-is when it lands.)
-      "openai-plan-terra": {
-        "name": "OpenAI plan - Terra account pair (ordered)",
-        "targets": [
-          "openai.alternate/gpt-6.1-terra",
-          "openai/gpt-6.1-terra"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "openai-plan-sol": {
-        "name": "OpenAI plan - Sol account pair (ordered)",
-        "targets": [
-          "openai.alternate/gpt-6.1-sol",
-          "openai/gpt-6.1-sol"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "openai-plan-luna": {
-        "name": "OpenAI plan - Luna account pair (ordered)",
-        "targets": [
-          "openai.alternate/gpt-6-luna",
-          "openai/gpt-6-luna"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
+      // openai-plan (2026-10-31, Drew; collapsed 2026-11-01): the GPT
+      // account burn order for the ChatGPT pair now lives ONCE in
+      // experimental.provider_routes (below) as the provider route
+      // "openai-plan" - openai.alternate (popesdrew) first, openai
+      // (drewrypope) the reserve, ordered. The per-model routes that
+      // stood here (openai-plan-terra/-sol/-luna) are gone: terra-plan,
+      // sol-plan and luna-plan now target openai-plan/<model>
+      // directly. Change the account order in the provider_routes
+      // block, and nowhere else.
       "luna-plan": {
         "name": "GPT Luna - plan providers",
         // 2026-10-27 pool-coverage audit: burn-by-expiry weights. Both
@@ -6688,12 +6734,12 @@
         // opendesign) at half of 5.6's reference rates, so the pool
         // now serves one Luna generation on every door.
         // 2026-10-31 (Drew): the ChatGPT pair seats through
-        // opencode-route/openai-plan-luna (ordered: alternate first,
+        // openai-plan/gpt-6-luna (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
         // (1.5 + 1 = 2.5). The Go burn-by-expiry weights (3/2) above
         // are untouched.
         "targets": [
-          "opencode-route/openai-plan-luna",
+          "openai-plan/gpt-6-luna",
           {
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
@@ -6707,7 +6753,7 @@
         "weights": {
           "opencode-go.personal/gpt-6-luna": 3,
           "opencode-go.lab/gpt-6-luna": 2,
-          "opencode-route/openai-plan-luna": 2.5
+          "openai-plan/gpt-6-luna": 2.5
         }
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
@@ -6859,11 +6905,11 @@
         // list, 85 ids, 2026-10-28 — the running bridge trails the
         // source catalog but does serve Sol).
         // 2026-10-31 (Drew): the ChatGPT pair seats through
-        // opencode-route/openai-plan-sol (ordered: alternate first,
+        // openai-plan/gpt-6.1-sol (ordered: alternate first,
         // main the reserve) at the pair's previous combined weight
         // (2 + 1 = 3); OpenDesign and Command Code keep their seats.
         "targets": [
-          "opencode-route/openai-plan-sol",
+          "openai-plan/gpt-6.1-sol",
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
@@ -6873,7 +6919,7 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/openai-plan-sol": 3
+          "openai-plan/gpt-6.1-sol": 3
         }
       },
       "terra-plan": {
@@ -6897,10 +6943,10 @@
         // Terra through the fork's refreshed built-in catalog, PR opencode#563).
         // The codex-door entries added in #1296 stay in their catalogs.
         // 2026-10-31 (Drew): the Codex pair seats through
-        // opencode-route/openai-plan-terra (ordered: alternate first,
+        // openai-plan/gpt-6.1-terra (ordered: alternate first,
         // main the reserve). This pool is workhorse's primary seat,
         // so that is the burn order that matters most.
-        "targets": ["opencode-route/openai-plan-terra"],
+        "targets": ["openai-plan/gpt-6.1-terra"],
         "selection": "round-robin",
         "autonomy": "rules"
       },
@@ -7065,7 +7111,8 @@
         "autonomy": "rules"
       },
       "workhorse-primary": {
-        "name": "Workhorse primary - Codex only: Terra",
+        "name": "Workhorse primary - Codex only: Luna",
+        // 2026-10-31 (Drew): primary swaps Terra -> Luna #xhigh to start (high also approved). AA v5 cost-per-score: Luna beats Terra at EVERY effort level (cost per 100 score pts - low 0.021 vs 0.241, medium 0.067 vs 0.447, high 0.091 vs 0.619, xhigh 0.114 vs 0.889, max 0.184 vs 1.882 USD); both burn the same ChatGPT pair, so the efficiency is pure quota yield. Terra keeps its specialist-tier seats, where its higher score ceiling (51 max vs Luna 38) earns its cost.
         // 2026-10-31 (Drew): primary swaps to Codex — terra-plan#medium takes the primary seat to burn the Codex pool down (Drew resets the quota once it is used up); Gemini Flash moves to workhorse-weighted at weight 2.
         // 2026-10-31 (Drew): Sonnet leaves primary — primary is Gemini Flash alone. Sonnet moves to workhorse-weighted.
         // 2026-10-31 (Drew): primary is Antigravity-only. The DeepSeek
@@ -7150,12 +7197,12 @@
         // door) at the same weight 2. Argon stays seated in
         // argon-plan; the 2026-10-29 Argon note above is history.
         "targets": [
-          "opencode-route/terra-plan#medium"
+          "opencode-route/luna-plan#xhigh"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/terra-plan": 2
+          "opencode-route/luna-plan": 2
         }
       },
       "workhorse": {
@@ -7251,7 +7298,8 @@
         "targets": [
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
-          "opencode-route/spark-plan#max",
+        // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
+          "opencode-route/spark-plan#xhigh",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",

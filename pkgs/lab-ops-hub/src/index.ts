@@ -6,7 +6,10 @@ import {
   fetchFollowingValidatedRedirects,
   parseJsonObjectBody,
   readResponseTextCapped,
+  crawlArchiveKey,
+  uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
@@ -276,20 +279,30 @@ export default {
         const b = parsed.body;
         const valid = validateMachineBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
-        const r = await env.DB.prepare(
-          "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        )
-          .bind(
-            valid.values.name,
-            b.role ?? "compute",
-            b.cpu ?? null,
-            b.ram_gb ?? null,
-            b.storage ?? null,
-            b.gpu ?? null,
-            b.status ?? "planned",
-            b.notes ?? null,
+        let r;
+        try {
+          r = await env.DB.prepare(
+            "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
           )
-          .run();
+            .bind(
+              valid.values.name,
+              b.role ?? "compute",
+              b.cpu ?? null,
+              b.ram_gb ?? null,
+              b.storage ?? null,
+              b.gpu ?? null,
+              b.status ?? "planned",
+              b.notes ?? null,
+            )
+            .run();
+        } catch (e) {
+          // A duplicate name is a client conflict, not a server fault
+          // (#2631); every other DB failure keeps the outer 500.
+          if (isMachineNameConflict(e)) {
+            return json({ error: "machine name already exists", name: valid.values.name }, 409);
+          }
+          throw e;
+        }
         ctx.waitUntil(Promise.all([logUsage(env, "d1_write", "machine"), env.CACHE.delete("machines:all")]));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
       }
@@ -360,7 +373,7 @@ export default {
         const file = form.get("file") as File | null;
         if (!file) return json({ error: "multipart field 'file' required" }, 400);
         const buf = await file.arrayBuffer();
-        const key = `uploads/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
         await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
           .bind(key, file.name, file.type || null, buf.byteLength)
@@ -414,7 +427,7 @@ export default {
           containerError = String(e).slice(0, 300);
           result = await crawlFallback(b.url);
         }
-        const key = `crawls/${Date.now()}.json`;
+        const key = crawlArchiveKey(Date.now(), crypto.randomUUID());
         await env.FILES.put(key, JSON.stringify({ url: b.url, source, ...result }, null, 2), {
           httpMetadata: { contentType: "application/json" },
         });

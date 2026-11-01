@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -129,20 +128,13 @@ func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
 	}
 }
 
-// exeBytes is the program a running child is executing, read through /proc. A
-// child keeps the file it was started from even after that path is replaced,
-// so this is what tells the old program from the new one.
-func exeBytes(t *testing.T, pid int) []byte {
-	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skipf("exeBytes reads /proc/%d/exe, which only exists on linux", pid)
-	}
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		t.Fatalf("read /proc/%d/exe: %v", pid, err)
-	}
-	return b
-}
+// exeBytes is the program a running child is executing. A child keeps
+// the file it was started from even after that path is replaced, so
+// this is what tells the old program from the new one. The read is
+// per-OS (exe_bytes_linux_test.go, exe_bytes_darwin_test.go): linux
+// reads the running inode through /proc/<pid>/exe; darwin has no
+// /proc, so it resolves the child's exec path via kern.procargs2
+// and reads that file.
 
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()

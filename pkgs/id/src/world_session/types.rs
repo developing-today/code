@@ -15,7 +15,10 @@ use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
 
 /// Largest Wasm world module that may be installed (16 MiB).
-pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::MAX_WORLD_MODULE_BYTES;
 
 /// Largest raw upload chunk; hex + JSON framing remains below [`MAX_FRAME_BYTES`].
 pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
