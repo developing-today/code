@@ -22,6 +22,7 @@
 // gh call and the outbox append; tests feed literals.
 import type { SnapshotRecord } from "../model.ts";
 import { dayTs } from "../snapshot-records.ts";
+import { isIsoDate, isNonNegative } from "../validate.ts";
 
 export interface BillingUsageItem {
   date?: string;
@@ -74,14 +75,28 @@ function codespacesCoreMultiplier(sku: unknown): number {
   return m ? Number(m[1]) : 1;
 }
 
+/** A numeric endpoint field contributes only when it is a finite,
+ * non-negative number (#2493): a negative or non-finite quantity or
+ * amount is not usage, and a negative derived record would pass
+ * isSnapshotRecord and be stored. Anything else contributes 0,
+ * extending the existing non-number fallback. */
+function usageNumber(v: unknown): number {
+  return isNonNegative(v) ? v : 0;
+}
+
 /** Per-day aggregates from raw endpoint items, oldest day first. */
 export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggregate[] {
   const byDate = new Map<string, BillingDayAggregate>();
   for (const item of items) {
     if (typeof item.date !== "string" || item.date.length < 10) continue;
     const date = item.date.slice(0, 10);
+    // The bucket date must be a real calendar date (#2493): an
+    // impossible date (month 13, Feb 30) derives snapshot records
+    // that fail isSnapshotRecord, and the collector throws on ANY
+    // invalid record — discarding the whole month's collection.
+    if (!isIsoDate(date)) continue;
     const day = byDate.get(date) ?? emptyDay(date);
-    const qty = typeof item.quantity === "number" ? item.quantity : 0;
+    const qty = usageNumber(item.quantity);
     // Classification is case-insensitive: the endpoint's documented
     // response example spells product/unitType "Actions"/"minutes"
     // while live rows arrive as "actions"/"Minutes" — both must
@@ -96,8 +111,8 @@ export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggr
     else if (product === "codespaces" && unit === "gigabytehours")
       day.codespacesStorageGbHours += qty;
     // Gross/net span every product the endpoint reports, known or not.
-    if (typeof item.grossAmount === "number") day.grossUsd += item.grossAmount;
-    if (typeof item.netAmount === "number") day.netUsd += item.netAmount;
+    day.grossUsd += usageNumber(item.grossAmount);
+    day.netUsd += usageNumber(item.netAmount);
     byDate.set(date, day);
   }
   return [...byDate.values()]
