@@ -163,6 +163,7 @@ pub mod blob_gate;
 pub mod boards;
 pub mod chain;
 pub mod chat;
+pub mod chat_presence;
 pub mod cli;
 pub mod commands;
 pub use id_core::connectivity;
