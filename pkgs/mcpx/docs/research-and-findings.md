@@ -221,11 +221,15 @@ model providers, and the credential/OAuth providers that hand out tokens.
 - **Accepted-and-ignored flags are bugs**, even when accepting them is
   deliberate-looking (#74, fixed by #75). *(read-from-source — issues #74,
   #75)*
-- **Help coverage drifts from the dispatch table**: `internal/cli/manual.go`
-  `Commands()` lists 32 commands, but `cmd/mcpx/main.go` also routes `man`,
-  `completion`, `serve`, `openapi`, `adapter`, `registry`, and `api`, which
-  help and man therefore do not list. *(read-from-source —
-  `internal/cli/manual.go`, `cmd/mcpx/main.go`)*
+- **Help coverage once drifted from the dispatch table** (historical):
+  `man`, `completion`, `serve`, `openapi`, `adapter`, `registry`, and
+  `api` were once dispatched by `cmd/mcpx/main.go` but undeclared in
+  `internal/cli/manual.go`, so help, the man page, and completions did
+  not list them. All seven are declared now, and
+  `TestEveryDispatchedCommandIsDeclared` holds the declaration and the
+  dispatch table equal in both directions, so the gap cannot reopen
+  silently. *(read-from-source — `docs/cli.md`, “once dispatched
+  but undeclared”; `internal/cli/manual.go`)*
 
 ## Containers and CI
 
