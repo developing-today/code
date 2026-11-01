@@ -36,6 +36,7 @@
 - [Quick start](quick-start.md)
 - [Release runbook](release-runbook.md)
 - [Reaching a daemon on another machine](remote.md)
+- [Research and incidental findings](research-and-findings.md)
 - [Script runtimes, permission profiles and presets](runtimes.md)
 - [Schema validation (`internal/schemaval`)](schema-validation.md)
 - [Scripts](scripts.md)
