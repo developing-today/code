@@ -70,30 +70,30 @@ Never claim, bind, launch, or mutate a task in shadow mode.
 4. For each candidate, highest queue priority first, while cap room
    remains:
    a. Re-verify the task is still claimed, still lane `opencode`,
-      still unbound (re-run poll.py for that task id). If it changed,
-      skip it -- someone else owns the launch now.
+   still unbound (re-run poll.py for that task id). If it changed,
+   skip it -- someone else owns the launch now.
    b. Create the worker session on the standing OpenCode server
-      (`POST /api/session`, directory = the repo's laptop primary,
-      title naming the queue task and issue, model = the route above).
-      From the moment creation succeeds, the session id is KNOWN and
-      the steps below are ordered so it can never be lost.
+   (`POST /api/session`, directory = the repo's laptop primary,
+   title naming the queue task and issue, model = the route above).
+   From the moment creation succeeds, the session id is KNOWN and
+   the steps below are ordered so it can never be lost.
    c. BIND AT LAUNCH, immediately after creation and BEFORE sending
-      the prompt or anything else that can interleave: PATCH the
-      task row (the pm-dispatch precedent: a launch that knows its
-      exact task binds by direct PATCH, then records the lane) setting
-      `progress.session_id` to the new session id and
-      `progress.launched_by: "opencode-claimant"`, then run the helper
-      `checkpoint <id> --worker opencode-claimant --stage launched`
-      with the session id in the progress JSON. A launch without this
-      binding is the Oct 28 duplicate-PR defect -- never leave one.
+   the prompt or anything else that can interleave: PATCH the
+   task row (the pm-dispatch precedent: a launch that knows its
+   exact task binds by direct PATCH, then records the lane) setting
+   `progress.session_id` to the new session id and
+   `progress.launched_by: "opencode-claimant"`, then run the helper
+   `checkpoint <id> --worker opencode-claimant --stage launched`
+   with the session id in the progress JSON. A launch without this
+   binding is the Oct 28 duplicate-PR defect -- never leave one.
    d. Send the worker prompt to the bound session: the queue runbook
-      for its queue with the task id, issue, and packet inlined,
-      instructing it to work THAT task (it is already claimed and
-      lane-bound; it must not claim another) and to finish with the
-      helper terminal verbs (complete / park / block / fail) carrying
-      `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`.
+   for its queue with the task id, issue, and packet inlined,
+   instructing it to work THAT task (it is already claimed and
+   lane-bound; it must not claim another) and to finish with the
+   helper terminal verbs (complete / park / block / fail) carrying
+   `--execution "{\"lane\": \"opencode\", \"session_id\": \"<id>\"}"`.
    e. Post the launch agent-note on the issue (agent-note:v1,
-      state=handed off) naming task id + session id.
+   state=handed off) naming task id + session id.
 5. Terminal states are recorded by the worker session itself via the
    helper when it ends (step 4d instructs it). Failure handling
    depends on whether a session id exists:

@@ -22,6 +22,7 @@ the value is never printed or stored) and one GET to the laptop
 OpenCode server. The claimant treats a null cap_room as NO launch room:
 an unreadable session list must never become a launch decision.
 """
+
 import importlib.util
 import json
 import os
@@ -50,8 +51,7 @@ ACTIVE_WINDOW_MS = 30 * 60 * 1000
 
 
 def is_root_session(s):
-    return isinstance(s, dict) and not s.get("parentID") \
-        and not s.get("parent_id")
+    return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
 def is_active_root(s, now_ms, active_ids=None):
@@ -72,8 +72,7 @@ def is_active_root(s, now_ms, active_ids=None):
 
 
 def count_active_roots(sessions, now_ms, active_ids=None):
-    return sum(1 for s in sessions
-               if is_active_root(s, now_ms, active_ids))
+    return sum(1 for s in sessions if is_active_root(s, now_ms, active_ids))
 
 
 def summarize_cap(sessions, active_ids, now_ms):
@@ -96,11 +95,13 @@ def summarize_cap(sessions, active_ids, now_ms):
 
 
 HELPER = os.environ.get(
-    "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py"))
+    "REPO_QUEUE_HELPER", os.path.expanduser("~/hatch/tools/repo-queue.py")
+)
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"))
+    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+)
 
 
 def load_helper():
@@ -119,8 +120,7 @@ def fetch_active_ids():
             password = json.load(f)["password"]
     except Exception:
         return None
-    req = urllib.request.Request(
-        OPENCODE_URL.rstrip("/") + "/api/session/active")
+    req = urllib.request.Request(OPENCODE_URL.rstrip("/") + "/api/session/active")
     token = base64.b64encode(f"opencode:{password}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
@@ -163,34 +163,41 @@ def main():
     key = helper.get_service_key()
     out = {"queues": {}, "candidates": []}
     for q in QUEUES:
-        rows = helper.http(
-            "GET",
-            f"tasks?queue=eq.{q}&status=eq.claimed"
-            "&select=id,queue,status,worker_id,priority,progress,lease_until"
-            "&limit=500",
-            key) or []
+        rows = (
+            helper.http(
+                "GET",
+                f"tasks?queue=eq.{q}&status=eq.claimed"
+                "&select=id,queue,status,worker_id,priority,progress,lease_until"
+                "&limit=500",
+                key,
+            )
+            or []
+        )
         cands = []
         for r in rows:
             prog = r.get("progress") or {}
             if prog.get("lane") != "opencode" or prog.get("session_id"):
                 continue
-            cands.append({
-                "id": r["id"], "queue": q,
-                "priority": r.get("priority"),
-                "worker_id": r.get("worker_id"),
-                "lease_until": r.get("lease_until"),
-                "issue_number": prog.get("issue_number"),
-            })
+            cands.append(
+                {
+                    "id": r["id"],
+                    "queue": q,
+                    "priority": r.get("priority"),
+                    "worker_id": r.get("worker_id"),
+                    "lease_until": r.get("lease_until"),
+                    "issue_number": prog.get("issue_number"),
+                }
+            )
         out["queues"][q] = {"claimed": len(rows), "candidates": cands}
         out["candidates"].extend(cands)
-    out["candidates"].sort(key=lambda c: (c["priority"] is None,
-                                          c["priority"] or 0))
+    out["candidates"].sort(key=lambda c: (c["priority"] is None, c["priority"] or 0))
     sessions = fetch_sessions()
     out["cap"] = CAP
     live, active, room = summarize_cap(
         sessions,
         fetch_active_ids() if sessions is not None else None,
-        int(time.time() * 1000))
+        int(time.time() * 1000),
+    )
     out["live_root_sessions"] = live
     out["active_root_sessions"] = active
     out["cap_room"] = room

@@ -8,12 +8,14 @@ verified 2026-10-31): a finished root session carries time.idle and an
 outcome; a running one carries neither. Non-dict / child entries must
 never count.
 """
+
 import importlib.util
 import unittest
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
-    "poll", Path(__file__).resolve().parent / "poll.py")
+    "poll", Path(__file__).resolve().parent / "poll.py"
+)
 poll = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(poll)
 
@@ -22,8 +24,7 @@ MIN = 60 * 1000
 
 
 def root(**over):
-    s = {"id": "ses_x", "time": {"created": NOW - 5 * MIN,
-                                 "updated": NOW - 1 * MIN}}
+    s = {"id": "ses_x", "time": {"created": NOW - 5 * MIN, "updated": NOW - 1 * MIN}}
     s.update(over)
     return s
 
@@ -82,22 +83,25 @@ class TestIsActiveRoot(unittest.TestCase):
     def test_count_active_roots_over_a_mixed_list(self):
         finished = root(outcome="failed")
         finished["time"]["idle"] = NOW
-        sessions = [root(), root(), finished,
-                    root(parentID="ses_p"),
-                    {"id": "ses_old",
-                     "time": {"created": NOW - 90 * MIN,
-                              "updated": NOW - 90 * MIN}}]
+        sessions = [
+            root(),
+            root(),
+            finished,
+            root(parentID="ses_p"),
+            {
+                "id": "ses_old",
+                "time": {"created": NOW - 90 * MIN, "updated": NOW - 90 * MIN},
+            },
+        ]
         self.assertEqual(poll.count_active_roots(sessions, NOW), 2)
         # The same list with ses_old in the server's active set (a
         # resumed zombie-looking root) counts it too.
-        self.assertEqual(
-            poll.count_active_roots(sessions, NOW, {"ses_old"}), 3)
+        self.assertEqual(poll.count_active_roots(sessions, NOW, {"ses_old"}), 3)
 
 
 class TestSummarizeCap(unittest.TestCase):
     def test_unreadable_session_list_is_unknown(self):
-        self.assertEqual(poll.summarize_cap(None, set(), NOW),
-                         (None, None, None))
+        self.assertEqual(poll.summarize_cap(None, set(), NOW), (None, None, None))
 
     def test_unreadable_active_set_is_unknown_not_zero(self):
         # Fail closed: markers alone must never become a launch
@@ -109,7 +113,8 @@ class TestSummarizeCap(unittest.TestCase):
 
     def test_known_counts_give_room(self):
         live, active, room = poll.summarize_cap(
-            [root(), root(outcome="failed")], set(), NOW)
+            [root(), root(outcome="failed")], set(), NOW
+        )
         self.assertEqual((live, active, room), (2, 1, poll.CAP - 1))
 
 
