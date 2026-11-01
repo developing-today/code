@@ -203,6 +203,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// neither consume the pending body frame nor end the heritage
 	// state (Codex P2 on #3334).
 	heritageBraceDepth := 0
+	// heritageFrameFloor / heritageDeclPending snapshot the pending
+	// body state when the OUTERMOST heritage brace opens: a '{'
+	// inside the heritage may consume only body state created after
+	// that point (a function/class expression nested in the heritage
+	// object), never the outer class's own pending body (Codex P2
+	// on #3354: class extends {x:{C:Object}}.x.C {} / 2 — the inner
+	// object ate the outer frame and the real body's '}' read as a
+	// statement boundary).
+	heritageFrameFloor := 0
+	heritageDeclPending := false
 	// dotRun counts consecutive '.' significant characters: a '{'
 	// after a spread token '...' is the spread object operand
 	// even when trivia (whitespace or a comment) intervenes
@@ -809,16 +819,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// body too, never a heritage operand.
 			topHeritageBrace := len(stack) > 0 && stack[len(stack)-1].char == '{' && stack[len(stack)-1].heritage
 			insideHeritageBrace := topHeritageBrace || heritageBraceDepth > 0
-			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0
-			declBodyBrace := insideHeritageBrace && expectDeclBody && expectDeclParenDepth == 0
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0
+			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
 			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
 				(topHeritageBrace ||
 					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']'))
 			if heritageExprBrace {
+				if heritageBraceDepth == 0 {
+					heritageFrameFloor = len(funcClassFrames)
+					heritageDeclPending = expectDeclBody
+				}
 				heritageBraceDepth++
 				exprAfter = false
 			}
-			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 {
+			if !heritageExprBrace && len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && (!insideHeritageBrace || len(funcClassFrames) > heritageFrameFloor) {
 				exprAfter = false
 				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
 			}
@@ -826,7 +840,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				inClassHeritage = false
 				heritageBraceDepth = 0
 			}
-			if !heritageExprBrace && expectDeclBody && expectDeclParenDepth == 0 {
+			if !heritageExprBrace && expectDeclBody && expectDeclParenDepth == 0 && (!insideHeritageBrace || !heritageDeclPending) {
 				exprAfter = true
 				expectDeclBody = false
 			}
@@ -925,7 +939,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				instActive = false
 			}
 			prevSig = 'x'
-		case ch == '<' && !inTypeAssert && prevSig == 'x' && !unicode.IsDigit(prevChar) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
+		case ch == '<' && !inTypeAssert && prevSig == 'x' && !prevTokenIsNumeric(chars, i) && prevChar != '\'' && prevChar != '"' && prevChar != '`' && looksLikeInstantiation(chars, i):
 			// A TypeScript instantiation expression
 			// (f<number> / 2): the generic list's closing '>'
 			// completes the operand, so the slash divides
@@ -1265,6 +1279,41 @@ func isHexDigit(ch rune) bool {
 // '.', operator, or delimiter) rather than another operand, which
 // would make the '<' a relational operator instead
 // (a < Foo > b is a comparison chain, f<Foo> / 2 is not).
+// prevTokenIsNumeric reports whether the token immediately before
+// offset lt is a numeric literal: it walks back over identifier
+// characters and checks the token's FIRST character, so an
+// identifier that merely ends in a digit (f1) is not mistaken for
+// a number (Codex P2 on #3354: f1<number> / 2 lost instantiation
+// recognition to a guard that looked only at the final character,
+// and the relational '>' left the slash to open a phantom regex).
+func prevTokenIsNumeric(chars []rune, lt int) bool {
+	end := lt
+	// Skip trailing trivia — whitespace and block comments — the
+	// way the scanner's prevChar already does: in "1 < x" the
+	// character before '<' is a space, but the token is "1".
+	for end > 0 {
+		for end > 0 && isJSWhitespace(chars[end-1]) {
+			end--
+		}
+		if end >= 2 && chars[end-2] == '*' && chars[end-1] == '/' {
+			open := end - 2
+			for open >= 2 && !(chars[open-2] == '/' && chars[open-1] == '*') {
+				open--
+			}
+			if open >= 2 {
+				end = open - 2
+				continue
+			}
+		}
+		break
+	}
+	start := end
+	for start > 0 && isIdentChar(chars[start-1]) {
+		start--
+	}
+	return start < end && unicode.IsDigit(chars[start])
+}
+
 func looksLikeInstantiation(chars []rune, lt int) bool {
 	n := len(chars)
 	depth := 0
