@@ -488,10 +488,18 @@ impl<'a> Reader<'a> {
 
     fn varint(&mut self) -> Result<usize> {
         let mut x = 0usize;
-        for shift in (0..).step_by(7).take(5) {
+        for (i, shift) in (0..).step_by(7).take(5).enumerate() {
             let b = self.byte()?;
             x |= ((b & 0x7f) as usize) << shift;
             if b < 0x80 {
+                // Minimal form only: put_varint never emits a trailing
+                // zero payload group, so a multi-byte spelling that ends
+                // in one (0x81 0x00 for 1) is a second wire spelling of
+                // the same value and is refused (#2596).
+                ensure!(
+                    i == 0 || b != 0,
+                    "varint is not minimally encoded"
+                );
                 return Ok(x);
             }
         }
@@ -987,6 +995,45 @@ mod tests {
             decode_frame(&[0, 1, 65]).is_err(),
             "bound longer than a key"
         );
+    }
+
+    /// #2596: Reader::varint accepts only the minimal base-128 spelling
+    /// put_varint emits. Width boundaries stay accepted; an overlong
+    /// spelling is refused at the reader and in all three wire positions
+    /// that read a varint (frame entry count, Fp count, Ids count).
+    #[test]
+    fn test_varint_refuses_non_minimal_encodings() {
+        let read = |bytes: &[u8]| {
+            let mut r = Reader { buf: bytes };
+            r.varint()
+        };
+        // Minimal spellings at the width boundaries.
+        assert_eq!(read(&[0]).unwrap(), 0);
+        assert_eq!(read(&[1]).unwrap(), 1);
+        assert_eq!(read(&[0x7f]).unwrap(), 127);
+        assert_eq!(read(&[0x80, 0x01]).unwrap(), 128);
+        assert_eq!(read(&[0xac, 0x02]).unwrap(), 300);
+        // Overlong spellings of the same values.
+        assert!(read(&[0x80, 0x00]).is_err(), "0 spelled in 2 bytes");
+        assert!(read(&[0x81, 0x00]).is_err(), "1 spelled in 2 bytes");
+        assert!(read(&[0xff, 0x80, 0x00]).is_err(), "127 spelled in 3 bytes");
+
+        // Position 1: the frame header entry count.
+        let mut frame = vec![0u8, 0x81, 0x00];
+        frame.extend_from_slice(&[0, 0]); // one Skip entry, +infinity bound
+        assert!(decode_frame(&frame).is_err(), "overlong frame count");
+
+        // Position 2: the Fp count inside an entry.
+        let mut frame = vec![0u8, 1, 0, 1];
+        frame.extend_from_slice(&[7u8; 16]); // fingerprint
+        frame.extend_from_slice(&[0x81, 0x00]); // overlong count of 1
+        assert!(decode_frame(&frame).is_err(), "overlong Fp count");
+
+        // Position 3: the Ids count inside an entry.
+        let mut frame = vec![0u8, 1, 0, 2];
+        frame.extend_from_slice(&[0x81, 0x00]); // overlong count of 1
+        frame.extend_from_slice(&[9u8; 32]); // the one ID
+        assert!(decode_frame(&frame).is_err(), "overlong Ids count");
     }
 
     #[test]
