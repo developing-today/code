@@ -1339,6 +1339,67 @@ fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<Stri
 /// (`200.0` -> 200, `200.5` refused). Percents, other units, and
 /// junk return `None`; the caller warns instead of dropping the
 /// value silently, as the pre-#2180 bare-`u64` parse did.
+fn parse_integral_decimal(raw: &str) -> Option<u64> {
+    let (negative, raw) = if let Some(raw) = raw.strip_prefix('-') {
+        (true, raw)
+    } else {
+        (false, raw.strip_prefix('+').unwrap_or(raw))
+    };
+
+    let (mantissa, exponent) = if let Some(index) = raw.find(|ch| matches!(ch, 'e' | 'E')) {
+        (&raw[..index], raw[index + 1..].parse::<i32>().ok()?)
+    } else {
+        (raw, 0)
+    };
+    let (integer, fractional) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if integer.is_empty() && fractional.is_empty() {
+        return None;
+    }
+    if !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let mut digits = String::with_capacity(integer.len() + fractional.len());
+    digits.push_str(integer);
+    digits.push_str(fractional);
+    let significant = digits.trim_start_matches('0');
+    if significant.is_empty() {
+        // Keep the exact zero spellings accepted by the former float parser,
+        // including -0.0, without converting through f64.
+        return Some(0);
+    }
+
+    let fractional_digits = i32::try_from(fractional.len()).ok()?;
+    let scale = exponent.checked_sub(fractional_digits)?;
+    let integer = if scale >= 0 {
+        let trailing_zeroes = usize::try_from(scale).ok()?;
+        if significant.len().checked_add(trailing_zeroes)? > 20 {
+            return None;
+        }
+        let mut integer = String::with_capacity(significant.len() + trailing_zeroes);
+        integer.push_str(significant);
+        integer.push_str(&"0".repeat(trailing_zeroes));
+        integer.parse::<u64>().ok()?
+    } else {
+        let trailing_zeroes = usize::try_from(scale.checked_neg()?).ok()?;
+        if trailing_zeroes > significant.len() {
+            return None;
+        }
+        let split = significant.len() - trailing_zeroes;
+        if significant[split..].bytes().any(|byte| byte != b'0') {
+            return None;
+        }
+        significant[..split].parse::<u64>().ok()?
+    };
+
+    if negative && integer != 0 {
+        return None;
+    }
+    Some(integer)
+}
+
 fn parse_dimension(raw: &str) -> Option<u64> {
     let trimmed = raw.trim();
     // Byte-wise suffix check: slicing the string at len()-2 to test
@@ -1355,12 +1416,7 @@ fn parse_dimension(raw: &str) -> Option<u64> {
     if let Ok(n) = body.parse::<u64>() {
         return Some(n);
     }
-    let f = body.parse::<f64>().ok()?;
-    if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= u64::MAX as f64 {
-        Some(f as u64)
-    } else {
-        None
-    }
+    parse_integral_decimal(body)
 }
 
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
@@ -4698,6 +4754,24 @@ Some text
                 node["attrs"].get("width").is_none(),
                 "width {raw:?} refused: {node}"
             );
+        }
+    }
+
+    #[test]
+    fn test_img_decimal_dimensions_are_parsed_exactly() {
+        for raw in ["199.99999999999999", "18446744073709551616.0"] {
+            let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
+                .expect("img parses");
+            assert!(
+                node["attrs"].get("width").is_none(),
+                "inexact or out-of-range width {raw:?} refused: {node}"
+            );
+        }
+
+        for (raw, expected) in [("200.00", 200), ("18446744073709551615.0", u64::MAX)] {
+            let node = parse_img_tag(&format!("<img src=\"x.png\" width=\"{raw}\" />"))
+                .expect("img parses");
+            assert_eq!(node["attrs"]["width"], expected, "width {raw:?}");
         }
     }
 
