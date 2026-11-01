@@ -1584,6 +1584,30 @@ fn list_kind(node: &Value) -> Option<&str> {
     }
 }
 
+/// The tightness a PM list effectively renders with: the stored
+/// `attrs.tight` when present; for a legacy task_list without the
+/// attribute, the same inference json_to_ast applies (loose if any
+/// item has more than one block child, else tight); bullet/ordered
+/// lists without the attribute render loose (json_to_ast defaults
+/// them to false). Boundary decisions in collect_boundary_kinds must
+/// use this, not the raw attribute: comparing raw attrs mistook a
+/// legacy tight task list for loose (CodeRabbit review, PR #3258).
+fn effective_tight(node: &Value) -> bool {
+    if let Some(tight) = node["attrs"]["tight"].as_bool() {
+        return tight;
+    }
+    if node["type"].as_str() == Some("task_list") {
+        return !node["content"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.len() > 1)
+            })
+        });
+    }
+    false
+}
+
 /// #1397: comrak's renderer separates adjacent list siblings with an
 /// `<!-- end list -->` comment - renderer-internal markup that lands in
 /// the user's file. Where the two lists are of DIFFERENT PM kinds the
@@ -1623,6 +1647,7 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     // only treat lines outside fences as separators.
     let mut in_fence = false;
     let mut fence_char = '`';
+    let mut fence_len = 0usize;
     let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
     for line in &lines {
         let trimmed = line.trim_start_matches(['>', ' ']).trim_start();
@@ -1637,9 +1662,20 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
             Some(c) if !in_fence => {
                 in_fence = true;
                 fence_char = c;
+                fence_len = trimmed.chars().take_while(|&ch| ch == c).count();
                 is_separator.push(false);
             }
-            Some(c) if c == fence_char => {
+            // CodeRabbit review, PR #3258: a fence closes only on a
+            // BARE run of the fence character at least as long as the
+            // opener. A content line such as ```rust starts with the
+            // marker but is not a closer; ending the fence there let a
+            // separator-looking line later in the code block be counted
+            // (and dropped) as renderer markup, losing authored lines.
+            Some(c)
+                if c == fence_char
+                    && trimmed.trim_end().chars().all(|ch| ch == c)
+                    && trimmed.trim_end().len() >= fence_len =>
+            {
                 in_fence = false;
                 is_separator.push(false);
             }
@@ -1703,14 +1739,27 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
         return;
     };
     let mut prev_list: Option<&Value> = None;
+    // Effective tight of the current consecutive bullet_list run's
+    // FIRST list (the tight json_to_ast's coalesce renders with).
+    let mut bullet_run_tight: Option<bool> = None;
     for child in content {
         let kind = list_kind(child);
         if let (Some(prev), Some(kind)) = (prev_list, kind)
             && !(list_kind(prev) == Some("bullet_list") && kind == "bullet_list")
         {
-            let tight_pair = [prev, child]
-                .iter()
-                .all(|l| l["attrs"]["tight"].as_bool() == Some(true));
+            // Codex review, PR #3258: when prev is a bullet_list that
+            // json_to_ast coalesced with earlier bullet siblings, the
+            // rendered list carries the FIRST sibling's tight, so the
+            // boundary must compare that effective tightness - the last
+            // original sibling's attr can differ and silently loosens
+            // the following run on reparse.
+            let prev_tight = if list_kind(prev) == Some("bullet_list") {
+                bullet_run_tight.unwrap_or_else(|| effective_tight(prev))
+            } else {
+                effective_tight(prev)
+            };
+            let child_tight = effective_tight(child);
+            let tight_pair = prev_tight && child_tight;
             // Two lists that both render as ordered Markdown merge into
             // one list on reparse if the separator goes; the merge is
             // lossless only when the second list starts exactly where
@@ -1719,7 +1768,11 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             let ordered_merge_safe = match (ordered_start(prev), ordered_start(child)) {
                 (Some(prev_start), Some(next_start)) => {
                     let prev_count = prev["content"].as_array().map_or(0, |c| c.len()) as u64;
-                    next_start == prev_start + prev_count
+                    // attrs.order comes from the request's PM JSON; a
+                    // crafted start near u64::MAX must not overflow the
+                    // sum (debug builds panic, release builds wrap and
+                    // could drop a separator that should stay).
+                    prev_start.checked_add(prev_count) == Some(next_start)
                 }
                 _ => true,
             };
@@ -1733,8 +1786,7 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             // fixpoint, so the separator stays. Different families split
             // on reparse by marker type and keep their own tightness.
             let renders_ordered = |n: &Value| ordered_start(n).is_some();
-            let tight_differs =
-                prev["attrs"]["tight"].as_bool() != child["attrs"]["tight"].as_bool();
+            let tight_differs = prev_tight != child_tight;
             let tight_merge_safe =
                 !(renders_ordered(prev) == renders_ordered(child) && tight_differs);
             let merge_safe = ordered_merge_safe && tight_merge_safe;
@@ -1774,9 +1826,17 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             collect_boundary_kinds(child, out);
         }
         if kind.is_some() {
+            if kind == Some("bullet_list") {
+                if prev_list.is_none_or(|p| list_kind(p) != Some("bullet_list")) {
+                    bullet_run_tight = Some(effective_tight(child));
+                }
+            } else {
+                bullet_run_tight = None;
+            }
             prev_list = Some(child);
         } else {
             prev_list = None;
+            bullet_run_tight = None;
         }
     }
 }
@@ -3386,6 +3446,142 @@ mod tests {
         assert_eq!(content.len(), 2, "two lists");
         assert_eq!(content[0]["attrs"]["tight"], true, "first list stays tight");
         assert_eq!(content[1]["attrs"]["tight"], false, "second list stays loose");
+    }
+
+    #[test]
+    fn test_coalesced_bullet_run_boundary_uses_first_lists_tight() {
+        // Codex review on PR #3258 (P2): a loose bullet list followed by
+        // a tight bullet list coalesces in json_to_ast using the FIRST
+        // list's tight (loose). The boundary to a following tight task
+        // list must be judged against that effective tightness: the two
+        // render as one loose bullet list, so dropping the separator
+        // merged everything into one loose list on reparse and silently
+        // loosened the task run (its next save grew a blank line inside
+        // it). The separator stays.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": false}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]},
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "aa"}]}]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "c"}]}]},
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "d"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            first.contains("<!-- end list -->"),
+            "separator kept for coalesced loose-bullet -> tight-task boundary: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "coalesced-boundary shape is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_legacy_task_list_boundary_uses_inferred_tight() {
+        // CodeRabbit review on PR #3258: collect_boundary_kinds compared
+        // raw attrs.tight, so a legacy task_list without the attribute
+        // (json_to_ast infers tight for single-paragraph items) counted
+        // as tight-differing next to an explicitly tight bullet list and
+        // kept a separator the rendered output does not need. With the
+        // inferred tightness the pair is a tight same-family pair whose
+        // separator drops, and the save is a fixpoint.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let first = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            !first.contains("end list"),
+            "no separator for inferred-tight legacy task pair: {first:?}"
+        );
+        let reparsed = markdown_to_prosemirror(&first);
+        let second = prosemirror_to_markdown(&reparsed).unwrap();
+        assert_eq!(first, second, "legacy-tight pair is a fixpoint");
+        let content = reparsed["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "reparse yields bullet + task lists: {reparsed}");
+        assert_eq!(content[1]["attrs"]["tight"], true, "task run stays tight");
+    }
+
+    #[test]
+    fn test_fence_closes_only_on_bare_run() {
+        // CodeRabbit review on PR #3258 (Major): the fence scanner closed
+        // a fence on ANY line starting with the marker, so a ```rust
+        // content line ended the block early and a separator-looking line
+        // later in the block was counted as renderer markup. A fence now
+        // closes only on a bare run at least as long as its opener: the
+        // authored line inside the block below must neither count toward
+        // the boundary correspondence nor be dropped, while the real
+        // bullet -> ordered separator still drops.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "```\ncode\n```rust\n<!-- end list -->\nmore\n```\n\n- a\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the code block's authored line remains: {out:?}"
+        );
+        assert!(
+            out.contains("```rust\n<!-- end list -->\nmore"),
+            "code block content survives intact: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_boundary_order_overflow_does_not_panic() {
+        // CodeRabbit review on PR #3258: the merge-safety check computed
+        // prev_start + prev_count on a request-supplied attrs.order; a
+        // start near u64::MAX overflowed (panic in debug builds, wrap in
+        // release). Checked addition treats overflow as not-merge-safe,
+        // so the separator stays and nothing panics.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "ordered_list", "attrs": {"tight": true, "order": u64::MAX}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "a"}]}]}
+                ]},
+                {"type": "task_list", "attrs": {"tight": true, "order": 1}, "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "18446744073709551615. a\n\n<!-- end list -->\n\n1. [ ] b\n",
+        );
+        assert!(
+            out.contains("<!-- end list -->"),
+            "separator kept when the start sum overflows: {out:?}"
+        );
     }
 
     #[test]
