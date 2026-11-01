@@ -2,6 +2,7 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { RepoCensus } from "./coverage.ts";
 import type {
   AaFeedSection,
   BoardItem,
@@ -49,6 +50,14 @@ export interface Source {
   registry(): Promise<SessionRecord[]>;
   /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */
   projects(): Promise<ProjectPoolItem[]>;
+  /** The collector's per-repo backlog census (#1220), when the source
+   * carries one; null = not collected. Optional so fixtures and test
+   * doubles keep working — the coverage panel degrades honestly. */
+  coverageCensus?(): Promise<RepoCensus[] | null>;
+  /** Whether the Project pool was actually read (#1220): false when the
+   * feed carried no projects section, so coverage renders the pool as
+   * unavailable instead of zero. Optional, like coverageCensus. */
+  projectsAvailable?(): Promise<boolean>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

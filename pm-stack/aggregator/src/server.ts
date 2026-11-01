@@ -11,6 +11,7 @@ import { decodePathSegment } from "./path-segment.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
+import { computeCoverage, CoverageSnapshotStore, nextCoverageSnapshot, type CoverageSnapshotFile, type RepoCensus } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
@@ -66,6 +67,25 @@ import { liveSource } from "./sources/live.ts";
 
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
+
+/** #1220: the coverage snapshot behind the /projects panel — computed
+ * from the feed's items + the Project pool, rotated weekly by
+ * nextCoverageSnapshot, persisted only when it actually changes. */
+async function coverageSnapshot(
+  census: RepoCensus[] | null,
+  pool: ProjectPoolItem[],
+  poolAvailable: boolean,
+): Promise<CoverageSnapshotFile> {
+  const stored = await coverageStore.read();
+  const next = nextCoverageSnapshot(stored, computeCoverage(census, poolAvailable ? pool : null));
+  const strip = (s: CoverageSnapshotFile | null): string =>
+    s ? JSON.stringify({ baseline: s.baseline, weekly: s.weekly ?? null, anchorAt: s.anchorAt ?? "", current: { ...s.current, generatedAt: "" } }) : "";
+  if (strip(next) !== strip(stored)) {
+    await coverageStore.write(next).catch(() => {});
+  }
+  return next;
+}
 const actionsStore = new ActionsStore(cfg.actionsFile);
 
 function pickSource(): Source {
@@ -664,11 +684,13 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/projects") {
-    const [pool, orchestration, formOpts, actionsByObject] = await Promise.all([
+    const [pool, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
       source.projects().catch(() => []),
       source.orchestration().catch(() => null),
       commentFormOpts(),
       actionsStore.byObject(),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     return html(
       renderProjects(pool, prov(), {
@@ -677,12 +699,18 @@ async function handler(req: Request): Promise<Response> {
         detail: provDetail(),
         actionsByObject,
         identities: formOpts.identities,
+        coverage: await coverageSnapshot(census, pool, poolAvailable),
       }),
     );
   }
   if (path === "/api/projects.json") {
-    const pool = await source.projects().catch(() => []);
-    return json({ project: "developing-today#4", items: pool });
+    const [pool, census, poolAvailable] = await Promise.all([
+      source.projects().catch(() => []),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
+    ]);
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    return json({ project: "developing-today#4", items: pool, coverage: coverage.current, coverageBaseline: coverage.baseline });
   }
 
   if (path === "/program" || path === "/api/program.json") {

@@ -98,6 +98,8 @@ import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from ".
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { fetchProjectPool } from "../src/projects.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
+import { REPOS } from "../src/model.ts";
+import type { RepoCensus } from "../src/coverage.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -663,6 +665,47 @@ async function main(): Promise<void> {
     projects = undefined;
   }
 
+  // --- Coverage census (#1220) -------------------------------------------
+  // Per-repo open-issue + gate-label counts via the Search API, using
+  // the same token as the Project read. Fail-soft: a repo whose counts
+  // fail is omitted, and a total failure omits the section — the
+  // aggregator panel then renders backlog counts as unavailable.
+  let coverage: RepoCensus[] | undefined;
+  try {
+    const token = await resolveProjectToken();
+    if (!token) {
+      console.error("collector: no GitHub token available; coverage census omitted");
+    } else {
+      const count = async (q: string): Promise<number> => {
+        const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
+          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "pm-aggregator-collector" },
+        });
+        if (!res.ok) throw new Error(`search ${res.status}`);
+        const body = (await res.json()) as { total_count?: number };
+        if (!Number.isInteger(body.total_count)) throw new Error("search: no total_count");
+        return body.total_count as number;
+      };
+      const rows: RepoCensus[] = [];
+      for (const repo of REPOS) {
+        try {
+          const base = `repo:${repo} is:issue is:open`;
+          rows.push({
+            repo,
+            openIssues: await count(base),
+            gateNow: await count(`${base} label:now`),
+            gateNext: await count(`${base} label:next`),
+          });
+        } catch (err) {
+          console.error(`collector: coverage census failed for ${repo} (${err instanceof Error ? err.message : "error"}); repo omitted`);
+        }
+      }
+      if (rows.length) coverage = rows;
+    }
+  } catch (err) {
+    console.error(`collector: coverage census failed (${err instanceof Error ? err.message : "error"}); section omitted`);
+    coverage = undefined;
+  }
+
   // --- AA cost explorer (Supabase ainventory) ------------------------------
   // Always attempted; the section carries its own failure (absent
   // form) so the dashboard can say why instead of showing stale data.
@@ -724,6 +767,7 @@ async function main(): Promise<void> {
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
+    ...(coverage ? { coverage } : {}),
     aa,
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
@@ -737,6 +781,7 @@ async function main(): Promise<void> {
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
       (projects ? `, projects ${projects.length} items` : ", no projects section") +
+      (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"
         ? `, aa ${aa.rankings?.length ?? 0} rankings / ${aa.configs?.length ?? 0} configs / ${aa.testRuns?.length ?? 0} test runs`
         : ", aa absent") +
