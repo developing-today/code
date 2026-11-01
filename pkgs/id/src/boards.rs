@@ -582,21 +582,23 @@ impl BoardGraph {
                     previous.object.kind_name() != "board",
                     "a board identity root cannot be superseded"
                 );
-                // Reject an edge that would close a cycle: following the
-                // existing replacement chain from the replacement must never
-                // arrive back at the previous object.
-                let mut current = value.replacement.clone();
+                // Reject an edge that would close a cycle: the previous
+                // object must not be reachable from the replacement through
+                // ANY existing supersede path. A version may have several
+                // replacements, so traverse every successor, not just one.
+                let mut stack = vec![value.replacement.clone()];
                 let mut visited = BTreeSet::new();
-                while let Some(next) = self.supersede_replacement(&current) {
-                    ensure!(
-                        next != value.previous,
-                        "supersede relationship would create a cycle"
-                    );
-                    ensure!(
-                        visited.insert(current.clone()),
-                        "existing supersede chain already contains a cycle"
-                    );
-                    current = next;
+                while let Some(current) = stack.pop() {
+                    if !visited.insert(current.clone()) {
+                        continue;
+                    }
+                    for next in self.supersede_replacements(&current) {
+                        ensure!(
+                            next != value.previous,
+                            "supersede relationship would create a cycle"
+                        );
+                        stack.push(next);
+                    }
                 }
             }
             BoardObject::Tombstone(value) => {
@@ -614,17 +616,18 @@ impl BoardGraph {
         Ok(())
     }
 
-    /// The replacement named by an existing supersede record for
-    /// `previous`, if the graph already holds one.
-    fn supersede_replacement(&self, previous: &ArtifactHash) -> Option<ArtifactHash> {
+    /// Every replacement named by an existing supersede record for
+    /// `previous` (a version may have been superseded more than once).
+    fn supersede_replacements(&self, previous: &ArtifactHash) -> Vec<ArtifactHash> {
         self.objects
             .values()
-            .find_map(|signed| match &signed.object {
+            .filter_map(|signed| match &signed.object {
                 BoardObject::Supersede(value) if &value.previous == previous => {
                     Some(value.replacement.clone())
                 }
                 _ => None,
             })
+            .collect()
     }
 
     fn require_board(&self, reference: &ArtifactHash) -> Result<&SignedBoardObject> {
@@ -1020,7 +1023,7 @@ mod tests {
             .insert(post(&author, root_hash.clone(), thread_hash.clone(), "v1"))
             .unwrap();
         let second_hash = graph
-            .insert(post(&author, root_hash.clone(), thread_hash, "v2"))
+            .insert(post(&author, root_hash.clone(), thread_hash.clone(), "v2"))
             .unwrap();
         let supersede = |seq: u64, previous: ArtifactHash, replacement: ArtifactHash| {
             SignedBoardObject::sign(
@@ -1039,8 +1042,24 @@ mod tests {
             .insert(supersede(3, first_hash.clone(), second_hash.clone()))
             .unwrap();
         assert!(
-            graph.insert(supersede(4, second_hash, first_hash)).is_err(),
+            graph
+                .insert(supersede(4, second_hash.clone(), first_hash.clone()))
+                .is_err(),
             "a supersede edge closing a cycle must be rejected"
+        );
+
+        // Multi-successor reachability: first is superseded by both second
+        // and third; an edge third -> first would close first -> third ->
+        // first and must be rejected whichever successor sorts first.
+        let third_hash = graph
+            .insert(post(&author, root_hash.clone(), thread_hash, "v3"))
+            .unwrap();
+        graph
+            .insert(supersede(5, first_hash.clone(), third_hash.clone()))
+            .unwrap();
+        assert!(
+            graph.insert(supersede(6, third_hash, first_hash)).is_err(),
+            "cycle detection must traverse every supersede successor"
         );
     }
 
