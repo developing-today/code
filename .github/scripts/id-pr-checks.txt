@@ -37,6 +37,7 @@ test-shard-3
 test-web-unit
 test-web-typecheck
 roc-test
+roc-examples
 crash-gate-sampled
 crash-gate-sweep
 crash-gate-control
