@@ -9,7 +9,8 @@
 //! grants anything: the join capability inside the session is the only
 //! authority over a world.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -22,6 +23,8 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use crate::abuse::{AbuseEvaluator, AbusePolicy, Counters, EndpointId as AbuseEndpointId, NodeId};
+use crate::frames::{charge_frame, read_frame_body, read_frame_len};
 use crate::world_hub::WorldHub;
 use crate::world_session::{
     Inbound, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
@@ -59,6 +62,19 @@ pub use crate::frames::{read_frame, write_frame};
 #[derive(Clone, Debug)]
 pub struct WorldProtocol {
     hub: WorldHub,
+    /// The shared #2244 P0-A abuse evaluator: one bucket set per remote
+    /// endpoint, shared across every stream and connection that
+    /// endpoint opens, plus the counter registry operators read via
+    /// [`WorldProtocol::abuse_counters`].
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+}
+
+/// Monotonic milliseconds for the abuse evaluator, from a process-wide
+/// epoch. The evaluator only compares deltas, so the epoch is arbitrary.
+fn abuse_now_ms() -> u64 {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 impl WorldProtocol {
@@ -66,7 +82,33 @@ impl WorldProtocol {
     /// into a one-world hub) to Iroh peers.
     #[must_use]
     pub fn new(hub: impl Into<WorldHub>) -> Self {
-        Self { hub: hub.into() }
+        Self::with_local_node(hub, [0; 32])
+    }
+
+    /// Like [`WorldProtocol::new`], with the serving node's id recorded
+    /// as the local side of every counter-registry row. The zero id from
+    /// `new` means "this serving node"; rows are keyed by remote
+    /// endpoint either way.
+    #[must_use]
+    pub fn with_local_node(hub: impl Into<WorldHub>, local_node: NodeId) -> Self {
+        Self {
+            hub: hub.into(),
+            abuse: Arc::new(Mutex::new(AbuseEvaluator::new(
+                AbusePolicy::default(),
+                local_node,
+            ))),
+        }
+    }
+
+    /// Snapshot of the per-(local node, remote endpoint) frame/byte
+    /// counters recorded by the shared evaluator — the operator
+    /// visibility surface for #2244 P0-A charging.
+    #[must_use]
+    pub fn abuse_counters(&self) -> Vec<((NodeId, AbuseEndpointId), Counters)> {
+        self.abuse
+            .lock()
+            .map(|abuse| abuse.counters().snapshot())
+            .unwrap_or_default()
     }
 }
 
@@ -83,9 +125,11 @@ impl ProtocolHandler for WorldProtocol {
                 continue;
             };
             let hub = self.hub.clone();
+            let abuse = Arc::clone(&self.abuse);
+            let remote_endpoint: AbuseEndpointId = *remote.as_bytes();
             sessions.spawn(async move {
                 let _permit = permit;
-                let mut io = StreamIo::new(send, recv);
+                let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
                 run_session(&hub, &mut io).await;
                 io.finish();
             });
@@ -104,18 +148,55 @@ struct StreamIo {
     frames: mpsc::Receiver<Inbound>,
     send: SendStream,
     reader: JoinHandle<()>,
+    abuse: Arc<Mutex<AbuseEvaluator>>,
+    remote: AbuseEndpointId,
 }
 
 impl StreamIo {
-    fn new(send: SendStream, mut recv: RecvStream) -> Self {
+    fn new(
+        send: SendStream,
+        mut recv: RecvStream,
+        abuse: Arc<Mutex<AbuseEvaluator>>,
+        remote: AbuseEndpointId,
+    ) -> Self {
         let (tx, frames) = mpsc::channel(8);
+        let reader_abuse = Arc::clone(&abuse);
         let reader = tokio::spawn(async move {
             loop {
-                let inbound = match read_frame(&mut recv).await {
-                    Ok(Some(body)) => match String::from_utf8(body) {
-                        Ok(text) => Inbound::Text(text),
-                        Err(_) => Inbound::Unsupported,
-                    },
+                // Charge after the length prefix, before the body is
+                // allocated (frames::read_frame_len / read_frame_body
+                // split), holding the shared lock only for the
+                // synchronous charge — never across the body read. A
+                // refusal sheds this stream only; the peer connection
+                // and its other sessions stay up.
+                let inbound = match read_frame_len(&mut recv).await {
+                    Ok(Some(len)) => {
+                        // The guard drops at the end of this block, before
+                        // the body read's await: a refused (or poisoned)
+                        // charge sheds this stream, not the connection.
+                        let admitted = match reader_abuse.lock() {
+                            Ok(mut abuse) => charge_frame(
+                                &mut abuse,
+                                remote,
+                                true,
+                                len as usize,
+                                abuse_now_ms(),
+                            )
+                            .is_ok(),
+                            Err(_) => false,
+                        };
+                        if admitted {
+                            match read_frame_body(&mut recv, len).await {
+                                Ok(body) => match String::from_utf8(body) {
+                                    Ok(text) => Inbound::Text(text),
+                                    Err(_) => Inbound::Unsupported,
+                                },
+                                Err(_) => Inbound::Closed,
+                            }
+                        } else {
+                            Inbound::Closed
+                        }
+                    }
                     Ok(None) | Err(_) => Inbound::Closed,
                 };
                 let stop = matches!(inbound, Inbound::Closed);
@@ -128,6 +209,8 @@ impl StreamIo {
             frames,
             send,
             reader,
+            abuse,
+            remote,
         }
     }
 
@@ -148,6 +231,23 @@ impl SessionIo for StreamIo {
     }
 
     async fn send(&mut self, frame: String) -> bool {
+        // Charge the write funnel before encoding; a refusal sheds
+        // this frame only, the stream stays open. The guard drops
+        // before the write's await.
+        let admitted = match self.abuse.lock() {
+            Ok(mut abuse) => charge_frame(
+                &mut abuse,
+                self.remote,
+                true,
+                frame.len(),
+                abuse_now_ms(),
+            )
+            .is_ok(),
+            Err(_) => false,
+        };
+        if !admitted {
+            return false;
+        }
         write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
     }
 }

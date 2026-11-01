@@ -11,6 +11,8 @@
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
+
+use crate::abuse::{AbuseEvaluator, EndpointId, RefusalError};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 
 /// Largest accepted or emitted frame, in bytes (1 MiB).
@@ -139,6 +141,116 @@ impl FrameBuffer {
     }
 }
 
+/// Charge one frame of `payload_len` bytes against `endpoint`'s
+/// shared bucket in `abuse` (the #2244 P0-A evaluator): one frame
+/// token plus the byte cost, admitted or refused as a unit. This is
+/// the admission seam every charged transport funnels through — the
+/// read path calls it after the length prefix is known and before
+/// the body is allocated, the write path before the frame is
+/// encoded. A refusal sheds this frame/stream only; nothing here
+/// touches the peer connection.
+///
+/// # Errors
+///
+/// Returns the evaluator's structured [`RefusalError`] (reason +
+/// bounded retry value) when the bucket cannot admit the frame.
+pub fn charge_frame(
+    abuse: &mut AbuseEvaluator,
+    endpoint: EndpointId,
+    authorized: bool,
+    payload_len: usize,
+    now_ms: u64,
+) -> Result<(), RefusalError> {
+    abuse.check_frame(endpoint, authorized, now_ms)?;
+    abuse.check_bytes(endpoint, authorized, payload_len as u64, now_ms)?;
+    Ok(())
+}
+
+/// Read the length prefix of one frame from an Iroh stream.
+/// `Ok(None)` means the peer finished cleanly between frames. Split
+/// from [`read_frame_body`] so a charged reader can charge the frame
+/// (see [`charge_frame`]) after the prefix and before allocating the
+/// body, without holding any lock across the body read.
+///
+/// # Errors
+///
+/// Fails on a stream error or a length above [`MAX_FRAME_BYTES`].
+pub async fn read_frame_len(recv: &mut RecvStream) -> Result<Option<u32>> {
+    let mut len = [0_u8; 4];
+    match recv.read_exact(&mut len).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
+        Err(e) => return Err(e).context("read frame length"),
+    }
+    let len = u32::from_be_bytes(len);
+    if len as usize > MAX_FRAME_BYTES {
+        bail!("frame of {len} bytes exceeds {MAX_FRAME_BYTES}");
+    }
+    Ok(Some(len))
+}
+
+/// Read the body of one frame whose length prefix ([`read_frame_len`])
+/// has already been consumed.
+///
+/// # Errors
+///
+/// Fails on a truncated frame or a stream error.
+pub async fn read_frame_body(recv: &mut RecvStream, len: u32) -> Result<Vec<u8>> {
+    let mut body = vec![0_u8; len as usize];
+    recv.read_exact(&mut body)
+        .await
+        .context("read frame body")?;
+    Ok(body)
+}
+
+/// Read one frame, charging it against `endpoint`'s shared bucket in
+/// `abuse` after the length prefix and before the body is allocated.
+/// `Ok(None)` means the peer finished cleanly between frames. The
+/// caller owns `abuse` for the duration of the read; transports that
+/// share one evaluator across streams charge via [`read_frame_len`] +
+/// [`charge_frame`] + [`read_frame_body`] instead, so the shared lock
+/// is never held across the body read.
+///
+/// # Errors
+///
+/// Fails with the structured [`RefusalError`] when the bucket refuses
+/// the frame, and on a truncated frame, a stream error, or a length
+/// above [`MAX_FRAME_BYTES`] (the oversized body is never read).
+pub async fn read_frame_charged(
+    recv: &mut RecvStream,
+    abuse: &mut AbuseEvaluator,
+    endpoint: EndpointId,
+    authorized: bool,
+    now_ms: u64,
+) -> Result<Option<Vec<u8>>> {
+    let Some(len) = read_frame_len(recv).await? else {
+        return Ok(None);
+    };
+    charge_frame(abuse, endpoint, authorized, len as usize, now_ms)?;
+    Ok(Some(read_frame_body(recv, len).await?))
+}
+
+/// Write one frame, charging it against `endpoint`'s shared bucket in
+/// `abuse` before the frame is encoded. A refusal sheds this frame
+/// only; the stream stays open.
+///
+/// # Errors
+///
+/// Fails with the structured [`RefusalError`] when the bucket refuses
+/// the frame, if the payload exceeds [`MAX_FRAME_BYTES`], or if the
+/// stream is closed.
+pub async fn write_frame_charged(
+    send: &mut SendStream,
+    abuse: &mut AbuseEvaluator,
+    endpoint: EndpointId,
+    authorized: bool,
+    now_ms: u64,
+    payload: &[u8],
+) -> Result<()> {
+    charge_frame(abuse, endpoint, authorized, payload.len(), now_ms)?;
+    write_frame(send, payload).await
+}
+
 /// Read one frame. `Ok(None)` means the peer finished cleanly between frames.
 ///
 /// This is **not** cancel-safe; run it in its own task, not inside `select!`.
@@ -200,6 +312,44 @@ mod tests {
         client.write_all(&too_long).await.unwrap();
         assert!(read_frame_from(&mut server).await.is_err());
         assert!(encode_frame(&vec![0; MAX_FRAME_BYTES + 1]).is_err());
+    }
+
+    #[tokio::test]
+    async fn charged_frames_round_trip_and_count_both_directions() {
+        use crate::abuse::{AbusePolicy, BucketLimits};
+        let policy = AbusePolicy {
+            authorized: BucketLimits {
+                frames_per_sec: 1,
+                frame_burst: 2,
+                bytes_per_sec: 8,
+                byte_burst: 16,
+            },
+            ..AbusePolicy::default()
+        };
+        let mut abuse = AbuseEvaluator::new(policy, [9; 32]);
+        let endpoint = [7; 32];
+        let (mut client, mut server) = tokio::io::duplex(64);
+        // Write path charges via the encode funnel (write_frame_to on a
+        // byte stream charges the same seam as write_frame_charged).
+        charge_frame(&mut abuse, endpoint, true, 5, 0).unwrap();
+        write_frame_to(&mut client, b"hello").await.unwrap();
+        // Read path charges after the length prefix, before the body.
+        let mut len = [0_u8; 4];
+        server.read_exact(&mut len).await.unwrap();
+        let len = u32::from_be_bytes(len);
+        charge_frame(&mut abuse, endpoint, true, len as usize, 0).unwrap();
+        let mut body = vec![0_u8; len as usize];
+        server.read_exact(&mut body).await.unwrap();
+        assert_eq!(body, b"hello");
+        // Both directions recorded: 2 frames, 10 bytes for the pair.
+        let snapshot = abuse.counters().snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].1.frames, 2);
+        assert_eq!(snapshot[0].1.bytes, 10);
+        // The burst (2 frames) is spent: the next charge is refused
+        // with a machine-readable retry value.
+        let refusal = charge_frame(&mut abuse, endpoint, true, 1, 0).unwrap_err();
+        assert!(refusal.0.retry_after_ms.is_some());
     }
 
     #[test]

@@ -97,6 +97,13 @@ impl Refusal {
         }
     }
 
+    /// The retry delay as whole seconds, rounded up, for an HTTP
+    /// `Retry-After` header. `None` for permanent blocks.
+    #[must_use]
+    pub fn retry_after_secs_ceil(&self) -> Option<u64> {
+        self.retry_after_ms.map(|ms| ms.div_ceil(1_000))
+    }
+
     /// A permanent operator block: no retry is offered.
     #[must_use]
     pub fn blocked_by_operator() -> Self {
@@ -104,6 +111,29 @@ impl Refusal {
             reason: RefusalReason::BlockedByOperator,
             retry_after_ms: None,
         }
+    }
+}
+
+/// A [`Refusal`] as a standard error, so surfaces can propagate it
+/// with `?` / anyhow and callers can downcast back to the structured
+/// refusal (reason + bounded retry value) at their boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RefusalError(pub Refusal);
+
+impl std::fmt::Display for RefusalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.retry_after_ms {
+            Some(ms) => write!(f, "refused ({:?}); retry after {ms} ms", self.0.reason),
+            None => write!(f, "refused ({:?}); no retry offered", self.0.reason),
+        }
+    }
+}
+
+impl std::error::Error for RefusalError {}
+
+impl From<Refusal> for RefusalError {
+    fn from(refusal: Refusal) -> Self {
+        Self(refusal)
     }
 }
 
