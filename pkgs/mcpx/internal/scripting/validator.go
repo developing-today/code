@@ -187,7 +187,6 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// it opens a statement block, not an object literal (Codex P2
 	// on #1659: switch (1) { case 1: {} /a+/.test(..) }).
 	pendingStmtColon := false
-	ternaryDepth := 0
 	// TypeScript as/satisfies assertion state: while inTypeAssert
 	// a generic argument list may follow (Extract<number, number>);
 	// its closing '>' completes the asserted operand, so a '/'
@@ -196,6 +195,26 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	inTypeAssert := false
 	typeAngleDepth := 0
 	typeSawAngle := false
+	// typeSawToken records that a token of the asserted type has
+	// been scanned, and typeStackDepth is len(stack) when the
+	// assertion began: a newline only ends the assertion once its
+	// type has started AND the scan is back at the assertion's own
+	// delimiter depth — a line break right after as/satisfies, or
+	// inside a multi-line type, keeps the state (Codex P2 on
+	// #1659: 4 as\n{ toFixed(): string } / 2).
+	typeSawToken := false
+	typeStackDepth := 0
+	// ternaryStack records len(stack) for each unmatched '?', so a
+	// ';' or ':' is scoped to its own delimiter context: a ';'
+	// inside a nested callback cannot clear an outer conditional,
+	// and a ':' inside a nested object cannot consume it (Codex
+	// P2 on #1659: true ? (()=>{return 1;})() : {} / 2).
+	var ternaryStack []int
+	// prevTokenArrow records that the previous significant token
+	// was the arrow '=>' (as one token), so the '{' that follows
+	// is an arrow-function body block, not the object literal a
+	// relational '>' would imply (Codex P2 on #1659).
+	prevTokenArrow := false
 
 	chars := []rune(src)
 	n := len(chars)
@@ -255,8 +274,24 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					inTypeAssert = true
 					typeAngleDepth = 0
 					typeSawAngle = false
+					typeSawToken = false
+					typeStackDepth = len(stack)
 				}
-				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' {
+				if lastIdent == "default" && prevIdent == "export" && lastIdentPrev != '.' {
+					// export default <expression>: an expression
+					// follows the keyword pair, so a '/' opens a
+					// regex literal instead of dividing (Codex
+					// P2 on #1659: export default /a+/.test(..)).
+					// Reached through member access (obj.default)
+					// the word is a property name instead.
+					prevSig = 'o'
+				}
+				// A function/class keyword directly followed by
+				// ':', ',', '}' or ')' is an object property name
+				// ({class: 1}), not a declaration: it must not set
+				// pending body state that a later '{' would
+				// consume (Codex P2 on #1659).
+				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && ch != ':' && ch != ',' && ch != '}' && ch != ')' {
 					if isExprPositionStart(lastIdentPrev, prevIdent) {
 						expectFuncClassBody = true
 						expectFuncClassStackDepth = len(stack)
@@ -266,7 +301,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 						expectDeclStackDepth = len(stack)
 					}
 				}
-				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' {
+				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' && ch != ':' && ch != ',' && ch != '}' && ch != ')' {
 					expectDeclBody = true
 					expectDeclParenDepth = 0
 					expectDeclStackDepth = len(stack)
@@ -303,9 +338,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				expectFuncClassBody = false
 				expectFuncClassParenDepth = 0
 			}
-			if typeAngleDepth == 0 {
+			if typeAngleDepth == 0 && inTypeAssert && typeSawToken && len(stack) <= typeStackDepth {
 				inTypeAssert = false
 				typeSawAngle = false
+				typeSawToken = false
 			}
 			if inString == '\'' || inString == '"' {
 				// unclosed single-line string literal
@@ -408,6 +444,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 		}
 
+		if inTypeAssert && !isJSWhitespace(ch) {
+			typeSawToken = true
+		}
+
 		// Regex literal vs division. A '/' opens a regex literal only
 		// in expression position: at the start of the script or right
 		// after an operator or opening delimiter (prevSig 0 or 'o').
@@ -490,6 +530,15 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				kwIdent = ""
 			}
 			exprAfter := !isObjectBrace(prevChar, kwIdent)
+			if prevTokenArrow {
+				// An arrow-function body is a block, not an
+				// object literal: its '}' ends the function
+				// expression, so a '/' starting the next
+				// (ASI-separated) statement opens a regex
+				// (Codex P2 on #1659). A relational '>' keeps
+				// the object reading (1 > {} / 2 divides).
+				exprAfter = true
+			}
 			if pendingStmtColon {
 				exprAfter = true
 				pendingStmtColon = false
@@ -573,12 +622,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// a later statement colon look like a ternary branch
 			// (Codex P2 on #1659: switch (obj?.x) { case 1: ... }).
 			if !(i+1 < n && (chars[i+1] == '?' || (chars[i+1] == '.' && !(i+2 < n && unicode.IsDigit(chars[i+2]))))) {
-				ternaryDepth++
+				ternaryStack = append(ternaryStack, len(stack))
 			}
 			prevSig = 'o'
 		case ch == ':':
-			if ternaryDepth > 0 {
-				ternaryDepth--
+			if len(ternaryStack) > 0 && ternaryStack[len(ternaryStack)-1] == len(stack) {
+				ternaryStack = ternaryStack[:len(ternaryStack)-1]
 			} else if isStatementColon(stack, lastIdent, lastIdentPrev, prevChar) {
 				pendingStmtColon = true
 			}
@@ -637,10 +686,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				expectDeclBody = false
 				expectDeclParenDepth = 0
 			}
-			ternaryDepth = 0
+			// Only ternaries opened at this ';' own delimiter
+			// depth or deeper end with the statement; an outer
+			// conditional whose branch contains this nested
+			// statement keeps its pending '?' (Codex P2 on
+			// #1659).
+			for len(ternaryStack) > 0 && ternaryStack[len(ternaryStack)-1] >= len(stack) {
+				ternaryStack = ternaryStack[:len(ternaryStack)-1]
+			}
 			inTypeAssert = false
 			typeAngleDepth = 0
 			typeSawAngle = false
+			typeSawToken = false
 			// A statement boundary expires any keyword context: a
 			// '{' after ';' must not be classified by a keyword an
 			// earlier statement ended with (Codex P2 on #1659:
@@ -651,6 +708,10 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		}
 		closedExprAfter = false
 		if !isJSWhitespace(ch) {
+			// The arrow is a single token: a '>' immediately
+			// after '=' in the source is '=>'; any other
+			// significant character ends the arrow context.
+			prevTokenArrow = ch == '>' && i > 0 && chars[i-1] == '='
 			prevChar = ch
 		}
 	}

@@ -171,6 +171,14 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division after structural satisfies assertion", "const q = 4 satisfies { toFixed(): string } / 2;\n"},
 		{"regex after for-await header", "async function f() { for await (const x of [1]) /a+/.test(\"aa\"); }\n"},
 		{"hashbang line before script", "#!/usr/bin/env -S deno run --allow-read=/tmp\nconst re = /a+/;\nconst ok = re.test(\"aa\");\n"},
+		{"division after object with class-named property", "const obj = {class: 1, x: {} / 2};\n"},
+		{"division after object with function-named property", "const obj = {function: 1, x: {} / 2};\n"},
+		{"division after ternary with callback semicolon", "function f(){const q = true ? (()=>{return 1;})() : {} / 2;} f();\n"},
+		{"division after structural as assertion split after as", "const q = 4 as\n{ toFixed(): string } / 2;\n"},
+		{"division after generic as assertion split after as", "const q = 4 as\nExtract<number, number> / 2;\n"},
+		{"regex in default export expression", "export default /a+/.test(\"aa\") ? () => 1 : () => 0;\n"},
+		{"regex after arrow body on next line", "const f = () => {}\n/a+/.test(\"aa\");\n"},
+		{"regex after async arrow body on next line", "const f = async () => {}\n/a+/.test(\"aa\");\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
