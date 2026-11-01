@@ -71,6 +71,7 @@ use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
 
+use crate::chat_presence::{PresenceHeartbeat, PresenceTable, decode_frame, encode_frame};
 use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
@@ -819,6 +820,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Create peer discovery table
     let peer_discovery = PeerDiscovery::new();
+    let chat_presence = PresenceTable::new();
 
     // Always create Gossip — iroh-docs needs it even if peer discovery is off
     let gossip = Gossip::builder().spawn(endpoint.clone());
@@ -1094,6 +1096,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
         // Spawn background gossip task
         let gossip_peer_discovery = peer_discovery.clone();
+        let gossip_chat_presence = chat_presence.clone();
         let gossip_store = store_handle.clone();
         let gossip_node_id = node_id;
         let gossip_endpoint = router.endpoint().clone();
@@ -1103,6 +1106,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 sender,
                 receiver,
                 gossip_peer_discovery,
+                gossip_chat_presence,
                 gossip_store,
                 gossip_endpoint,
             )
@@ -1491,6 +1495,7 @@ async fn run_gossip_loop(
     sender: distributed_topic_tracker::GossipSender,
     mut receiver: distributed_topic_tracker::GossipReceiver,
     peer_discovery: PeerDiscovery,
+    chat_presence: PresenceTable,
     store: iroh_blobs::api::Store,
     endpoint: Endpoint,
 ) {
@@ -1536,17 +1541,41 @@ async fn run_gossip_loop(
                     debug!("gossip announcement serialization error: {}", e);
                 }
             }
+
+            // Presence rides the same gossip plane (#2809): an ephemeral
+            // heartbeat naming this node. Channel membership lives in the
+            // chat layer above serve, so this heartbeat names no channels;
+            // receivers scope and read it through PresenceTable.
+            let presence = PresenceHeartbeat::new(
+                *announce_node_id.as_bytes(),
+                Vec::new(),
+                Vec::new(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            );
+            if let Err(e) = sender.broadcast(encode_frame(&presence)).await {
+                debug!("gossip presence broadcast error: {}", e);
+            }
         }
     });
 
     // Spawn receive task
     let recv_discovery = peer_discovery.clone();
+    let recv_presence = chat_presence.clone();
     let recv_handle = tokio::spawn(async move {
         loop {
             match receiver.next().await {
                 Ok(event) => match event {
                     iroh_gossip::api::Event::Received(msg) => {
-                        match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
+                        if let Some(heartbeat) = decode_frame(&msg.content) {
+                            debug!(
+                                "presence heartbeat from {}: {} channel(s)",
+                                heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                heartbeat.channels.len()
+                            );
+                            recv_presence.update(heartbeat);
+                        } else match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
                             Ok(announcement) => {
                                 debug!(
                                     "peer announcement from {}: blob_count={}",
