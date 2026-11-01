@@ -185,6 +185,12 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     // Strip trailing 'Z' and optional fractional seconds
     let s = s.strip_suffix('Z').unwrap_or(s);
     let s = if let Some(dot_pos) = s.rfind('.') {
+        // The fraction is a component too: it must be digits, not junk
+        // silently truncated away (#1879).
+        let fraction = &s[dot_pos + 1..];
+        if fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
         &s[..dot_pos]
     } else {
         s
@@ -196,8 +202,18 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
         return None;
     }
 
-    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
-    let time_parts: Vec<u64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+    // Every component must parse: a non-numeric segment makes the whole
+    // timestamp malformed (#1879). Dropping failed segments let junk like
+    // "2026-03-12-draft" collapse onto the valid "2026-03-12" and parse
+    // as the same instant.
+    let date_parts: Vec<u64> = parts[0]
+        .split('-')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    let time_parts: Vec<u64> = parts[1]
+        .split(':')
+        .map(|p| p.parse().ok())
+        .collect::<Option<Vec<u64>>>()?;
 
     if date_parts.len() != 3 || time_parts.len() != 3 {
         return None;
@@ -3275,6 +3291,9 @@ mod tests {
             "auto-2026-report.md",
             "auto-",
             "auto-draft",
+            // Regression (#1879): a near-miss timestamp with a junk date
+            // suffix used to parse as valid and classify as Auto.
+            "auto-2026-03-12-draftT06:42:30",
         ] {
             let (kind, ts) = classify_tag(name);
             assert_eq!(kind, FileKind::Primary, "{name}");
@@ -3311,7 +3330,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_valid() {
         // 2026-03-12T06:42:30.015Z → should produce a valid timestamp
-        let ts = parse_iso_timestamp("auto-2026-03-12T06:42:30.015Z");
+        let ts = parse_iso_timestamp("2026-03-12T06:42:30.015Z");
         assert!(ts.is_some());
         let t = ts.unwrap();
         // 2026-03-12 is after 2025-01-01 (approx 1735689600)
@@ -3320,9 +3339,34 @@ mod tests {
 
     #[test]
     fn test_parse_iso_timestamp_invalid() {
-        assert!(parse_iso_timestamp("auto-not-a-date").is_none());
-        assert!(parse_iso_timestamp("auto-").is_none());
+        assert!(parse_iso_timestamp("not-a-date").is_none());
+        assert!(parse_iso_timestamp("").is_none());
         assert!(parse_iso_timestamp("noprefix").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_malformed_components() {
+        // Regression (#1879): a non-numeric component used to be dropped,
+        // so malformed timestamps parsed as the valid instant they
+        // surrounded. The valid control is 2026-03-12T06:42:30Z.
+        assert_eq!(
+            parse_iso_timestamp("2026-03-12T06:42:30Z"),
+            Some(1_773_297_750)
+        );
+        // Junk suffix on the date side.
+        assert!(parse_iso_timestamp("2026-03-12-draftT06:42:30").is_none());
+        // Junk components on the time side.
+        assert!(parse_iso_timestamp("2026-03-12T06:xx:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:xx:30").is_none());
+        // Extra components, numeric or not (the count check alone is not
+        // enough when a bad segment can be dropped to reach three).
+        assert!(parse_iso_timestamp("2026-03-12-99T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30:30").is_none());
+        // Missing components.
+        assert!(parse_iso_timestamp("2026-03T06:42:30").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T06:42").is_none());
+        // Junk fractional seconds.
+        assert!(parse_iso_timestamp("2026-03-12T06:42:30.abcZ").is_none());
     }
 
     #[test]
@@ -3358,7 +3402,7 @@ mod tests {
     #[test]
     fn test_parse_iso_timestamp_epoch() {
         // 1970-01-01T00:00:00.000Z should be 0
-        let ts = parse_iso_timestamp("auto-1970-01-01T00:00:00.000Z");
+        let ts = parse_iso_timestamp("1970-01-01T00:00:00.000Z");
         assert_eq!(ts, Some(0));
     }
 
