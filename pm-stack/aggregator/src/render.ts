@@ -2859,6 +2859,30 @@ const AA_EXPLORER_SCRIPT = `<script>
   var CAI_POINTS = DATA.caiPoints || [];
   var CATALOG = DATA.catalog || null;
   var POINTS = AA_POINTS;
+  // Default benchmark vintage (2026-11-01, Drew): the payload carries
+  // every vintage the AA import holds (v5 beside v4.3.2 today); ranking
+  // across vintages compares scores from different methodologies, so
+  // the first-load view pins the newest vintage present. "All
+  // benchmarks" (bench "") stays one click away in the filter, and
+  // saved setups / perspective switches keep their existing semantics.
+  function benchVersionKey(b) {
+    var m = /v(\d+(?:\.\d+)*)/.exec(b || "");
+    return m ? m[1].split(".").map(function (n) { return parseInt(n, 10) || 0; }) : null;
+  }
+  function cmpVer(a, b) {
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++) { var d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
+    return 0;
+  }
+  function latestBench(points) {
+    var best = "", bestKey = null;
+    (points || []).forEach(function (p) {
+      var k = benchVersionKey(p.benchmark);
+      if (!k) return;
+      if (!bestKey || cmpVer(k, bestKey) > 0) { bestKey = k; best = p.benchmark; }
+    });
+    return best;
+  }
   var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
   var famColor = {};
   var famList = [];
@@ -2955,7 +2979,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     q: "",
     creator: "",
     fam: "",
-    bench: "",
+    bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
     off: {},
