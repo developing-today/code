@@ -44,6 +44,7 @@ func (s *Server) tasks() *taskStore {
 			s.taskStore.MaxTTL = tm.TaskMaxTTL
 			s.taskStore.MaxPerRequestor = tm.TaskMaxPerRequestor
 			s.taskStore.PerMinute = tm.TaskWindowPerMinute
+			s.taskStore.CancelGrace = tm.TaskCancelGrace
 		}
 	}
 	return s.taskStore

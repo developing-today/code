@@ -547,6 +547,7 @@ func (s *Server) taskStore() *tasks.Store {
 			// is injected into the MCP server, MCP too.
 			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
 			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			s.tasks.CancelGrace = s.set.Duration("protoTasks.cancelGrace")
 			// The setting's 0 disables the window; the store's 0 means
 			// "default", so translate here.
 			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
