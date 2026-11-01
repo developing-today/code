@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn blank_and_whitespace_lines_are_skipped_and_kept() {
+    fn test_blank_and_whitespace_lines_are_skipped_and_kept() {
         let dir = tempfile::tempdir().unwrap();
         let contents = format!("{}\n\n \t\r\n{}\n\n", queued_line("e1"), queued_line("e2"));
         fs::write(path(&dir), &contents).unwrap();
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn blank_lines_before_a_torn_tail_are_kept_when_the_tail_is_truncated() {
+    fn test_blank_lines_before_a_torn_tail_are_kept_when_the_tail_is_truncated() {
         let dir = tempfile::tempdir().unwrap();
         let kept = format!("{}\n \t\n", queued_line("e1"));
         fs::write(path(&dir), format!("{kept}{{\"op\":\"queued\"")).unwrap();
