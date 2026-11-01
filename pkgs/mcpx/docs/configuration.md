@@ -689,6 +689,7 @@ skipped launcher phases).
 
 | setting | kind | default | scope | hot | flag | variable | governs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoTasks.cancelGrace` | duration | `5s` | daemon | no | `--proto-tasks-cancel-grace` | `MCPX_PROTO_TASKS_CANCEL_GRACE` | how long cooperative task work may finish after cancellation |
 | `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once |
 | `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped |
 | `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |

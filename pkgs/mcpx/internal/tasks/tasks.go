@@ -56,12 +56,16 @@ type Task struct {
 	// per-requestor limits (protoTasks.maxPerRequestor). Never on the wire.
 	requestor Requestor
 
-	result   any
-	fault    *Fault
-	cancel   context.CancelFunc
-	done     chan struct{}
-	timer    *time.Timer
-	OnCancel func(ctx context.Context, reason string) `json:"-"`
+	result any
+	fault  *Fault
+	cancel context.CancelFunc
+	done   chan struct{}
+	timer  *time.Timer
+	// cancelTimer bounds the in-memory cooperative-cancellation window. The
+	// cancelling mark and timer are deliberately not persisted or exposed.
+	cancelTimer *time.Timer
+	cancelling  bool
+	OnCancel    func(ctx context.Context, reason string) `json:"-"`
 }
 
 // Statuses, from the specification.
@@ -109,6 +113,9 @@ type Store struct {
 	// protoTasks.perMinute (whose 0 means disabled, translated by the
 	// wiring seam, not here).
 	PerMinute int
+	// CancelGrace is how long cooperative work may finish after cancellation
+	// is requested. Zero means DefaultCancelGrace.
+	CancelGrace time.Duration
 
 	win      *Window
 	winLimit int
@@ -456,6 +463,7 @@ const (
 	DefaultMaxTTL          = time.Hour
 	DefaultMaxPerRequestor = 32
 	DefaultPerMinute       = 120
+	DefaultCancelGrace     = 5 * time.Second
 )
 
 // ErrPerRequestorCap is the named sentinel Start returns when a requestor
@@ -694,14 +702,23 @@ func (s *Store) StartWithDeadline(requestor Requestor, ttl int64, deadline time.
 func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t.Status == Cancelled {
-		return false // cancelled while running; the cancellation stands
+	if Terminal(t.Status) {
+		return false // the first terminal recording under the lock wins
+	}
+	wasCancelling := t.cancelling
+	t.cancelling = false
+	if t.cancelTimer != nil {
+		t.cancelTimer.Stop()
+		t.cancelTimer = nil
 	}
 	t.LastUpdatedAt = time.Now()
 	t.InputRequests = nil
 	if fault != nil {
 		t.Status, t.fault = Failed, fault
 		t.StatusMessage = fault.Message
+		if t.StatusMessage == "" && wasCancelling {
+			t.StatusMessage = "completed during cancellation"
+		}
 		s.saveTaskLocked(t)
 		s.armRetentionLocked(t)
 		return true
@@ -712,7 +729,11 @@ func (s *Store) finish(t *Task, result any, fault *Fault) bool {
 	if m, ok := result.(map[string]any); ok {
 		if isErr, _ := m["isError"].(bool); isErr {
 			t.Status = Failed
+			t.StatusMessage = toolResultErrorMessage(m)
 		}
+	}
+	if t.StatusMessage == "" && wasCancelling {
+		t.StatusMessage = "completed during cancellation"
 	}
 	s.saveTaskLocked(t)
 	s.armRetentionLocked(t)
@@ -747,7 +768,7 @@ func (s *Store) Get(id string) (Task, bool) {
 func (s *Store) SetStatus(id, status, message string) {
 	s.mu.Lock()
 	t, ok := s.tasks[id]
-	moved := ok && !Terminal(t.Status) && (t.Status != status || t.StatusMessage != message)
+	moved := ok && !t.cancelling && !Terminal(t.Status) && (t.Status != status || t.StatusMessage != message)
 	if moved {
 		t.Status, t.StatusMessage, t.LastUpdatedAt = status, message, time.Now()
 		s.saveTaskLocked(t)
@@ -771,7 +792,7 @@ func (s *Store) setInput(id string, requests map[string]any) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
-	if !ok || Terminal(t.Status) {
+	if !ok || t.cancelling || Terminal(t.Status) {
 		return false
 	}
 	status := Working
@@ -805,8 +826,9 @@ func (s *Store) Cancel(id string) (Task, bool) {
 	return s.CancelWithReason(id, "cancelled")
 }
 
-// CancelWithReason stops a task with an explanatory reason and returns its final state,
-// performing a cooperative cancellation handshake before hard termination.
+// CancelWithReason begins cooperative cancellation and returns the current
+// wire-visible state. If the work finishes within CancelGrace, its own
+// terminal status wins; otherwise the store records Cancelled with reason.
 func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 	s.mu.Lock()
 	t, ok := s.tasks[id]
@@ -814,16 +836,18 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 		s.mu.Unlock()
 		return Task{}, false
 	}
-	moved := !Terminal(t.Status)
+	start := !Terminal(t.Status) && !t.cancelling
 	var onCancel func(ctx context.Context, reason string)
 	var cancel context.CancelFunc
-	if moved {
-		t.Status, t.LastUpdatedAt = Cancelled, time.Now()
-		if t.StatusMessage == "" && reason != "" {
-			t.StatusMessage = reason
+	if start {
+		t.cancelling = true
+		grace := s.CancelGrace
+		if grace <= 0 {
+			grace = DefaultCancelGrace
 		}
-		s.saveTaskLocked(t)
-		s.armRetentionLocked(t)
+		t.cancelTimer = time.AfterFunc(grace, func() {
+			s.expireCancellation(t, reason)
+		})
 		onCancel = t.OnCancel
 		cancel = t.cancel
 	}
@@ -831,7 +855,7 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 	hook := s.OnCancelHook
 	s.mu.Unlock()
 
-	if moved {
+	if start {
 		if onCancel != nil {
 			ctx, cancelCtx := context.WithTimeout(context.Background(), defaults.UpstreamCancelSendTimeout)
 			onCancel(ctx, reason)
@@ -843,9 +867,51 @@ func (s *Store) CancelWithReason(id string, reason string) (Task, bool) {
 		if cancel != nil {
 			cancel()
 		}
-		s.changed(id)
 	}
 	return snap, true
+}
+
+// expireCancellation records the cancel only if the task's work did not
+// record a terminal status first. Called by the per-task grace timer.
+func (s *Store) expireCancellation(t *Task, reason string) {
+	s.mu.Lock()
+	if s.tasks[t.TaskID] != t || !t.cancelling || Terminal(t.Status) {
+		s.mu.Unlock()
+		return
+	}
+	t.cancelling = false
+	t.cancelTimer = nil
+	t.Status, t.LastUpdatedAt = Cancelled, time.Now()
+	if t.StatusMessage == "" && reason != "" {
+		t.StatusMessage = reason
+	}
+	s.saveTaskLocked(t)
+	s.armRetentionLocked(t)
+	s.mu.Unlock()
+	s.changed(t.TaskID)
+}
+
+// toolResultErrorMessage returns the first text content from an isError
+// result, bounded by the protocol's status-message limit.
+func toolResultErrorMessage(result map[string]any) string {
+	if blocks, ok := result["content"].([]any); ok {
+		for _, block := range blocks {
+			part, ok := block.(map[string]any)
+			if !ok || part["type"] != "text" {
+				continue
+			}
+			text, ok := part["text"].(string)
+			if !ok || text == "" {
+				continue
+			}
+			runes := []rune(text)
+			if len(runes) > 512 {
+				runes = runes[:512]
+			}
+			return string(runes)
+		}
+	}
+	return "tool returned an error result"
 }
 
 // ErrNoTask is returned for a handle the store does not hold, which usually

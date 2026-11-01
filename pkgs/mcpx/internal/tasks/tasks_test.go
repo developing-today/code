@@ -38,7 +38,9 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 	// makes a client that checks only the status miss every failure.
 	st := tasks.New()
 	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
-		return map[string]any{"isError": true}, nil
+		return map[string]any{"isError": true, "content": []any{
+			map[string]any{"type": "text", "text": "tool failed"},
+		}}, nil
 	})
 	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
 		t.Fatal(err)
@@ -47,10 +49,14 @@ func TestAToolResultThatIsItselfAnErrorIsAFailedTask(t *testing.T) {
 	if snap.Status != tasks.Failed {
 		t.Errorf("status = %q", snap.Status)
 	}
+	if snap.StatusMessage != "tool failed" {
+		t.Errorf("statusMessage = %q, want first text content", snap.StatusMessage)
+	}
 }
 
 func TestCancellingStopsTheWorkAndStands(t *testing.T) {
 	st := tasks.New()
+	st.CancelGrace = time.Second
 	released := make(chan struct{})
 	task, _ := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
@@ -58,8 +64,8 @@ func TestCancellingStopsTheWorkAndStands(t *testing.T) {
 		return "too late", nil
 	})
 	snap, ok := st.Cancel(task.TaskID)
-	if !ok || snap.Status != tasks.Cancelled {
-		t.Fatalf("cancel returned %+v", snap)
+	if !ok || snap.Status != tasks.Working {
+		t.Fatalf("cancel should return the pre-cancel wire state, got %+v", snap)
 	}
 	select {
 	case <-released:
@@ -70,11 +76,13 @@ func TestCancellingStopsTheWorkAndStands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fault == nil {
-		t.Fatal("collecting a cancelled task should report the cancellation")
+	if fault != nil {
+		t.Fatalf("work that finished within the grace period should keep its result, fault=%v", fault)
 	}
-	if after, _ := st.Get(task.TaskID); after.Status != tasks.Cancelled {
-		t.Errorf("a cancellation stands even though the work returned: %q", after.Status)
+	if after, _ := st.Get(task.TaskID); after.Status != tasks.Completed {
+		t.Errorf("work finishing during cancellation should be completed, got %q", after.Status)
+	} else if after.StatusMessage != "completed during cancellation" {
+		t.Errorf("statusMessage = %q, want cancellation completion note", after.StatusMessage)
 	}
 }
 
@@ -172,6 +180,7 @@ func TestTaskPersistenceAcrossReopen(t *testing.T) {
 
 func TestCooperativeCancellationHandshake(t *testing.T) {
 	st := tasks.New()
+	st.CancelGrace = time.Second
 	cooperativeCalled := false
 	var cancelReason string
 
@@ -186,14 +195,20 @@ func TestCooperativeCancellationHandshake(t *testing.T) {
 	})
 
 	snap, ok := st.CancelWithReason(task.TaskID, "user aborted run")
-	if !ok || snap.Status != tasks.Cancelled {
-		t.Fatalf("cancel returned %+v", snap)
+	if !ok || snap.Status != tasks.Working {
+		t.Fatalf("cancel should preserve the pre-cancel status, got %+v", snap)
 	}
 	if !cooperativeCalled {
 		t.Error("expected cooperative cancel hook to be called")
 	}
 	if cancelReason != "user aborted run" {
 		t.Errorf("expected reason 'user aborted run', got %q", cancelReason)
+	}
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := st.Get(task.TaskID); after.Status != tasks.Completed {
+		t.Errorf("cooperative work should be allowed to finish, got %q", after.Status)
 	}
 }
 
@@ -547,8 +562,11 @@ func TestAStartDeadlineCancelsWaitingWork(t *testing.T) {
 	// nobody answers does not wait forever now that the retention clock
 	// no longer kills running tasks.
 	st := tasks.New()
+	st.CancelGrace = 20 * time.Millisecond
 	task, _ := st.StartWithDeadline(tasks.Caller(""), 60000, 50*time.Millisecond, func(ctx context.Context) (any, *tasks.Fault) {
 		<-ctx.Done()
+		// Simulate work that does not finish during the cooperative grace.
+		time.Sleep(100 * time.Millisecond)
 		return nil, nil
 	})
 	deadline := time.Now().Add(2 * time.Second)
@@ -601,5 +619,141 @@ func TestADeadlineTasksResultSurvivesAPollCycleBeyondTheClamp(t *testing.T) {
 	}
 	if plain.TTL != 50 {
 		t.Errorf("a plain task's TTL stays clamped, got %d ms", plain.TTL)
+	}
+}
+
+func TestCancelGraceExpiryWinsOverLateResult(t *testing.T) {
+	st := tasks.New()
+	st.CancelGrace = 15 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-ctx.Done()
+		close(started)
+		<-release
+		return "late result", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, ok := st.CancelWithReason(task.TaskID, "user aborted run")
+	if !ok || snap.Status != tasks.Working {
+		t.Fatalf("cancel should return the pre-cancel state, got %+v", snap)
+	}
+	<-started
+	if during, _ := st.Get(task.TaskID); during.Status != tasks.Working {
+		t.Fatalf("wire status changed during the grace window: %q", during.Status)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		current, _ := st.Get(task.TaskID)
+		if current.Status == tasks.Cancelled {
+			if current.StatusMessage != "user aborted run" {
+				t.Errorf("cancellation reason = %q", current.StatusMessage)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grace expiry did not cancel the task: %+v", current)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := st.Get(task.TaskID); after.Status != tasks.Cancelled {
+		t.Errorf("late work overwrote terminal cancellation: %q", after.Status)
+	}
+}
+
+func TestFaultWithinCancelGraceKeepsItsFailure(t *testing.T) {
+	st := tasks.New()
+	st.CancelGrace = time.Second
+	task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+		<-ctx.Done()
+		return nil, &tasks.Fault{Code: -32603, Message: "work failed while stopping"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := st.CancelWithReason(task.TaskID, "caller cancelled"); !ok {
+		t.Fatal("cancel lost the task")
+	}
+	_, fault, err := st.Result(context.Background(), task.TaskID)
+	if err != nil || fault == nil || fault.Message != "work failed while stopping" {
+		t.Fatalf("work fault should win inside the grace period: fault=%v err=%v", fault, err)
+	}
+	got, _ := st.Get(task.TaskID)
+	if got.Status != tasks.Failed || got.StatusMessage != "work failed while stopping" {
+		t.Errorf("got status=%q statusMessage=%q", got.Status, got.StatusMessage)
+	}
+}
+
+func TestCancelGraceCompletionOrExpiryWinsAtMostOnce(t *testing.T) {
+	for i := 0; i < 12; i++ {
+		st := tasks.New()
+		st.CancelGrace = 5 * time.Millisecond
+		release := make(chan struct{})
+		task, err := st.Start(tasks.Caller("tester"), 0, func(ctx context.Context) (any, *tasks.Fault) {
+			<-ctx.Done()
+			<-release
+			return "finished", nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := st.CancelWithReason(task.TaskID, "cancel race"); !ok {
+			t.Fatal("cancel lost the task")
+		}
+		if i%2 == 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(release)
+		if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := st.Get(task.TaskID)
+		if got.Status != tasks.Completed && got.Status != tasks.Cancelled {
+			t.Fatalf("iteration %d has no terminal winner: %+v", i, got)
+		}
+	}
+}
+
+func TestIsErrorStatusMessageUsesFirstTextAndFallsBack(t *testing.T) {
+	long := strings.Repeat("é", 513)
+	for _, tc := range []struct {
+		name    string
+		content []any
+		want    string
+	}{
+		{name: "first text block", content: []any{
+			map[string]any{"type": "image"},
+			map[string]any{"type": "text", "text": "first"},
+			map[string]any{"type": "text", "text": "second"},
+		}, want: "first"},
+		{name: "rune truncation", content: []any{
+			map[string]any{"type": "text", "text": long},
+		}, want: strings.Repeat("é", 512)},
+		{name: "fallback", content: []any{
+			map[string]any{"type": "image"},
+		}, want: "tool returned an error result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := tasks.New()
+			task, err := st.Start(tasks.Caller("tester"), 0, func(context.Context) (any, *tasks.Fault) {
+				return map[string]any{"isError": true, "content": tc.content}, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := st.Result(context.Background(), task.TaskID); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := st.Get(task.TaskID)
+			if got.Status != tasks.Failed || got.StatusMessage != tc.want {
+				t.Errorf("got status=%q statusMessage=%q, want failed with %q", got.Status, got.StatusMessage, tc.want)
+			}
+		})
 	}
 }

@@ -20,6 +20,8 @@ func init() {
 		// the internal/tasks tests below.
 		S("tasks-rate-limit", "tasks.TestAdmitCountsAgainstThePerMinuteWindow@all"),
 		S("tasks-resource-limits", "tasks.TestStartClampsTTLToTheStoreMax@all", "tasks.TestStartRefusesBeyondThePerRequestorCap@all", "tasks.TestNewIDIs128Bit@all"),
+		S("tasks-failed-status-message", "tasks.TestAToolResultThatIsItselfAnErrorIsAFailedTask@all", "tasks.TestIsErrorStatusMessageUsesFirstTextAndFallsBack@all"),
+		S("ext-tasks-cancel-cooperative", "tasks.TestCancellingStopsTheWorkAndStands@all", "tasks.TestCooperativeCancellationHandshake@all", "tasks.TestFaultWithinCancelGraceKeepsItsFailure@all", "tasks.TestCancelGraceExpiryWinsOverLateResult@all", "tasks.TestCancelGraceCompletionOrExpiryWinsAtMostOnce@all"),
 		C("caching-ttl-zero-stale", "pool.TestPoolCacheTTLZeroStale@2026-07-28", "mcpclient.TestListToolsWithHintsAggregatesPages@2026-07-28"),
 		C("caching-ttl-positive-fresh", "pool.TestPoolCacheTTLPositiveFresh@2026-07-28", "pool.TestPoolCacheTTLPositiveExpires@2026-07-28"),
 		C("caching-ttl-absent-zero", "pool.TestPoolCacheTTLAbsentStale@2026-07-28", "mcpclient.TestListPromptsWithHintsAbsent@2026-07-28"),
@@ -120,9 +122,7 @@ func init() {
 	)
 	registerGaps(
 		Gap{ID: "tasks-get-implies-list", Side: Server, Issue: "#1554", Why: "a task started on a connection without an identity can be read by tasks/get and is never listed"},
-		Gap{ID: "tasks-failed-status-message", Side: Server, Issue: "#1554", Why: "a task failed by an isError tool result carries no statusMessage"},
 		Gap{ID: "tasks-document-unbound", Side: Server, Issue: "#1554", Why: "nothing user-facing documents that an unowned task is reachable by anyone holding its id"},
 		Gap{ID: "tasks-audit", Side: Server, Issue: "#1554", Why: "task creation, completion and retrieval are not logged"},
-		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#1554", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
 	)
 }
