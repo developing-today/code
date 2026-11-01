@@ -85,6 +85,15 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// This is the setting `mcpx` gives the daemon it starts on
 			// demand, so it is the one the tests start.
 			"MCPX_AUTOSTART_IDLE_EXIT="+testIdleExit,
+			// The write policy gate (#1979) defaults to ask, and these
+			// tests drive the CLI and the MCP surface with no human to
+			// answer: an unannotated tool is a write by the
+			// specification's defaults, so every such call would wait
+			// out the ask timeout and fail. The gate's own tests opt
+			// back in by setting policy.write=ask (or the
+			// confirmDestructive floor) explicitly, the way
+			// handoff_load_test.go already does.
+			"MCPX_POLICY_WRITE=allow",
 		),
 	}
 	t.Cleanup(func() {
