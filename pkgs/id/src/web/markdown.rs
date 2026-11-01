@@ -1070,7 +1070,33 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             // lone underline at a block start is paragraph text
             // itself, so the gate is !at_block_start.
             let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
-            at_block_start = starts_new_block(stripped) || setext_ends_paragraph;
+            // A container line's eligibility follows its CONTENT,
+            // exactly as the reference collector's fourteenth cut:
+            // `- Body` is paragraph text inside the item, so the
+            // next line is its continuation -- a type-7 HTML tag
+            // there (`  <em>`) cannot open a block, and treating
+            // the marker line itself as a block start let the HTML
+            // tracker open at the tag and swallow the heading and
+            // the genuine definition after it (Codex P2 on #1565's
+            // twenty-third cut). Only item/quote content that
+            // itself ends or starts a block (blank, heading, break,
+            // setext, a new block) leaves the next line eligible.
+            let container_eligible =
+                if strip_container_prefixes(stripped) != stripped {
+                    let c = container_stripped;
+                    Some(
+                        c.trim().is_empty()
+                            || is_atx_heading(c)
+                            || is_thematic_break(c)
+                            || (is_setext_underline(c) && !at_block_start)
+                            || starts_new_block(c),
+                    )
+                } else {
+                    None
+                };
+            at_block_start = container_eligible
+                .unwrap_or_else(|| starts_new_block(stripped))
+                || setext_ends_paragraph;
             i += 1;
             continue;
         };
@@ -1100,7 +1126,20 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             if indentation_columns(next) >= 4 {
                 source_lines.push(next);
                 last_content = source_lines.len() - 1;
-                prev_is_content = true;
+                // Lazy-continuation eligibility follows THIS line's
+                // block type, not its mere presence: an indented
+                // block line (`    # Heading`) is a new block inside
+                // the definition and cannot accept an unindented
+                // lazy paragraph continuation, so a following
+                // `<em>` starts a top-level HTML block whose
+                // definition-shaped interior is literal -- setting
+                // content unconditionally consumed the tag into the
+                // definition and then collected the literal line as
+                // a real footnote (Codex P2 on #1565's twenty-third
+                // cut). Mirrors the opening-body check above.
+                let content = next.trim_start();
+                prev_is_content =
+                    !content.is_empty() && !starts_new_block(content);
                 j += 1;
                 continue;
             }
@@ -5424,6 +5463,61 @@ mod tests {
             "definitions-only document keeps its definition: {first:?}"
         );
         assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_list_paragraph_html_line_does_not_swallow_footnote() {
+        // #1565 twenty-third cut (Codex P2): `- Body` is paragraph
+        // text inside the list item, so the indented `<em>` line
+        // continues that paragraph -- a type-7 HTML block cannot
+        // interrupt it. The footnote scanner treated the marker
+        // line as a block start, opened the HTML tracker at the
+        // tag, and swallowed the heading and the genuine orphan
+        // definition as HTML interior, deleting the note on save.
+        let original = "- Body\n  <em>\n# Heading\n[^real]: note\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .filter_map(|n| n["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["real"]);
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^real]:") && first.contains("note"),
+            "genuine definition after list-paragraph HTML line survives: {first:?}"
+        );
+        assert_eq!(first, second, "list-paragraph round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_indented_heading_in_footnote_blocks_lazy_continuation() {
+        // #1565 twenty-third cut (Codex P2): an indented heading
+        // inside a footnote definition is a new block and cannot
+        // accept an unindented lazy continuation, so `<em>` after
+        // it starts a top-level HTML block and the definition-
+        // shaped line inside it is literal text, not a footnote.
+        // The scanner set lazy eligibility unconditionally on the
+        // indented line, consumed the tag into the definition,
+        // and collected the literal line as a real definition.
+        let original = "[^a]: First.\n\n    # Heading\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        let labels: Vec<&str> = doc["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "footnote_definition")
+            .filter_map(|n| n["attrs"]["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["a"], "literal line must not become a definition");
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^a]:") && first.contains("First."),
+            "real definition survives: {first:?}"
+        );
+        assert_eq!(first, second, "indented-heading round-trip is a fixpoint");
     }
 
     #[test]
