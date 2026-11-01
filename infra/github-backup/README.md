@@ -32,7 +32,7 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   store one shared history plus deltas. Members are NOT self-contained —
   the tree is the unit. Cold copies use `git bundle` (materializes
   objects), never a bare tar of a member `.git`.
-- **Freshness:** a dedicated GitHub App (`hatch-repo-backup`,
+- **Freshness:** a dedicated GitHub App (`developing-today-backup`,
   metadata:read + contents:read, push+repository events) sends webhooks
   to the Cloudflare Worker in `worker/`; the Worker verifies the HMAC
   and queues events in KV; the laptop drains the queue every 5 min
@@ -65,3 +65,4 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 | `worker/` | Cloudflare Worker webhook receiver (wrangler) |
 | `systemd/` | laptop user units + timers + installer |
 | `docs/RUNBOOK.md` | copy-paste operations: install, add org, upgrade, DR |
+| `tests/` | regression tests (plain python3, no deps) |

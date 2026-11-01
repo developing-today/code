@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // resumeProbeTimeout bounds the check that a handed-on upstream session is

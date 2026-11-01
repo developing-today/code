@@ -2035,6 +2035,43 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Fork a durable world on disk into a new world (F12.2).
+    ///
+    /// Copies the source world's journal and modules into the destination
+    /// directory under a new world id and records the fork provenance in
+    /// the new journal. Only the journal and the modules are copied: no
+    /// seed secret or other source file comes along (the F11.11 policy).
+    /// Local only; no host is contacted.
+    Fork {
+        /// Directory of the world to fork (the one holding `journal.jsonl`).
+        source: PathBuf,
+        /// Directory to create for the fork; it must be absent or empty.
+        dir: PathBuf,
+        /// The new world's id: `a-z`, `0-9`, `-` and `_`. Defaults to the
+        /// destination directory's name, which is the id a host serving
+        /// that directory will open it under.
+        #[arg(long)]
+        name: Option<String>,
+        /// Mark the fork reusable as a template (recorded in its
+        /// provenance; see `id world provenance`).
+        #[arg(long)]
+        template: bool,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a durable world's provenance from its journal: its id and,
+    /// for a fork, the world it was forked from, the module hash at the
+    /// fork point, and whether it was marked a template (F12.2). Local
+    /// only; no host is contacted.
+    Provenance {
+        /// Directory of the world to inspect (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Subcommands for `id doc`. A document is a `document.put` event over the content's hash.

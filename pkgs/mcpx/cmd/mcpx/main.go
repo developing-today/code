@@ -11,9 +11,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/dezren39/mcpx/internal/cli"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

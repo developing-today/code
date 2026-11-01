@@ -7,7 +7,7 @@ package settings
 // exists because a script produced it, and every question about delivery is a
 // question about how the run reports back.
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 func execSettings() []Setting {
 	return append(execRunSettings(), artifactSettings()...)

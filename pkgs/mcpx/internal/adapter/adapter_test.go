@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
 )
 
 func echoSpec() adapter.Spec {

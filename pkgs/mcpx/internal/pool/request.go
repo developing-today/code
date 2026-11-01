@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
-	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
 // instanceRef names the instance a server-initiated request arrived on.

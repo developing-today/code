@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/pool"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // #1864 item 4: a pool.callTimeout that arrived in the call-settings

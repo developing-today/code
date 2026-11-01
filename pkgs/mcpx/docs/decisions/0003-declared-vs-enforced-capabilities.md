@@ -92,6 +92,17 @@ directory: `--runtime deno --permissions strict` fails with `NotCapable`;
 to be installed, which on a Nix install it always is (#181 row 11), so nobody
 testing through the flake sees it.
 
+> **Supersession note (2026-10-31, #3246):** the paragraph above describes
+> the state when this record was written. It no longer holds as written:
+> the profiles now live in `internal/defaults/defaults.json`, enforcement
+> is rendered per runtime in `internal/runner/runtimes.go`, node enforces
+> `readnet` / `read-net` via `--permission --allow-fs-read=*`, and a named
+> profile with no entry for the chosen runtime is refused with an error
+> rather than run unenforced. The corrected per-runtime description is
+> the "is it safe?" answer in [`docs/faq.md`](../faq.md). The original
+> text above is kept unchanged as the record of the problem this decision
+> addressed.
+
 **3. `servers.<name>.auth` does nothing.** `config.Server.Auth`
 (`internal/config/config.go:141`) is the only non-test reference to package
 `mcpauth` in the tree; nothing calls `Auth.Resolve` (`mcpauth.go:93`) or
