@@ -1659,7 +1659,7 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
         output = output.replace(&placeholder, &format!("<{raw}>"));
     }
     for token in fence_tokens {
-        output = output.replace(&token, "");
+        output = strip_fence_placeholder(&output, &token);
     }
     Ok(output)
 }
@@ -1898,15 +1898,41 @@ fn force_fenced_code_blocks_in_blockquotes<'a>(root: &'a AstNode<'a>) -> Vec<Str
         if let NodeValue::CodeBlock(code_block) = &mut data.value
             && code_block.info.is_empty()
         {
-            let mut token = format!("idweb-blockquote-fence-{}", tokens.len());
-            while code_block.literal.contains(&token) {
-                token.push_str("-x");
-            }
+            // The trailing `-end` keeps placeholders prefix-free
+            // (`-1-end` is not a prefix of `-10-end`); restoration is
+            // positional regardless (see `strip_fence_placeholder`).
+            let token = format!("idweb-blockquote-fence-{}-end", tokens.len());
             code_block.info.clone_from(&token);
             tokens.push(token);
         }
     }
     tokens
+}
+
+/// Remove a #1496 fence placeholder from rendered output — ONLY at
+/// its generated fence-info position: a run of >= 3 backticks
+/// immediately before the placeholder and a newline immediately after
+/// it (the renderer's fence line shape). A plain `str::replace` would
+/// also strip the placeholder text anywhere else it occurs (user prose,
+/// code content) and, with prefix-sharing placeholders, corrupt
+/// neighbouring blocks' info strings (Codex review on PR #3770).
+fn strip_fence_placeholder(output: &str, token: &str) -> String {
+    let mut result = String::with_capacity(output.len());
+    let mut rest = output;
+    while let Some(pos) = rest.find(token) {
+        let before = &rest[..pos];
+        let after = &rest[pos + token.len()..];
+        let fence_run = before.chars().rev().take_while(|c| *c == '`').count();
+        if fence_run >= 3 && after.starts_with('\n') {
+            result.push_str(before);
+            rest = after;
+        } else {
+            result.push_str(&rest[..pos + token.len()]);
+            rest = after;
+        }
+    }
+    result.push_str(rest);
+    result
 }
 
 /// Replace every link/image destination containing whitespace (space,
@@ -3214,6 +3240,34 @@ mod tests {
             let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
             assert_eq!(resaved, saved, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_blockquote_fence_placeholders_do_not_collide_or_eat_text() {
+        // PR #3770 Codex finding: with >= 11 placeholder blocks,
+        // `...-1` is a prefix of `...-10`, and an unrestricted replace
+        // would corrupt that block's info string; placeholder-shaped
+        // user text elsewhere must also survive a save untouched.
+        let mut original = String::new();
+        for i in 0..12 {
+            original.push_str(&format!("> ```\n> code {i}\n> ```\n>\n"));
+        }
+        original.push_str("> trailing\n");
+        original.push_str("\nmention idweb-blockquote-fence-0-end in prose\n");
+        let saved = prosemirror_to_markdown(&markdown_to_prosemirror(&original)).unwrap();
+        assert!(
+            saved.contains("idweb-blockquote-fence-0-end in prose"),
+            "placeholder-shaped user text was stripped: {saved:?}"
+        );
+        assert!(
+            !saved.contains("```idweb"),
+            "a generated placeholder leaked into the output: {saved:?}"
+        );
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            markdown_to_prosemirror(&original),
+            "12-block quote changed structure: {saved:?}"
+        );
     }
 
     #[test]
