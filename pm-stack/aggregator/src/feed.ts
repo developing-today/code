@@ -1,8 +1,11 @@
-// The fleet feed: a JSON file produced on the sandbox host by
-// scripts/collect-fleet-feed.ts and pushed to the laptop (the sandbox
-// OpenCode server binds its own loopback, and the quota sources of
-// record live on the sandbox). The aggregator renders the feed as-is;
-// a stale feed keeps rendering with its age stated in provenance.
+// The fleet feed: a JSON file produced on the laptop by
+// scripts/collect-fleet-feed.ts, run by the laptop's fleet-feed-collector
+// user timer (declared in the pm-stack NixOS module, #3363/#3368) and
+// written straight to the aggregator's state dir. (The collector
+// originally ran on the sandbox and pushed the feed here; that sandbox
+// timer is retired — a stale sandbox copy overwriting this file was
+// code#3362.) The aggregator renders the feed as-is; a stale feed keeps
+// rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";

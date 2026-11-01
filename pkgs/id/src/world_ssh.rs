@@ -2,8 +2,8 @@
 //!
 //! The SSH user names the world (empty for the default world) and the SSH
 //! password is the join capability. Keystrokes become `input` frames and each
-//! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
-//! world that presents a view.
+//! `view` frame repaints the terminal (incrementally for stable raw SSH screens),
+//! so an ordinary `ssh` client can play any world that presents a view.
 //!
 //! ## Input modes
 //!
@@ -498,6 +498,7 @@ impl Handler for SshClient {
             records_prefix: None,
             records_drained: 0,
             errored: false,
+            previous_screen: None,
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
@@ -692,6 +693,9 @@ struct SshIo {
     /// large world's records are bounded across pages, not just per page.
     records_drained: usize,
     errored: bool,
+    /// Last screen successfully written to this shell's terminal. A missing
+    /// value forces the next screen view to repaint the whole terminal.
+    previous_screen: Option<crate::world_presentation::ScreenSurface>,
 }
 
 /// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
@@ -774,6 +778,7 @@ impl SessionIo for SshIo {
             return Inbound::Text(join);
         }
         if let Some((width, height)) = self.first_resize.take() {
+            self.previous_screen = None;
             return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         match self.mode {
@@ -871,6 +876,7 @@ impl SessionIo for SshIo {
                         self.commands.extend(self.lines.push(&bytes));
                     }
                     Some(resize @ SshInputFrame::Resize(..)) => {
+                        self.previous_screen = None;
                         return Inbound::Text(raw_frame(&resize));
                     }
                     None => return Inbound::Closed,
@@ -889,10 +895,12 @@ impl SessionIo for SshIo {
                 self.dropped_input.fetch_add(bytes, Ordering::Relaxed);
                 return false;
             }
+            self.previous_screen = None;
         }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
             return true;
         };
+        let mut next_screen = None;
         let text = match value["type"].as_str() {
             Some("snapshot") => {
                 if matches!(self.mode, ShellMode::Command) {
@@ -906,7 +914,19 @@ impl SessionIo for SshIo {
                     if let Ok(crate::world_presentation::WorldSurface::Screen(screen)) =
                         serde_json::from_value(surface.clone())
                     {
-                        if let Some(rendered) = screen.render_ansi() {
+                        let raw_mode = matches!(self.mode, ShellMode::Raw);
+                        let rendered = if raw_mode {
+                            self.previous_screen
+                                .as_ref()
+                                .and_then(|previous| screen.render_ansi_diff(previous))
+                                .or_else(|| screen.render_ansi())
+                        } else {
+                            screen.render_ansi()
+                        };
+                        if let Some(rendered) = rendered {
+                            if raw_mode {
+                                next_screen = Some(screen);
+                            }
                             rendered
                         } else if let Some(data) = value["data"].as_str() {
                             format!("\x1b[H\x1b[2J{}", terminal_text(data))
@@ -988,7 +1008,16 @@ impl SessionIo for SshIo {
             }
             _ => return true,
         };
-        self.handle.data(self.channel, text).await.is_ok()
+        if text.is_empty() {
+            return true;
+        }
+        let written = self.handle.data(self.channel, text).await.is_ok();
+        if written {
+            // Non-view output invalidates the terminal baseline; a successfully
+            // written screen view becomes the new baseline only now.
+            self.previous_screen = next_screen;
+        }
+        written
     }
 }
 
@@ -2056,10 +2085,22 @@ mod tests {
         terminal: &mut vt100::Parser,
         needle: &str,
     ) {
+        let _ = read_until_bytes(channel, terminal, needle).await;
+    }
+
+    async fn read_until_bytes(
+        channel: &mut Channel<client::Msg>,
+        terminal: &mut vt100::Parser,
+        needle: &str,
+    ) -> Vec<u8> {
+        let mut received = Vec::new();
         tokio::time::timeout(Duration::from_secs(10), async {
             while !terminal.screen().contents().contains(needle) {
                 match channel.wait().await {
-                    Some(ChannelMsg::Data { data }) => terminal.process(&data),
+                    Some(ChannelMsg::Data { data }) => {
+                        terminal.process(&data);
+                        received.extend_from_slice(&data);
+                    }
                     Some(_) => {}
                     None => panic!("shell closed before {needle:?}"),
                 }
@@ -2072,6 +2113,7 @@ mod tests {
                 terminal.screen().contents()
             )
         });
+        received
     }
 
     fn lobby_hub() -> WorldHub {
@@ -2963,14 +3005,18 @@ mod tests {
         );
         // ...and the whole drain has a larger, but still finite, total cap, so
         // a many-page world stops instead of streaming without bound.
-        const { assert!(
-            MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
-            "the total cap must exceed the per-page cap"
-        ) };
-        const { assert!(
-            MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
-            "the total cap must be finite"
-        ) };
+        const {
+            assert!(
+                MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
+                "the total cap must exceed the per-page cap"
+            )
+        };
+        const {
+            assert!(
+                MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
+                "the total cap must be finite"
+            )
+        };
     }
 
     #[cfg(test)]
@@ -3078,7 +3124,7 @@ mod tests {
 
     #[cfg(feature = "sandbox")]
     #[tokio::test]
-    async fn a_shell_plays_the_world_and_repaints_each_view() {
+    async fn a_shell_plays_the_world_with_incremental_ansi_views() {
         use iroh_blobs::store::mem::MemStore;
 
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
@@ -3108,9 +3154,25 @@ mod tests {
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
-        read_until(&mut channel, &mut terminal, "count=0").await;
+        let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
+        assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
-        read_until(&mut channel, &mut terminal, "count=1").await;
+        // The initial PTY resize may still be queued after the first view and
+        // correctly forces one more full repaint. Consume that recovery frame
+        // before checking a stable, consecutive update.
+        let _resize_recovery = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
+        channel.data(&b"inc"[..]).await.unwrap();
+        let update = read_until_bytes(&mut channel, &mut terminal, "count=2").await;
+        assert!(
+            !update.windows(3).any(|window| window == b"[2J"),
+            "subsequent screen update should not clear and repaint the terminal"
+        );
+        assert!(
+            update.len() < initial.len(),
+            "sparse update was {} bytes, initial full frame was {} bytes",
+            update.len(),
+            initial.len()
+        );
         server.abort();
     }
 
