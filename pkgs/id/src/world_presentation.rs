@@ -591,6 +591,13 @@ mod tests {
         parse_surface(&value.to_string())
     }
 
+    fn parsed_screen(value: Value) -> ScreenSurface {
+        match screen(value).unwrap() {
+            Some(WorldSurface::Screen(screen)) => screen,
+            None => panic!("expected a screen surface"),
+        }
+    }
+
     fn cell(symbol: &str) -> ScreenCell {
         ScreenCell {
             symbol: symbol.to_owned(),
@@ -689,32 +696,22 @@ mod tests {
 
     #[test]
     fn ansi_diff_handles_wide_glyph_transitions_and_style_changes() {
-        let previous = screen(json!({
+        let previous = parsed_screen(json!({
             "kind": "screen",
             "version": 1,
             "width": 6,
             "height": 1,
             "rows": ["界ab  "],
             "styles": [[{"x": 0, "length": 2, "fg": 1, "bg": 0, "bold": false}]]
-        }))
-        .unwrap()
-        .unwrap();
-        let WorldSurface::Screen(previous) = previous else {
-            panic!("expected screen");
-        };
-        let next = screen(json!({
+        }));
+        let next = parsed_screen(json!({
             "kind": "screen",
             "version": 1,
             "width": 6,
             "height": 1,
             "rows": ["x界b  "],
             "styles": [[{"x": 1, "length": 2, "fg": 2, "bg": 0, "bold": true}]]
-        }))
-        .unwrap()
-        .unwrap();
-        let WorldSurface::Screen(next) = next else {
-            panic!("expected screen");
-        };
+        }));
 
         let diff = next.render_ansi_diff(&previous).unwrap();
         assert!(diff.contains("\x1b[0;1;38;5;2m"));
