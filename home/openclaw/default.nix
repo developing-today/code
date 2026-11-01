@@ -42,13 +42,19 @@ in
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
 
   # Point acpx's harnesses at this laptop's pinned binaries instead of
-  # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
-  # OpenCode fork (the build OpenChamber uses); claude/codex run the local
-  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
-  # the system antigravity-acp server.
+  # acpx's default `npx -y ...` upstream downloads: opencode runs through
+  # the ACP-to-HTTP adapter in this repo (bin/opencode-acp-adapter.mjs,
+  # #1243) so OpenClaw sessions land on the standing shared
+  # `opencode serve` at 127.0.0.1:13420 instead of a private per-process
+  # server; claude/codex run the local wrappers in ~/.openclaw/acpx
+  # (bundled adapters, no npx fetch); agy is the system
+  # antigravity-acp server.
+  # FALLBACK (#1243): to revert opencode to the private-server path,
+  # restore opencode.command below (and agents.opencode in the embedded
+  # acpx override) to "/etc/profiles/per-user/user/bin/opencode acp".
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
-      opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+      opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
       codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
@@ -395,9 +401,13 @@ in
             # (and the npx fetch hangs on this laptop's npmjs route).
             # The standalone acpx CLI reads ~/.acpx/config.json instead;
             # that file is kept in sync above, but the plugin ignores it.
+            # Via the ACP-to-HTTP adapter (#1243), not `opencode acp`:
+            # sessions land on the shared serve at 127.0.0.1:13420.
+            # Fallback: command "/etc/profiles/per-user/user/bin/opencode"
+            # with args [ "acp" ] restores the private-server path.
             agents.opencode = {
-              command = "/etc/profiles/per-user/user/bin/opencode";
-              args = [ "acp" ];
+              command = "${homeDir}/code/bin/opencode-acp-adapter.mjs";
+              args = [ "--server" "http://127.0.0.1:13420" ];
             };
             agents.claude = {
               command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
