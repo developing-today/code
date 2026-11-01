@@ -2694,6 +2694,7 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       b.querySelector(".bulkreview").hidden = false;
     }
     if (t.classList.contains("bulk-cancel-btn")) {
+      if (submitting) return;
       snapshot = null;
       b.querySelector(".bulkreview").hidden = true;
     }
@@ -2759,14 +2760,37 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       submitting = false;
       var failedRefs = {};
       var recorded = 0;
+      var verb0 = batch.actions.length ? batch.actions[0].verb : "";
       allResults.forEach(function (r) {
         var line = document.createElement("div");
-        if (r.ok) { recorded++; line.textContent = "\u2713 " + r.objectRef + " \u2014 recorded"; }
-        else { line.textContent = "\u2717 " + (r.objectRef || "(unknown ref)") + " \u2014 " + r.error + " (still in Needs-you)"; failedRefs[r.objectRef] = true; }
+        if (r.ok) {
+          recorded++;
+          line.textContent = "\u2713 " + r.objectRef + " \u2014 recorded";
+          // Update the accepted card in place (the __dashAfter
+          // pattern): uncheck its pick, stamp the sent line, and
+          // tombstone it for a snooze. This runs even when other
+          // items failed \u2014 a partial batch gets no fragment
+          // refresh, so failed picks and errors below stay put.
+          var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(r.objectRef) + '"]');
+          if (pk) {
+            pk.checked = false;
+            var pickLine = pk.closest(".bulkpickline");
+            var card = pickLine ? pickLine.nextElementSibling : null;
+            if (card && card.classList.contains("card")) {
+              var sent = document.createElement("div");
+              sent.className = "sentline";
+              sent.textContent = "\u2713 " + verb0 + " sent \u00b7 pending \u2014 the fleet applies it on its next pass";
+              card.appendChild(sent);
+              if (verb0 === "snooze") card.classList.add("tombstone");
+            }
+          }
+        } else {
+          line.textContent = "\u2717 " + (r.objectRef || "(unknown ref)") + " \u2014 " + r.error + " (still in Needs-you)";
+          failedRefs[r.objectRef] = true;
+        }
         resultsEl.appendChild(line);
       });
       var failed = allResults.length - recorded;
-      document.querySelectorAll("input.bulkpick:checked").forEach(function (pk) { if (!failedRefs[pk.dataset.object]) pk.checked = false; });
       b.querySelector(".bulkreview-summary").textContent = "Batch submitted: " + recorded + " recorded, " + failed + " failed. Change the selection and Review again for another batch.";
       syncBar();
       if (!failed) {
