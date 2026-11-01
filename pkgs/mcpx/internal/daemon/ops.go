@@ -383,13 +383,15 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(raw, &res) == nil && len(res.Completion) > 0 {
 			payload = res.Completion
 		}
+		payload = capUpstreamCompletion(payload,
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues")))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"completion": payload, "upstream": true, "source": "upstream"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"completion": localCompletion(p.CachedPrompts(), p.CachedTemplates(), req,
-			cs.Int("completion.maxValues")),
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues"))),
 		// Said plainly, because a client that cannot tell an empty answer
 		// from an unimplemented one shows nothing and the user concludes
 		// completion is broken. `upstream` stays for the callers that read
@@ -429,6 +431,35 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 		values = values[:max]
 	}
 	return map[string]any{"values": values, "total": total, "hasMore": total > len(values)}
+}
+
+// capUpstreamCompletion applies the shared completion cap to an
+// upstream CompleteResult payload (#2878): values are truncated to
+// limit, total keeps the upstream full count, and hasMore is
+// recomputed from the two. A payload that does not decode as a
+// completion object with a values array passes through unchanged —
+// capping must never corrupt a reply it cannot read.
+func capUpstreamCompletion(payload json.RawMessage, limit int) json.RawMessage {
+	var obj map[string]any
+	if json.Unmarshal(payload, &obj) != nil {
+		return payload
+	}
+	rawValues, ok := obj["values"].([]any)
+	if !ok || len(rawValues) <= limit {
+		return payload
+	}
+	total := len(rawValues)
+	if t, ok := obj["total"].(float64); ok && int(t) > total {
+		total = int(t)
+	}
+	obj["values"] = rawValues[:limit]
+	obj["total"] = total
+	obj["hasMore"] = total > limit
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // rankCompletions orders the candidates that match value by relevance

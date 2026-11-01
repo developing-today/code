@@ -864,6 +864,12 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON request body: expected an object' }));
+        return;
+      }
+
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
       await ensureInitialModels();

@@ -101,7 +101,7 @@ func (f *fakeBackend) GetPrompt(_ context.Context, name string, _ map[string]str
 
 // Complete stands in for the upstream server that owns a ref: values only it
 // could know, so a test can tell who answered.
-func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) ([]string, error) {
+func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) (mcpserver.Completion, error) {
 	f.hit("complete")
 	var p struct {
 		Ref struct {
@@ -111,11 +111,19 @@ func (f *fakeBackend) Complete(_ context.Context, params json.RawMessage) ([]str
 	_ = json.Unmarshal(params, &p)
 	switch p.Ref.Name {
 	case "nosuch":
-		return nil, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
+		return mcpserver.Completion{}, fmt.Errorf("%w: no prompt named %q", mcpserver.ErrInvalidParams, p.Ref.Name)
 	case "broken":
-		return nil, errors.New("upstream timed out")
+		return mcpserver.Completion{}, errors.New("upstream timed out")
+	case "capped":
+		// Stands in for the daemon's already-capped /v1/complete reply
+		// (#2878): fewer values than the full match count, total known.
+		values := make([]string, 50)
+		for i := range values {
+			values[i] = fmt.Sprintf("capped-%02d", i)
+		}
+		return mcpserver.Completion{Values: values, Total: 150, TotalKnown: true}, nil
 	}
-	return []string{"from-upstream-1", "from-upstream-2", "from-upstream-3"}, nil
+	return mcpserver.Completion{Values: []string{"from-upstream-1", "from-upstream-2", "from-upstream-3"}}, nil
 }
 
 func (f *fakeBackend) ResourceTemplates(context.Context) ([]mcpserver.ResourceRef, error) {

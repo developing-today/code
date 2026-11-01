@@ -165,7 +165,14 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.source === "string" &&
     typeof r.label === "string" &&
     (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
-    (r.startedAt === undefined || typeof r.startedAt === "string")
+    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    // #2408: mergeRecords spreads taskRefs as an array, so a present-but-
+    // non-array taskRefs throws TypeError on the duplicate-key merge (and
+    // a string silently spreads into single-character refs). The validator
+    // owns the rule, per the #2347/#2376 precedent above: taskRefs must be
+    // absent or an array of strings; anything else rejects the record.
+    (r.taskRefs === undefined ||
+      (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
   );
 }
 

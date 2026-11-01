@@ -4469,7 +4469,17 @@ const AA_EXPLORER_SCRIPT = `<script>
     render();
   }
   function loadSetups() {
-    try { return JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}"); } catch (e) { return {}; }
+    // #2851: the store is null-prototype — on a plain object a setup
+    // named "__proto__" assigns the prototype instead of becoming an
+    // entry (silently never saved), and an imported "__proto__" entry
+    // mutates the live store's prototype. Copy the parsed own keys
+    // into Object.create(null) so every name is an ordinary entry.
+    var out = Object.create(null);
+    try {
+      var parsed = JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}");
+      if (parsed && typeof parsed === "object") Object.keys(parsed).forEach(function (k) { out[k] = parsed[k]; });
+    } catch (e) { /* unreadable storage: empty store */ }
+    return out;
   }
   function storeSetups(obj) {
     try { localStorage.setItem("xpl-setups-v1", JSON.stringify(obj)); } catch (e) { /* storage unavailable: setups stay session-only */ }

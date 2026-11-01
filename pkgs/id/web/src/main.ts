@@ -15,6 +15,7 @@ import { identityNeedsRefresh } from "./identity-refresh";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
+import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -1448,7 +1449,7 @@ async function init(): Promise<void> {
 
   // Ctrl+S to save, Enter to submit tags
   document.addEventListener("keydown", (event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+    if (isSaveShortcut(event)) {
       event.preventDefault();
       if (app.collab?.editor && app.autoSave) {
         app.autoSave.saveNow();

@@ -13,6 +13,7 @@ import {
   readResponseTextCapped,
   uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
@@ -905,4 +906,18 @@ test("crawlArchiveKey: same-millisecond derivations with distinct uniques never 
     assert.ok(!seen.has(k), k);
     seen.add(k);
   }
+});
+
+test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
+  assert.equal(
+    isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")),
+    true,
+  );
+  // Other constraints and other failures stay on the 500 path.
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: files.r2_key")), false);
+  assert.equal(isMachineNameConflict(new Error("no such table: machines")), false);
+  assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed")), false);
+  assert.equal(isMachineNameConflict("UNIQUE constraint failed: machines.name"), true);
+  assert.equal(isMachineNameConflict(null), false);
 });

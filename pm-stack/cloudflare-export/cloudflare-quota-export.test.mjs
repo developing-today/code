@@ -7,10 +7,12 @@ import {
   classifyR2,
   cycleStartUtc,
   API_REQUEST_TIMEOUT_MS,
+  ExportError,
   failureDocument,
   foldKv,
   parseGraphqlUsage,
   R2_STORAGE_GROUP_LIMIT,
+  run,
   successDocument,
 } from "./cloudflare-quota-export.mjs";
 
@@ -232,4 +234,59 @@ test("documents: success carries the spec fields; failure carries no values", ()
   assert.equal(bad.measuredAt, null);
   assert.equal("metrics" in bad, false);
   assert.deepEqual(bad.missingScopes, ["Account Analytics Read"]);
+});
+
+// #2608: GraphQL errors shape handling in run(). The stub answers the
+// billing probes and R2 enumeration with benign bodies and returns the
+// given body for /graphql; ACCOUNT is a valid parsed account node.
+function stubFetchFor(gqlBody) {
+  return async (url) => {
+    const u = String(url);
+    let body;
+    if (u.includes("/graphql")) body = gqlBody;
+    else if (u.includes("/r2/buckets")) body = { result: { buckets: [{ name: "b1" }] } };
+    else body = {};
+    return { status: 200, json: async () => body };
+  };
+}
+
+async function runWithErrors(errors) {
+  const prev = globalThis.fetch;
+  globalThis.fetch = stubFetchFor({
+    data: { viewer: { accounts: [ACCOUNT] } },
+    ...(errors !== undefined ? { errors } : {}),
+  });
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+async function expectExportError(errors, status, exitCode) {
+  await assert.rejects(runWithErrors(errors), (e) => {
+    assert.ok(e instanceof ExportError, `expected ExportError, got ${e}`);
+    assert.equal(e.status, status);
+    assert.equal(e.exitCode, exitCode);
+    return true;
+  });
+}
+
+test("run: GraphQL errors malformed shapes fail closed as unparseable (#2608)", async () => {
+  await expectExportError("boom", "unparseable", 6);
+  await expectExportError([null], "unparseable", 6);
+  await expectExportError([{ message: 12345 }], "unparseable", 6);
+  await expectExportError({ message: 12345 }, "unparseable", 6);
+});
+
+test("run: a single-object GraphQL errors classifies like the array form (#2608)", async () => {
+  await expectExportError({ message: "auth: permission denied" }, "token-scope", 3);
+  await expectExportError({ message: "some query error" }, "unparseable", 6);
+});
+
+test("run: GraphQL errors controls unchanged (#2608)", async () => {
+  await expectExportError([{ message: "auth: permission denied" }], "token-scope", 3);
+  const doc = await runWithErrors(undefined);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.metrics.length, 11);
 });
