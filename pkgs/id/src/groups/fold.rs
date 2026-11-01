@@ -522,6 +522,12 @@ pub(super) struct Decision {
     pub(super) group: Hash,
     pub(super) action: Option<GroupAction<AuthId, ()>>,
     pub(super) effect: Effect,
+    /// The identity the membership layer should see as the operation's author, when the
+    /// signer acted on borrowed authority: a delegated Manage chain is exercised under
+    /// its root, whose own access carries the operation in the auth graph (the same
+    /// pattern as a device, which the layer sees as its account). `None` means the
+    /// effective author itself.
+    pub(super) auth_author: Option<Key>,
 }
 
 /// A rule's verdict: a decision, or the reason it has no effect.
@@ -580,7 +586,7 @@ impl Engine {
         };
         let role = match &decision.action {
             Some(action) => Placed::Auth {
-                author: effective_author,
+                author: decision.auth_author.unwrap_or(effective_author),
                 group: Some(decision.group),
                 action: action.clone(),
             },
@@ -802,6 +808,7 @@ impl Engine {
             ),
         ];
         Ok(Decision {
+            auth_author: None,
             group,
             action: Some(GroupAction::Create {
                 initial_members: initial,
@@ -826,6 +833,7 @@ impl Engine {
             return Err(Refusal::AlreadyPresent);
         }
         Ok(Decision {
+            auth_author: None,
             group,
             action: None,
             effect: Effect::Present(author),
@@ -864,6 +872,7 @@ impl Engine {
             return Err(Refusal::OverCap { cap });
         }
         Ok(Decision {
+            auth_author: None,
             group,
             action: None,
             effect: Effect::Policy(policy.clone()),
@@ -885,12 +894,12 @@ impl Engine {
             return Err(Refusal::NotActive);
         };
         let is_admin = author_role == Role::Admin;
-        let is_manager = author_role >= Role::Manage;
         match op {
             MemberOp::Add { member, role } => {
-                if !is_manager {
-                    return Err(Refusal::NotManager);
-                }
+                // No membership-role gate here: a delegated Manage chain authorizes the add
+                // just as a manager's role does, and only `manage_chain` (which runs on an Ok
+                // decision, design §7.2) can see the chain. It refuses there — NotManager for
+                // an author no Manage grant reaches, NoChain for a chain that does not stand.
                 if role == Role::Admin && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
@@ -903,6 +912,7 @@ impl Engine {
                     return Err(Refusal::OverCap { cap });
                 }
                 Ok(Decision {
+                    auth_author: None,
                     group,
                     action: Some(GroupAction::Add {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -918,14 +928,12 @@ impl Engine {
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
                 }
-                if member != author && !is_manager {
-                    return Err(Refusal::NotManager);
-                }
                 // Manage removes members at or below its own level. Admin is above it (design §5.2).
                 if member != author && record.admins.contains(&member) && !is_admin {
                     return Err(Refusal::NotAdmin);
                 }
                 Ok(Decision {
+                    auth_author: None,
                     group,
                     action: Some(GroupAction::Remove {
                         member: GroupMember::Individual(AuthId::Key(member)),
@@ -958,6 +966,7 @@ impl Engine {
                     Ordering::Equal => None,
                 };
                 Ok(Decision {
+                    auth_author: None,
                     group,
                     action,
                     effect: Effect::Grant {
@@ -1268,6 +1277,7 @@ impl Engine {
                     return Ok(Err(Refusal::Attenuated));
                 }
                 Ok(Ok(Decision {
+                    auth_author: None,
                     group,
                     action: None,
                     effect: Effect::DeviceAdd {
@@ -1278,6 +1288,7 @@ impl Engine {
                 }))
             }
             DeviceOp::Revoke { device } => Ok(Ok(Decision {
+                auth_author: None,
                 group,
                 action: None,
                 effect: Effect::DeviceRevoke {
@@ -1477,6 +1488,7 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         dissolved_by: None,
     };
     Ok(Decision {
+        auth_author: None,
         group: event.id,
         action: Some(GroupAction::Create {
             initial_members: initial,

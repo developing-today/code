@@ -117,6 +117,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            auth_author: None,
             group,
             action: None,
             effect: Effect::Delegation {
@@ -161,6 +162,7 @@ impl Engine {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
+            auth_author: None,
             group,
             action: None,
             effect: Effect::Veto(grant),
@@ -185,19 +187,89 @@ impl Engine {
         {
             return Ok(Ok(decision));
         }
+        // Authorize the signer, not the resolved account: for a device signer this is
+        // what enforces the device's scope cap (a Read-scoped device of a manager
+        // account holds no Manage here, however its account stands).
         let manages = self.authorized(
             by_id,
             decision.group,
-            author,
+            event.author,
             Role::Manage,
             &event.after,
             false,
         )?;
-        if manages {
-            Ok(Ok(decision))
-        } else {
-            Ok(Err(Refusal::NoChain))
+        if !manages {
+            // A Manage grant reaches the author but its chain does not stand at this
+            // position (cut, vetoed, or its grantor lost the scope): that is a chain
+            // failure, not a missing manager role.
+            let reached_by_grant = self.grants.values().any(|grant| {
+                grant.group == decision.group
+                    && (grant.to == author || grant.to == event.author)
+                    && grant.scope >= Role::Manage
+            });
+            return Ok(Err(if reached_by_grant {
+                Refusal::NoChain
+            } else {
+                Refusal::NotManager
+            }));
         }
+        // The membership layer validates the operation against its author's own
+        // access, so a delegated operation is placed under the chain root whose
+        // authority it exercises (a device is likewise placed under its account).
+        let mut decision = decision;
+        if let Some(root) = self.chain_root(by_id, decision.group, event.author, &event.after)? {
+            decision.auth_author = Some(root);
+        }
+        Ok(Ok(decision))
+    }
+
+    /// The root whose Manage authority `actor` exercises at `after`: the actor itself
+    /// when it is a manager there (a device resolves to its account first, under the
+    /// same scope cap as [`Engine::authorized`]), otherwise the root at the head of
+    /// the chain of Manage links that reaches it. Deterministic in the event set:
+    /// roots and links are traversed in their stored (sorted) order.
+    fn chain_root(
+        &mut self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        actor: Key,
+        after: &[Hash],
+    ) -> Result<Option<Key>, FoldError> {
+        if !self.groups.contains_key(&group) {
+            return Ok(None);
+        }
+        let actor = match self.authorized_device_account(by_id, group, actor, after) {
+            Some((account, device_scope)) => {
+                if device_scope < Role::Manage {
+                    return Ok(None);
+                }
+                account
+            }
+            None => actor,
+        };
+        let roots = self.membership.managers_at_position(after, group)?;
+        if roots.contains(&actor) {
+            return Ok(Some(actor));
+        }
+        let links = self.links(by_id, group, after)?;
+        let mut origin: BTreeMap<Key, Key> = roots.iter().map(|root| (*root, *root)).collect();
+        let mut stack: Vec<Key> = roots.iter().copied().collect();
+        while let Some(holder) = stack.pop() {
+            let root = origin[&holder];
+            for link in links
+                .iter()
+                .filter(|link| !link.crossing && link.from == holder && link.scope >= Role::Manage)
+            {
+                if link.to == actor {
+                    return Ok(Some(root));
+                }
+                if link.redelegate && !origin.contains_key(&link.to) {
+                    origin.insert(link.to, root);
+                    stack.push(link.to);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// The grants in force at the head of the events: every grant that its own link carries when
