@@ -10,10 +10,13 @@ configuration its authenticated endpoints need. The --deploy-version
 (rollback) path never provisioned secrets at all.
 
 The fix: after provisioning, re-read the live deployment and advertise
-the final configured version; and on the --deploy-version path,
-re-provision the secrets against the just-deployed version (secret put
-derives from the deployed code, preserving the rollback target's code)
-and report the configured live version.
+the final configured version. On the --deploy-version path the
+configuration cannot be added after the fact (ordinary `secret put`
+hard-errors when the latest version is not deployed — the rollback
+state by definition — and `versions secret put` patches the latest
+version, not the selected one), so the path verifies BEFORE deploying:
+a target missing the required secret bindings is refused with the
+roll-forward remedy named; a configured target deploys as-is.
 
 Drives the real deploy.mjs (node) with stubbed bws/wrangler/git
 executables on PATH. The wrangler stub is stateful: `versions deploy`
@@ -62,6 +65,12 @@ case "$1 $2" in
   "secret put")
     cat > /dev/null
     echo "configured-final" > "$STUB_STATE/live";;
+  "versions view")
+    if [ "$3" = "old-v9" ]; then
+      echo '{"resources":{"bindings":[{"name":"DRAIN_BEARER","type":"secret_text"},{"name":"GITHUB_WEBHOOK_SECRET","type":"secret_text"}]}}'
+    else
+      echo '{"resources":{"bindings":[]}}'
+    fi;;
 esac
 exit 0
 """
@@ -114,23 +123,32 @@ check("normal: no mock secret value in output",
       "stub-bearer-value" not in proc.stdout + proc.stderr and
       "stub-webhook-value" not in proc.stdout + proc.stderr)
 
-# 2. rollback re-provisions runtime configuration, in order
+# 2. rollback of a CONFIGURED version deploys as-is, verified first
 proc, calls = run_deploy(["--deploy-version", "old-v9"])
 check("rollback: exit 0", proc.returncode == 0)
+check("rollback: bindings verified before deploying",
+      "wrangler versions view old-v9" in calls and
+      calls.find("wrangler versions view old-v9") < calls.find("wrangler versions deploy"))
 check("rollback: versions deploy at 100%",
       "wrangler versions deploy old-v9@100%" in calls)
-deploy_at = calls.find("wrangler versions deploy old-v9@100%")
-secret_at = calls.find("wrangler secret put")
-check("rollback: secrets provisioned after the deployment",
-      deploy_at >= 0 and secret_at > deploy_at)
-check("rollback: both Worker secrets provisioned",
-      "wrangler secret put DRAIN_BEARER" in calls and
-      "wrangler secret put GITHUB_WEBHOOK_SECRET" in calls)
-check("rollback: advertised live version is the configured version",
-      "at version configured-final" in proc.stdout)
+check("rollback: no secret put (a configured version needs none, and "
+      "secret put would hard-error in the rollback state)",
+      "wrangler secret put" not in calls)
+check("rollback: advertised live version is the target, verified",
+      "at version old-v9" in proc.stdout and "verified" in proc.stdout)
 check("rollback: no mock secret value in output",
       "stub-bearer-value" not in proc.stdout + proc.stderr and
       "stub-webhook-value" not in proc.stdout + proc.stderr)
+
+# 3. rollback of an UNCONFIGURED version is refused before any deploy
+proc, calls = run_deploy(["--deploy-version", "bare-v1"])
+check("unconfigured: non-zero exit", proc.returncode != 0)
+check("unconfigured: error names the missing bindings and the refusal",
+      "DRAIN_BEARER" in proc.stderr and "refusing to roll back" in proc.stderr)
+check("unconfigured: no versions deploy happened",
+      "versions deploy" not in calls)
+check("unconfigured: no secret put attempted",
+      "wrangler secret put" not in calls)
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
 sys.exit(0 if all(ok for _, ok in PASS) else 1)

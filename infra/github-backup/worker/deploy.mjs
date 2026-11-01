@@ -33,6 +33,13 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "developing-today-backup";
+// [Worker binding name, Bitwarden secret name] pairs the Worker needs
+// to serve authenticated endpoints. A version without these bindings
+// is not a sound rollback target (#3475).
+const WORKER_SECRETS = [
+  ["DRAIN_BEARER", "github-app.backup-worker-bearer"],
+  ["GITHUB_WEBHOOK_SECRET", "github-app.backup-webhook-secret"],
+];
 const WORKER_URL = "https://developing-today-backup.developing-today.workers.dev";
 
 const args = process.argv.slice(2);
@@ -66,21 +73,25 @@ if (!apiToken) {
 const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken };
 
 if (deployVersion !== null) {
+  // #3475: deploying an existing version restores that version exactly,
+  // bindings included. A version uploaded by the normal flow predates
+  // the runtime-configuration step, so it carries no secret bindings —
+  // and the configuration cannot be added after the fact: ordinary
+  // `wrangler secret put` hard-errors when the latest version is not
+  // the deployed one (the rollback state by definition), and
+  // `wrangler versions secret put` patches the LATEST version, not the
+  // selected one. So verify BEFORE switching traffic: refuse a target
+  // missing the required secret bindings and name the remedy (roll
+  // forward through the normal flow, which uploads, deploys, and
+  // provisions, producing a configured version). Configured versions —
+  // including every version the normal flow now advertises — deploy
+  // as-is.
+  verifyVersionConfigured(deployVersion);
   createDeployment(deployVersion);
-  // #3475: deploying an existing version restores that version's code
-  // only. A version uploaded by the normal flow predates the runtime
-  // configuration step below, so rolling back to it would restore a
-  // Worker whose DRAIN_BEARER / GITHUB_WEBHOOK_SECRET bindings were
-  // never provisioned on it. Re-provision the secrets against the
-  // just-deployed version: `wrangler secret put` derives a new version
-  // from the deployed code, so the rollback target's code is preserved
-  // and the final live version is the configured one reported below.
-  setWorkerSecrets();
   reportLive();
-  const rollbackLive = liveVersionIds();
   console.log(
-    `live: ${WORKER_URL} at version ${rollbackLive.join(", ") || deployVersion} ` +
-    `(rolled back to ${deployVersion}, runtime configuration re-provisioned)`
+    `live: ${WORKER_URL} at version ${deployVersion} ` +
+    `(rollback; required runtime configuration verified on the version)`
   );
   process.exit(0);
 }
@@ -174,6 +185,27 @@ function liveVersionIds() {
   }
 }
 
+// Refuse to make live a version that lacks the required secret
+// bindings. Reads the version's bindings via `wrangler versions view`;
+// secret values are never fetched, only binding names.
+function verifyVersionConfigured(versionId) {
+  const out = runWrangler(["versions", "view", versionId, "--name", WORKER, "--json"], { capture: true });
+  const parsed = JSON.parse(out);
+  const bindings = parsed?.resources?.bindings ?? parsed?.bindings ?? [];
+  const secretNames = new Set(
+    bindings.filter((b) => b?.type === "secret_text").map((b) => b.name)
+  );
+  const missing = WORKER_SECRETS.map(([envName]) => envName).filter((name) => !secretNames.has(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `version ${versionId} lacks required runtime configuration (${missing.join(", ")} secret binding(s) missing); ` +
+      `refusing to roll back to an unconfigured version. Roll forward instead: check out the version's git tag and ` +
+      `run the normal deploy, which uploads, deploys, and provisions the secrets, producing a configured version.`
+    );
+  }
+  console.log(`version ${versionId} carries the required secret bindings (${[...secretNames].join(", ")})`);
+}
+
 function createDeployment(versionId) {
   console.log(`creating deployment at version ${versionId} (100%)`);
   runWrangler(["versions", "deploy", `${versionId}@100%`, "--name", WORKER, "--yes"], { stdio: "inherit" });
@@ -187,11 +219,7 @@ function createDeployment(versionId) {
 // advertising a rollback target (#3475). Values pass through
 // wrangler's stdin only; nothing is printed.
 function setWorkerSecrets() {
-  const wanted = [
-    ["DRAIN_BEARER", "github-app.backup-worker-bearer"],
-    ["GITHUB_WEBHOOK_SECRET", "github-app.backup-webhook-secret"],
-  ];
-  for (const [envName, secretName] of wanted) {
+  for (const [envName, secretName] of WORKER_SECRETS) {
     const value = byName(secretName);
     if (!value) {
       console.log(`warning: no Bitwarden secret named ${secretName}; skipping ${envName}`);
