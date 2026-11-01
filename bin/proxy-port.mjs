@@ -23,6 +23,20 @@ export const parseProxyPortValue = (name, raw, fallback) => {
   );
 };
 
+// Validate each comma-separated target; one bad entry must reject the whole list.
+export const parseProxyPortListValue = (name, raw) => {
+  if (raw === undefined || raw === '') {
+    throw new Error(`${name} is required (comma list)`);
+  }
+  return raw.split(',').map((segment) => {
+    const value = segment.trim();
+    if (value === '') {
+      throw new Error(`${name}="${raw}" contains an empty port segment`);
+    }
+    return parseProxyPortValue(name, value);
+  });
+};
+
 // Strict port parsing for a host:port address taken from an env var
 // (#494). The port is the segment after the last ':'; anything that is
 // not exactly an integer 1-65535 is an error naming the variable and
@@ -41,6 +55,15 @@ export const parseAddressPortValue = (name, raw) => {
 export const parseProxyPort = (name, fallback) => {
   try {
     return parseProxyPortValue(name, process.env[name], fallback);
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
+};
+
+export const parseProxyPortList = (name) => {
+  try {
+    return parseProxyPortListValue(name, process.env[name]);
   } catch (err) {
     console.error(err.message);
     process.exit(1);
