@@ -64,6 +64,9 @@ const MAX_NAME_LENGTH: usize = 64;
 /// Maximum token age before it's considered expired (30 days in seconds).
 const TOKEN_MAX_AGE_SECS: u64 = 30 * 24 * 60 * 60;
 
+/// Maximum tolerated clock skew for a token issued in the future (5 minutes).
+const TOKEN_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
 /// A client's identity information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientIdentity {
@@ -376,8 +379,11 @@ impl IdentityStore {
         // Deserialize payload
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
 
-        // Reject expired tokens (older than TOKEN_MAX_AGE_SECS)
+        // Reject tokens dated implausibly far in the future, then apply the age cap.
         let now = unix_timestamp();
+        if payload.created_at > now.saturating_add(TOKEN_FUTURE_SKEW_SECS) {
+            return None;
+        }
         if now.saturating_sub(payload.created_at) > TOKEN_MAX_AGE_SECS {
             return None;
         }
@@ -1143,6 +1149,30 @@ mod tests {
         // Expired token should be rejected
         assert!(store.verify_token(&expired_token).await.is_none());
         assert!(store.verify_token_client_id(&expired_token).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_future_dated_token_within_and_beyond_skew() {
+        let store = IdentityStore::new_ephemeral();
+        let (_, identity) = store.register(None).await.unwrap();
+        let now = unix_timestamp();
+
+        let within_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS - 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&within_skew).await.is_some());
+
+        let beyond_skew = store
+            .create_token(
+                &identity.client_id,
+                now.saturating_add(TOKEN_FUTURE_SKEW_SECS + 60),
+            )
+            .unwrap();
+        assert!(store.verify_token(&beyond_skew).await.is_none());
+        assert!(store.verify_token_client_id(&beyond_skew).is_none());
     }
 
     /// A token with the given payload and 64 signature bytes, in the wire format.
