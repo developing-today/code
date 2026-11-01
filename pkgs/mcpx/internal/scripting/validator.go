@@ -106,6 +106,14 @@ type delimToken struct {
 	exprAfter bool
 }
 
+// pendingBodyFrame tracks one not-yet-seen function/class
+// expression body: parenDepth counts '(' opened while the frame is
+// pending, stackDepth is len(stack) when the frame was pushed.
+type pendingBodyFrame struct {
+	parenDepth int
+	stackDepth int
+}
+
 func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	var diags []diagnose.Diagnostic
 	var stack []delimToken
@@ -153,24 +161,51 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 	// spots expression keywords in front of function/class
 	// (return function() {} / 2 divides after the body closure).
 	prevIdent := ""
-	// expectFuncClassBody is set while scanning a function or
-	// class EXPRESSION whose body '{' has not been seen yet: that
+	// funcClassFrames holds one frame per function or class
+	// EXPRESSION whose body '{' has not been seen yet: that
 	// brace closes an operand, not a statement block, so a '/'
 	// after its '}' is division (Codex P2 on #1659:
-	// const n = function() {} / 2). It is gated on the keyword
-	// sitting in expression position — after a function/class
-	// DECLARATION a '/' starts a new statement and does open a
-	// regex — and is cleared by the body's '{' or by a ';'.
-	expectFuncClassBody := false
-	// expectFuncClassParenDepth counts '(' opened while
-	// expectFuncClassBody is pending: a '{' inside the parameter
+	// const n = function() {} / 2). Frames are pushed only when
+	// the keyword sits in expression position — after a
+	// function/class DECLARATION a '/' starts a new statement
+	// and does open a regex — and are consumed by the body's
+	// '{' or cleared by a ';' in their own scope.
+	// funcClassFrames is a STACK of pending function/class
+	// expression bodies: a nested function/class expression inside
+	// an outer one's parameter list has its own pending body, and
+	// a single shared marker misclassifies the inner body closure
+	// (Codex P2 on #1659: function(a = function() {} / 2) {} / 2,
+	// and an inner class {} likewise). Each frame counts '('
+	// opened while it is pending — a '{' inside the parameter
 	// list (a default object, a destructuring pattern) is not the
-	// body and must not consume the marker (Codex P2 on #1659:
-	// function(a = {}) {} / 2).
-	expectFuncClassParenDepth := 0
-	// expectFuncClassStackDepth is len(stack) when the marker was
-	// set: a ';' only clears the marker from its own scope (F1).
-	expectFuncClassStackDepth := 0
+	// body and must not consume the frame (function(a = {}) {} / 2)
+	// — and records len(stack) when it was pushed: a ';' only
+	// clears a frame from its own scope.
+	var funcClassFrames []pendingBodyFrame
+	// inClassHeritage is set while scanning a class head before
+	// its body '{': the expression after 'extends' is a heritage
+	// expression in expression position (Codex P2 on #1659:
+	// class C extends /a+/.constructor {}).
+	inClassHeritage := false
+	// Static module declaration state (Codex P2 on #1659):
+	// inModuleDecl while an import/export declaration that began
+	// in statement position is being scanned; expectModuleString
+	// after its 'from' keyword; stringIsModuleSpec marks the
+	// string literal currently being scanned as the module
+	// specifier; moduleSpecClosed records that it has closed, so
+	// the next newline is a statement boundary (ASI) even though
+	// the specifier string itself is an operand
+	// (import "node:fs"\n/a+/.test(..)).
+	inModuleDecl := false
+	expectModuleString := false
+	stringIsModuleSpec := false
+	moduleSpecClosed := false
+	// lineBreakPending records that a line terminator has been
+	// scanned since the last significant token: it breaks the
+	// postfix ++/-- restricted production (Codex P2 on #1659:
+	// n\n++ /a+/ — the '++' is a prefix on the next statement,
+	// not a postfix on n).
+	lineBreakPending := false
 	// expectDeclBody mirrors expectFuncClassBody for DECLARATIONS
 	// (function/class in statement position, interface, enum): a
 	// declaration body '{' opens a statement block whose '}'
@@ -252,6 +287,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				lastIdent = string(curIdent)
 				lastIdentPrev = identPrev
 				curIdent = nil
+				// The next significant character after the
+				// identifier, skipping whitespace and comments:
+				// trivia between a keyword and a ':' must not
+				// defeat the property-name guards below (Codex
+				// P2 on #1659: {class : 1}).
+				nextSig := nextSignificant(chars, i)
 				if isExprKeyword(lastIdent) && lastIdentPrev != '.' {
 					prevSig = 'o'
 				}
@@ -286,32 +327,67 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					// the word is a property name instead.
 					prevSig = 'o'
 				}
-				// A function/class keyword directly followed by
-				// ':', ',', '}' or ')' is an object property name
-				// ({class: 1}), not a declaration: it must not set
-				// pending body state that a later '{' would
-				// consume (Codex P2 on #1659).
-				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && ch != ':' && ch != ',' && ch != '}' && ch != ')' {
+				// A function/class keyword followed (after any
+				// trivia) by ':', ',', '}' or ')' is an object
+				// property name ({class : 1}), not a declaration:
+				// it must not set pending body state that a later
+				// '{' would consume (Codex P2 on #1659).
+				if (lastIdent == "function" || lastIdent == "class") && lastIdentPrev != '.' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
+					if lastIdent == "class" {
+						inClassHeritage = true
+					}
 					if isExprPositionStart(lastIdentPrev, prevIdent) {
-						expectFuncClassBody = true
-						expectFuncClassStackDepth = len(stack)
+						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack)})
 					} else {
 						expectDeclBody = true
 						expectDeclParenDepth = 0
 						expectDeclStackDepth = len(stack)
 					}
 				}
-				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' && ch != ':' && ch != ',' && ch != '}' && ch != ')' {
+				if (lastIdent == "interface" || lastIdent == "enum") && lastIdentPrev != '.' && nextSig != ':' && nextSig != ',' && nextSig != '}' && nextSig != ')' {
 					expectDeclBody = true
 					expectDeclParenDepth = 0
 					expectDeclStackDepth = len(stack)
+				}
+				if lastIdent == "extends" && lastIdentPrev != '.' && inClassHeritage && nextSig != ':' {
+					// A class heritage expression follows
+					// 'extends': it is in expression position, so
+					// a '/' opens a regex literal (Codex P2 on
+					// #1659: class C extends /a+/.constructor {}).
+					prevSig = 'o'
+				}
+				if (lastIdent == "import" || lastIdent == "export") && lastIdentPrev != '.' &&
+					(lastIdentPrev == 0 || lastIdentPrev == ';' || lastIdentPrev == '{' || lastIdentPrev == '}') {
+					// A static module declaration in statement
+					// position: its module-specifier string ends
+					// the declaration (Codex P2 on #1659).
+					inModuleDecl = true
+					expectModuleString = false
+				}
+				if lastIdent == "from" && lastIdentPrev != '.' && inModuleDecl {
+					expectModuleString = true
 				}
 			}
 		}
 
 		if ch == '\n' {
 			line++
+			lineBreakPending = true
 			inSingleLineComment = false
+			if moduleSpecClosed {
+				// A static import/export declaration ended at
+				// its module-specifier string: ASI ends the
+				// declaration at the newline, so a '/' on the
+				// next line opens a regex, it is not division
+				// after the specifier string (Codex P2 on
+				// #1659: import "node:fs"\n/a+/.test(..)).
+				prevSig = 'o'
+				moduleSpecClosed = false
+				inModuleDecl = false
+				expectModuleString = false
+				lastIdent = ""
+				lastIdentPrev = 0
+			}
 			if inRegex {
 				// A regex literal cannot span lines; an unterminated
 				// one is a genuine error, not a valid script.
@@ -335,8 +411,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				prevSig = 'o'
 				lastIdent = ""
 				lastIdentPrev = 0
-				expectFuncClassBody = false
-				expectFuncClassParenDepth = 0
+				funcClassFrames = nil
 			}
 			if typeAngleDepth == 0 && inTypeAssert && typeSawToken && len(stack) <= typeStackDepth {
 				inTypeAssert = false
@@ -354,6 +429,14 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				inString = rune(0)
 			}
 			continue
+		}
+
+		// The first significant character after a line break
+		// consumes it; later characters on the same line see no
+		// break (postfix ++/-- classification consults this).
+		brokeLine := lineBreakPending
+		if !isJSWhitespace(ch) {
+			lineBreakPending = false
 		}
 
 		if inSingleLineComment {
@@ -380,6 +463,17 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			if ch == inString {
 				inString = rune(0)
 				prevSig = 'x'
+				// The closing quote is the previous significant
+				// CHARACTER too: leaving prevChar at whatever
+				// preceded the string (an '=' above all) made a
+				// following ASI-separated '{' classify as an
+				// object literal instead of a statement block
+				// (Codex P2 on #1659: const x = "x"\n{} /a+/).
+				prevChar = ch
+				if stringIsModuleSpec {
+					moduleSpecClosed = true
+					stringIsModuleSpec = false
+				}
 				// The string was the keyword's operand; the keyword
 				// context does not survive it (see the ';' expiry).
 				lastIdent = ""
@@ -425,6 +519,20 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// completed literal stays a single operand token.
 				for i+1 < n && isRegexFlag(chars[i+1]) {
 					i++
+				}
+				// As with strings, the completed literal is the
+				// previous significant character for a following
+				// '{' classification: with flags it is the last
+				// flag letter; without, an operand sentinel —
+				// the '/' itself is an operator character and
+				// would misclassify the brace (Codex P2 on
+				// #1659: const x = /x/\n{} /a+/). The sentinel
+				// 'x' is an identifier character, which every
+				// prevChar consumer reads as operand position.
+				if i < n && isRegexFlag(chars[i]) && chars[i] != '/' {
+					prevChar = chars[i]
+				} else {
+					prevChar = 'x'
 				}
 			}
 			continue
@@ -490,14 +598,19 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 		// String starts
 		if ch == '\'' || ch == '"' || ch == '`' {
 			inString = ch
+			// A string directly after 'import' (a side-effect
+			// import) or after a module declaration's 'from' is
+			// the module specifier: the declaration ends with
+			// it (Codex P2 on #1659).
+			stringIsModuleSpec = inModuleDecl && (expectModuleString || lastIdent == "import")
 			continue
 		}
 
 		// Delimiters
 		switch ch {
 		case '(':
-			if expectFuncClassBody {
-				expectFuncClassParenDepth++
+			for fi := range funcClassFrames {
+				funcClassFrames[fi].parenDepth++
 			}
 			if expectDeclBody {
 				expectDeclParenDepth++
@@ -550,10 +663,18 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// (Codex P2 on #1659: 4 as { toFixed(): string } / 2).
 				exprAfter = false
 			}
-			if expectFuncClassBody && expectFuncClassParenDepth == 0 {
+			if i >= 3 && chars[i-1] == '.' && chars[i-2] == '.' && chars[i-3] == '.' {
+				// A '{' right after a spread token is the spread
+				// object operand, not a statement block: its '}'
+				// is an operand, so a following '/' divides
+				// (Codex P2 on #1659: {...{} / 2}).
 				exprAfter = false
-				expectFuncClassBody = false
 			}
+			if len(funcClassFrames) > 0 && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 {
+				exprAfter = false
+				funcClassFrames = funcClassFrames[:len(funcClassFrames)-1]
+			}
+			inClassHeritage = false
 			if expectDeclBody && expectDeclParenDepth == 0 {
 				exprAfter = true
 				expectDeclBody = false
@@ -575,8 +696,12 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			}
 			top := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
-			if top.char == '(' && expectFuncClassBody && expectFuncClassParenDepth > 0 {
-				expectFuncClassParenDepth--
+			if top.char == '(' {
+				for fi := range funcClassFrames {
+					if funcClassFrames[fi].parenDepth > 0 {
+						funcClassFrames[fi].parenDepth--
+					}
+				}
 			}
 			if top.char == '(' && expectDeclBody && expectDeclParenDepth > 0 {
 				expectDeclParenDepth--
@@ -621,7 +746,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// conditional-expression openers: counting them makes
 			// a later statement colon look like a ternary branch
 			// (Codex P2 on #1659: switch (obj?.x) { case 1: ... }).
-			if !(i+1 < n && (chars[i+1] == '?' || (chars[i+1] == '.' && !(i+2 < n && unicode.IsDigit(chars[i+2]))))) {
+			if !(i+1 < n && (chars[i+1] == '?' || (chars[i+1] == '.' && !(i+2 < n && unicode.IsDigit(chars[i+2]))))) && !(i > 0 && chars[i-1] == '?') {
+				// The second '?' of '??' is excluded by the
+				// previous-character check: when it is scanned,
+				// the lookahead above no longer sees the pair
+				// (Codex P2 on #1659: switch (null ?? 1) {...}).
 				ternaryStack = append(ternaryStack, len(stack))
 			}
 			prevSig = 'o'
@@ -658,9 +787,11 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// Whitespace does not change the ruling.
 		case isIdentChar(ch):
 			prevSig = 'x'
-		case (ch == '+' || ch == '-') && i > 0 && chars[i-1] == ch && signAfterOperand:
+		case (ch == '+' || ch == '-') && i > 0 && chars[i-1] == ch && signAfterOperand && !brokeLine:
 			// Postfix increment/decrement: the adjacent sign pair
 			// completes an operand, so a following '/' divides.
+			// A line break before the pair makes it a prefix on
+			// the next statement instead (restricted production).
 			prevSig = 'x'
 		case ch == '.' && ((i > 0 && unicode.IsDigit(chars[i-1])) || (i+1 < n && unicode.IsDigit(chars[i+1]))):
 			// A decimal point within a numeric token (4. / 2,
@@ -671,17 +802,27 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// Operators and opening delimiters: expression position.
 			prevSig = 'o'
 		}
-		signAfterOperand = (ch == '+' || ch == '-') && wasOperand
+		// A line break before the sign breaks the postfix
+		// production, so the sign does not arm a postfix pair.
+		signAfterOperand = (ch == '+' || ch == '-') && wasOperand && !brokeLine
 		if ch == ';' {
-			// Only a ';' in the pending marker's own scope clears
+			// Only a ';' in a pending frame's own scope clears
 			// it: a ';' inside a nested parameter default
 			// (function(a = () => { return 1; })) belongs to the
-			// nested scope and must not clear the outer marker
+			// nested scope and must not clear the outer frame
 			// (Codex P2 on #1659).
-			if expectFuncClassParenDepth == 0 && len(stack) <= expectFuncClassStackDepth {
-				expectFuncClassBody = false
-				expectFuncClassParenDepth = 0
+			kept := funcClassFrames[:0]
+			for _, fr := range funcClassFrames {
+				if !(fr.parenDepth == 0 && len(stack) <= fr.stackDepth) {
+					kept = append(kept, fr)
+				}
 			}
+			funcClassFrames = kept
+			inClassHeritage = false
+			inModuleDecl = false
+			expectModuleString = false
+			stringIsModuleSpec = false
+			moduleSpecClosed = false
 			if expectDeclParenDepth == 0 && len(stack) <= expectDeclStackDepth {
 				expectDeclBody = false
 				expectDeclParenDepth = 0
@@ -879,6 +1020,37 @@ func isSimpleTypeName(name string) bool {
 		return true
 	}
 	return false
+}
+
+// nextSignificant returns the first significant (non-whitespace,
+// non-comment) character at or after index from, or 0 if there is
+// none. It lets keyword classification look past trivia — spaces
+// or comments between an identifier and a following ':' must not
+// change the ruling (Codex P2 on #1659: {class : 1}).
+func nextSignificant(chars []rune, from int) rune {
+	n := len(chars)
+	for j := from; j < n; j++ {
+		c := chars[j]
+		if isJSWhitespace(c) || c == '\n' {
+			continue
+		}
+		if c == '/' && j+1 < n && chars[j+1] == '/' {
+			for j < n && chars[j] != '\n' {
+				j++
+			}
+			continue
+		}
+		if c == '/' && j+1 < n && chars[j+1] == '*' {
+			j += 2
+			for j+1 < n && !(chars[j] == '*' && chars[j+1] == '/') {
+				j++
+			}
+			j++
+			continue
+		}
+		return c
+	}
+	return 0
 }
 
 func isRegexFlag(ch rune) bool {

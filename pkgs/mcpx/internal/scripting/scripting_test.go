@@ -179,6 +179,21 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"regex in default export expression", "export default /a+/.test(\"aa\") ? () => 1 : () => 0;\n"},
 		{"regex after arrow body on next line", "const f = () => {}\n/a+/.test(\"aa\");\n"},
 		{"regex after async arrow body on next line", "const f = async () => {}\n/a+/.test(\"aa\");\n"},
+		{"division after object with spaced class property", "const obj = {class : 1, x: {} / 2};\n"},
+		{"division after object with commented class property", "const obj = {class /*c*/ : 1, x: {} / 2};\n"},
+		{"regex in switch case after nullish discriminant", "switch (null ?? 1) { case 1: {} /a+/.test(\"aa\"); }\n"},
+		{"division after nested function expression in param default", "const n = function(a = function() {} / 2) {} / 2;\n"},
+		{"division after nested class expression in param default", "const n = function(a = class {} / 2) {} / 2;\n"},
+		{"regex after block following string statement", "const x = \"x\"\n{} /a+/.test(\"aa\");\n"},
+		{"regex after block following regex statement", "const x = /x/\n{} /a+/.test(\"aa\");\n"},
+		{"regex as class heritage expression", "class C extends /a+/.constructor {}\n"},
+		{"regex as class expression heritage", "const C = class extends /a+/.constructor {};\n"},
+		{"division after spread object operand", "const obj = {...{} / 2};\n"},
+		{"regex after side-effect import newline", "import \"node:fs\"\n/a+/.test(\"aa\");\n"},
+		{"regex after named import newline", "import { readFile } from \"node:fs\"\n/a+/.test(\"aa\");\n"},
+		{"regex after re-export newline", "export { readFile } from \"node:fs\"\n/a+/.test(\"aa\");\n"},
+		{"regex after prefix increment on new line", "let n = 1; n\n++/a+/.lastIndex;\n"},
+		{"division after same-line postfix increment", "let n = 4;\nconst ratio = n++ / 2;\n"},
 	}
 	for _, tc := range valid {
 		t.Run(tc.name, func(t *testing.T) {
