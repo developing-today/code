@@ -1,4 +1,5 @@
 # Summary
+<!-- id: book-summary since: pre-release -->
 
 - [Archive](archive.md)
 - [The binary](binary.md)

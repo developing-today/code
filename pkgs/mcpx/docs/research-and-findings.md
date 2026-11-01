@@ -72,6 +72,8 @@ harvest has somewhere to put things, and says so rather than padding.
 
 ## Plugins
 
+<!-- id: research-plugins since: unreleased -->
+
 - **A plugin can connect without the binary.** The connection ladder and
   `GET /v1/resolve` let the opencode plugin find or start a daemon instead
   of assuming one is installed (#44, fixed in #53). *(read-from-source —
@@ -161,6 +163,8 @@ model providers, and the credential/OAuth providers that hand out tokens.
   seed list)*
 
 ## MCP
+
+<!-- id: research-mcp since: unreleased -->
 
 - **Two protocol eras.** The protocol has a before and an after, and a
   client has to speak to both; "What 2026-07-28 actually asks of a client"
