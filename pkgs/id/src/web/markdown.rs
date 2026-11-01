@@ -1626,6 +1626,75 @@ fn effective_tight(node: &Value) -> bool {
 /// its restart (Codex review, PR #3258). If the lines found in the output
 /// do not line up one-to-one with the boundaries computed from the doc,
 /// the output is returned untouched.
+/// The fence run a rendered line opens or closes, if any: returns the
+/// fence character and the remainder of the line starting at the run.
+/// List-marker prefixes are stripped first (blockquote `>` markers and
+/// indentation, then bullet / ordered / task-checkbox markers, repeated
+/// for nested items), because a code block that is a list item's first
+/// block renders its opening fence immediately after the marker
+/// (`- ``` `). Plain lines return their own trimmed remainder.
+fn list_fence_rest(line: &str) -> Option<(char, &str)> {
+    let mut rest = line.trim_start_matches(['>', ' ']).trim_start();
+    loop {
+        let mut stripped = false;
+        for marker in ["- ", "+ ", "* ", "[ ] ", "[x] ", "[X] "] {
+            if let Some(r) = rest.strip_prefix(marker) {
+                rest = r.trim_start();
+                stripped = true;
+                break;
+            }
+        }
+        if stripped {
+            continue;
+        }
+        let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digits > 0 {
+            let after = &rest[digits..];
+            for marker in [". ", ") "] {
+                if let Some(r) = after.strip_prefix(marker) {
+                    rest = r.trim_start();
+                    stripped = true;
+                    break;
+                }
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    if rest.starts_with("```") {
+        Some(('`', rest))
+    } else if rest.starts_with("~~~") {
+        Some(('~', rest))
+    } else {
+        None
+    }
+}
+
+/// Whether a list's first item renders empty (no text, no block content
+/// beyond empty paragraphs): an empty list item cannot interrupt a
+/// paragraph under CommonMark, whatever its marker (Codex review,
+/// PR #3258: `- a\n\n1.\n2. b` saved without the blank reparsed the
+/// empty `1.` as lazy continuation text and lost the ordered list).
+fn list_starts_with_empty_item(list: &Value) -> bool {
+    let Some(first) = list["content"].as_array().and_then(|items| items.first()) else {
+        return false;
+    };
+    fn node_is_empty(node: &Value) -> bool {
+        if node["text"].as_str().is_some_and(|t| !t.trim().is_empty()) {
+            return false;
+        }
+        match node["type"].as_str() {
+            Some("paragraph" | "list_item" | "task_list_item" | "text") | None => {}
+            Some(_) => return false,
+        }
+        node["content"]
+            .as_array()
+            .is_none_or(|parts| parts.iter().all(node_is_empty))
+    }
+    node_is_empty(first)
+}
+
 fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     // Recompute with kinds: the drop decision needs them, so collect
     // (prev_kind, kind, tight_pair, merge_safe, needs_blank) tuples
@@ -1650,19 +1719,22 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
     let mut fence_len = 0usize;
     let mut is_separator: Vec<bool> = Vec::with_capacity(lines.len());
     for line in &lines {
-        let trimmed = line.trim_start_matches(['>', ' ']).trim_start();
-        let fence_marker = if trimmed.starts_with("```") {
-            Some('`')
-        } else if trimmed.starts_with("~~~") {
-            Some('~')
-        } else {
-            None
-        };
+        // Codex review, PR #3258: a fence can open immediately after a
+        // list marker (a list item whose first block is a code block
+        // renders as `- ``` `): strip any list-marker prefixes (bullet,
+        // ordered, task checkbox, nested) before looking for the fence
+        // run, or the opener is missed, the fence's literal content is
+        // counted as a separator, and the closing fence is mistaken
+        // for an opener that hides the real separator.
+        let fence_rest = list_fence_rest(line);
+        let fence_marker = fence_rest.map(|(c, _)| c);
         match fence_marker {
             Some(c) if !in_fence => {
                 in_fence = true;
                 fence_char = c;
-                fence_len = trimmed.chars().take_while(|&ch| ch == c).count();
+                fence_len = fence_rest
+                    .map(|(_, rest)| rest.chars().take_while(|&ch| ch == c).count())
+                    .unwrap_or(0);
                 is_separator.push(false);
             }
             // CodeRabbit review, PR #3258: a fence closes only on a
@@ -1673,8 +1745,10 @@ fn strip_end_list_separators(doc: &Value, output: &str) -> String {
             // (and dropped) as renderer markup, losing authored lines.
             Some(c)
                 if c == fence_char
-                    && trimmed.trim_end().chars().all(|ch| ch == c)
-                    && trimmed.trim_end().len() >= fence_len =>
+                    && fence_rest.is_some_and(|(_, rest)| {
+                        rest.trim_end().chars().all(|ch| ch == c)
+                            && rest.trim_end().len() >= fence_len
+                    }) =>
             {
                 in_fence = false;
                 is_separator.push(false);
@@ -1795,8 +1869,9 @@ fn collect_boundary_kinds(node: &Value, out: &mut Vec<(String, String, bool, boo
             // previous list does not itself render ordered, the boundary
             // must keep a blank line or the second list's first line
             // reparses as a lazy continuation of the previous item.
-            let needs_blank = matches!(ordered_start(child), Some(start) if start != 1)
-                && ordered_start(prev).is_none();
+            let needs_blank = (matches!(ordered_start(child), Some(start) if start != 1)
+                && ordered_start(prev).is_none())
+                || list_starts_with_empty_item(child);
             out.push((
                 list_kind(prev).unwrap_or_default().to_string(),
                 kind.to_string(),
@@ -3621,6 +3696,64 @@ mod tests {
             out.starts_with("- a\n1. b"),
             "the real boundary separator dropped: {out:?}"
         );
+    }
+
+    #[test]
+    fn test_end_list_literal_inside_fence_after_list_marker_survives() {
+        // Codex review on PR #3258 (P2): a list item whose first block
+        // is a fenced code block renders its opener immediately after
+        // the list marker (`- ``` `). The scanner missed that opener,
+        // counted the fence's literal separator-looking line, mistook
+        // the closing fence for an opener (hiding the real separator),
+        // and the counts still matched - so the literal was deleted.
+        // The fence content must survive and the real separator drop.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "code_block", "content": [{"type": "text", "text": "<!-- end list -->"}]}]}
+                ]},
+                {"type": "ordered_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "b"}]}]}
+                ]}
+            ]
+        });
+        let out = strip_end_list_separators(
+            &doc,
+            "- ```\n  <!-- end list -->\n  ```\n\n<!-- end list -->\n\n1. b\n",
+        );
+        assert_eq!(
+            out.matches("<!-- end list -->").count(),
+            1,
+            "only the fence's literal line remains: {out:?}"
+        );
+        assert!(
+            out.contains("- ```\n  <!-- end list -->\n  ```"),
+            "fenced code block survives verbatim: {out:?}"
+        );
+        assert!(
+            out.contains("```\n1. b"),
+            "the real boundary separator dropped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn test_adjacent_list_before_empty_first_item_keeps_blank() {
+        // Codex review on PR #3258 (P2): `- a\n\n1.\n2. b` saved
+        // without the blank line - an empty list item cannot interrupt
+        // a paragraph even when its marker starts at 1, so the empty
+        // `1.` reparsed as lazy continuation text and the ordered list
+        // was lost. The boundary keeps exactly one blank line.
+        let original = "- a\n\n1.\n2. b\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "blank kept before the empty item: {first:?}");
+        assert!(!first.contains("end list"), "no artefact: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2, "two lists survive reparse: {content:?}");
+        assert_eq!(content[1]["type"], "ordered_list");
+        assert_eq!(content[1]["content"].as_array().unwrap().len(), 2, "both ordered items survive");
     }
 
     #[test]
