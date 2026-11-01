@@ -1938,6 +1938,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "world")]
     #[test]
     fn world_names_are_bounded_and_are_a_single_path_segment() {
         for bad in [
