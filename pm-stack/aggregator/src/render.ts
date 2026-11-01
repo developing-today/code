@@ -2612,6 +2612,7 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
   // action controls after review invalidates the snapshot.
   var snapshot = null;
   var submitting = false;
+  var boundBar = null;
   function picks() { return Array.prototype.slice.call(document.querySelectorAll("input.bulkpick:checked:not(:disabled)")); }
   function bar() { return document.getElementById("bulkbar"); }
   function invalidate() {
@@ -2621,11 +2622,37 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
     b.querySelector(".bulkreview").hidden = true;
     b.querySelector(".bulkerr").textContent = "Selection or action changed after review \u2014 review the batch again before submitting.";
   }
+  function showReview(b, opts) {
+    if (!snapshot) return;
+    boundBar = b;
+    var list = b.querySelector(".bulkreview-list");
+    list.replaceChildren();
+    snapshot.items.forEach(function (it) {
+      var li = document.createElement("li");
+      li.textContent = it.title + " \u2014 " + it.object;
+      list.appendChild(li);
+    });
+    // Re-check the reviewed picks on the live cards (a fragment
+    // refresh re-renders them unchecked; the snapshot is the truth).
+    snapshot.items.forEach(function (it) {
+      var pk = document.querySelector('input.bulkpick[data-object="' + CSS.escape(it.object) + '"]');
+      if (pk && !pk.disabled) pk.checked = true;
+    });
+    var summary = b.querySelector(".bulkreview-summary");
+    if (submitting) summary.textContent = "Submitting \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + " \u2014 waiting for the result\u2026";
+    else if (opts && opts.restored) summary.textContent = "Review restored after a page refresh: \u201c" + snapshot.text + "\u201d for " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + ". Submit retries exactly this reviewed batch.";
+    else summary.textContent = "Apply \u201c" + snapshot.text + "\u201d to " + snapshot.actions.length + " item" + (snapshot.actions.length === 1 ? "" : "s") + "? Nothing is submitted yet \u2014 Submit sends exactly this reviewed list.";
+    if (!opts || !opts.keepResults) b.querySelector(".bulkresults").replaceChildren();
+    if (!opts || !opts.restored) b.querySelector(".bulkerr").textContent = "";
+    b.querySelector(".bulk-confirm-btn").disabled = submitting;
+    b.querySelector(".bulkreview").hidden = false;
+    syncBar();
+  }
   function syncBar() {
     var b = bar(); if (!b) return;
     var n = picks().length;
     b.querySelector(".bulkcount").textContent = n + " selected";
-    b.querySelector(".bulk-review-btn").disabled = n === 0;
+    b.querySelector(".bulk-review-btn").disabled = submitting || n === 0;
     var verb = b.querySelector("select[name=bulkVerb]").value;
     b.querySelector(".bulk-snooze-fields").hidden = verb !== "snooze";
     b.querySelector(".bulk-tier-fields").hidden = verb !== "escalate";
@@ -2679,19 +2706,12 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
         if (pk.dataset.object.indexOf("gh:") === 0) a.targetRef = pk.dataset.object.slice(3);
         return a;
       });
-      snapshot = { actions: actions, text: describeAction(b) };
-      var list = b.querySelector(".bulkreview-list");
-      list.replaceChildren();
-      sel.forEach(function (pk) {
-        var li = document.createElement("li");
-        li.textContent = (pk.dataset.title || pk.dataset.object) + " \u2014 " + pk.dataset.object;
-        list.appendChild(li);
-      });
-      b.querySelector(".bulkreview-summary").textContent = "Apply \u201c" + snapshot.text + "\u201d to " + actions.length + " item" + (actions.length === 1 ? "" : "s") + "? Nothing is submitted yet \u2014 Submit sends exactly this reviewed list.";
-      b.querySelector(".bulkresults").replaceChildren();
-      b.querySelector(".bulkerr").textContent = "";
-      b.querySelector(".bulk-confirm-btn").disabled = false;
-      b.querySelector(".bulkreview").hidden = false;
+      snapshot = {
+        actions: actions,
+        text: describeAction(b),
+        items: sel.map(function (pk) { return { object: pk.dataset.object, title: pk.dataset.title || pk.dataset.object }; }),
+      };
+      showReview(b, {});
     }
     if (t.classList.contains("bulk-cancel-btn")) {
       if (submitting) return;
@@ -2747,10 +2767,20 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       } catch (e) {
         // No definitive result: the snapshot (and its client tokens)
         // is kept, so Submit retries the identical envelope and the
-        // endpoint dedupes anything a lost response had recorded.
-        b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        // endpoint dedupes anything a lost response had recorded. If
+        // a fragment refresh swapped the bar mid-flight, restore the
+        // review UI on the LIVE bar first \u2014 the retry must never
+        // be stranded on a detached element.
+        var bLive = bar();
+        if (bLive && bLive !== b) {
+          showReview(bLive, { restored: true, keepResults: true });
+          b = bLive;
+        }
         submitting = false;
-        t.disabled = false;
+        b.querySelector(".bulkreview-summary").textContent = "Batch result unknown for \u201c" + batch.text + "\u201d \u2014 Submit retries exactly this reviewed batch.";
+        b.querySelector(".bulkerr").textContent = "Batch result unknown: " + e.message + " \u2014 the reviewed batch is unchanged; Submit retries it exactly, and already-recorded items dedupe by client token.";
+        var cf = b.querySelector(".bulk-confirm-btn");
+        if (cf) cf.disabled = false;
         b.querySelector(".bulk-review-btn").disabled = picks().length === 0;
         return;
       }
@@ -2758,6 +2788,19 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       // needs a fresh review, which mints fresh tokens.
       snapshot = null;
       submitting = false;
+      var bNow = bar();
+      if (bNow && bNow !== b) {
+        // The queues fragment was re-rendered mid-flight (e.g. a
+        // single-card action refreshed it): write the results into
+        // the LIVE bar, not the detached one.
+        b = bNow;
+        boundBar = bNow;
+        resultsEl = b.querySelector(".bulkresults");
+        resultsEl.replaceChildren();
+        b.querySelector(".bulkreview").hidden = false;
+        var cf2 = b.querySelector(".bulk-confirm-btn");
+        if (cf2) cf2.disabled = true;
+      }
       var failedRefs = {};
       var recorded = 0;
       var verb0 = batch.actions.length ? batch.actions[0].verb : "";
@@ -2799,6 +2842,19 @@ const BULK_SCRIPT = `<script>${DASH_AFTER_JS}
       }
     }
   });
+  // A queue fragment refresh (a Datastar swap \u2014 e.g. a single-card
+  // action while a bulk batch is in flight or awaiting retry)
+  // replaces #bulkbar wholesale. When a reviewed snapshot exists,
+  // rebuild its review UI on the new bar, so the batch and its exact
+  // retry survive the refresh instead of stranding on detached nodes.
+  boundBar = bar();
+  new MutationObserver(function () {
+    var bNow2 = bar();
+    if (!bNow2 || bNow2 === boundBar) return;
+    boundBar = bNow2;
+    if (snapshot) showReview(bNow2, { restored: true, keepResults: true });
+    else syncBar();
+  }).observe(document.documentElement, { childList: true, subtree: true });
 })();
 </script>`;
 
