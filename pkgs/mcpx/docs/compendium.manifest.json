@@ -649,6 +649,13 @@
       "note": "lessons learned while building mcpx: verification and diagnostics traps"
     },
     {
+      "path": "docs/research-and-findings.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 285,
+      "note": "the #1871 research chapter: findings by topic, provenance-tagged, with the harvesting process"
+    },
+    {
       "path": "docs/SUMMARY.md",
       "chapter": null,
       "role": "not-compendium",
