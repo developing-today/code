@@ -20,6 +20,7 @@
 //! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items) with `tight` attribute; ordered task lists also carry an `order` attribute
 //! - `task_list_item`: Task list item with `checked` attribute
 //! - `image`: Inline image with `src`, `alt`, `title` attributes
+//! - `link_reference_definition`: An unused link reference definition carried as an atom block with `label`, `url`, `title` attributes (#1004); without it comrak drops the definition on parse and it is silently deleted on save
 //! - `hard_break`: Hard line break
 //! - `text`: Text content
 //!
@@ -132,6 +133,12 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     if let Some(token) = newline_token {
         restore_attr_newlines(&mut doc, &token);
     }
+    // #1004: comrak resolves link reference definitions while parsing
+    // and emits no AST node for one that nothing references, so an
+    // unused definition would be silently deleted on save (a
+    // definitions-only document saved as an empty file). Recover them
+    // from the source and carry them as dedicated PM nodes.
+    preserve_unused_link_reference_definitions(&mut doc, markdown);
     doc
 }
 
@@ -358,6 +365,505 @@ fn escape_table_code_span_pipes(markdown: &str) -> String {
 /// parse produced it from a destination), so only those string attrs
 /// are rewritten — literal text that happens to contain the token
 /// string is untouched.
+
+// ============================================================================
+// Link reference definition preservation (#1004)
+// ============================================================================
+
+/// A link reference definition found by the source pre-scan: its label
+/// as authored (trimmed), its destination, its optional title, and the
+/// line range it occupies (for the usage scan to exclude).
+struct LinkReferenceDefinition {
+    label: String,
+    url: String,
+    title: Option<String>,
+    first_line: usize,
+    last_line: usize,
+}
+
+/// Normalize a link label for comparison: CommonMark label matching is
+/// case-insensitive and collapses internal whitespace to single spaces.
+fn normalize_link_label(label: &str) -> String {
+    label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Resolve backslash escapes the way CommonMark does: a backslash
+/// before ASCII punctuation yields the punctuation, otherwise both
+/// characters are kept.
+fn unescape_md(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(next) if next.is_ascii_punctuation() => out.push(next),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Strip blockquote markers and up to three leading spaces, repeatedly,
+/// so a definition inside a blockquote is still a candidate.
+fn strip_container_prefixes(line: &str) -> &str {
+    let mut s = line;
+    loop {
+        let mut t = s;
+        let mut spaces = 0;
+        while t.starts_with(' ') && spaces < 3 {
+            t = &t[1..];
+            spaces += 1;
+        }
+        if let Some(rest) = t.strip_prefix('>') {
+            s = rest.strip_prefix(' ').unwrap_or(rest);
+        } else {
+            return t;
+        }
+    }
+}
+
+enum TailParse {
+    Parsed { url: String, title: Option<String>, end: usize },
+    Incomplete,
+    Invalid,
+}
+
+/// Parse the destination + optional title of a link reference
+/// definition from `tail` (the text after `[label]:`, with following
+/// lines joined by `\n` when the caller retries with more). `end` is
+/// the byte offset in `tail` just past the definition.
+fn parse_link_ref_tail(tail: &str) -> TailParse {
+    let b = tail.as_bytes();
+    let mut pos = 0;
+    let skip_ws = |b: &[u8], mut pos: usize| {
+        while pos < b.len() && (b[pos] == b' ' || b[pos] == b'\t' || b[pos] == b'\n') {
+            pos += 1;
+        }
+        pos
+    };
+    pos = skip_ws(b, pos);
+    if pos >= b.len() {
+        return TailParse::Incomplete;
+    }
+    // Destination: <...> (may span lines) or a bare run with balanced
+    // parentheses.
+    let url: String;
+    if b[pos] == b'<' {
+        let mut j = pos + 1;
+        let mut close = None;
+        while j < b.len() {
+            if b[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            if b[j] == b'>' {
+                close = Some(j);
+                break;
+            }
+            if b[j] == b'<' {
+                return TailParse::Invalid;
+            }
+            j += 1;
+        }
+        let Some(close) = close else { return TailParse::Incomplete };
+        url = unescape_md(&tail[pos + 1..close]);
+        pos = close + 1;
+    } else {
+        let start = pos;
+        let mut depth = 0i32;
+        while pos < b.len() {
+            match b[pos] {
+                b'\\' => pos += 2,
+                b'(' => {
+                    depth += 1;
+                    pos += 1;
+                }
+                b')' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    pos += 1;
+                }
+                b' ' | b'\t' | b'\n' => break,
+                _ => pos += 1,
+            }
+        }
+        if pos == start {
+            return TailParse::Invalid;
+        }
+        url = unescape_md(&tail[start..pos]);
+    }
+    let after_dest = pos;
+    // Optional title, on the same line or the next one.
+    pos = skip_ws(b, pos);
+    let mut title = None;
+    if pos < b.len() && (b[pos] == b'"' || b[pos] == b'\'' || b[pos] == b'(') {
+        let opener = b[pos];
+        let closer = if opener == b'(' { b')' } else { opener };
+        let mut j = pos + 1;
+        let mut close = None;
+        while j < b.len() {
+            if b[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            if opener == b'(' && b[j] == b'(' {
+                return TailParse::Invalid;
+            }
+            if b[j] == closer {
+                close = Some(j);
+                break;
+            }
+            j += 1;
+        }
+        let Some(close) = close else { return TailParse::Incomplete };
+        title = Some(unescape_md(&tail[pos + 1..close]));
+        pos = close + 1;
+    } else {
+        // No title: the definition ends at the destination. Anything
+        // else on the destination's line is not a definition.
+        pos = after_dest;
+    }
+    // Only trailing blanks may follow on the final line.
+    let mut end = pos;
+    while end < b.len() && (b[end] == b' ' || b[end] == b'\t') {
+        end += 1;
+    }
+    if end < b.len() && b[end] != b'\n' {
+        return TailParse::Invalid;
+    }
+    TailParse::Parsed { url, title, end }
+}
+
+/// Collect the link reference definitions in `markdown`, in source
+/// order, first definition per normalized label winning (the
+/// CommonMark rule). Fenced code blocks are skipped — definition-shaped
+/// text inside a fence is literal code, not a definition.
+fn collect_link_reference_definitions(markdown: &str) -> Vec<LinkReferenceDefinition> {
+    let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
+    let line_text: Vec<&str> = lines
+        .iter()
+        .map(|l| l.strip_suffix('\n').unwrap_or(l))
+        .collect();
+    let mut defs: Vec<LinkReferenceDefinition> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let raw = line_text[i];
+        // Fence tracking, mirroring protect_newline_destinations.
+        {
+            let mut j = 0;
+            let bytes = raw.as_bytes();
+            while j < bytes.len() && bytes[j] == b' ' && j < 3 {
+                j += 1;
+            }
+            if raw[j..].starts_with("```") || raw[j..].starts_with("~~~") {
+                in_fence = !in_fence;
+                i += 1;
+                continue;
+            }
+        }
+        if in_fence {
+            i += 1;
+            continue;
+        }
+        let stripped = strip_container_prefixes(raw);
+        let Some(rest) = stripped.strip_prefix('[') else {
+            i += 1;
+            continue;
+        };
+        if rest.starts_with('^') {
+            i += 1; // footnote definition — #1565's territory
+            continue;
+        }
+        // Label: up to the first unescaped ']'.
+        let rb = rest.as_bytes();
+        let mut j = 0;
+        let mut label_end = None;
+        while j < rb.len() {
+            if rb[j] == b'\\' {
+                j += 2;
+                continue;
+            }
+            if rb[j] == b']' {
+                label_end = Some(j);
+                break;
+            }
+            if rb[j] == b'[' {
+                break;
+            }
+            j += 1;
+        }
+        let Some(label_end) = label_end else {
+            i += 1;
+            continue;
+        };
+        if rest.as_bytes().get(label_end + 1) != Some(&b':') {
+            i += 1;
+            continue;
+        }
+        let label = rest[..label_end].trim().to_string();
+        if label.is_empty() {
+            i += 1;
+            continue;
+        }
+        // Destination/title may continue onto following lines; retry
+        // with more of them while the parse is incomplete, but never
+        // across a blank line.
+        let tail0 = &rest[label_end + 2..];
+        let mut tail = tail0.to_string();
+        let mut extra = 0;
+        let parsed = loop {
+            match parse_link_ref_tail(&tail) {
+                TailParse::Parsed { url, title, end } => {
+                    break Some((url, title, tail[..end].matches('\n').count()));
+                }
+                TailParse::Incomplete if extra < 3 && i + extra + 1 < lines.len() => {
+                    let next = line_text[i + extra + 1];
+                    if next.trim().is_empty() {
+                        break None;
+                    }
+                    tail.push('\n');
+                    tail.push_str(next);
+                    extra += 1;
+                }
+                _ => break None,
+            }
+        };
+        let Some((url, title, crossed)) = parsed else {
+            i += 1;
+            continue;
+        };
+        let last_line = i + crossed;
+        let norm = normalize_link_label(&label);
+        if !seen.contains(&norm) {
+            seen.push(norm);
+            defs.push(LinkReferenceDefinition {
+                label,
+                url,
+                title,
+                first_line: i,
+                last_line,
+            });
+        }
+        i = last_line + 1;
+    }
+    defs
+}
+
+/// The normalized labels that are actually USED by a reference link or
+/// image in `markdown`. Definitions themselves, fenced code blocks and
+/// inline code spans never count as usages.
+fn link_reference_used_labels(
+    markdown: &str,
+    defs: &[LinkReferenceDefinition],
+) -> Vec<String> {
+    let chars: Vec<char> = markdown.chars().collect();
+    let mut scrub: Vec<char> = chars.clone();
+    // Char index of each line start.
+    let mut line_starts: Vec<usize> = vec![0];
+    for (idx, c) in chars.iter().enumerate() {
+        if *c == '\n' {
+            line_starts.push(idx + 1);
+        }
+    }
+    let blank = |scrub: &mut Vec<char>, from: usize, to: usize| {
+        for slot in scrub.iter_mut().take(to).skip(from) {
+            if *slot != '\n' {
+                *slot = ' ';
+            }
+        }
+    };
+    // Blank fenced code blocks and the definitions themselves.
+    let mut in_fence = false;
+    for (li, start) in line_starts.iter().enumerate() {
+        let end = if li + 1 < line_starts.len() {
+            line_starts[li + 1] - 1
+        } else {
+            chars.len()
+        };
+        let line: String = chars[*start..end].iter().collect();
+        let mut spaces = 0;
+        let mut k = 0;
+        let lb = line.as_bytes();
+        while k < lb.len() && lb[k] == b' ' && spaces < 3 {
+            k += 1;
+            spaces += 1;
+        }
+        if line[k..].starts_with("```") || line[k..].starts_with("~~~") {
+            in_fence = !in_fence;
+            blank(&mut scrub, *start, end);
+            continue;
+        }
+        if in_fence {
+            blank(&mut scrub, *start, end);
+        }
+    }
+    for def in defs {
+        let from = line_starts[def.first_line];
+        let to = if def.last_line + 1 < line_starts.len() {
+            line_starts[def.last_line + 1] - 1
+        } else {
+            chars.len()
+        };
+        blank(&mut scrub, from, to);
+    }
+    // Blank inline code spans (a backtick run closed by a run of the
+    // same length).
+    {
+        let mut i = 0;
+        while i < scrub.len() {
+            if scrub[i] != '`' {
+                i += 1;
+                continue;
+            }
+            let mut run = 0;
+            while i + run < scrub.len() && scrub[i + run] == '`' {
+                run += 1;
+            }
+            let mut j = i + run;
+            let mut closed = None;
+            while j < scrub.len() {
+                if scrub[j] == '`' {
+                    let mut r2 = 0;
+                    while j + r2 < scrub.len() && scrub[j + r2] == '`' {
+                        r2 += 1;
+                    }
+                    if r2 == run {
+                        closed = Some(j + r2);
+                        break;
+                    }
+                    j += r2;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(end) = closed {
+                blank(&mut scrub, i, end);
+                i = end;
+            } else {
+                i += run;
+            }
+        }
+    }
+    // Scan for reference usages.
+    let def_norms: Vec<String> = defs.iter().map(|d| normalize_link_label(&d.label)).collect();
+    let mut used: Vec<String> = Vec::new();
+    let mut mark_used = |used: &mut Vec<String>, norm: String| {
+        if def_norms.contains(&norm) && !used.contains(&norm) {
+            used.push(norm);
+        }
+    };
+    let mut i = 0;
+    while i < scrub.len() {
+        let is_image = scrub[i] == '!' && i + 1 < scrub.len() && scrub[i + 1] == '[';
+        if scrub[i] != '[' && !is_image {
+            i += 1;
+            continue;
+        }
+        let open = if is_image { i + 1 } else { i };
+        // Find the ']' matching this '[' (balanced, escapes honoured).
+        let mut depth = 0i32;
+        let mut j = open;
+        let mut close = None;
+        while j < scrub.len() {
+            match scrub[j] {
+                '\\' => {
+                    j += 2;
+                    continue;
+                }
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        let Some(close) = close else {
+            i = open + 1;
+            continue;
+        };
+        let inner: String = scrub[open + 1..close].iter().collect();
+        let after = close + 1;
+        if after < scrub.len() && scrub[after] == '[' {
+            // Full or collapsed reference: find its ']'.
+            let mut k = after + 1;
+            let mut close2 = None;
+            while k < scrub.len() {
+                if scrub[k] == '\\' {
+                    k += 2;
+                    continue;
+                }
+                if scrub[k] == ']' {
+                    close2 = Some(k);
+                    break;
+                }
+                k += 1;
+            }
+            if let Some(close2) = close2 {
+                let second: String = scrub[after + 1..close2].iter().collect();
+                let label = if second.trim().is_empty() { &inner } else { &second };
+                mark_used(&mut used, normalize_link_label(label));
+                i = close2 + 1;
+                continue;
+            }
+            i = after;
+            continue;
+        }
+        if after < scrub.len() && (scrub[after] == '(' || scrub[after] == ':') {
+            i = after;
+            continue;
+        }
+        // Shortcut reference: a usage only when the label is defined.
+        mark_used(&mut used, normalize_link_label(&inner));
+        i = close + 1;
+    }
+    used
+}
+
+/// Append a `link_reference_definition` PM node for every definition
+/// in `markdown` that no reference link or image uses (#1004).
+fn preserve_unused_link_reference_definitions(doc: &mut Value, markdown: &str) {
+    let defs = collect_link_reference_definitions(markdown);
+    if defs.is_empty() {
+        return;
+    }
+    let used = link_reference_used_labels(markdown, &defs);
+    if doc["content"].is_null() {
+        doc["content"] = json!([]);
+    }
+    let Some(content) = doc["content"].as_array_mut() else {
+        return;
+    };
+    for def in &defs {
+        if used.contains(&normalize_link_label(&def.label)) {
+            continue;
+        }
+        content.push(json!({
+            "type": "link_reference_definition",
+            "attrs": {
+                "label": def.label,
+                "url": def.url,
+                "title": def.title,
+            }
+        }));
+    }
+}
+
 fn restore_attr_newlines(value: &mut Value, token: &str) {
     match value {
         Value::Object(map) => {
@@ -1532,7 +2038,8 @@ fn placement_of(node_type: &str) -> Option<Placement> {
         | "ordered_list"
         | "task_list"
         | "table"
-        | "footnote_definition" => Some(Placement::Block),
+        | "footnote_definition"
+        | "link_reference_definition" => Some(Placement::Block),
         "text" | "image" | "hard_break" | "html_inline" | "footnote_reference" => {
             Some(Placement::Inline)
         }
@@ -2246,6 +2753,32 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
                 ..Default::default()
             }))
+        }
+
+        // #1004: a preserved unused link reference definition.
+        // comrak's AST has no node for an unreferenced definition, so
+        // carry the rendered definition line as an HtmlBlock: the
+        // CommonMark formatter emits the literal verbatim, and on
+        // reparse comrak consumes the line as a definition again while
+        // the parse direction's pre-scan re-synthesizes this node.
+        "link_reference_definition" => {
+            let label = json["attrs"]["label"].as_str().unwrap_or("");
+            let url = json["attrs"]["url"].as_str().unwrap_or("");
+            let dest = if url.is_empty() || url.chars().any(char::is_whitespace) {
+                format!("<{url}>")
+            } else {
+                url.to_owned()
+            };
+            let mut literal = format!("[{label}]: {dest}");
+            if let Some(title) = json["attrs"]["title"].as_str() {
+                let escaped = title.replace('\\', "\\\\").replace('"', "\\\"");
+                literal.push_str(&format!(" \"{escaped}\""));
+            }
+            literal.push('\n');
+            NodeValue::HtmlBlock(comrak::nodes::NodeHtmlBlock {
+                literal,
+                ..Default::default()
+            })
         }
 
         // #945: footnote definition block -> comrak FootnoteDefinition.
@@ -3331,6 +3864,104 @@ mod tests {
         let first = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
         let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
         (first, second)
+    }
+
+    #[test]
+    fn test_unused_link_reference_definition_survives() {
+        // #1004: comrak consumes an unreferenced definition on parse
+        // and emits no node for it, so it used to vanish on save.
+        let original = "Body text.\n\n[unused]: https://example.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let def = top
+            .iter()
+            .find(|n| n["type"] == "link_reference_definition")
+            .expect("link_reference_definition node present");
+        assert_eq!(def["attrs"]["label"], "unused");
+        assert_eq!(def["attrs"]["url"], "https://example.com");
+        assert_eq!(def["attrs"]["title"], serde_json::Value::Null);
+        let (first, second) = two_saves(original);
+        assert!(first.contains("[unused]: https://example.com"), "definition emitted: {first:?}");
+        assert_eq!(first, second, "unused definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_definitions_only_document_is_not_emptied() {
+        // #1004: a definitions-only document saved as an empty file.
+        let original = "[a]: https://a.com\n[b]: https://b.com \"Bee\"\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        let defs: Vec<&serde_json::Value> = top
+            .iter()
+            .filter(|n| n["type"] == "link_reference_definition")
+            .collect();
+        assert_eq!(defs.len(), 2, "both definitions carried: {top:?}");
+        assert_eq!(defs[1]["attrs"]["title"], "Bee");
+        let (first, second) = two_saves(original);
+        assert!(first.contains("[a]: https://a.com"), "{first:?}");
+        assert!(first.contains("[b]: https://b.com \"Bee\""), "{first:?}");
+        assert_eq!(first, second, "definitions-only round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_used_link_references_gain_no_definition_node() {
+        // Used references (full, collapsed, shortcut, reference image,
+        // several links sharing one definition) round-trip inlined
+        // exactly as before: the definition is consumed, never
+        // re-emitted, never duplicated.
+        let original = "See [full][a], [a][], [a], and ![pic][a].\n\n[a]: https://a.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        assert!(
+            top.iter().all(|n| n["type"] != "link_reference_definition"),
+            "no definition node for a used label: {top:?}"
+        );
+        let (first, second) = two_saves(original);
+        assert!(!first.contains("[a]:"), "definition not re-emitted: {first:?}");
+        assert_eq!(first.matches("https://a.com").count(), 4, "four inlined links: {first:?}");
+        assert_eq!(first, second, "used-reference round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_in_fence_not_synthesized() {
+        // Definition-shaped text inside a fenced code block is code,
+        // not a definition.
+        let original = "```\n[x]: https://x.com\n```\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        assert!(
+            top.iter().all(|n| n["type"] != "link_reference_definition"),
+            "fenced text not synthesized: {top:?}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_title_and_angle_destination() {
+        // Angle-bracket destinations (with spaces) and titles survive;
+        // a shortcut mention inside a code span is NOT a usage, so the
+        // definition is still preserved.
+        let original = "Body mentions `[t]` in code.\n\n[t]: <https://example.com/some path> \"The Title\"\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[t]: <https://example.com/some path> \"The Title\""),
+            "angle destination + title emitted: {first:?}"
+        );
+        assert_eq!(first, second, "titled definition round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_link_reference_definition_case_and_whitespace_insensitive_use() {
+        // Label matching is case-insensitive with collapsed whitespace:
+        // [My Label] is used by [my  label], so nothing is preserved.
+        let original = "See [my  label].\n\n[My Label]: https://a.com\n";
+        let doc = markdown_to_prosemirror(original);
+        let top = doc["content"].as_array().unwrap();
+        assert!(
+            top.iter().all(|n| n["type"] != "link_reference_definition"),
+            "case/whitespace variant counts as used: {top:?}"
+        );
     }
 
     #[test]

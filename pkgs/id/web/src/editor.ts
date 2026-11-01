@@ -283,6 +283,32 @@ export const richSchema = new Schema({
       // node carrying the tag verbatim in `html`; the markdown codec
       // reads/writes it. Display shows the tag as inert text — the attr
       // is never rendered via innerHTML or as live markup.
+      // #1004: unused link reference definitions, carried for the
+      // markdown codec as an atom block with label/url/title attrs
+      // (mirrors the codec's link_reference_definition node, following
+      // the #943 html_inline mirror pattern). Undeclared, Node.fromJSON
+      // would drop the node on editor load and the definition would
+      // be silently deleted on save. Rendered as inert text — the
+      // attrs are never rendered as live markup.
+      link_reference_definition: {
+        group: "block",
+        atom: true,
+        selectable: true,
+        attrs: {
+          label: { default: "" },
+          url: { default: "" },
+          title: { default: null },
+        },
+        parseDOM: [{ tag: "div[data-link-ref-def]" }],
+        toDOM(node) {
+          const title = node.attrs.title ? ` "${node.attrs.title as string}"` : "";
+          return [
+            "div",
+            { "data-link-ref-def": "" },
+            `[${node.attrs.label as string}]: ${node.attrs.url as string}${title}`,
+          ];
+        },
+      },
       html_inline: {
         inline: true,
         group: "inline",
