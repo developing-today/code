@@ -57,8 +57,18 @@ describe("class + quiet merges (design §1/§2)", () => {
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
-    expect(mergeQuiet({ start: "22:30" })).toEqual({ start: "22:30", end: "07:00", tz: "America/Chicago", enabled: true });
-    expect(mergeQuiet({ start: "9pm" })).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
+    expect(mergeQuiet({ start: "22:30" })).toEqual({
+      start: "22:30",
+      end: "07:00",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+    expect(mergeQuiet({ start: "9pm" })).toEqual({
+      start: "23:00",
+      end: "07:00",
+      tz: "America/Chicago",
+      enabled: true,
+    });
   });
   test("inQuietHours wraps midnight and honors the window edges", () => {
     const q = { start: "23:00", end: "07:00", tz: "America/Chicago" };
