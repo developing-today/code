@@ -723,10 +723,20 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<String>,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -804,10 +814,20 @@ pub enum Command {
         #[arg(long)]
         all: bool,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -890,10 +910,20 @@ pub enum Command {
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -957,10 +987,20 @@ pub enum Command {
         #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1"
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -2880,6 +2920,33 @@ mod tests {
     fn test_cli_verify() {
         // Verify CLI structure is valid
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn test_cli_rejects_first_and_last_together() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                assert!(
+                    Cli::try_parse_from(["id", "show", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "peek", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "find", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "search", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     // Tests for Show command
