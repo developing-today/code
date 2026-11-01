@@ -61,5 +61,13 @@ describe("handleLaunchFailure", () => {
     expect(msg).toBe("string failure");
     expect(calls.comments).toHaveLength(1);
     expect(calls.comments[0][2]).toContain("string failure");
+    // The note must report the cancellation's actual outcome (#2917):
+    // cancellation FAILED, the task may still be queued/claimed and
+    // needs cleanup, with the cancellation error named — and it must
+    // never claim the task was cancelled.
+    expect(calls.comments[0][2]).toContain("cancelling queue task #7 FAILED");
+    expect(calls.comments[0][2]).toContain("may still be queued or claimed and needs cleanup");
+    expect(calls.comments[0][2]).toContain("Cancellation error: queue unreachable");
+    expect(calls.comments[0][2]).not.toContain("was cancelled");
   });
 });
