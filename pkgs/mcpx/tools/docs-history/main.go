@@ -480,8 +480,20 @@ func Render(doc *Document, agent bool) string {
 			insertAfter[sec.HeaderEnd] = block
 		}
 	}
+	// A section whose frozen ID no longer matches its heading's slug
+	// (the heading was reworded) gets an explicit anchor, so history
+	// links to #<id> resolve in the rendered document.
+	insertBefore := map[int][]string{}
+	for _, sec := range doc.Sections {
+		if sec.Explicit && sec.ID != Slugify(sec.Heading) {
+			insertBefore[sec.Line] = []string{`<a id="` + sec.ID + `"></a>`}
+		}
+	}
 	var out []string
 	for i, ln := range doc.Lines {
+		if before, ok := insertBefore[i]; ok {
+			out = append(out, before...)
+		}
 		out = append(out, ln)
 		if block, ok := insertAfter[i]; ok {
 			out = append(out, block...)
@@ -642,6 +654,45 @@ func Stamp(files []string, version, date, changesDir string) error {
 		}
 	}
 
+	// A fragment target must be unambiguous across the stamped set:
+	// IDs are unqualified, so an ID living in two documents cannot be
+	// folded safely.
+	idDocs := map[string]map[string]bool{}
+	for path, doc := range docs {
+		for _, sec := range doc.Sections {
+			if idDocs[sec.ID] == nil {
+				idDocs[sec.ID] = map[string]bool{}
+			}
+			idDocs[sec.ID][path] = true
+		}
+	}
+	for _, frag := range fragments {
+		for _, id := range frag.Sections {
+			if len(idDocs[id]) > 1 {
+				return fmt.Errorf("%s: section ID %q is ambiguous across documents %v", frag.Path, id, idDocs[id])
+			}
+		}
+	}
+	// Consolidate every fragment entry per section first: two
+	// fragments naming one section produce ONE changed list, not one
+	// `changed:` key per fragment.
+	entriesBySection := map[*Section][]Change{}
+	for _, frag := range fragments {
+		for _, id := range frag.Sections {
+			sec := allIDs[id]
+			entry := Change{Version: version, Date: date, Summary: frag.Summary}
+			dup := false
+			for _, c := range append(append([]Change{}, sec.Changed...), entriesBySection[sec]...) {
+				if c == entry {
+					dup = true
+				}
+			}
+			if !dup {
+				entriesBySection[sec] = append(entriesBySection[sec], entry)
+			}
+		}
+	}
+
 	// Edits are line insertions/replacements per document, applied
 	// bottom-up so indices stay valid.
 	type edit struct {
@@ -670,36 +721,30 @@ func Stamp(files []string, version, date, changesDir string) error {
 					}
 				}
 			}
-			// Fold fragments naming this section.
-			for _, frag := range fragments {
-				for _, id := range frag.Sections {
-					if id != sec.ID {
-						continue
-					}
-					entry := Change{Version: version, Date: date, Summary: frag.Summary}
-					already := false
-					for _, c := range sec.Changed {
-						if c == entry {
-							already = true
-						}
-					}
-					if already {
-						continue // idempotent
-					}
-					if sec.KeyBlock != nil {
-						kb := sec.KeyBlock
-						if kb.ChangedKeyLine >= 0 {
-							edits = append(edits, edit{line: kb.ChangedItemLast,
-								text: []string{"  - " + entry.String()}})
-						} else {
-							edits = append(edits, edit{line: kb.End - 1,
-								text: []string{"changed:", "  - " + entry.String()}})
-						}
-					} else {
-						edits = append(edits, edit{line: sec.HeaderEnd,
-							text: []string{"<!-- changed: " + entry.String() + " -->"}})
-					}
+			// Fold the section's consolidated fragment entries in
+			// a single edit.
+			entries := entriesBySection[sec]
+			if len(entries) == 0 {
+				continue
+			}
+			var itemLines []string
+			for _, e := range entries {
+				itemLines = append(itemLines, "  - "+e.String())
+			}
+			if sec.KeyBlock != nil {
+				kb := sec.KeyBlock
+				if kb.ChangedKeyLine >= 0 {
+					edits = append(edits, edit{line: kb.ChangedItemLast, text: itemLines})
+				} else {
+					edits = append(edits, edit{line: kb.End - 1,
+						text: append([]string{"changed:"}, itemLines...)})
 				}
+			} else {
+				var comments []string
+				for _, e := range entries {
+					comments = append(comments, "<!-- changed: "+e.String()+" -->")
+				}
+				edits = append(edits, edit{line: sec.HeaderEnd, text: comments})
 			}
 		}
 		if len(edits) == 0 {
@@ -768,12 +813,26 @@ func Check(files []string, diff string, trivial bool, changesDir string) []strin
 		problems = append(problems, err.Error())
 		fragments = nil
 	}
+	// Fragment targets are unqualified IDs: an ID that lives in more
+	// than one checked document is ambiguous and cannot be folded or
+	// gated safely.
+	idDocCount := map[string]map[string]bool{}
+	for path, doc := range docs {
+		for _, sec := range doc.Sections {
+			if idDocCount[sec.ID] == nil {
+				idDocCount[sec.ID] = map[string]bool{}
+			}
+			idDocCount[sec.ID][path] = true
+		}
+	}
 	fragmented := map[string]bool{}
 	for _, frag := range fragments {
 		for _, id := range frag.Sections {
 			fragmented[id] = true
 			if !allIDs[id] && !anySlugID(docs, id) {
 				problems = append(problems, fmt.Sprintf("%s: fragment names unknown section ID %q", frag.Path, id))
+			} else if len(idDocCount[id]) > 1 {
+				problems = append(problems, fmt.Sprintf("%s: fragment target section ID %q is ambiguous across documents %v", frag.Path, id, idDocCount[id]))
 			}
 		}
 	}
@@ -816,7 +875,9 @@ func anySlugID(docs map[string]*Document, id string) bool {
 // ownerSection returns the section a (0-based) line belongs to: the
 // last section whose heading is at or before the line. A line inside
 // that section's header zone (heading, key block, compact markers)
-// is metadata, not prose, and has no owner.
+// is metadata, not prose, and has no owner. Prose between a heading
+// and a document-level key block (the lede in container.md) IS prose
+// and keeps its owner.
 func ownerSection(doc *Document, line int) *Section {
 	var cur *Section
 	for _, sec := range doc.Sections {
@@ -825,8 +886,18 @@ func ownerSection(doc *Document, line int) *Section {
 		}
 		cur = sec
 	}
-	if cur == nil || line <= cur.HeaderEnd {
+	if cur == nil || line == cur.Line {
 		return nil
+	}
+	if cur.KeyBlock != nil && line >= cur.KeyBlock.Start && line <= cur.KeyBlock.End {
+		return nil
+	}
+	if line <= cur.HeaderEnd {
+		txt := strings.TrimSpace(doc.Lines[line])
+		if txt == "" || compactRe.MatchString(txt) {
+			return nil
+		}
+		return cur // lede prose before a document-level key block
 	}
 	return cur
 }
@@ -845,6 +916,8 @@ func diffChangedLines(diff string) map[string]map[int]bool {
 	out := map[string]map[int]bool{}
 	var file string
 	newLine := 0
+	lastNew := -1
+	hunkStart := -1
 	inHunk := false
 	for _, ln := range strings.Split(diff, "\n") {
 		switch {
@@ -858,17 +931,31 @@ func diffChangedLines(diff string) map[string]map[int]bool {
 			m := hunkRe.FindStringSubmatch(ln)
 			start, _ := strconv.Atoi(m[1])
 			newLine = start - 1
+			hunkStart = newLine
+			lastNew = -1
 			inHunk = true
 			if out[file] == nil {
 				out[file] = map[int]bool{}
 			}
 		case inHunk && strings.HasPrefix(ln, "+"):
 			out[file][newLine] = true
+			lastNew = newLine
 			newLine++
 		case inHunk && strings.HasPrefix(ln, "-"):
-			// deleted line: no new-file line consumed
+			// A deleted line has no new-file position; attribute
+			// it to the nearest preceding new-file line in the
+			// hunk (or the hunk's first line), so a deletion-only
+			// prose change still needs a fragment.
+			pseudo := lastNew
+			if pseudo < 0 {
+				pseudo = hunkStart
+			}
+			if pseudo >= 0 {
+				out[file][pseudo] = true
+			}
 		case inHunk && strings.HasPrefix(ln, "\\"):
 		case inHunk:
+			lastNew = newLine
 			newLine++
 		}
 	}

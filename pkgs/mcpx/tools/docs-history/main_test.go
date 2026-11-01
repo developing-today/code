@@ -89,9 +89,9 @@ func TestMigratedBlockLeadingWithID(t *testing.T) {
 
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
-		"Session-isolated process pools":        "session-isolated-process-pools",
+		"Session-isolated process pools":      "session-isolated-process-pools",
 		"[feat(a11y): Teletypewriter](../x.md)": "feata11y-teletypewriter",
-		"~~Modes and scopes~~ — shipped":        "modes-and-scopes-shipped",
+		"~~Modes and scopes~~ — shipped":      "modes-and-scopes-shipped",
 	}
 	for in, want := range cases {
 		if got := Slugify(in); got != want {
@@ -250,6 +250,43 @@ func TestOwnerSectionChildHeaderIsNotParentProse(t *testing.T) {
 	// Line 10 is parent prose.
 	if got := ownerSection(doc, 10); got == nil || got.ID != "parent" {
 		t.Fatalf("parent prose line owned by %v, want parent", got)
+	}
+}
+
+func TestStampTwoFragmentsOneChangedList(t *testing.T) {
+	dir := t.TempDir()
+	src := "## Entry\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: entry\nsince: unreleased\nstatus: core\ndescription: d\n```\n\nProse.\n"
+	docPath := writeFile(t, dir, "docs/a.md", src)
+	writeFile(t, dir, "docs/changes/one.md", "sections: entry\nkind: Added\nsummary: first\n")
+	writeFile(t, dir, "docs/changes/two.md", "sections: entry\nkind: Fixed\nsummary: second\n")
+	if err := Stamp([]string{docPath}, "0.2.0", "2026-11-02", ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(docPath)
+	got := string(data)
+	if strings.Count(got, "changed:") != 1 {
+		t.Fatalf("want exactly one changed: key, got:\n%s", got)
+	}
+	if !strings.Contains(got, "  - 0.2.0 (2026-11-02): first\n  - 0.2.0 (2026-11-02): second") {
+		t.Fatalf("both entries should share the one list:\n%s", got)
+	}
+}
+
+func TestCheckDiffDeletionOnlyNeedsFragment(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "docs/story.md", sampleDoc)
+	diff := "diff --git a/docs/story.md b/docs/story.md\n--- a/docs/story.md\n+++ b/docs/story.md\n@@ -22,3 +22,2 @@\n Lifetime prose.\n-old line\n \n"
+	problems := Check([]string{p}, diff, false, "")
+	if !strings.Contains(strings.Join(problems, "\n"), "pools-lifetime") {
+		t.Fatalf("deletion-only change should name pools-lifetime, got %v", problems)
+	}
+}
+
+func TestRenderAnchorForRenamedSection(t *testing.T) {
+	src := "## New name\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: old-name\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): x\n```\n\nProse.\n\n## Other\n\n```\ncreated: 2026-09-25T00:00:00-05:00\nid: other\nsince: pre-release\nstatus: core\ndescription: d\nchanged:\n  - 0.2.0 (2026-11-02): y\n```\n\nMore.\n"
+	out := Render(ParseDocument("x.md", src), false)
+	if !strings.Contains(out, "<a id=\"old-name\"></a>\n## New name") {
+		t.Error("renamed section should get an explicit anchor for its frozen ID")
 	}
 }
 

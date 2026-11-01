@@ -258,6 +258,9 @@ jobs:
           if [ "${{ contains(github.event.pull_request.labels.*.name, 'docs:trivial') }}" = "true" ]; then
             trivial="--trivial"
           fi
+          if git log "origin/${{ github.base_ref }}..HEAD" --format=%B | grep -qi '^Docs-Trivial: yes'; then
+            trivial="--trivial"
+          fi
           go run ./tools/docs-history check --diff "$RUNNER_TEMP/docs.diff" $trivial docs/*.md
 
   lint:
