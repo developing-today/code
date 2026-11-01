@@ -146,8 +146,18 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
             }
         };
 
+        let mut capped = false;
         for peer in &rpc_peers {
-            all_peers.insert(peer.node_id, peer.clone());
+            if offer_peer(&mut all_peers, peer.clone(), options.max_peers) == PeerOffer::Capped {
+                capped = true;
+                break;
+            }
+        }
+        if capped {
+            tracing::warn!(
+                "peers: max-peers cap ({}) reached in RPC results; truncating",
+                options.max_peers
+            );
         }
 
         // Depth crawling via RPC
@@ -162,7 +172,13 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
             )
             .await;
             for peer in crawled {
-                all_peers.insert(peer.node_id, peer);
+                if offer_peer(&mut all_peers, peer, options.max_peers) == PeerOffer::Capped {
+                    tracing::warn!(
+                        "peers: max-peers cap ({}) reached merging crawl results; truncating",
+                        options.max_peers
+                    );
+                    break;
+                }
             }
         }
     }
@@ -173,7 +189,13 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         match gossip_peers {
             Ok(peers) => {
                 for peer in peers {
-                    all_peers.insert(peer.node_id, peer);
+                    if offer_peer(&mut all_peers, peer, options.max_peers) == PeerOffer::Capped {
+                        tracing::warn!(
+                            "peers: max-peers cap ({}) reached merging gossip results; truncating",
+                            options.max_peers
+                        );
+                        break;
+                    }
                 }
             }
             Err(e) => {
@@ -217,6 +239,40 @@ pub(crate) fn format_peer_row(peer: &PeerAnnouncement) -> String {
         "{}\t{}\t{}\t{}",
         peer.node_id, name, peer.blob_count, peer.timestamp_secs
     )
+}
+
+/// Outcome of offering one peer to a capped collection (#1765).
+#[derive(Debug, PartialEq, Eq)]
+enum PeerOffer {
+    /// New unique node ID, inserted; consumes one cap slot.
+    Added,
+    /// Known node ID: the stored announcement is refreshed in place;
+    /// updates do not consume a cap slot.
+    Updated,
+    /// New node ID refused because the collection is already at the cap.
+    Capped,
+}
+
+/// Offers `peer` to `peers`, enforcing the global `--max-peers` hard cap
+/// on unique node IDs (#1765). The cap is consulted at every insertion
+/// site — seeds, RPC responses, crawl merges, gossip collection, and the
+/// combined-mode merge in [`cmd_peers`] — so no single oversized
+/// response or announcement stream can grow a retained collection past
+/// it. A cap of 0 refuses every new peer.
+fn offer_peer(
+    peers: &mut HashMap<EndpointId, PeerAnnouncement>,
+    peer: PeerAnnouncement,
+    max_peers: usize,
+) -> PeerOffer {
+    if peers.contains_key(&peer.node_id) {
+        peers.insert(peer.node_id, peer);
+        return PeerOffer::Updated;
+    }
+    if peers.len() >= max_peers {
+        return PeerOffer::Capped;
+    }
+    peers.insert(peer.node_id, peer);
+    PeerOffer::Added
 }
 
 /// Queries the local serve instance for its peer list via RPC.
@@ -302,10 +358,20 @@ async fn crawl_peers(
     let mut visited: HashSet<EndpointId> = HashSet::new();
     let mut frontier: Vec<EndpointId> = Vec::new();
 
-    // Initialize with known peers
+    // Initialize with known peers, bounded by the cap: the frontier
+    // never holds more unique peers than the cap allows (#1765).
     for peer in initial_peers {
-        all_peers.insert(peer.node_id, peer.clone());
-        frontier.push(peer.node_id);
+        match offer_peer(&mut all_peers, peer.clone(), max_peers) {
+            PeerOffer::Added => frontier.push(peer.node_id),
+            PeerOffer::Updated => {}
+            PeerOffer::Capped => {
+                tracing::warn!(
+                    "peers: max-peers cap ({}) reached in crawl seeds; truncating",
+                    max_peers
+                );
+                break;
+            }
+        }
     }
 
     let mut current_depth = 0;
@@ -341,11 +407,21 @@ async fn crawl_peers(
             {
                 Ok(Ok(peers)) => {
                     for peer in peers {
-                        if let std::collections::hash_map::Entry::Vacant(e) =
-                            all_peers.entry(peer.node_id)
-                        {
-                            next_frontier.push(peer.node_id);
-                            e.insert(peer);
+                        let node_id = peer.node_id;
+                        match offer_peer(&mut all_peers, peer, max_peers) {
+                            PeerOffer::Added => next_frontier.push(node_id),
+                            PeerOffer::Updated => {}
+                            PeerOffer::Capped => {
+                                // Insertion stops here, including at the
+                                // final depth: warn and drop the rest of
+                                // this response (#1765).
+                                tracing::warn!(
+                                    "peers: max-peers cap ({}) reached at depth {}; truncating response",
+                                    max_peers,
+                                    current_depth
+                                );
+                                break;
+                            }
                         }
                     }
                 }
@@ -446,7 +522,12 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
             {
-                peers.insert(announcement.node_id, announcement);
+                if offer_peer(&mut peers, announcement, options.max_peers) == PeerOffer::Capped {
+                    tracing::warn!(
+                        "peers: max-peers cap ({}) reached in gossip collection; ignoring further announcements",
+                        options.max_peers
+                    );
+                }
             }
         }
     })
@@ -725,5 +806,64 @@ mod tests {
         let use_gossip = gossip || !rpc;
         assert!(use_rpc);
         assert!(use_gossip);
+    }
+
+    #[test]
+    fn test_offer_peer_over_cap_response_is_truncated() {
+        // One oversized response (#1765): only the first `cap` unique
+        // peers are retained, the rest are refused as Capped.
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        let mut capped = 0;
+        for byte in 1..=5u8 {
+            if offer_peer(&mut peers, announcement(byte, None), 3) == PeerOffer::Capped {
+                capped += 1;
+            }
+        }
+        assert_eq!(peers.len(), 3);
+        assert_eq!(capped, 2);
+    }
+
+    #[test]
+    fn test_offer_peer_zero_cap_refuses_every_new_peer() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, None), 0),
+            PeerOffer::Capped
+        );
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn test_offer_peer_duplicate_update_at_cap_consumes_no_slot() {
+        let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, Some("old")), 1),
+            PeerOffer::Added
+        );
+        // At the cap, a duplicate refreshes in place instead of being refused.
+        assert_eq!(
+            offer_peer(&mut peers, announcement(1, Some("new")), 1),
+            PeerOffer::Updated
+        );
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers.values().next().unwrap().name.as_deref(), Some("new"));
+        // ...while a genuinely new peer is still refused.
+        assert_eq!(
+            offer_peer(&mut peers, announcement(2, None), 1),
+            PeerOffer::Capped
+        );
+    }
+
+    #[tokio::test]
+    async fn test_crawl_seeds_are_bounded_by_cap() {
+        // Depth 0 performs no network queries; the returned set is the
+        // seed set, which the cap must bound (#1765).
+        let seeds: Vec<PeerAnnouncement> = (1..=5u8).map(|b| announcement(b, None)).collect();
+        let crawled = crawl_peers(&seeds, 0, 3, 1, true, true).await;
+        assert_eq!(crawled.len(), 3);
+        let uncapped = crawl_peers(&seeds, 0, 1000, 1, true, true).await;
+        assert_eq!(uncapped.len(), 5);
+        let zero = crawl_peers(&seeds, 0, 0, 1, true, true).await;
+        assert!(zero.is_empty());
     }
 }
