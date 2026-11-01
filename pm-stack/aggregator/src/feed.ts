@@ -91,10 +91,10 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** Project #4 coverage census (#1220): per-repo open-issue and
-   * gate-label counts from the collector's Search API reads, embedded
-   * beside the projects section. Absent when the collector had no
-   * GitHub token or the census failed. */
+  /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
+   * gate-label, and timestamped >90-day untouched-issue counts from the
+   * collector's Search API reads, embedded beside the projects section.
+   * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed

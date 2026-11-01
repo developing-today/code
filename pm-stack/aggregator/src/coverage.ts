@@ -1,4 +1,5 @@
-// Project #4 coverage report (#1220): pool vs backlog reality.
+// Project #4 coverage report (#1220/#1224): pool vs backlog reality and
+// timestamped repository-wide stale-issue counts.
 //
 // Backlog counts (open issues per repo, `now`/`next` gate labels) cannot
 // come from the aggregator's item resolution — the Source only resolves
@@ -24,24 +25,43 @@
 // unavailable pool never masquerades as zero coverage.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ProjectPoolItem } from "./model.ts";
+import { REPOS, type ProjectPoolItem } from "./model.ts";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const STALE_ISSUE_AGE_MS = 90 * DAY_MS;
+export const STALE_ISSUE_CENSUS_STALE_MS = 7 * DAY_MS;
+
+/** GitHub Search API query for issues untouched strictly before the 90-day cutoff. */
+export function staleIssueSearchQuery(repo: string, collectedAt: Date): string {
+  const cutoff = new Date(collectedAt.getTime() - STALE_ISSUE_AGE_MS).toISOString();
+  return `repo:${repo} is:issue is:open updated:<${cutoff}`;
+}
 
 /** One repo's backlog census, as embedded by the collector. */
 export interface RepoCensus {
   repo: string;
   /** Open issues in the repo (Search API total_count, is:issue is:open). */
-  openIssues: number;
+  openIssues: number | null;
   /** Open issues carrying the `now` gate label. */
-  gateNow: number;
+  gateNow: number | null;
   /** Open issues carrying the `next` gate label. */
-  gateNext: number;
+  gateNext: number | null;
+  /** Open issues untouched for more than 90 days; null when this query failed. */
+  staleOpenIssues?: number | null;
+  /** Time this repo's stale-issue query completed (or failed). */
+  staleIssuesCollectedAt?: string | null;
+  /** Sanitized collection error for the stale-issue query, if any. */
+  staleIssuesError?: string | null;
 }
 
-export interface RepoCoverage extends Omit<RepoCensus, "openIssues" | "gateNow" | "gateNext"> {
+export interface RepoCoverage extends Omit<RepoCensus, "openIssues" | "gateNow" | "gateNext" | "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError"> {
   /** Null when the feed carried no census for this repo. */
   openIssues: number | null;
   gateNow: number | null;
   gateNext: number | null;
+  staleOpenIssues: number | null;
+  staleIssuesCollectedAt: string | null;
+  staleIssuesError: string | null;
   /** Project #4 pool items whose linked issue/PR lives in this repo.
    * Null when the feed carried no projects section (pool unavailable). */
   poolItems: number | null;
@@ -81,10 +101,25 @@ export function isRepoCensus(v: unknown): v is RepoCensus {
   return (
     typeof r.repo === "string" &&
     r.repo.includes("/") &&
-    Number.isInteger(r.openIssues) &&
-    Number.isInteger(r.gateNow) &&
-    Number.isInteger(r.gateNext)
+    (r.openIssues === null || Number.isInteger(r.openIssues)) &&
+    (r.gateNow === null || Number.isInteger(r.gateNow)) &&
+    (r.gateNext === null || Number.isInteger(r.gateNext)) &&
+    (r.staleOpenIssues === undefined || r.staleOpenIssues === null || Number.isInteger(r.staleOpenIssues)) &&
+    (r.staleIssuesCollectedAt === undefined || r.staleIssuesCollectedAt === null ||
+      (typeof r.staleIssuesCollectedAt === "string" && Number.isFinite(Date.parse(r.staleIssuesCollectedAt)))) &&
+    (r.staleIssuesError === undefined || r.staleIssuesError === null || typeof r.staleIssuesError === "string")
   );
+}
+
+export type StaleIssueState = "current" | "stale" | "error" | "unavailable";
+
+/** The collection freshness is independent of the 90-day issue-age threshold. */
+export function staleIssueState(repo: Pick<RepoCoverage, "staleOpenIssues" | "staleIssuesCollectedAt" | "staleIssuesError">, now = new Date()): StaleIssueState {
+  if (repo.staleIssuesError) return "error";
+  if (repo.staleOpenIssues === null || !repo.staleIssuesCollectedAt) return "unavailable";
+  const collectedAt = Date.parse(repo.staleIssuesCollectedAt);
+  if (!Number.isFinite(collectedAt) || collectedAt > now.getTime()) return "unavailable";
+  return now.getTime() - collectedAt > STALE_ISSUE_CENSUS_STALE_MS ? "stale" : "current";
 }
 
 /**
@@ -111,6 +146,9 @@ export function computeCoverage(
         openIssues: null,
         gateNow: null,
         gateNext: null,
+        staleOpenIssues: null,
+        staleIssuesCollectedAt: null,
+        staleIssuesError: null,
         poolItems: pool ? 0 : null,
         poolUnsetStatus: pool ? 0 : null,
         poolUnsetArea: pool ? 0 : null,
@@ -119,11 +157,15 @@ export function computeCoverage(
     }
     return r;
   };
+  for (const repo of REPOS) row(repo);
   for (const c of census ?? []) {
     const r = row(c.repo);
     r.openIssues = c.openIssues;
     r.gateNow = c.gateNow;
     r.gateNext = c.gateNext;
+    r.staleOpenIssues = c.staleOpenIssues ?? null;
+    r.staleIssuesCollectedAt = c.staleIssuesCollectedAt ?? null;
+    r.staleIssuesError = c.staleIssuesError ?? null;
   }
   for (const p of pool ?? []) {
     const r = row(p.repo);
