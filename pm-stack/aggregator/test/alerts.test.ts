@@ -25,6 +25,8 @@ import {
   type PushSubscriptionRow,
 } from "../src/alerts.ts";
 import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
+import { renderAlerts } from "../src/render.ts";
+import type { Provenance } from "../src/model.ts";
 import { sqlInt, sqlJson, sqlStr } from "../src/supabase.ts";
 import type { Config } from "../src/config.ts";
 
@@ -353,5 +355,89 @@ describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
     expect(summary).toEqual({ subscriptions: 1, sent: 0, gone: 1, errors: 0 });
     expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" }]);
     expect(gone).toEqual([row.endpoint]);
+  });
+});
+
+describe("alerts page push panel (Drew 2026-11-01: load-order race + saved state)", () => {
+  const PROV: Provenance = {
+    board: "test",
+    roadmap: "test",
+    items: "test",
+    comments: "test",
+    quota: "test",
+    usage: "test",
+    attention: "test",
+    orchestration: "test",
+    dns: "test",
+    registry: "test",
+    aa: "test",
+  };
+  const subRow = (
+    quiet: PushSubscriptionRow["quiet"],
+    classes: Record<string, boolean> = { incident: true },
+  ): PushSubscriptionRow => ({
+    id: "11111111-2222-3333-4444-555555555555",
+    endpoint: "https://push.example.test/send/xyz",
+    p256dh: "p",
+    auth: "a",
+    classes,
+    quiet,
+    user_agent: "test",
+    created_at: "2026-11-01T00:00:00Z",
+    last_seen_at: "2026-11-01T12:00:00Z",
+    gone_count: 0,
+  });
+  const page = (subs: PushSubscriptionRow[]) =>
+    renderAlerts(
+      { available: true, incidents: [], events: [], subscriptions: subs, ackWindowMin: 15 },
+      PROV,
+      "VAPIDKEY",
+    );
+
+  test("stored quiet-hours OFF renders unchecked with the time inputs disabled (no client JS needed)", () => {
+    const html = page([subRow({ start: "22:30", end: "06:15", tz: "America/Chicago", enabled: false })]);
+    expect(html).toContain('id="push-quiet-enabled">');
+    expect(html).not.toContain('id="push-quiet-enabled" checked');
+    expect(html).toContain('id="push-quiet-start" value="22:30" disabled');
+    expect(html).toContain('id="push-quiet-end" value="06:15" disabled');
+  });
+
+  test("stored incident-class OFF renders its checkbox unchecked", () => {
+    const html = page([
+      subRow({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true }, { incident: false }),
+    ]);
+    expect(html).toContain('id="push-class-incident">');
+    expect(html).not.toContain('id="push-class-incident" checked');
+  });
+
+  test("stored quiet-hours ON renders checked with the stored window", () => {
+    const html = page([subRow({ start: "22:30", end: "06:15", tz: "America/Chicago", enabled: true })]);
+    expect(html).toContain('id="push-quiet-enabled" checked>');
+    expect(html).toContain('id="push-quiet-start" value="22:30">');
+  });
+
+  test("no subscriptions: defaults render (quiet on, 23:00-07:00)", () => {
+    const html = page([]);
+    expect(html).toContain('id="push-quiet-enabled" checked>');
+    expect(html).toContain('id="push-quiet-start" value="23:00"');
+  });
+
+  test("support is judged from the window, not from the deferred push client", () => {
+    const html = page([]);
+    expect(html).toContain("function pushSupportedHere()");
+    expect(html).toContain('"PushManager" in window');
+    expect(html).toContain("waitForPmPush");
+    expect(html).not.toContain("!window.pmPush || !window.pmPush.supported()");
+  });
+
+  test("prefs application falls back to the single stored subscription (endpoint rotation)", () => {
+    const html = page([subRow({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: false })]);
+    expect(html).toContain("SUBS.length === 1 ? SUBS[0] : null");
+  });
+
+  test("Save preferences confirms in place instead of reloading", () => {
+    const html = page([]);
+    expect(html).toContain("Saved \u2014 quiet hours off, no time-of-day limit.");
+    expect(html).not.toContain("updatePrefs(prefs()); location.reload()");
   });
 });
