@@ -725,6 +725,82 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
     crate::commands::group::log_path(path)
 }
 
+/// Builds the blob gate's folded worlds from the two sources serve has: the group
+/// log at `groups_log` for membership, and the event store's document references
+/// for which blobs each world names (#173).
+///
+/// A referenced blob that parses as a `HashSeq` contributes its children to the
+/// same world, but only when every child is present in the store — arbitrary
+/// content whose length is a multiple of 32 bytes would otherwise spray
+/// references onto hashes nobody stored. Any source that fails to read folds to
+/// empty for that source: the gate fails closed, and the next refresh retries.
+#[cfg(feature = "web")]
+async fn build_blob_gate(
+    events: &Arc<tokio::sync::Mutex<crate::local_events::LocalEvents>>,
+    store: &iroh_blobs::api::Store,
+    groups_log: &std::path::Path,
+) -> crate::blob_gate::FoldedWorlds {
+    let empty_worlds = crate::groups::worlds::Worlds::empty;
+    let worlds = match GroupLog::open(groups_log) {
+        Ok(log) => crate::blob_gate::fold_group_events(log.events()).unwrap_or_else(|error| {
+            warn!("blob gate: group log does not fold: {error}");
+            empty_worlds()
+        }),
+        Err(error) => {
+            warn!("blob gate: cannot open group log: {error}");
+            empty_worlds()
+        }
+    };
+    let references = {
+        let events = events.lock().await;
+        match events.document_references() {
+            Ok(references) => references,
+            Err(error) => {
+                warn!("blob gate: cannot read document references: {error}");
+                Vec::new()
+            }
+        }
+    };
+    // Expand HashSeq collections whose children are all in the store.
+    let mut children: std::collections::HashMap<iroh_blobs::Hash, Vec<iroh_blobs::Hash>> =
+        std::collections::HashMap::new();
+    let mut seen: std::collections::BTreeSet<iroh_blobs::Hash> = std::collections::BTreeSet::new();
+    let mut frontier: Vec<iroh_blobs::Hash> = references.iter().map(|(hash, _)| *hash).collect();
+    while let Some(hash) = frontier.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let Ok(bytes) = store.get_bytes(hash).await else {
+            continue;
+        };
+        let kids = crate::blob_gate::hashseq_children(&bytes);
+        if kids.is_empty() {
+            continue;
+        }
+        let mut all_present = true;
+        for kid in &kids {
+            match store.has(*kid).await {
+                Ok(true) => {}
+                _ => {
+                    all_present = false;
+                    break;
+                }
+            }
+        }
+        if all_present {
+            frontier.extend(kids.iter().copied());
+            children.insert(hash, kids);
+        }
+    }
+    let named = references
+        .into_iter()
+        .filter_map(|(hash, group)| group.map(|group| (hash, crate::blob_gate::world_key(&group))));
+    let index = crate::blob_gate::build_reference_index(named, |hash| {
+        children.get(hash).cloned().unwrap_or_default()
+    });
+    crate::blob_gate::FoldedWorlds::new(worlds, index)
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -846,22 +922,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Err(e) => warn!("tags: legacy metadata import failed: {e:#}"),
     }
 
-    // Build router — gossip ALPN is always registered (needed by iroh-docs),
-    // but peer discovery gossip topic only joins when gossip is enabled
-    let meta = MetaProtocol::new(
-        &store_handle,
-        Some(peer_discovery.clone()),
-        Arc::clone(&tag_store),
-        access.clone(),
-        node_id,
-    );
-    // iroh-blobs rejects pushes unless an event handler enables them; this one
-    // allows them only from nodes the access policy lets write.
-    let blobs = BlobsProtocol::new(
-        &store_handle,
-        Some(crate::access::blobs_events(access.clone())),
-    );
-
     // The node's own event store, shared between the web layer and /id-range-sync/1
     // range sync (#792). Serve opens it once, on the same directory the web
     // state would open (the `events` sibling of the identity database), and
@@ -882,6 +942,61 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(Arc::new(tokio::sync::Mutex::new(events)))
     } else {
         None
+    };
+
+    // The blob membership gate (#173). With the event store open, serve builds the
+    // gate from the group log (membership) and the store's document references
+    // (which blobs each world names), and a refresh task below keeps it current.
+    // Without the store there is no document source to index, so blob reads stay
+    // ungated this run — push-only, as before — and serve says so at startup.
+    #[cfg(feature = "web")]
+    let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = match &event_events {
+        Some(events) => {
+            let folded = build_blob_gate(
+                events,
+                &store_handle,
+                &serve_groups_log_path(groups_log.clone()),
+            )
+            .await;
+            Some(Arc::new(crate::blob_gate::RefreshingWorlds::new(folded)))
+        }
+        None => None,
+    };
+    #[cfg(not(feature = "web"))]
+    let blob_gate: Option<Arc<crate::blob_gate::RefreshingWorlds>> = None;
+    if blob_gate.is_none() {
+        warn!(
+            "blob gate (#173): inactive — the event store is only opened with the web UI, \
+             so blob reads are not membership-checked this run"
+        );
+    }
+
+    // Build router — gossip ALPN is always registered (needed by iroh-docs),
+    // but peer discovery gossip topic only joins when gossip is enabled
+    let meta = MetaProtocol::new(
+        &store_handle,
+        Some(peer_discovery.clone()),
+        Arc::clone(&tag_store),
+        access.clone(),
+        node_id,
+    );
+    // iroh-blobs rejects pushes unless an event handler enables them; this one
+    // allows them only from nodes the access policy lets write. With the blob
+    // gate built, the gate's handler decides pushes the same way and also
+    // membership-checks fetches and observes (#173).
+    let blobs = match &blob_gate {
+        Some(gate) => BlobsProtocol::new(
+            &store_handle,
+            Some(crate::blob_gate::blob_events(
+                Arc::clone(gate),
+                crate::blob_gate::BlobPolicy::default(),
+                access.clone(),
+            )),
+        ),
+        None => BlobsProtocol::new(
+            &store_handle,
+            Some(crate::access::blobs_events(access.clone())),
+        ),
     };
 
     // Every world lives in one hub, shared by the Iroh protocol and the web
@@ -1314,6 +1429,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
         status!("group warning: {}", warning.message());
     }
+    #[cfg(feature = "web")]
+    let gate_groups_log = groups_log.clone();
     let group_warning_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(GROUP_WARNING_INTERVAL);
         interval.tick().await;
@@ -1322,6 +1439,29 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now());
         }
     });
+
+    // Blob gate refresh (#173): on the same cadence as the group warnings,
+    // re-fold the group log and the document references so a removed member
+    // loses fetch and a new document becomes fetchable without a restart.
+    #[cfg(feature = "web")]
+    let blob_gate_handle = match (&blob_gate, &event_events) {
+        (Some(gate), Some(events)) => {
+            let gate = Arc::clone(gate);
+            let events = Arc::clone(events);
+            let store = store_handle.clone();
+            let groups_log = gate_groups_log;
+            Some(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(GROUP_WARNING_INTERVAL);
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let folded = build_blob_gate(&events, &store, &groups_log).await;
+                    gate.refresh(folded);
+                }
+            }))
+        }
+        _ => None,
+    };
 
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
@@ -1349,6 +1489,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     if let Some(hub) = &world_hub {
         hub.shutdown_all().await;
+    }
+    #[cfg(feature = "web")]
+    if let Some(gate_task) = blob_gate_handle {
+        gate_task.abort();
+        let _ = gate_task.await;
     }
     group_warning_handle.abort();
     let _ = group_warning_handle.await;
@@ -1689,10 +1834,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -1939,7 +2081,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
