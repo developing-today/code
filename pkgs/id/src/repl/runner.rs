@@ -587,6 +587,10 @@ struct FindArgs<'a> {
     to_file: bool,
     /// Output format: "tag", "group", or "union"
     format: &'a str,
+    /// Set when `--format` named an unknown value: the handlers surface
+    /// this error instead of letting the value reach the printers, whose
+    /// fallthrough arm would silently render it as the tag format.
+    format_error: Option<&'a str>,
     /// Return only first N matches
     first: Option<usize>,
     /// Return only last N matches
@@ -633,6 +637,7 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
         dir: None,
         to_file: false,
         format: default_format,
+        format_error: None,
         first: None,
         last: None,
         count: false,
@@ -663,7 +668,12 @@ fn parse_find_args<'a>(rest: &[&'a str], default_format: &'a str) -> FindArgs<'a
             }
         } else if arg == "--format" {
             if i + 1 < rest.len() {
-                args.format = rest[i + 1];
+                let value = rest[i + 1];
+                if matches!(value, "tag" | "group" | "union") {
+                    args.format = value;
+                } else {
+                    args.format_error = Some(value);
+                }
                 i += 1;
             }
         } else if arg == "--tag" {
@@ -732,6 +742,11 @@ async fn handle_find_command(
 ) -> Result<()> {
     let args = parse_find_args(rest, "union");
 
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
     if args.queries.is_empty() {
         println!(
             "usage: find <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
@@ -793,6 +808,11 @@ async fn handle_find_command(
 async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
     let args = parse_find_args(rest, "union");
 
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
+
     if args.queries.is_empty() {
         println!(
             "usage: search <query>... [--name] [--all] [--first [N]] [--last [N]] [--count] [--exclude PAT] [--dir <dir>] [--file] [>filename]"
@@ -844,6 +864,11 @@ async fn handle_search_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<(
 /// to stdout (or file with -o).
 async fn handle_show_command(ctx: &mut ReplContext, rest: &[&str]) -> Result<()> {
     let args = parse_find_args(rest, "union");
+
+    if let Some(bad) = args.format_error {
+        println!("error: invalid --format \"{bad}\": expected tag, group, or union");
+        return Ok(());
+    }
 
     if args.queries.is_empty() {
         println!(
@@ -1191,6 +1216,7 @@ fn parse_peek_args<'a>(rest: &[&'a str]) -> (FindArgs<'a>, PeekOptions) {
         dir: None,
         to_file: false,
         format: "union",
+        format_error: None,
         first: None,
         last: None,
         count: false,
@@ -1562,6 +1588,28 @@ mod tests {
         let rest = vec!["query", "--union"];
         let args = parse_find_args(&rest, "tag");
         assert_eq!(args.format, "union");
+    }
+
+    #[test]
+    fn test_parse_find_args_invalid_format_is_error() {
+        let rest = ["--format", "gorup", "hello"];
+        let args = parse_find_args(&rest, "union");
+        assert_eq!(args.format_error, Some("gorup"));
+        assert_eq!(args.format, "union");
+
+        let rest = ["--format", "yaml", "hello"];
+        let args = parse_find_args(&rest, "tag");
+        assert_eq!(args.format_error, Some("yaml"));
+    }
+
+    #[test]
+    fn test_parse_find_args_valid_format_is_stored() {
+        for good in ["tag", "group", "union"] {
+            let rest = ["--format", good, "hello"];
+            let args = parse_find_args(&rest, "union");
+            assert_eq!(args.format_error, None);
+            assert_eq!(args.format, good);
+        }
     }
 
     #[test]
