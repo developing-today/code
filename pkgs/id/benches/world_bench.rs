@@ -14,9 +14,12 @@
 //! The four workloads from the issue, and the surface each one measures:
 //!
 //! - `guest_replay` — replaying N committed events: `WorldCore::restore`
-//!   over a journal of N `Committed` chat events, then the restored
-//!   `replay` events are pushed through a `WorldProgram` (an in-process
-//!   counting guest). The wasm sandbox replay path is environment-gated
+//!   over a journal of N `Committed` chat events, then the journal's
+//!   committed events are pushed through a `WorldProgram` (an in-process
+//!   counting guest). (`restore` applies committed chat events to core
+//!   state without returning them in `replay`, so the guest pass iterates
+//!   the journal's committed events directly — #1403.) The wasm sandbox
+//!   replay path is environment-gated
 //!   (it needs the nix-built host), so this measures the host-side replay
 //!   pipeline every guest replay pays for; sandbox trap costs are on top.
 //! - `journal_append_fsync` — `FileJournal` append of one entry per call,
@@ -159,6 +162,22 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
             event: chat_event(seq, "replay me"),
         });
     }
+    // The guest workload: the journal's committed events, in order.
+    // restore() consumes committed chat events into core state and does
+    // NOT return them in `replay` (only Input events and journal System
+    // entries land there), so iterating `restored.replay` would push
+    // zero events through the guest and measure restore alone (#1403).
+    let committed: Vec<WorldEvent> = journal
+        .iter()
+        .filter_map(|entry| match entry {
+            JournalEntry::Committed { event } => Some(event.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        committed.len() as u64, events,
+        "journal must hold exactly the N committed chat events"
+    );
 
     let mut samples = Vec::new();
     for _ in 0..reps {
@@ -166,12 +185,17 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
         let restored = WorldCore::restore("bench-replay", WorldLimits::default(), journal.clone())
             .context("restore")?;
         let mut guest = CountingProgram::default();
-        for event in &restored.replay {
+        for event in &committed {
             guest.update(event)?;
         }
-        // Committed chat events also land in the core's retained history;
-        // count the guest pass over the full journal's events as the replay
-        // workload when restore() consumed them into core state directly.
+        // The guest must have seen every committed event: if a future
+        // change re-empties this workload the bench fails loudly instead
+        // of reporting a restore-only number as guest replay (#1403).
+        assert_eq!(
+            guest.seen, events,
+            "guest replayed {} events, expected {events}",
+            guest.seen
+        );
         samples.push(start.elapsed().as_secs_f64() * 1e6 / events as f64);
         black_box(guest.seen);
         black_box(restored.replay.len());
