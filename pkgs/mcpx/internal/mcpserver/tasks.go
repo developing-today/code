@@ -436,6 +436,9 @@ func modernTask(t Task) map[string]any {
 		"status":         t.Status,
 		"createdAt":      t.CreatedAt,
 		"lastUpdatedAt":  t.LastUpdatedAt,
+		"expiresAt":      t.ExpiresAt,
+		"lastTouched":    t.LastTouched,
+		"ttlRemainingMs": t.TTLRemainingMs,
 		"ttlMs":          t.TTL,
 		"pollIntervalMs": t.PollInterval,
 	}

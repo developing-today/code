@@ -510,6 +510,7 @@ func (s *Server) taskStore() *tasks.Store {
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
+			s.tasks.Configure(s.set.Duration("tasks.ttl"), s.set.Duration("tasks.maxAge"))
 		}
 	})
 	return s.tasks

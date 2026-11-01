@@ -263,6 +263,15 @@ func limitSettings() []Setting {
 				"Raise it if the thing collecting results runs on its own schedule.",
 		},
 		{
+			Path: "tasks.maxAge", Kind: KindDuration, Default: defaults.Str(defaults.TaskMaxAge),
+			Scope: ScopeDaemon, Hot: true,
+			Name: "Task maximum age", Short: "the absolute ceiling on a task's life, however often it is read",
+			Long: "Touch-on-read renewal (tasks.ttl) can never push a task result's " +
+				"retention past its creation plus this long. The ceiling is what keeps " +
+				"a result somebody keeps polling from living forever: renewal exists " +
+				"for a client mid-collection, not for immortality.",
+		},
+		{
 			Path: "tasks.resultWait", Kind: KindDuration, Default: defaults.Str(defaults.TaskResultWait),
 			Scope: ScopeCall, Hot: true,
 			Name: "Task result wait", Short: "how long collecting a task result blocks before giving up",

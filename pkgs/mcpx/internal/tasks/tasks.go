@@ -36,6 +36,19 @@ type Task struct {
 	StatusMessage string    `json:"statusMessage,omitempty"`
 	CreatedAt     time.Time `json:"createdAt"`
 	LastUpdatedAt time.Time `json:"lastUpdatedAt"`
+	// ExpiresAt is the effective deadline of the task under the
+	// touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
+	// the earlier of the idle deadline (lastTouched + ttl) and the
+	// absolute ceiling (createdAt + maxAge).
+	ExpiresAt time.Time `json:"expiresAt"`
+	// LastTouched is when the task was last looked at: its creation,
+	// or the latest item read that renewed it.
+	LastTouched time.Time `json:"lastTouched"`
+	// TTLRemainingMs is ExpiresAt minus the moment this representation
+	// was produced, in milliseconds, never negative. It is the shared
+	// vocabulary every expiring mcpx representation carries beside its
+	// RFC 3339 expiresAt.
+	TTLRemainingMs int64 `json:"ttlRemainingMs"`
 	// TTL is how long a finished task's result is kept, in milliseconds,
 	// measured from when the task reaches a terminal state — never from
 	// creation: a task still working when its TTL passes keeps working,
@@ -57,6 +70,33 @@ type Task struct {
 	done     chan struct{}
 	timer    *time.Timer
 	OnCancel func(ctx context.Context, reason string) `json:"-"`
+}
+
+// deadline is the effective expiry under the touch-on-read convention:
+// the earlier of the idle deadline (lastTouched + ttl) and the absolute
+// ceiling (created + maxAge). Renewal by use is the default; the ceiling
+// is what keeps an item from living forever.
+func deadline(created, lastTouched time.Time, ttl, maxAge time.Duration) time.Time {
+	d := lastTouched.Add(ttl)
+	if maxAge > 0 {
+		if ceiling := created.Add(maxAge); ceiling.Before(d) {
+			d = ceiling
+		}
+	}
+	return d
+}
+
+// refreshTTLRemaining restamps TTLRemainingMs against now.
+func (t *Task) refreshTTLRemaining(now time.Time) {
+	if t.ExpiresAt.IsZero() {
+		t.TTLRemainingMs = 0
+		return
+	}
+	ms := t.ExpiresAt.Sub(now).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
+	t.TTLRemainingMs = ms
 }
 
 // Statuses, from the specification.
@@ -86,11 +126,11 @@ func (f *Fault) Error() string { return f.Message }
 
 // Store holds running and recently finished tasks.
 type Store struct {
-	mu    sync.Mutex
-	tasks map[string]*Task
-	db    *sql.DB
-	// PollInterval is the pollInterval each new task carries. Zero means
-	// the built-in default. Set before the store is shared.
+	mu           sync.Mutex
+	tasks        map[string]*Task
+	db           *sql.DB
+	ttl          time.Duration
+	maxAge       time.Duration
 	PollInterval time.Duration
 
 	// watchers hear the id of every task whose state changed, after the
@@ -101,6 +141,22 @@ type Store struct {
 	// OnCancelHook is called when a task is cancelled to perform cooperative
 	// upstream cancellation (e.g. notifications/cancelled or process interrupt)
 	OnCancelHook func(id string, reason string)
+}
+
+// Configure sets the TTL convention's two durations, from the settings
+// registry (tasks.ttl / tasks.maxAge). A non-positive value is
+// ignored: a store nobody configured keeps the built-in defaults, and
+// a resolved set that somehow produced zero must not make tasks
+// immortal or instantly dead.
+func (s *Store) Configure(ttl, maxAge time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ttl > 0 {
+		s.ttl = ttl
+	}
+	if maxAge > 0 {
+		s.maxAge = maxAge
+	}
 }
 
 // Watch calls fn with a task's id each time its status, input requests or
