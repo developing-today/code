@@ -862,6 +862,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       }
       return view;
     },
+    async ingestSnapshots(): Promise<number> {
+      // The server's background writer tick is the landing step for
+      // collector-derived records carried by the feed. Keep this out of
+      // usage(): GETs must remain safe with a read-only snapshot store.
+      const feed = await getFeed();
+      if (!feed?.snapshots?.length) return 0;
+      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
+    },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
       // collector extracts Part (b) on the sandbox, where the sources
@@ -869,13 +877,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       // from the quota view + registry files; fixtures only when
       // neither exists. Snapshot history comes from the local store
       // (§4): the feed carries the writers' records (collector-derived
-      // plus the stewardship / check-usage outbox), and ingesting them
-      // here — append with dedupe — is the one write this reader makes.
+      // plus the stewardship / check-usage outbox); a background writer
+      // tick lands them into the local store. This reader only reads it.
       const feed = await getFeed();
       const store = new SnapshotStore(cfg.snapshotsDir);
-      if (feed?.snapshots?.length) {
-        await store.append(feed.snapshots).catch(() => 0);
-      }
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)

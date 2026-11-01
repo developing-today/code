@@ -3,7 +3,8 @@
 //   (a) the fleet-feed collector derives records from the hub sections
 //       of the feed it is about to publish (SaaS services, PAYG lines,
 //       the DNS register totals) and embeds them in the feed; the
-//       laptop aggregator ingests them into its local store.
+//       laptop aggregator's background writer tick lands them in its
+//       local store (never a page/read path).
 //   (b) stewardship-cycle, after a quota-view refresh, runs
 //       scripts/append-usage-snapshots.ts, which derives records from
 //       the same extractors (pools included) into the outbox the
