@@ -54,24 +54,65 @@
     return navigator.serviceWorker.ready;
   }
 
+  function isIOS() {
+    return (
+      /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+    );
+  }
+
+  function isStandalone() {
+    return (
+      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+      window.navigator.standalone === true
+    );
+  }
+
+  // Coded errors (Drew 2026-11-01): callers translate codes into plain
+  // words. A raw Notification.permission value or exception text must
+  // never reach the page as the message — the old build threw
+  // "notification permission: default" and the page alert()ed it.
+  function pushError(code) {
+    var e = new Error(code);
+    e.code = code;
+    return e;
+  }
+
   window.pmPush = {
     supported: function () {
       return "PushManager" in window && "Notification" in window;
+    },
+    platform: function () {
+      return { ios: isIOS(), standalone: isStandalone() };
+    },
+    permission: function () {
+      return "Notification" in window ? Notification.permission : "unsupported";
     },
     current: async function () {
       var reg = await ready();
       return reg.pushManager.getSubscription();
     },
     subscribe: async function (vapidPublicKey, prefs) {
-      var permission = await Notification.requestPermission();
-      if (permission !== "granted") throw new Error("notification permission: " + permission);
+      if (!window.pmPush.supported()) throw pushError("unsupported");
+      // The permission request happens here, synchronously downstream
+      // of the Enable tap, so the browser attributes the prompt to
+      // the user's gesture.
+      if (Notification.permission === "denied") throw pushError("denied");
+      var permission =
+        Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      if (permission === "denied") throw pushError("denied");
+      if (permission !== "granted") throw pushError("dismissed");
       var reg = await ready();
       var sub = await reg.pushManager.getSubscription();
       if (!sub) {
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
-        });
+        try {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+          });
+        } catch (e) {
+          throw pushError("subscribe-failed");
+        }
       }
       var json = sub.toJSON();
       var res = await fetch("/api/push/subscriptions", {
@@ -85,12 +126,12 @@
           userAgent: navigator.userAgent,
         }),
       });
-      if (!res.ok) throw new Error("subscription save failed: HTTP " + res.status);
+      if (!res.ok) throw pushError("save-failed");
       return sub;
     },
     updatePrefs: async function (prefs) {
       var sub = await window.pmPush.current();
-      if (!sub) throw new Error("not subscribed on this browser");
+      if (!sub) throw pushError("not-subscribed");
       var json = sub.toJSON();
       var res = await fetch("/api/push/subscriptions", {
         method: "POST",
@@ -103,7 +144,7 @@
           userAgent: navigator.userAgent,
         }),
       });
-      if (!res.ok) throw new Error("preference save failed: HTTP " + res.status);
+      if (!res.ok) throw pushError("save-failed");
     },
     unsubscribe: async function () {
       var sub = await window.pmPush.current();

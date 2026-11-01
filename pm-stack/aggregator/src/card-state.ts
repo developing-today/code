@@ -92,10 +92,7 @@ export function cardState(actions: DashAction[] | undefined, now = Date.now()): 
       for (const entry of a.payload.answers) {
         if (!isRecord(entry) || typeof entry.questionId !== "string") continue;
         const value = entry.value;
-        if (
-          typeof value === "string" ||
-          (Array.isArray(value) && value.every((item) => typeof item === "string"))
-        ) {
+        if (typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"))) {
           answered.set(entry.questionId, value);
         }
       }

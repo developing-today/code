@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildIncidentPayload,
+  buildTestPayload,
   classEnabled,
   duplicateWouldRepeatDelivery,
   incidentObjectRef,
@@ -14,12 +15,18 @@ import {
   inQuietHours,
   mergeClasses,
   mergeQuiet,
+  runAlertTick,
+  sendTestPush,
+  TEST_OBJECT_REF,
   validateNewIncident,
   validateNewSubscription,
+  type AlertsStore,
   type Incident,
+  type PushSubscriptionRow,
 } from "../src/alerts.ts";
-import { isForeignSwScript } from "../src/push.ts";
+import { isForeignSwScript, type PushOutcome, type PushTarget } from "../src/push.ts";
 import { sqlInt, sqlJson, sqlStr } from "../src/supabase.ts";
+import type { Config } from "../src/config.ts";
 
 describe("sql literals", () => {
   test("single quotes double", () => {
@@ -49,9 +56,19 @@ describe("class + quiet merges (design §1/§2)", () => {
     expect(classEnabled({ classes: { incident: true } }, "incident")).toBe(true);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
-    expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago" });
-    expect(mergeQuiet({ start: "22:30" })).toEqual({ start: "22:30", end: "07:00", tz: "America/Chicago" });
-    expect(mergeQuiet({ start: "9pm" })).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago" });
+    expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });
+    expect(mergeQuiet({ start: "22:30" })).toEqual({
+      start: "22:30",
+      end: "07:00",
+      tz: "America/Chicago",
+      enabled: true,
+    });
+    expect(mergeQuiet({ start: "9pm" })).toEqual({
+      start: "23:00",
+      end: "07:00",
+      tz: "America/Chicago",
+      enabled: true,
+    });
   });
   test("inQuietHours wraps midnight and honors the window edges", () => {
     const q = { start: "23:00", end: "07:00", tz: "America/Chicago" };
@@ -62,6 +79,22 @@ describe("class + quiet merges (design §1/§2)", () => {
     // 2026-01-15T12:59Z = 06:59 CST — inside; 13:00Z = 07:00 — outside (end exclusive).
     expect(inQuietHours(q, new Date("2026-01-15T12:59:00Z"))).toBe(true);
     expect(inQuietHours(q, new Date("2026-01-15T13:00:00Z"))).toBe(false);
+  });
+  test("quiet hours OFF survives the merge (Drew 2026-11-01: no time-of-day limit)", () => {
+    expect(mergeQuiet({ enabled: false })).toEqual({
+      start: "23:00",
+      end: "07:00",
+      tz: "America/Chicago",
+      enabled: false,
+    });
+    expect(mergeQuiet({ enabled: true }).enabled).toBe(true);
+    expect(mergeQuiet({ enabled: "no" }).enabled).toBe(true); // non-boolean ignored — stays on
+  });
+  test("inQuietHours is never true when quiet hours are disabled", () => {
+    const off = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: false };
+    // 2026-01-15T05:30Z = Jan 14 23:30 CST — dead center of the window.
+    expect(inQuietHours(off, new Date("2026-01-15T05:30:00Z"))).toBe(false);
+    expect(inQuietHours(off, new Date("2026-01-15T12:59:00Z"))).toBe(false);
   });
 });
 
@@ -145,5 +178,180 @@ describe("sw-probe foreign test (design §6)", () => {
     expect(isForeignSwScript("https://amd-6.example.ts.net/sw.js")).toBe(false);
     expect(isForeignSwScript("https://amd-6.example.ts.net/service-worker.js")).toBe(true);
     expect(isForeignSwScript("not a url")).toBe(true);
+  });
+});
+
+const tickConfig = {
+  publicOrigin: "https://alerts.example.ts.net",
+  alerts: { ackWindowMin: 30, tickMs: 60_000 },
+} as Config;
+
+function alertTickStore(
+  options: { deliveries?: Incident[]; escalations?: Incident[]; noSubscriptions?: boolean } = {},
+) {
+  const calls = {
+    delivered: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+    escalated: [] as Array<{ id: string; detail: Record<string, unknown> }>,
+    sends: [] as Array<{ outcome: string; incidentId?: string }>,
+  };
+  const store = {
+    listSubscriptions: async () =>
+      options.noSubscriptions
+        ? []
+        : [
+            {
+              id: "sub-1",
+              endpoint: "https://push.example/sub-1",
+              p256dh: "p256dh",
+              auth: "auth",
+              classes: { incident: true },
+              quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+              user_agent: null,
+              created_at: "2026-11-01T00:00:00Z",
+              last_seen_at: "2026-11-01T00:00:00Z",
+              gone_count: 0,
+            },
+          ],
+    pendingDeliveries: async () => (calls.delivered.length ? [] : (options.deliveries ?? [incident])),
+    pendingEscalations: async () => (calls.escalated.length ? [] : (options.escalations ?? [])),
+    markDelivered: async (id: string, detail: Record<string, unknown>) => {
+      calls.delivered.push({ id, detail });
+      return true;
+    },
+    markEscalated: async (id: string, detail: Record<string, unknown>) => {
+      calls.escalated.push({ id, detail });
+      return true;
+    },
+    logSend: async (entry: { outcome: string; incidentId?: string }) => {
+      calls.sends.push(entry);
+    },
+    noteSubscriptionAlive: async () => {},
+    noteSubscriptionGone: async () => "marked" as const,
+  };
+  return { store: store as unknown as AlertsStore, calls };
+}
+
+const failedSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
+  ok: false,
+  gone: false,
+  error: "push service unavailable",
+});
+const successfulSend = async (_target: PushTarget, _payload: unknown): Promise<PushOutcome> => ({
+  ok: true,
+  status: 201,
+});
+
+describe("alert tick delivery state", () => {
+  test("all-error delivery stays pending and a later successful tick marks it delivered once", async () => {
+    const { store, calls } = alertTickStore();
+
+    await runAlertTick(tickConfig, store, failedSend);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error"]);
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toHaveLength(1);
+    expect(calls.delivered[0]).toMatchObject({
+      id: incident.id,
+      detail: { subscriptions: 1, sent: 1, gone: 0, errors: 0 },
+    });
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error", "sent"]);
+  });
+
+  test("escalation also stays pending on all-error sends and marks only after success", async () => {
+    const escalation = { ...incident, delivered_at: "2026-11-01T11:00:00Z" };
+    const { store, calls } = alertTickStore({ deliveries: [], escalations: [escalation] });
+
+    await runAlertTick(tickConfig, store, failedSend);
+    expect(calls.escalated).toEqual([]);
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.escalated).toHaveLength(1);
+    expect(calls.escalated[0]).toMatchObject({
+      id: incident.id,
+      detail: { subscriptions: 1, sent: 1, gone: 0, errors: 0, ackWindowMin: 30 },
+    });
+    expect(calls.sends.map((send) => send.outcome)).toEqual(["error", "sent"]);
+  });
+
+  test("zero subscriptions leave delivery and escalation untouched", async () => {
+    const { store, calls } = alertTickStore({ noSubscriptions: true });
+
+    await runAlertTick(tickConfig, store, successfulSend);
+    expect(calls.delivered).toEqual([]);
+    expect(calls.escalated).toEqual([]);
+    expect(calls.sends).toEqual([]);
+  });
+});
+
+describe("test push (Drew 2026-11-01: the /alerts test button)", () => {
+  test("the payload is unmistakably a test and deep-links to /alerts", () => {
+    const p = buildTestPayload("https://amd-6.example.ts.net");
+    expect(p.class).toBe("test");
+    expect(p.objectRef).toBe(TEST_OBJECT_REF);
+    expect(p.url).toBe("https://amd-6.example.ts.net/alerts");
+    expect(p.title.toLowerCase()).toContain("test");
+    expect(p.body.toLowerCase()).toContain("test");
+  });
+
+  const row: PushSubscriptionRow = {
+    id: "99999999-8888-7777-6666-555555555555",
+    endpoint: "https://push.example.test/send/abc",
+    p256dh: "p",
+    auth: "a",
+    classes: { incident: true },
+    quiet: { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true },
+    user_agent: "test",
+    created_at: "2026-11-01T00:00:00Z",
+    last_seen_at: "2026-11-01T00:00:00Z",
+    gone_count: 0,
+  };
+
+  function stubStore(subs: PushSubscriptionRow[]) {
+    const sends: { class: string; objectRef: string; outcome: string }[] = [];
+    const gone: string[] = [];
+    const alive: string[] = [];
+    const store = {
+      listSubscriptions: async () => subs,
+      logSend: async (e: { class: string; objectRef: string; outcome: "sent" | "gone" | "error" }) => {
+        sends.push(e);
+      },
+      noteSubscriptionGone: async (endpoint: string) => {
+        gone.push(endpoint);
+        return "marked" as const;
+      },
+      noteSubscriptionAlive: async (endpoint: string) => {
+        alive.push(endpoint);
+      },
+    };
+    return { store, sends, gone, alive };
+  }
+
+  test("a sent test records one class 'test' sends row with outcome sent", async () => {
+    const { store, sends, alive } = stubStore([row]);
+    const summary = await sendTestPush(store, "https://amd-6.example.ts.net", async () => ({ ok: true, status: 201 }));
+    expect(summary).toEqual({ subscriptions: 1, sent: 1, gone: 0, errors: 0 });
+    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent" }]);
+    expect(alive).toEqual([row.endpoint]);
+  });
+
+  test("no subscriptions: summary is all zero and nothing is logged (the endpoint's plain-words case)", async () => {
+    const { store, sends } = stubStore([]);
+    const summary = await sendTestPush(store, "https://amd-6.example.ts.net", async () => ({ ok: true, status: 201 }));
+    expect(summary).toEqual({ subscriptions: 0, sent: 0, gone: 0, errors: 0 });
+    expect(sends).toEqual([]);
+  });
+
+  test("a gone endpoint records outcome gone and marks the subscription", async () => {
+    const { store, sends, gone } = stubStore([row]);
+    const summary = await sendTestPush(store, "https://amd-6.example.ts.net", async () => ({
+      ok: false,
+      gone: true,
+      status: 410,
+      error: "gone",
+    }));
+    expect(summary).toEqual({ subscriptions: 1, sent: 0, gone: 1, errors: 0 });
+    expect(sends).toEqual([{ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" }]);
+    expect(gone).toEqual([row.endpoint]);
   });
 });

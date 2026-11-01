@@ -12,6 +12,7 @@ Read-only. Never prints token values (only credential ids, labels, methods).
 Exit: 0 healthy, 1 violation, 2 check error.
 Usage: openai-cred-watchdog.py [path-to-opencode.db]
 """
+
 import json
 import os
 import sqlite3
@@ -88,7 +89,9 @@ def main():
         for v in violations:
             print(f"VIOLATION: {v}")
         return 1
-    print("OK: openai credential invariant holds (no token-sharing row; active methods browser/headless)")
+    print(
+        "OK: openai credential invariant holds (no token-sharing row; active methods browser/headless)"
+    )
     return 0
 
 

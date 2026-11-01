@@ -78,7 +78,13 @@ import {
   type CommentFormOpts,
 } from "./render.ts";
 import { timingSafeEqual } from "node:crypto";
-import { getAlertsStore, startAlertEngine, validateNewIncident, validateNewSubscription } from "./alerts.ts";
+import {
+  getAlertsStore,
+  sendTestPush,
+  startAlertEngine,
+  validateNewIncident,
+  validateNewSubscription,
+} from "./alerts.ts";
 import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret } from "./secrets.ts";
 import { SW_SOURCE } from "./sw-source.ts";
@@ -994,6 +1000,14 @@ async function handler(req: Request): Promise<Response> {
       }
     }
     return json({ error: "method not allowed" }, 405);
+  }
+
+  if (path === "/api/push/test") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const summary = await sendTestPush(store, cfg.publicOrigin);
+    return json(summary);
   }
 
   // --- Alert throat (#3676): incident intake + ack/close --------------

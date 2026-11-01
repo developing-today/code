@@ -834,12 +834,22 @@ test("validateNoteBody requires title, then body", () => {
   const both = validateNoteBody({});
   assert.equal(both.ok, false);
   if (!both.ok) assert.equal(both.error, "title required");
-  for (const b of [{ title: null, body: "x" }, { title: " ", body: "x" }, { title: 7, body: "x" }]) {
+  for (const b of [
+    { title: null, body: "x" },
+    { title: " ", body: "x" },
+    { title: 7, body: "x" },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "title required");
   }
-  for (const b of [{ title: "t" }, { title: "t", body: null }, { title: "t", body: "" }, { title: "t", body: "  " }, { title: "t", body: 9 }]) {
+  for (const b of [
+    { title: "t" },
+    { title: "t", body: null },
+    { title: "t", body: "" },
+    { title: "t", body: "  " },
+    { title: "t", body: 9 },
+  ]) {
     const r = validateNoteBody(b as Record<string, unknown>);
     assert.equal(r.ok, false, JSON.stringify(b));
     if (!r.ok) assert.equal(r.error, "body required");
@@ -910,10 +920,7 @@ test("crawlArchiveKey: same-millisecond derivations with distinct uniques never 
 
 test("isMachineNameConflict recognises only the machines.name UNIQUE violation (#2631)", () => {
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: machines.name")), true);
-  assert.equal(
-    isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")),
-    true,
-  );
+  assert.equal(isMachineNameConflict(new Error("D1_ERROR: UNIQUE constraint failed: machines.name")), true);
   // Other constraints and other failures stay on the 500 path.
   assert.equal(isMachineNameConflict(new Error("UNIQUE constraint failed: files.r2_key")), false);
   assert.equal(isMachineNameConflict(new Error("no such table: machines")), false);

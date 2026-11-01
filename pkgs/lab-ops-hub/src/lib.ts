@@ -377,9 +377,7 @@ export function computeBudget(by: Record<string, number>): {
 // so successful requests are unchanged; genuine operational failures
 // still fall through to the 500 path in index.ts.
 
-export type JsonObjectBody =
-  | { ok: true; body: Record<string, unknown> }
-  | { ok: false; error: string };
+export type JsonObjectBody = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
 
 export async function parseJsonObjectBody(req: Request): Promise<JsonObjectBody> {
   let parsed: unknown;

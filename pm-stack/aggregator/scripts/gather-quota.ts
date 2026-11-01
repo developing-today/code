@@ -182,16 +182,22 @@ const TURSO_SECRET_NAME = "turso.platform-api-token-muse-cli";
  * yields nothing.
  */
 async function resolveBwsSecret(key: string): Promise<string | null> {
-  const bwsCandidates = [
-    process.env.BWS_BIN,
-    join(HOME, "tools/bin/bws"),
-    join(HOME, ".local/bin/bws"),
-    "bws",
-  ].filter((d): d is string => typeof d === "string" && d !== "");
+  const bwsCandidates = [process.env.BWS_BIN, join(HOME, "tools/bin/bws"), join(HOME, ".local/bin/bws"), "bws"].filter(
+    (d): d is string => typeof d === "string" && d !== "",
+  );
   let bwsBin: string | null = null;
   for (const cand of bwsCandidates) {
-    if (!cand.includes("/")) { bwsBin = cand; break; }
-    try { await access(cand); bwsBin = cand; break; } catch { /* next */ }
+    if (!cand.includes("/")) {
+      bwsBin = cand;
+      break;
+    }
+    try {
+      await access(cand);
+      bwsBin = cand;
+      break;
+    } catch {
+      /* next */
+    }
   }
   if (!bwsBin) return null;
   const tokenFiles = [
@@ -203,8 +209,13 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   for (const f of tokenFiles) {
     try {
       const v = (await readFile(f, "utf8")).trim();
-      if (v) { accessToken = v; break; }
-    } catch { /* next */ }
+      if (v) {
+        accessToken = v;
+        break;
+      }
+    } catch {
+      /* next */
+    }
   }
   if (!accessToken) return null;
   const run = (args: string[]): Promise<string> =>
@@ -212,7 +223,11 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
       execFile(
         bwsBin as string,
         args,
-        { env: { ...process.env, BWS_ACCESS_TOKEN: accessToken as string }, maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+        {
+          env: { ...process.env, BWS_ACCESS_TOKEN: accessToken as string },
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: 30_000,
+        },
         (err, stdout) => (err ? reject(err) : resolve(stdout)),
       );
     });
@@ -244,10 +259,12 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
   });
   const token = process.env.TURSO_API_TOKEN?.trim() || (await resolveBwsSecret(TURSO_SECRET_NAME));
   if (!token) {
-    return done(entryFromTurso(null, null, {
-      measuredAt: tickIso,
-      error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
-    }));
+    return done(
+      entryFromTurso(null, null, {
+        measuredAt: tickIso,
+        error: `turso token unavailable (Bitwarden secret ${TURSO_SECRET_NAME})`,
+      }),
+    );
   }
   const base = process.env.TURSO_API_BASE ?? "https://api.turso.tech";
   const slug = process.env.TURSO_ORG_SLUG ?? "dezren39";
@@ -273,10 +290,12 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
     const subscription = (await get("/subscription")) as TursoSubscriptionDoc;
     return done(entryFromTurso(usage, subscription, { measuredAt: tickIso }));
   } catch (err) {
-    return done(entryFromTurso(null, null, {
-      measuredAt: tickIso,
-      error: err instanceof Error ? err.message : String(err),
-    }));
+    return done(
+      entryFromTurso(null, null, {
+        measuredAt: tickIso,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
   }
 }
 

@@ -473,9 +473,7 @@ export interface SubscriptionSanitization {
 export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
   if (!isRecord(v)) return false;
   return (
-    typeof v.name === "string" &&
-    typeof v.plan === "string" &&
-    (typeof v.renewsAt === "string" || v.renewsAt === null)
+    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
   );
 }
 
@@ -504,7 +502,8 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
     // (#2439): the gate has already pinned the section to array-or-
     // absent, so arrayOf cannot return null here; malformed entries
     // drop individually and well-formed siblings still surface.
-    const charges = parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
+    const charges =
+      parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
     const subs = sanitizeSubscriptions(parsed.subscriptions);
     // Charges rows get the same drop-and-count treatment at this same
     // shared gate (#2445): the section is optional, so absence stays

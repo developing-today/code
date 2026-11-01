@@ -23,10 +23,7 @@ function makeStore() {
     getItem: (k: string) => (backing.has(k) ? backing.get(k)! : null),
     setItem: (k: string, v: string) => void backing.set(k, String(v)),
   };
-  const factory = new Function(
-    "localStorage",
-    `${storeFns}; return { loadSetups, storeSetups };`,
-  ) as (ls: unknown) => {
+  const factory = new Function("localStorage", `${storeFns}; return { loadSetups, storeSetups };`) as (ls: unknown) => {
     loadSetups: () => Record<string, { tab?: string; marker?: string }>;
     storeSetups: (obj: unknown) => void;
   };

@@ -2,12 +2,7 @@
 // query pipeline behind /sessions and /api/registry.json.
 
 import { describe, expect, test } from "bun:test";
-import {
-  parseRegistryQuery,
-  queryRegistry,
-  registryQueryString,
-  type RegistryQuery,
-} from "../src/registry-view.ts";
+import { parseRegistryQuery, queryRegistry, registryQueryString, type RegistryQuery } from "../src/registry-view.ts";
 import { authorBadge, renderSessions, sessionRecordLine } from "../src/render.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 import type { SessionRecord } from "../src/model.ts";

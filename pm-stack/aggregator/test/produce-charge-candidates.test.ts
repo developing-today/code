@@ -80,7 +80,9 @@ describe("amountFromBody (#3120)", () => {
 // never throw RangeError and discard the whole candidate batch.
 describe("gmailMessageDay (#2448)", () => {
   test("the triage local day wins when present", () => {
-    expect(gmailMessageDay({ message_sent_at: { user_local: "2026-10-25T09:30:00" }, date: "garbage" })).toBe("2026-10-25");
+    expect(gmailMessageDay({ message_sent_at: { user_local: "2026-10-25T09:30:00" }, date: "garbage" })).toBe(
+      "2026-10-25",
+    );
   });
 
   test("a parseable message date is used when no local day exists", () => {

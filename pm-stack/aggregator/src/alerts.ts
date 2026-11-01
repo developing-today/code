@@ -10,7 +10,7 @@
 // external to the thing that might be down. Warnings never push in
 // v1 (page + ledger only).
 import type { Config } from "./config.ts";
-import { sendPush, type PushTarget } from "./push.ts";
+import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
 
 // --- Shapes ----------------------------------------------------------------
@@ -63,6 +63,9 @@ export interface QuietPrefs {
   start: string;
   end: string;
   tz: string;
+  /** Drew 2026-11-01: quiet hours can be turned OFF entirely — no
+   * time-of-day limit at all. Absent (older rows) reads as on. */
+  enabled?: boolean;
 }
 
 // --- Pure helpers (unit-tested) ---------------------------------------------
@@ -70,7 +73,7 @@ export interface QuietPrefs {
 /** Design §1: the incident class defaults ON for new subscriptions. */
 export const DEFAULT_CLASSES: Record<string, boolean> = { incident: true };
 /** Design §2: default quiet window 23:00–07:00 America/Chicago. */
-export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago" };
+export const DEFAULT_QUIET: QuietPrefs = { start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true };
 
 export function mergeClasses(input: unknown): Record<string, boolean> {
   const out = { ...DEFAULT_CLASSES };
@@ -89,6 +92,7 @@ export function mergeQuiet(input: unknown): QuietPrefs {
     if (typeof q.start === "string" && /^\d{2}:\d{2}$/.test(q.start)) out.start = q.start;
     if (typeof q.end === "string" && /^\d{2}:\d{2}$/.test(q.end)) out.end = q.end;
     if (typeof q.tz === "string" && q.tz.trim()) out.tz = q.tz.trim();
+    if (typeof q.enabled === "boolean") out.enabled = q.enabled;
   }
   return out;
 }
@@ -102,6 +106,7 @@ export function classEnabled(sub: { classes: Record<string, boolean> }, cls: str
  * The incident class never consults this (breakthrough class, #3676);
  * it exists for the dashboard classes of #3317. */
 export function inQuietHours(quiet: QuietPrefs, now: Date): boolean {
+  if (quiet.enabled === false) return false; // quiet hours off — no time-of-day limit
   let mins: number;
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
@@ -417,6 +422,62 @@ export class AlertsStore {
   }
 }
 
+/** The test alert (#3676 follow-up, Drew 2026-11-01): the /alerts
+ * page's "Send a test alert" button. Clearly a test in title + body;
+ * objectRef is a stable non-incident ref so the sends ledger keeps
+ * test traffic distinguishable from incident traffic. */
+export const TEST_OBJECT_REF = "test:push";
+
+export function buildTestPayload(origin: string): PushPayload {
+  return {
+    class: "test",
+    objectRef: TEST_OBJECT_REF,
+    url: `${origin}/alerts`,
+    title: "Test alert — PM Stack",
+    body: "This is a test alert from the Alerts page. Push delivery works on this device.",
+  };
+}
+
+export interface TestPushSummary {
+  subscriptions: number;
+  sent: number;
+  gone: number;
+  errors: number;
+}
+
+/**
+ * Send the test push to every current subscription, recording one
+ * notification_sends row (class 'test') per subscription. The sender
+ * is injectable so the sends-row behavior is unit-testable without a
+ * network; production uses the real Web Push sender.
+ */
+export async function sendTestPush(
+  store: Pick<AlertsStore, "listSubscriptions" | "logSend" | "noteSubscriptionGone" | "noteSubscriptionAlive">,
+  origin: string,
+  send: typeof sendPush = sendPush,
+): Promise<TestPushSummary> {
+  const payload = buildTestPayload(origin);
+  const subs = await store.listSubscriptions();
+  const summary: TestPushSummary = { subscriptions: subs.length, sent: 0, gone: 0, errors: 0 };
+  for (const sub of subs) {
+    const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
+    const outcome = await send(target, payload);
+    if (outcome.ok) {
+      summary.sent += 1;
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "sent" });
+      await store.noteSubscriptionAlive(sub.endpoint);
+    } else if (outcome.gone) {
+      summary.gone += 1;
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "gone" });
+      await store.noteSubscriptionGone(sub.endpoint);
+    } else {
+      summary.errors += 1;
+      await store.logSend({ class: "test", objectRef: TEST_OBJECT_REF, outcome: "error" });
+    }
+  }
+  return summary;
+}
+
 let storePromise: Promise<AlertsStore | null> | null = null;
 
 /** The shared store; null when the Supabase path is unavailable. */
@@ -436,18 +497,21 @@ interface DeliverySummary {
   errors: number;
 }
 
+type PushSender = (target: PushTarget, payload: unknown) => Promise<PushOutcome>;
+
 async function deliverToAll(
   store: AlertsStore,
   targets: PushSubscriptionRow[],
   incident: Incident,
   origin: string,
   escalation: boolean,
+  push: PushSender,
 ): Promise<DeliverySummary> {
   const payload = buildIncidentPayload(incident, origin, escalation);
   const summary: DeliverySummary = { subscriptions: targets.length, sent: 0, gone: 0, errors: 0 };
   for (const sub of targets) {
     const target: PushTarget = { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth };
-    const outcome = await sendPush(target, payload);
+    const outcome = await push(target, payload);
     if (outcome.ok) {
       summary.sent += 1;
       await store.logSend({
@@ -482,22 +546,34 @@ async function deliverToAll(
 /**
  * One engine tick: deliver new open criticals, then escalate unacked
  * criticals past the ack window — exactly once each (delivered_at /
- * escalated_at are the guards, set only after the sends complete).
+ * escalated_at are the guards, set only after at least one send succeeds).
  * With zero subscriptions there is nothing to deliver to, so the
  * incident stays undelivered (and unescalated) until someone
  * subscribes — a later subscription still gets the push.
  */
-export async function runAlertTick(cfg: Config, store: AlertsStore): Promise<void> {
+export async function runAlertTick(cfg: Config, store: AlertsStore, push: PushSender = sendPush): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
   if (targets.length > 0) {
     for (const incident of await store.pendingDeliveries()) {
-      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false);
-      await store.markDelivered(incident.id, { ...summary });
+      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false, push);
+      if (summary.sent > 0) {
+        await store.markDelivered(incident.id, { ...summary });
+      } else {
+        console.warn(
+          `alerts engine: delivery not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
+        );
+      }
     }
     for (const incident of await store.pendingEscalations(cfg.alerts.ackWindowMin)) {
-      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true);
-      await store.markEscalated(incident.id, { ...summary, ackWindowMin: cfg.alerts.ackWindowMin });
+      const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true, push);
+      if (summary.sent > 0) {
+        await store.markEscalated(incident.id, { ...summary, ackWindowMin: cfg.alerts.ackWindowMin });
+      } else {
+        console.warn(
+          `alerts engine: escalation not marked for incident ${incident.id} (sent=0, gone=${summary.gone}, errors=${summary.errors})`,
+        );
+      }
     }
   }
 }

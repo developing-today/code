@@ -36,13 +36,13 @@ dir — the same pattern as `comments.json` / `registry.json`
 Classes are sourced from surfaces that already exist; the engine
 invents no new detection.
 
-| Class | Source | Trigger | Recommended default |
-|---|---|---|---|
-| `needs-drew` | the full attention view (below); the `needs-drew` tier is derived in `src/derive.ts:308-324` | an item *enters* the needs-drew tier | **on** |
-| `quota-wall` | `/api/quota.json` + the quota registry | a pool reaches 100% / closed before its reset | **on** |
-| `quota-near-wall` | same | a pool crosses 85% with time left to reset | **off**, except sole-door pools (below) |
-| `stack-health` | `/api/health` section diagnoses | a stack section flips ok → failing | **on** |
-| `blocked-age` | the full attention view, item ages | a needs-drew item is still unacted after the age threshold (§5) | **digest only** (never a per-item push) |
+| Class             | Source                                                                                       | Trigger                                                         | Recommended default                     |
+| ----------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------- |
+| `needs-drew`      | the full attention view (below); the `needs-drew` tier is derived in `src/derive.ts:308-324` | an item _enters_ the needs-drew tier                            | **on**                                  |
+| `quota-wall`      | `/api/quota.json` + the quota registry                                                       | a pool reaches 100% / closed before its reset                   | **on**                                  |
+| `quota-near-wall` | same                                                                                         | a pool crosses 85% with time left to reset                      | **off**, except sole-door pools (below) |
+| `stack-health`    | `/api/health` section diagnoses                                                              | a stack section flips ok → failing                              | **on**                                  |
+| `blocked-age`     | the full attention view, item ages                                                           | a needs-drew item is still unacted after the age threshold (§5) | **digest only** (never a per-item push) |
 
 **The engine's attention source is the complete view, not the
 flat API array.** The engine runs in-process and consumes the same
@@ -59,7 +59,7 @@ carry the drewExtra entries, so external consumers see the same
 queue the HTML renders.
 
 Two rules keep `quota-*` honest against the standing quota doctrine
-(2026-10-29: pools are *supposed* to reach ~100% at reset; routine
+(2026-10-29: pools are _supposed_ to reach ~100% at reset; routine
 exhaustion is not an anomaly):
 
 - `quota-wall` fires only for a wall hit **well before** the pool's
@@ -87,7 +87,7 @@ The table above is the recommendation he is ruling on.
   subscription, evaluated in the subscription's timezone at send
   time.
 - During quiet hours, non-urgent classes (`quota-near-wall`,
-  `blocked-age`, `stack-health` *recovery* notices) are not sent;
+  `blocked-age`, `stack-health` _recovery_ notices) are not sent;
   they accumulate into **one digest notification** at window end.
   A second batch point at 12:00 collects the morning's non-urgent
   items so nothing waits a full day.
@@ -98,9 +98,9 @@ The table above is the recommendation he is ruling on.
      with no alternative route), and
   2. `blocked-age` escalation at the 48-hour step (§5) — one push,
      then back to digest.
-  `stack-health` does **not** break through: if the stack is down,
-  the engine sending the notification is the thing that is down;
-  its recovery digest reports the outage window after the fact.
+     `stack-health` does **not** break through: if the stack is down,
+     the engine sending the notification is the thing that is down;
+     its recovery digest reports the outage window after the fact.
 - Every batched digest deep-links per item (§3): the digest
   notification's payload lists each item, and the click lands on
   the attention view filtered to those refs — still never a bare
@@ -121,8 +121,8 @@ and the contract is:
   landing allowed is the §2 digest case (attention view filtered to
   the digest's refs).
 - The notification `body` always names the item in plain text (repo
-  + number or session label), so the information survives even when
-  the link cannot be opened (e.g. tailnet down, §4 branch A).
+  - number or session label), so the information survives even when
+    the link cannot be opened (e.g. tailnet down, §4 branch A).
 - Implementation acceptance per class: a test notification for each
   class lands on a view whose actions complete a triage round-trip
   (act on the item → item leaves the needs-drew tier → engine sees
@@ -140,12 +140,12 @@ and the contract is:
   store.
 - Sending is **outbound only**: the aggregator POSTs to the
   subscription's vendor push endpoint (FCM / Apple / Mozilla). No
-  inbound public route is required to *send* — this is what makes
+  inbound public route is required to _send_ — this is what makes
   branch A viable today.
 - Subscription storage: `push-subscriptions.json` in the runtime
   state dir, one record per browser installation:
   `{endpoint, keys:{p256dh, auth}, classes:{...}, quiet:{start,end,tz},
-  createdAt, lastSeenAt, goneCount}`. A 404/410 from the push
+createdAt, lastSeenAt, goneCount}`. A 404/410 from the push
   service marks the subscription gone; two consecutive gone
   responses prune it. The store follows the comments/registry
   pattern (single JSON file, atomic replace, aggregator-owned).
@@ -158,7 +158,7 @@ and the contract is:
 `127.0.0.1:4870` + the tailnet name; there is no public route
 (#1182 triage, verified at `f00dde689`).
 
-*Prerequisite — a trusted HTTPS origin.* The canonical tailnet URL
+_Prerequisite — a trusted HTTPS origin._ The canonical tailnet URL
 today is **plain HTTP** (`pm-stack/aggregator/README.md:38`:
 `http://amd-6.raptor-pumpkinseed.ts.net:4870`), and plain HTTP on a
 remote host is not a browser secure context: service workers and
@@ -185,7 +185,7 @@ origin-configurable from the start:
 
 - The page, manifest, and service worker are served from the public
   origin; the subscription POST rides Drew's Access session cookie
-  (he is logged in when he subscribes). The push *receive* path in
+  (he is logged in when he subscribes). The push _receive_ path in
   the service worker needs no Access session — pushes arrive from
   the vendor, not from our origin.
 - A click with an expired Access session redirects through the
@@ -219,10 +219,10 @@ engine is conservative by construction:
   aggregator; no new tracking of Drew is introduced.
 - **Weekly sent-vs-acted-on measure:** every send is appended to
   `notifications.jsonl` in the state dir (`{at, class, objectRef,
-  outcome}` with outcome filled when acted-on is detected). A weekly
+outcome}` with outcome filled when acted-on is detected). A weekly
   roll-up on the `/notifications` page shows, per class: sent,
   acted-on within 24h, ratio. Any class under 10% acted-on over a
-  rolling 4 weeks is *proposed* for default-off in the roll-up —
+  rolling 4 weeks is _proposed_ for default-off in the roll-up —
   a proposal on the page, never an automatic change (defaults are
   Drew's, Q1).
 
@@ -232,9 +232,9 @@ Today `/sw.js` (`src/server.ts:815-819`, `SW_KILL_SWITCH` at
 `src/server.ts:227`) serves a worker whose whole job is to
 `registration.unregister()` itself and navigate clients away: it
 exists to evict a service worker from **opencode** that was
-stranded on this origin. It unregisters *any* registration —
+stranded on this origin. It unregisters _any_ registration —
 including, if naively replaced in the wrong order, the real
-aggregator worker, and including, if naively *kept*, our worker
+aggregator worker, and including, if naively _kept_, our worker
 forever.
 
 **Decision: two-step replacement, probe-gated.**
@@ -248,7 +248,7 @@ forever.
    days of probe data show **no foreign registration** on any
    client, the stranded opencode worker is gone and slice (b)
    replaces `/sw.js` with the real worker outright. If a foreign
-   registration *is* still seen, the real worker's activate handler
+   registration _is_ still seen, the real worker's activate handler
    carries the kill switch's job forward for one release: it
    unregisters any registration whose script URL is not its own
    before claiming clients — eviction preserved, then removed in
@@ -261,22 +261,23 @@ and no release silently drops the eviction behaviour.
 ## 7. Implementation slices (filed as sub-issues of #1184)
 
 a. **PWA installability** — Tailscale Serve HTTPS mapping for the
-   aggregator (the §4 branch-A prerequisite: config + README/topology
-   docs), manifest, icons, iOS meta, install affordance; `/sw.js`
-   untouched.
+aggregator (the §4 branch-A prerequisite: config + README/topology
+docs), manifest, icons, iOS meta, install affordance; `/sw.js`
+untouched.
 b. **Web Push plumbing** — VAPID secret wiring, subscription store
-   + API, service worker push/notification-click handlers, §6
-   step-2 kill-switch migration, §4 branch-B Access deep-link
-   check (when #1182 lands).
-c. **Notification engine** — pollers over the full attention view
-   (incl. drewExtra, §1), quota, and health; class triggers per §1
-   (incl. the quota-doctrine rules), dedupe, quiet hours, batching,
-   escalation ladder, send log; extends `/api/attention.json` with
-   the drewExtra entries (§1).
-d. **Preferences + deep links** — `/notifications` page (per-class
-   toggles, quiet hours), per-class deep-link acceptance per §3.
-e. **Measurement** — weekly sent-vs-acted-on roll-up on
-   `/notifications`, default-off proposals per §5.
+
+- API, service worker push/notification-click handlers, §6
+  step-2 kill-switch migration, §4 branch-B Access deep-link
+  check (when #1182 lands).
+  c. **Notification engine** — pollers over the full attention view
+  (incl. drewExtra, §1), quota, and health; class triggers per §1
+  (incl. the quota-doctrine rules), dedupe, quiet hours, batching,
+  escalation ladder, send log; extends `/api/attention.json` with
+  the drewExtra entries (§1).
+  d. **Preferences + deep links** — `/notifications` page (per-class
+  toggles, quiet hours), per-class deep-link acceptance per §3.
+  e. **Measurement** — weekly sent-vs-acted-on roll-up on
+  `/notifications`, default-off proposals per §5.
 
 Slices a–d are the critical path (a before b before c; d with c).
 Slice e follows once sends exist to measure.
@@ -286,7 +287,7 @@ Slice e follows once sends exist to measure.
 - **Q1 — Defaults.** Is the §1 recommended default set right
   (on: needs-drew, quota-wall, stack-health; sole-door near-wall
   on; blocked-age digest-only), or should the first version ship
-  with *only* needs-drew on until the fatigue measure exists?
+  with _only_ needs-drew on until the fatigue measure exists?
 - **Q2 — Quiet hours.** Is 23:00–07:00 America/Chicago the right
   window, and is the §2 breakthrough set (sole-door quota wall,
   48h blocked-age) the right one — anything else that should wake

@@ -9,9 +9,9 @@ The file has two halves and they have different rules.
 
 **Above `<!-- table-of-contents-marker -->` is the story.** One agent, one
 prompt, one script, with the exact bytes it saw. It is the whole interface in
-one read. It is *closed by default*: fix it, do not grow it.
+one read. It is _closed by default_: fix it, do not grow it.
 
-**Below the marker is the feature list.** It is *open by default*: any commit
+**Below the marker is the feature list.** It is _open by default_: any commit
 that lands on `main` may edit an entry or add one. It grows forever and that is
 fine, because nobody reads past the part that answers their question.
 
@@ -68,10 +68,10 @@ A small addition can be a heading and two links:
 
 Anything larger opens with a key block:
 
-```markdown
+````markdown
 ## Session-isolated process pools
 
-​```
+​`
 created:      2026-09-25T18:30:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
 id:           session-isolated-process-pools
@@ -79,12 +79,12 @@ since:        pre-release
 status:       core
 tags:         area:pools, area:concurrency
 description:  one sentence, present tense, what it does
-​```
+​`
 
 Prose, examples, the reasoning that is not obvious from the code.
 
 2026-09-27T05:05:00-05:00
-```
+````
 
 Required keys: `created`, `last-updated`, `id`, `since`, `status`, `description`.
 
@@ -106,7 +106,8 @@ metadata landed, so links never break when a heading is reworded:
 
 ```markdown
 changed:
-  - 0.2.0 (2026-11-02): idle exit is now a setting
+
+- 0.2.0 (2026-11-02): idle exit is now a setting
 ```
 
 Headings without a key block use the compact comment form, directly under the
@@ -148,19 +149,19 @@ current keys are `area`, `platform`, `cost`.
 
 `status` is one word:
 
-| status | meaning |
-| --- | --- |
-| `core` | mcpx is not mcpx without it |
-| `standard` | shipped and supported |
-| `candidate` | shipped, may still change shape |
-| `alpha` / `beta` | shipped behind a flag or unstable |
-| `proposed` | wanted, not built. Say so in the prose too |
-| `partial` | some of it works; the entry says which part |
-| `deprecated` | works, will be removed. Link the replacement |
-| `broken` | known broken, not yet removed |
-| `retired` | removed. Struck through, or moved to `docs/archive.md` |
+| status                    | meaning                                                   |
+| ------------------------- | --------------------------------------------------------- |
+| `core`                    | mcpx is not mcpx without it                               |
+| `standard`                | shipped and supported                                     |
+| `candidate`               | shipped, may still change shape                           |
+| `alpha` / `beta`          | shipped behind a flag or unstable                         |
+| `proposed`                | wanted, not built. Say so in the prose too                |
+| `partial`                 | some of it works; the entry says which part               |
+| `deprecated`              | works, will be removed. Link the replacement              |
+| `broken`                  | known broken, not yet removed                             |
+| `retired`                 | removed. Struck through, or moved to `docs/archive.md`    |
 | `shipped` / `implemented` | closed proposal: built (proposals, document-level blocks) |
-| `rejected` | closed proposal: decided against |
+| `rejected`                | closed proposal: decided against                          |
 
 **Every top-level entry ends with its `last-updated` timestamp on its own
 line**, RFC 3339 with offset. It duplicates the key block on purpose: the key
