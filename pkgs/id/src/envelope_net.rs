@@ -133,25 +133,49 @@ impl ProtocolHandler for EnvelopeProtocol {
     }
 }
 
-/// Answers every frame on `conn` with the [`Reply`] `receive` gives it, until the peer stops.
+/// Answers frames sequentially on `conn` with the [`Reply`] `receive` gives it.
+/// Each stream is bounded by [`TIMEOUT`]; a timed-out stream is reset and the
+/// accept loop advances to the next stream.
 pub async fn answer_frames<F, Fut>(conn: &Connection, receive: F) -> Result<(), AcceptError>
 where
     F: Fn(Vec<u8>) -> Fut,
     Fut: Future<Output = Reply> + Send,
 {
+    answer_frames_within(conn, receive, TIMEOUT).await
+}
+
+async fn answer_frames_within<F, Fut>(
+    conn: &Connection,
+    receive: F,
+    deadline: Duration,
+) -> Result<(), AcceptError>
+where
+    F: Fn(Vec<u8>) -> Fut,
+    Fut: Future<Output = Reply> + Send,
+{
     while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-        let reply = match read_frame(&mut recv).await {
-            Ok(Some(body)) => receive(body).await,
-            Ok(None) => continue,
-            Err(error) => Reply::Refused {
-                message: format!("{error:#}"),
-            },
-        };
-        let Ok(json) = serde_json::to_vec(&reply) else {
-            continue;
-        };
-        if write_frame(&mut send, &json).await.is_ok() {
-            let _ = send.finish();
+        let timed_out = tokio::time::timeout(deadline, async {
+            let reply = match read_frame(&mut recv).await {
+                Ok(Some(body)) => receive(body).await,
+                Ok(None) => return,
+                Err(error) => Reply::Refused {
+                    message: format!("{error:#}"),
+                },
+            };
+            let Ok(json) = serde_json::to_vec(&reply) else {
+                return;
+            };
+            if write_frame(&mut send, &json).await.is_ok() {
+                let _ = send.finish();
+            }
+        })
+        .await
+        .is_err();
+        if timed_out {
+            // `read_frame` is not cancel-safe. Abandon both halves rather
+            // than attempting to reuse a partially consumed stream.
+            let _ = send.reset(0_u32.into());
+            let _ = recv.stop(0_u32.into());
         }
     }
     Ok(())
@@ -269,6 +293,30 @@ mod tests {
                     Reply::Applied
                 }
             })
+            .await
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct DeadlineCaptureFrames {
+        frames: Arc<Mutex<Vec<Vec<u8>>>>,
+        deadline: Duration,
+    }
+
+    impl ProtocolHandler for DeadlineCaptureFrames {
+        async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
+            let frames = self.frames.clone();
+            answer_frames_within(
+                &conn,
+                move |body| {
+                    let frames = frames.clone();
+                    async move {
+                        frames.lock().await.push(body);
+                        Reply::Applied
+                    }
+                },
+                self.deadline,
+            )
             .await
         }
     }
@@ -478,6 +526,59 @@ mod tests {
             deliver(&client, gone_id, &envelope).await,
             Outcome::Retry(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_partial_frame_times_out_before_the_next_stream_is_answered() {
+        let server = endpoint().await;
+        let client = endpoint().await;
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let router = Router::builder(server.clone())
+            .accept(
+                ENVELOPE_ALPN,
+                DeadlineCaptureFrames {
+                    frames: frames.clone(),
+                    deadline: Duration::from_millis(100),
+                },
+            )
+            .spawn();
+        let conn = connect(&client, loopback_addr(&server), ENVELOPE_ALPN)
+            .await
+            .unwrap();
+
+        let (mut first_send, mut first_recv) = conn.open_bi().await.unwrap();
+        first_send.write_all(&[0, 0]).await.unwrap();
+
+        let (mut second_send, mut second_recv) = conn.open_bi().await.unwrap();
+        write_frame(&mut second_send, b"valid second frame")
+            .await
+            .unwrap();
+        second_send.finish().unwrap();
+
+        let second_reply = tokio::time::timeout(Duration::from_secs(2), async {
+            let frame = read_frame(&mut second_recv).await.unwrap().unwrap();
+            serde_json::from_slice::<Reply>(&frame).unwrap()
+        })
+        .await
+        .expect("second stream should be answered after the first times out");
+        assert!(matches!(second_reply, Reply::Applied));
+        assert_eq!(
+            frames.lock().await.as_slice(),
+            &[b"valid second frame".to_vec()]
+        );
+
+        let first_reply =
+            tokio::time::timeout(Duration::from_secs(1), first_recv.read_to_end(16)).await;
+        assert!(
+            matches!(first_reply, Ok(Err(_))),
+            "first stream should be reset"
+        );
+
+        drop(first_send);
+        conn.close(0_u32.into(), b"done");
+        client.close().await;
+        server.close().await;
+        router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
