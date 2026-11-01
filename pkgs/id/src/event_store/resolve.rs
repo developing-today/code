@@ -14,19 +14,36 @@
 //! 3. **Content.** Any other event applies, unless it names a voided event and its author is not a
 //!    member of its group at its position. A group with no create has no authority to lose, so its
 //!    content always applies. Content is kept on removal, as the content policy says.
+//! 4. **Group policy (Phase 2, #168).** The membership layer alone does not know the group rules
+//!    that live in [`crate::groups::fold`]: only an Admin may change a role or remove an Admin, a
+//!    create may not list its author or repeat a member, and a manager acts only through a chain
+//!    from an owner. So every group operation that can be bridged into the fold's event model is
+//!    folded with the rest, and an operation the fold refuses with a voiding reason does not
+//!    apply, however the membership layer judged it. Refusals that only wait (a group that does
+//!    not exist yet, an author not yet active) or freeze do not change the membership verdict:
+//!    the store's set may simply not hold the events the fold would need. The fold's projection
+//!    also gives the roster of a group it decided, so a refused operation's target never shows
+//!    as a member. Operations the bridge cannot represent (a create or an operation naming a
+//!    group as a member, friendship and policy bodies the body codec does not carry) keep the
+//!    membership verdict alone; the fold judges them when they travel as group events.
 //!
 //! A voided event stays stored. Its author's later events do not wait on it, and they are judged
 //! by the same rules. That is why an honest author never stalls on another author's removal.
 
 use std::collections::{HashMap, HashSet};
 
-use p2panda_auth::group::GroupAction;
+use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum};
 use redb::ReadableTable;
 
 use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::chain::Event;
+use crate::groups::{
+    Body as GroupBody, Create as GroupCreate, Event as GroupEvent, MemberOp, Policy, Projection,
+    Role as GroupRole, Template,
+};
 use crate::membership::{AuthId, CausalEvent, Membership, Role};
+use crate::rejection::Reason;
 use crate::waiting::AuthorKey;
 
 /// One stored event, with the membership action it carries when it is a group operation.
@@ -42,6 +59,8 @@ pub(super) struct Resolved {
     pub applied: HashSet<Hash>,
     /// The membership layer over the events, or `None` when there is no group operation.
     pub membership: Option<Membership>,
+    /// The group fold over the bridged group operations, or `None` when no operation bridged.
+    pub projection: Option<Projection>,
 }
 
 /// One event, or one fork proof header, as the resolution sees it.
@@ -156,10 +175,182 @@ pub(super) fn resolve(
         }
     }
 
+    // Pass three: the group policy gate (#168). An operation the fold refuses with a voiding
+    // reason does not apply, even when the membership layer let it through. The projection is
+    // kept on the result: it decides the roster of every group it folded.
+    let projection = fold_projection(&nodes);
+    if let Some(projection) = &projection {
+        for node in &nodes {
+            if node.action.is_none() || node.excluded {
+                continue;
+            }
+            if projection
+                .outcome(&node.id)
+                .and_then(|outcome| outcome.reason())
+                == Some(Reason::Voided)
+            {
+                applied.remove(&node.id);
+            }
+        }
+    }
+
     Ok(Resolved {
         applied,
         membership,
+        projection,
     })
+}
+
+/// The fold over the store's group operations, bridged into the group layer's event model.
+///
+/// A create becomes a group create under the custom template with the default policy record —
+/// the record a signed store body cannot carry yet — and an add, remove, promote or demote
+/// becomes the member operation with the same member and access. An operation naming a group
+/// as its member has no group-event form, and a create that does not list its author has no
+/// agreed form (see [`bridge`]), so both are left out and keep the membership verdict.
+/// A bridged event names as its `after` the bridged operations it causally follows, reached
+/// through any stored events in between, because the fold requires every named dependency to
+/// be in its set. A fold that cannot judge the set (it reports an error) gates nothing: the
+/// membership verdict stands rather than the store refusing every event it holds.
+fn fold_projection(nodes: &[Node]) -> Option<Projection> {
+    let position: HashMap<Hash, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id, index))
+        .collect();
+    let mut bridged: HashMap<Hash, GroupEvent> = HashMap::new();
+    for node in nodes {
+        if node.excluded {
+            continue;
+        }
+        if let Some(event) = bridge(node) {
+            bridged.insert(node.id, event);
+        }
+    }
+    if bridged.is_empty() {
+        return None;
+    }
+    let bridged_ids: HashSet<Hash> = bridged.keys().copied().collect();
+    let mut events: Vec<GroupEvent> = Vec::with_capacity(bridged.len());
+    for node in nodes {
+        let Some(mut event) = bridged.remove(&node.id) else {
+            continue;
+        };
+        event.after = bridged_after(node, nodes, &position, &bridged_ids);
+        events.push(event);
+    }
+    crate::groups::fold(&events).ok()
+}
+
+/// The bridged operations `node` causally follows: walk its `after` links through every stored
+/// node, collecting bridged operations and passing through anything else (content, fork proof
+/// headers, operations that did not bridge), so causal reachability between bridged operations
+/// is preserved exactly.
+fn bridged_after(
+    node: &Node,
+    nodes: &[Node],
+    position: &HashMap<Hash, usize>,
+    bridged: &HashSet<Hash>,
+) -> Vec<Hash> {
+    let mut found: Vec<Hash> = Vec::new();
+    let mut seen: HashSet<Hash> = HashSet::new();
+    let mut stack: Vec<Hash> = node.after.clone();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if bridged.contains(&id) {
+            found.push(id);
+            continue;
+        }
+        if let Some(&index) = position.get(&id) {
+            stack.extend(nodes[index].after.iter().copied());
+        }
+    }
+    found
+}
+
+/// One stored group operation as a group event, or `None` when it has no group-event form.
+fn bridge(node: &Node) -> Option<GroupEvent> {
+    let action = node.action.as_ref()?;
+    let body = match action {
+        GroupAction::Create { initial_members } => {
+            if node.group.is_some() {
+                return None;
+            }
+            // The two models name the creator differently: the membership layer knows the
+            // creator only when the create lists it, while the fold counts the creator as a
+            // member (and Admin) by construction and refuses a create that names it. Bridge
+            // only a create that lists its author — the form both models agree on — and drop
+            // the author's entry for the fold.
+            let mut members = Vec::with_capacity(initial_members.len());
+            let mut author_listed = false;
+            for (member, access) in initial_members {
+                let key = member_key(member)?;
+                if key == node.author {
+                    author_listed = true;
+                    continue;
+                }
+                members.push((key, role_of(access)));
+            }
+            if !author_listed {
+                return None;
+            }
+            GroupBody::Create(GroupCreate {
+                template: Template::Custom,
+                policy: Policy::default(),
+                members,
+                admins_on_create: false,
+            })
+        }
+        GroupAction::Add { member, access } => GroupBody::Member(MemberOp::Add {
+            member: member_key(member)?,
+            role: role_of(access),
+        }),
+        GroupAction::Remove { member } => GroupBody::Member(MemberOp::Remove {
+            member: member_key(member)?,
+            successor: None,
+        }),
+        GroupAction::Promote { member, access } | GroupAction::Demote { member, access } => {
+            GroupBody::Member(MemberOp::SetRole {
+                member: member_key(member)?,
+                role: role_of(access),
+            })
+        }
+    };
+    if !matches!(body, GroupBody::Create(_)) && node.group.is_none() {
+        return None;
+    }
+    Some(GroupEvent {
+        id: node.id,
+        author: node.author,
+        after: Vec::new(),
+        group: node.group,
+        body,
+    })
+}
+
+/// The account key of a member, or `None` when the member is a group: group events name
+/// accounts only, so an operation on a group member cannot bridge.
+fn member_key(member: &GroupMember<AuthId>) -> Option<crate::groups::Key> {
+    match member {
+        GroupMember::Individual(AuthId::Key(key)) => Some(*key),
+        GroupMember::Individual(AuthId::Group(_)) | GroupMember::Group(_) => None,
+    }
+}
+
+/// A group role at an access level. Admin has no access level of its own; it shows as Manage,
+/// as it does in the fold.
+fn role_of(access: &p2panda_auth::Access<()>) -> GroupRole {
+    if access.is_manage() {
+        GroupRole::Manage
+    } else if access.is_write() {
+        GroupRole::Write
+    } else if access.is_read() {
+        GroupRole::Read
+    } else {
+        GroupRole::Pull
+    }
 }
 
 /// Whether content applies. It applies unless it names a voided event and its author is not a
@@ -270,7 +461,18 @@ pub(super) fn decode_action(bytes: &[u8]) -> Result<GroupAction<AuthId, ()>, Sto
 }
 
 /// The members of `group` in a resolution, as keys. Empty when there is no membership layer.
+/// A group the fold decided takes its roster from the fold's view, so an operation the fold
+/// refused never leaves its target listed as a member.
 pub(super) fn roster_of(resolved: &Resolved, group: &Hash) -> Vec<AuthorKey> {
+    if let Some(view) = resolved
+        .projection
+        .as_ref()
+        .and_then(|projection| projection.group(group))
+    {
+        let mut keys: Vec<AuthorKey> = view.members.keys().copied().collect();
+        keys.sort_unstable();
+        return keys;
+    }
     let Some(layer) = resolved.membership.as_ref() else {
         return Vec::new();
     };
