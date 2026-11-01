@@ -886,16 +886,48 @@ impl BoardGraph {
     }
 
     /// Every hash in one board's replication set: the board root plus
-    /// every object scoped to it. This set — not a server-side copy — is
+    /// every object scoped to it, plus the dependency closure a fresh
+    /// graph needs before [`Self::validate_links`] will accept those
+    /// objects — the root's `theme_ref` theme and `forked_from`
+    /// ancestor root, recursively (an ancestor's own theme and fork
+    /// lineage, and a theme's fork lineage). Themes and ancestor roots
+    /// name no board (`board_ref` is `None`), so a scope-only filter
+    /// would export a set that can never be accepted elsewhere:
+    /// themed and forked boards would stall replication forever
+    /// (Codex P1 on PR #4048). This set — not a server-side copy — is
     /// what hosts replicate and converge on.
     pub fn board_object_set(&self, board: &ArtifactHash) -> BTreeSet<ArtifactHash> {
-        self.objects
+        let mut set: BTreeSet<ArtifactHash> = self
+            .objects
             .iter()
             .filter(|(hash, signed)| {
                 *hash == board || signed.object.board_ref() == Some(board)
             })
             .map(|(hash, _)| hash.clone())
-            .collect()
+            .collect();
+        let mut frontier: Vec<ArtifactHash> = set.iter().cloned().collect();
+        while let Some(hash) = frontier.pop() {
+            let Some(signed) = self.objects.get(&hash) else {
+                continue;
+            };
+            let dependencies: Vec<&ArtifactHash> = match &signed.object {
+                BoardObject::Board(body) => body
+                    .forked_from
+                    .iter()
+                    .chain(body.theme_ref.iter())
+                    .collect(),
+                BoardObject::Theme(body) => body.forked_from.iter().collect(),
+                _ => Vec::new(),
+            };
+            for dependency in dependencies {
+                if self.objects.contains_key(dependency)
+                    && set.insert(dependency.clone())
+                {
+                    frontier.push(dependency.clone());
+                }
+            }
+        }
+        set
     }
 
     /// The board's replication set as signed objects, in content-hash
@@ -2511,6 +2543,79 @@ mod tests {
         let again = replica.replicate_board_from(&source, &root).unwrap();
         assert!(again.transferred.is_empty());
         assert_eq!(again.status.state, ReplicaState::Complete);
+    }
+
+    #[test]
+    fn themed_board_replicates_with_its_theme() {
+        // Codex P1 on PR #4048: a theme names no board, so a
+        // scope-only export dropped it and the themed board root
+        // could never validate in a fresh graph.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let theme_hash = source.insert(theme(&owner, 1, None)).unwrap();
+        let root = source.insert(themed_board(&owner, theme_hash.clone())).unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&theme_hash));
+        assert_eq!(replica.board_object_set(&root), source.board_object_set(&root));
+    }
+
+    #[test]
+    fn theme_fork_lineage_replicates_with_themed_board() {
+        // The closure follows a theme's own fork lineage, not just
+        // the theme the board names directly.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let base_theme = source.insert(theme(&owner, 1, None)).unwrap();
+        let derived_theme = source
+            .insert(theme(&owner, 2, Some(base_theme.clone())))
+            .unwrap();
+        let root = source
+            .insert(themed_board(&owner, derived_theme.clone()))
+            .unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&derived_theme));
+        assert!(report.transferred.contains(&base_theme));
+    }
+
+    #[test]
+    fn forked_board_replicates_with_ancestor_root() {
+        // A forked board's root names its source root in
+        // `forked_from`; the ancestor root (and its own theme, by
+        // recursion) must travel with the fork's replication set.
+        let owner = key(7);
+        let mut source = BoardGraph::default();
+        let theme_hash = source.insert(theme(&owner, 1, None)).unwrap();
+        let ancestor = source
+            .insert(themed_board(&owner, theme_hash.clone()))
+            .unwrap();
+        let fork = SignedBoardObject::sign(
+            &owner,
+            1,
+            "",
+            BoardObject::Board(Board {
+                board_id: "forked-board".to_owned(),
+                forked_from: Some(ancestor.clone()),
+                theme_ref: None,
+            }),
+        )
+        .unwrap();
+        let fork_root = source.insert(fork).unwrap();
+
+        let mut replica = BoardGraph::default();
+        let report = replica.replicate_board_from(&source, &fork_root).unwrap();
+        assert_eq!(report.status.state, ReplicaState::Complete);
+        assert!(report.transferred.contains(&ancestor));
+        assert!(report.transferred.contains(&theme_hash));
+        assert_eq!(
+            replica.board_object_set(&fork_root),
+            source.board_object_set(&fork_root)
+        );
     }
 
     #[test]
