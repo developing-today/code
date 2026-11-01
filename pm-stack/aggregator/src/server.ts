@@ -8,9 +8,10 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { decodePathSegment } from "./path-segment.ts";
+import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
 import { ActionsStore, validateNewAction } from "./actions.ts";
 import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
-import { CommentsStore, validateNewComment } from "./comments.ts";
+import { commentKindCounts, CommentsStore, queuedComments, validateNewComment } from "./comments.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -38,7 +39,7 @@ import {
   unavailableRoadmapReconciliation,
   type RoadmapReconciliation,
 } from "./roadmap-reconcile.ts";
-import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
+import type { DashComment, ProjectPoolItem, QuotaView, RefKey, UsageView } from "./model.ts";
 import { buildEpicRollups } from "./epics.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -66,6 +67,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderCommentsQueue,
   renderPages,
   renderProgram,
   renderProgramProject,
@@ -322,18 +324,29 @@ const PWA_MANIFEST = {
   ],
 };
 
+/** #1211: the fail-soft facet fallbacks — an empty view is the honest
+ *  degraded form of a facet whose read threw (the renderers already
+ *  banner absent data, e.g. buildAttention's tier-source-missing
+ *  flag); a throwing facet must never 500 a whole page. */
+function emptyQuotaView(): QuotaView {
+  return { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+}
+function emptyUsageView(): UsageView {
+  return { services: [], payg: [], charges: [], attention: [], domains: null, subscriptions: [], history: {} };
+}
+
 async function boardContext() {
-  const board = await source.board();
+  const board = await source.board().catch(() => []);
   const refs = allRefs(board);
-  const items = await source.items(refs);
+  const items = await source.items(refs).catch(() => new Map());
   return { board, items };
 }
 
 async function roadmapContext() {
-  const rows = await source.roadmap();
+  const rows = await source.roadmap().catch(() => []);
   const refs = allRefs(rows);
   const [items, poolResult] = await Promise.all([
-    source.items(refs),
+    source.items(refs).catch(() => new Map()),
     source.projects().then(
       (pool) => ({ pool, failed: false }),
       () => ({ pool: [] as ProjectPoolItem[], failed: true }),
@@ -401,7 +414,11 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
 }
 
 async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
+  const [feed, summary, coverage] = await Promise.all([
+    source.attention().catch(() => []),
+    source.orchestration().catch(() => null),
+    source.coverage().catch(() => []),
+  ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
@@ -435,7 +452,7 @@ async function boardRender() {
     source.projects().catch(() => []),
     commentFormOpts(),
     actionsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
   ]);
   const act = {
     actionsByObject,
@@ -454,7 +471,7 @@ async function attentionRender() {
     commentFormOpts(),
     actionsStore.byObject(),
     commentsStore.byObject(),
-    commentsStore.counts(),
+    commentsStore.countsDetailed(),
     actionsStore.all(),
   ]);
   const order = effectiveNeedsOrder(allActions);
@@ -474,8 +491,8 @@ async function todayContext() {
     boardContext(),
     roadmapContext(),
     attentionContext(),
-    source.quota(),
-    source.orchestration(),
+    source.quota().catch(() => emptyQuotaView()),
+    source.orchestration().catch(() => null),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
   return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
@@ -488,7 +505,7 @@ async function overviewContext() {
   const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
-    source.quota(),
+    source.quota().catch(() => emptyQuotaView()),
     healthContext(),
     boardContext(),
     actionsStore.byObject().catch(() => new Map()),
@@ -591,6 +608,70 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
+  // #1277: bulk triage — one mediated batch, validated and appended
+  // item by item under the exact single-action rules above. Every
+  // accepted item becomes its OWN attributed audit entry (never one
+  // opaque batch record), so the batch is recoverable from the
+  // entries themselves; every rejected item is reported by ref with
+  // its error and appends nothing, so a partial batch never silently
+  // drops work — the failed items simply remain in Needs-you.
+  if (req.method === "POST" && path === "/api/actions/batch") {
+    try {
+      const body = (await readJsonBody(req)) as { actions?: unknown };
+      if (!Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > 100) {
+        return json({ error: "actions must be an array of 1-100 action objects" }, 400);
+      }
+      const entries: unknown[] = body.actions;
+      // The published-item checks (#1291/#1293) need the section once,
+      // not once per item.
+      const section = entries.some(
+        (a) => typeof a === "object" && a !== null && (a as { kind?: unknown }).kind === "triage",
+      )
+        ? await source.orchestration().catch(() => null)
+        : null;
+      const results: {
+        index: number;
+        objectRef: string | null;
+        ok: boolean;
+        action?: unknown;
+        deduped?: boolean;
+        error?: string;
+      }[] = [];
+      for (const [index, raw] of entries.entries()) {
+        const objectRef =
+          typeof raw === "object" && raw !== null && typeof (raw as { objectRef?: unknown }).objectRef === "string"
+            ? (raw as { objectRef: string }).objectRef
+            : null;
+        const parsed = validateNewAction(raw);
+        if (!parsed.ok) {
+          results.push({ index, objectRef, ok: false, error: parsed.error });
+          continue;
+        }
+        if (parsed.value.kind === "triage" && section) {
+          const problem = checkActionAgainstItem(parsed.value, findTierItem(section, parsed.value.objectRef), Date.now());
+          if (problem) {
+            results.push({ index, objectRef, ok: false, error: problem });
+            continue;
+          }
+        }
+        try {
+          const { action, created } = await actionsStore.add(parsed.value);
+          results.push({ index, objectRef, ok: true, action, ...(created ? {} : { deduped: true }) });
+        } catch (err) {
+          results.push({
+            index,
+            objectRef,
+            ok: false,
+            error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+          });
+        }
+      }
+      const recorded = results.filter((r) => r.ok).length;
+      return json({ results, recorded, failed: results.length - recorded }, 200);
+    } catch (err) {
+      return json({ error: `invalid batch: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
   if (req.method === "POST" && path === "/api/actions/result") {
     try {
       const body = (await readJsonBody(req)) as { id?: unknown; outcome?: unknown; byRun?: unknown; note?: unknown };
@@ -680,22 +761,26 @@ async function handler(req: Request): Promise<Response> {
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     return html(
-      renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation, drill),
+      renderRoadmap(rows, items, prov(), grain, await commentsStore.countsDetailed(), provDetail(), reconciliation, drill),
     );
   }
 
   if (path === "/quota") {
-    const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
+    const [quota, usage] = await Promise.all([
+      source.quota().catch(() => emptyQuotaView()),
+      source.usage().catch(() => emptyUsageView()),
+    ]);
     return html(renderQuota(quota, prov(), usage, provDetail()));
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
   if (serviceMatch) {
-    const usage = await source.usage();
+    const usage = await source.usage().catch(() => emptyUsageView());
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
     if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
       `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
+      404,
     );
   }
 
@@ -868,6 +953,15 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/pages") {
     return html(renderPages(prov(), pageRenderHealth()));
+  }
+
+  if (path === "/comments") {
+    return html(renderCommentsQueue(await commentsStore.all(), prov()));
+  }
+
+  if (path === "/api/comments/queue.json") {
+    const all = await commentsStore.all();
+    return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
   }
 
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
@@ -1127,7 +1221,7 @@ async function handler(req: Request): Promise<Response> {
     if (id === null) {
       return json({ error: `malformed percent-encoding in path segment: ${itemMatch[1]}` }, 400);
     }
-    const [board, rows] = await Promise.all([source.board(), source.roadmap()]);
+    const [board, rows] = await Promise.all([source.board().catch(() => []), source.roadmap().catch(() => [])]);
     const subject = board.find((b) => b.id === id) ?? rows.find((r) => r.subject === id);
     if (subject) {
       const title = subject.title;
@@ -1135,8 +1229,8 @@ async function handler(req: Request): Promise<Response> {
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
       const [items, comments, allComments, records, pool, allActions] = await Promise.all([
-        source.items(refs),
-        source.comments(refs),
+        source.items(refs).catch(() => new Map()),
+        source.comments(refs).catch(() => []),
         commentsStore.all(),
         source.registry().catch(() => []),
         source.projects().catch(() => []),
@@ -1171,10 +1265,10 @@ async function handler(req: Request): Promise<Response> {
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }
-    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`);
+    return html(`<h1>Not found</h1><p class="muted">no board item or roadmap row with subject <code>${id}</code></p>`, 404);
   }
 
-  return json({ error: "not found", path }, 404);
+  return notFoundResponse(path);
 }
 
 /**
@@ -1187,7 +1281,17 @@ async function handler(req: Request): Promise<Response> {
  */
 
 async function fetchHandler(req: Request): Promise<Response> {
-  const res = await handler(req);
+  // #1211: the top-level error boundary. A throwing handler degrades
+  // to a styled 500 page (JSON for /api) instead of rejecting the
+  // fetch; the render-health record below still runs, accounting the
+  // failure as an unsuccessful render.
+  let res: Response;
+  try {
+    res = await handler(req);
+  } catch (err) {
+    console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
+    res = errorBoundaryResponse(new URL(req.url).pathname, err);
+  }
   if (req.method === "GET") {
     const route = manifestRouteFor(new URL(req.url).pathname);
     if (route && (res.headers.get("content-type") ?? "").includes("text/html")) {

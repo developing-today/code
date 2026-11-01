@@ -68,6 +68,10 @@ type FreshState = PoolFreshness["state"];
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   if (entry.state === "ok") {
+    // #1268: retained last-known entries are stale by definition —
+    // the provider's latest run failed, however recent the retained
+    // measuredAt is (one tick is 15 min, inside the 20-min bound).
+    if (entry.retainedFromFailedTick) return "stale";
     const t = Date.parse(entry.measuredAt);
     return Number.isFinite(t) && t - nowMs <= QUOTA_CURRENT_FUTURE_SKEW_MS && nowMs - t <= QUOTA_CURRENT_FRESH_MS
       ? "ok"

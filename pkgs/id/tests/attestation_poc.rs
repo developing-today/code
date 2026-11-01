@@ -63,7 +63,7 @@ fn play_match(x_outcome: &str, o_outcome: &str) -> Match {
     let o = key(100);
     let agreement = GenesisAgreement {
         game_id: "tic-tac-toe".to_owned(),
-        logic_hash: Hash::digest(include_bytes!("../examples/tic-tac-toe/main.roc")),
+        logic_hash: Hash::digest(include_bytes!("../apps/tic-tac-toe/program/main.roc")),
         players: [player_id(&x), player_id(&o)],
         witness: None,
         objection_window_secs: 3600,
