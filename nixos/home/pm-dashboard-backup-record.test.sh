@@ -93,11 +93,14 @@ run_scenario() {
   local dump_script="$home/no-such-dump-script.sh"
   if [[ "$dump_mode" == "ok" ]]; then
     dump_script="$home/dump-ok.sh"
-    printf '#!/usr/bin/env bash\nmkdir -p "$HOME/backups/db-dumps/$1"\nprintf "{}\\n" > "$HOME/backups/db-dumps/$1/dump.sql"\n' >"$dump_script"
+    { printf '#!%s\n' "$BASH"
+      printf '%s\n' 'mkdir -p "$HOME/backups/db-dumps/$1"'
+      printf '%s\n' 'printf "{}\n" > "$HOME/backups/db-dumps/$1/dump.sql"'
+    } >"$dump_script"
     chmod +x "$dump_script"
   elif [[ "$dump_mode" == "fail" ]]; then
     dump_script="$home/dump-fail.sh"
-    printf '#!/usr/bin/env bash\nexit 3\n' >"$dump_script"
+    { printf '#!%s\n' "$BASH"; printf '%s\n' 'exit 3'; } >"$dump_script"
     chmod +x "$dump_script"
   fi
   for f in actions.json comments.json fleet-feed.json quota-current.json registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do

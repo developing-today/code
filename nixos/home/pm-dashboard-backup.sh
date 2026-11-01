@@ -109,7 +109,10 @@ write_record() {
     if [ -z "$failing" ]; then
       if [ "$_outcome" = "failed" ]; then
         failing="$_name"
-      elif [ "$_name" = "db-dump" ]; then
+      elif [ "$rc" -eq 0 ] && [ "$_name" = "db-dump" ]; then
+        # Zero exit only: an untouched db-dump on a failed exit is not
+        # the failure -- the in-progress step (converted above) or the
+        # $STEP fallback names it, never an unattempted step.
         { [ "$_outcome" != "ok" ] && [ "$_outcome" != "not-applicable" ]; } && failing="$_name"
       elif [ "$rc" -eq 0 ] && [ "$_outcome" != "ok" ]; then
         failing="$_name"
