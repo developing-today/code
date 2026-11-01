@@ -88,9 +88,12 @@ class ScriptTree:
     with a stub `nix` (and a stub `uv`, so the .py shebang executes the
     body under python3) on PATH. The stub nix appends one line to a
     counter file per invocation and exits with the configured status.
+    With `interpreter_missing=True` there is no uv stub and no uv on
+    PATH, so direct execution fails 127, and a python3 shim pointing at
+    the running interpreter serves the wrapper's fallback.
     """
 
-    def __init__(self, src_dir: Path, nix_status: int):
+    def __init__(self, src_dir: Path, nix_status: int, interpreter_missing: bool = False):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
         self.repo_dir = base / "repo"
@@ -108,6 +111,19 @@ class ScriptTree:
             f'echo call >> "{self.counter}"\n'
             f"exit {nix_status}\n",
         )
+        if interpreter_missing:
+            # No uv stub and a PATH with no uv on it: the .py shebang
+            # (`env -S uv run --script`) cannot find its interpreter, so
+            # the wrapper's direct-execution attempt exits 127. The
+            # python3 shim keeps the wrapper's fallback interpreter
+            # hermetic — a host python3 may live outside /usr/bin:/bin
+            # (e.g. on NixOS) and must not leak into the 127 setup.
+            _write_executable(
+                self.bin / "python3",
+                f'#!/bin/sh\nexec {sys.executable} "$@"\n',
+            )
+            self.env = dict(os.environ, PATH=f"{self.bin}:/usr/bin:/bin")
+            return
         # The .py shebang is `env -S uv run --script`; this stub makes
         # the wrapper's direct-execution attempt run the body under
         # python3, so wrapper behaviour is testable without uv.
@@ -203,6 +219,18 @@ class TestWrapperContract(unittest.TestCase):
                 # must fall back to python3 exactly once and still
                 # propagate the genuine failure status.
                 (tree.repo_dir / "scripts" / "update-nixpkgs-inputs.py").chmod(0o644)
+                r = tree.run_sh()
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertEqual(tree.nix_calls(), 1)
+            finally:
+                tree.cleanup()
+        with self.subTest(copy=label, case="missing interpreter (127) falls back to python3"):
+            tree = ScriptTree(src_dir, nix_status=1, interpreter_missing=True)
+            try:
+                # uv absent: the shebang interpreter cannot be found, so
+                # direct execution fails 127 — the other cannot-execute
+                # exit. Same contract as 126: fall back to python3
+                # exactly once and propagate the genuine failure status.
                 r = tree.run_sh()
                 self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
                 self.assertEqual(tree.nix_calls(), 1)
