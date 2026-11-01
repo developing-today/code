@@ -51,7 +51,7 @@ export function mimeToExtension(mime: string): string {
     "image/bmp": "bmp",
     "image/x-icon": "ico",
   };
-  return map[mime] ?? "bin";
+  return Object.hasOwn(map, mime) ? map[mime] : "bin";
 }
 
 /**
