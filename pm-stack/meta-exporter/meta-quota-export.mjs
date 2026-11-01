@@ -172,7 +172,7 @@ export function parseBillingBanner(payload) {
  * an absent read must stay absent, never become a fake $0. */
 export function parsePaygBalance(iframeText) {
   if (typeof iframeText !== "string") return null;
-  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)/);
+  const m = iframeText.match(/Current balance\s*\n?\s*\$\s*([\d,]+(?:\.\d{2})?)(?![\d.,])/);
   if (!m) return null;
   const v = Number(m[1].replace(/,/g, ""));
   return Number.isFinite(v) ? v : null;
