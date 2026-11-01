@@ -32,12 +32,13 @@
 //!
 //! # Authentication
 //!
-//! A heartbeat is a claim about its `node`, so the transport must authenticate the
-//! claim before it reaches the table: the serve receive path accepts a frame only
-//! when the heartbeat's node equals the gossip message's transport-authenticated
-//! sender. Membership filtering alone cannot stop impersonation — it checks the
-//! claimed key — so callers of [`PresenceTable::update`] must bind the claim to an
-//! authenticated sender the same way.
+//! A heartbeat is a claim about its `node`, and the gossip plane does not
+//! authenticate message authors — membership filtering alone cannot stop
+//! impersonation, because it checks the claimed key. So every heartbeat is
+//! signed by its node's key ([`PresenceHeartbeat::sign`]) and receivers verify
+//! the signature ([`PresenceHeartbeat::verify`]) before the heartbeat reaches
+//! the table: a forged heartbeat naming another node, or one whose channels
+//! were tampered with after signing, does not verify and is dropped.
 //!
 //! # Roster
 //!
@@ -50,6 +51,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +95,12 @@ pub struct PresenceHeartbeat {
     pub typing: Vec<Hash>,
     /// Unix timestamp (seconds) when the heartbeat was created.
     pub ts: u64,
+    /// Ed25519 signature by `node` over the rest of the heartbeat (see
+    /// [`PresenceHeartbeat::sign`]). Empty until signed; an unsigned or badly
+    /// signed heartbeat is not authenticated and receivers must drop it (see
+    /// [`PresenceHeartbeat::verify`]).
+    #[serde(default)]
+    pub signature: Vec<u8>,
 }
 
 impl PresenceHeartbeat {
@@ -117,7 +125,38 @@ impl PresenceHeartbeat {
             channels,
             typing,
             ts,
+            signature: Vec::new(),
         }
+    }
+
+    /// The bytes the signature covers: the postcard encoding of
+    /// `(node, channels, typing, ts)`, in that order.
+    fn signing_bytes(&self) -> Vec<u8> {
+        postcard::to_allocvec(&(&self.node, &self.channels, &self.typing, self.ts))
+            .unwrap_or_default()
+    }
+
+    /// Signs the heartbeat with `key`, setting `node` to the key's verifying
+    /// key: the claim and the identity that vouches for it are the same key.
+    pub fn sign(&mut self, key: &SigningKey) {
+        self.node = key.verifying_key().to_bytes();
+        self.signature = key.sign(&self.signing_bytes()).to_bytes().to_vec();
+    }
+
+    /// Whether the heartbeat carries a valid signature by `node` over its
+    /// contents. Gossip in this stack does not authenticate message authors,
+    /// so this signature is the authentication: receivers verify before the
+    /// heartbeat reaches the table, and anything unsigned or forged — a claim
+    /// naming another node, channels tampered with after signing — is dropped.
+    #[must_use]
+    pub fn verify(&self) -> bool {
+        let Ok(verifying_key) = VerifyingKey::from_bytes(&self.node) else {
+            return false;
+        };
+        let Ok(signature) = Signature::from_slice(&self.signature) else {
+            return false;
+        };
+        verifying_key.verify(&self.signing_bytes(), &signature).is_ok()
     }
 
     /// Whether the heartbeat claims typing in `channel`.
@@ -662,6 +701,31 @@ mod tests {
         );
         let roster = table.roster_at(&chan, &[alice], replay_at);
         assert!(!roster[0].typing, "a replayed typing claim must not refresh");
+    }
+
+    #[test]
+    fn heartbeats_authenticate_by_signature() {
+        let chan = channel("general");
+        let alice_key = SigningKey::from_bytes(&[7u8; 32]);
+        let alice = alice_key.verifying_key().to_bytes();
+
+        let mut hb = heartbeat(alice, vec![chan], 9_500);
+        assert!(!hb.verify(), "an unsigned heartbeat is not authenticated");
+        hb.sign(&alice_key);
+        assert_eq!(hb.node, alice);
+        assert!(hb.verify());
+
+        // Tampering after signing — channels, stamp, or the claimed node —
+        // breaks the signature.
+        let mut forged = hb.clone();
+        forged.channels = Vec::new();
+        assert!(!forged.verify());
+        let mut forged = hb.clone();
+        forged.ts += 1;
+        assert!(!forged.verify());
+        let mut forged = hb;
+        forged.node = SigningKey::from_bytes(&[8u8; 32]).verifying_key().to_bytes();
+        assert!(!forged.verify());
     }
 
     #[test]
