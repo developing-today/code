@@ -333,7 +333,14 @@ body.xp-plan .xpl-costcol { display: none; }
   .dot.off, .dot.unknown { background: #59636e; }
   .dot.fixtures { background: transparent; border-color: #8250df; }
   .cmt { background: #f6f8fa; border-left-color: #d1d9e0; }
-  .cov, .cform, .actbox, .skel, .chart { background: #f6f8fa; border-color: #d1d9e0; }
+  .cov, .cform, .actbox, .skel { background: #f6f8fa; border-color: #d1d9e0; }
+  /* Charts keep their authored dark surface in light mode: the SVG
+     foregrounds are generated for dark (model labels #c9d1d9, the
+     Pareto frontier #e6edf3), so a light chart background would wash
+     them out — the chart card and its controls stay dark instead. */
+  .chart { background: #0d1117; border-color: #30363d; color: #e6edf3; }
+  .chart .muted { color: #8b949e; }
+  .chart .xpl-ctl button, .chart .xpl-ctl select { background: #161b22; color: #e6edf3; border-color: #30363d; }
   .cform textarea, .cform select, .cform input[type="text"], .actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"], nav select, .xpl-filters input[type="search"], .xpl-filters select, .xpl-ctl select { background: #ffffff; color: #1f2328; border-color: #d1d9e0; }
   .cform label, .actbox .ahead label, .aform .why, .optform .effect, .orderctl { color: #59636e; }
   .cform .kinds label { color: #1f2328; }
@@ -3969,7 +3976,7 @@ const AA_EXPLORER_SCRIPT = `<script>
   function bandGroup(title, blurb, bands) {
     var rowsHtml = bands.map(function (b) {
       var leader = b.choices.length ? b.choices[0] : null;
-      return "<tr><th scope=\"row\"><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></th><td>" +
+      return "<tr><th scope=\\\"row\\\"><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></th><td>" +
         (b.choices.length ? b.choices.map(function (p) { return chipFor(p, leader); }).join(" ") : '<span class="muted">No model meets the window of this band.</span>') + "</td></tr>";
     }).join("");
     return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><caption>' + esc(title) + '</caption><tbody>' + rowsHtml + "</tbody></table></div>";
@@ -4058,10 +4065,10 @@ const AA_EXPLORER_SCRIPT = `<script>
           var near = qual.filter(function (p) { return p.cost <= cheapest.cost * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
           return near.map(function (p) { return chipFor(p, cheapest); }).join(" ");
         });
-        return "<tr><th scope=\"row\"><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></th>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+        return "<tr><th scope=\\\"row\\\"><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></th>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
       }).join("");
       var h6 = '<h3>Lowest price within each speed target</h3><p class="muted">Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within ' + Math.round(priceWin * 100) + "% of the tier's cheapest.</p>" +
-        '<div class="tblwrap"><table class="xpl-table"><caption>Lowest price within each speed target</caption><thead><tr><th scope="col">Speed target</th>' + tiers.map(function (ci) { return "<th scope="col">Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
+        '<div class="tblwrap"><table class="xpl-table"><caption>Lowest price within each speed target</caption><thead><tr><th scope="col">Speed target</th>' + tiers.map(function (ci) { return "<th scope=\\\"col\\\">Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
     }
     html = (typeof h1 !== "undefined" ? h1 : "") + (typeof h2 !== "undefined" ? h2 : "") + (typeof h3 !== "undefined" ? h3 : "") + (typeof h4 !== "undefined" ? h4 : "") + (typeof h5 !== "undefined" ? h5 : "") + (typeof h6 !== "undefined" ? h6 : "");
     wrap.innerHTML = html || '<p class="muted">No banded comparisons can be built — the visible configurations lack the measures they need.</p>';

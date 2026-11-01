@@ -6,7 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PAGES } from "../src/pages.ts";
-import { navLinks, pageDropdown } from "../src/render.ts";
+import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
+import { FIXTURE_AA } from "../src/sources/fixtures.ts";
 
 const renderSource = readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
 
@@ -79,6 +80,30 @@ describe("one navigation model (#1215)", () => {
       expect(dropdown).toContain(`<optgroup label="${label}">`);
       expect(navLinks("/")).toContain(`>${label}</span>`);
     }
+  });
+});
+
+describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)", () => {
+  test("the /aa inline script parses — attribute quotes survive both string layers", () => {
+    const prov = {
+      board: "x", roadmap: "x", items: "x", comments: "x", quota: "x",
+      usage: "x", attention: "x", orchestration: "x", dns: "x",
+      registry: "x", aa: "fixtures",
+    } as never;
+    const html = renderAa(FIXTURE_AA, prov);
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+    // The row-header cells reach the browser as real scope attributes.
+    expect(scripts[0]).toContain('scope=\\"row\\"');
+  });
+
+  test("charts keep their dark surface in the light theme (Codex P2 on PR #3308)", () => {
+    const light = renderSource.slice(
+      renderSource.indexOf("@media (prefers-color-scheme: light)"),
+      renderSource.indexOf("@media (max-width: 720px)"),
+    );
+    expect(light).toContain(".chart { background: #0d1117;");
   });
 });
 
