@@ -91,3 +91,38 @@ func TestCallSettingsHeaderValue(t *testing.T) {
 		t.Fatalf("context round trip: got %q", got)
 	}
 }
+
+// The explicit-task branch of /v1/call (handleCall -> startCallTask)
+// runs the call on the task store's fresh context, which carries none
+// of the request's values: the call settings captured by value in
+// handleCall and attached inside the task callback are the only way a
+// caller's shorter pool.callTimeout reaches Registry.Call there
+// (Codex P2 on #3272, round 3). This pins the seam's composition: the
+// bare task context threads nothing; the callback's attach threads
+// exactly the header request.
+func TestCallTaskCallbackCarriesRequestedTimeout(t *testing.T) {
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		set:    settings.NewSet(sch),
+		logger: log.New(io.Discard, "", 0),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/call", nil)
+	req.Header.Set(CallSettingsHeader, `{"pool.callTimeout":"5s"}`)
+	cs := s.callSettings(req)
+
+	// The task store's fresh context, as the callback receives it.
+	taskCtx := context.Background()
+	if _, ok := pool.RequestedCallTimeout(withRequestedCallTimeout(taskCtx)); ok {
+		t.Fatal("bare task context threaded a per-call request from nothing")
+	}
+
+	// startCallTask's callback attach, then Registry.Call's threading.
+	ctx := withRequestedCallTimeout(withCallSettings(taskCtx, cs))
+	if d, ok := pool.RequestedCallTimeout(ctx); !ok || d != 5*time.Second {
+		t.Fatalf("task callback: got %v, %v; want 5s, true", d, ok)
+	}
+}

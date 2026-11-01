@@ -1112,7 +1112,12 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		if cc.SessionID == "" {
 			requestor = tasks.Caller(r.Header.Get("X-Mcpx-Run"))
 		}
-		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args)
+		// The task outlives this request, so capture its call settings
+		// by value now: startCallTask attaches them inside the task
+		// callback, where Registry.Call reads the caller's requested
+		// pool.callTimeout (#1864 item 4 -- the explicit-task branch
+		// must not drop what the sync and reporting paths honour).
+		task, terr := s.startCallTask(req.Task.TTL, req.Server, req.Tool, requestor, cc, args, s.callSettings(r))
 		if terr != nil {
 			// The store's per-requestor cap (protoTasks.maxPerRequestor).
 			writeErr(w, http.StatusTooManyRequests, terr)
