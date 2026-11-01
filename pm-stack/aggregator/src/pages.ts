@@ -158,6 +158,16 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "alerts",
+    title: "Alerts",
+    route: "/alerts",
+    api: "/api/alerts.json",
+    blurb:
+      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Supabase ledger.",
+    group: "ops",
+    nav: "dropdown",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",

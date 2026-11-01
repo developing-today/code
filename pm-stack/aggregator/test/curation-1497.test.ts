@@ -8,9 +8,17 @@ import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
 
 const PROV: Provenance = {
-  board: "x", roadmap: "x", items: "x", comments: "x", quota: "x",
-  usage: "x", attention: "x", orchestration: "x", dns: "x",
-  registry: "x", aa: "x",
+  board: "x",
+  roadmap: "x",
+  items: "x",
+  comments: "x",
+  quota: "x",
+  usage: "x",
+  attention: "x",
+  orchestration: "x",
+  dns: "x",
+  registry: "x",
+  aa: "x",
 };
 
 const DECISIONS: Record<string, "primary" | "dropdown"> = {
@@ -26,6 +34,10 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   program: "primary",
   health: "primary",
   pages: "dropdown",
+  // Post-#1497 addition (#3676, 2026-11-01): the Alerts page enters
+  // at dropdown tier — it earns no primary slot without a new
+  // curation decision.
+  alerts: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {
@@ -57,7 +69,11 @@ describe("the #1497 decision table is applied to the manifest", () => {
       expect(drop).toContain(`value="${page.route}"`);
     }
     const flat = primaryGroupedPages().flatMap((g) => g.pages.map((p) => p.id));
-    expect(flat.sort()).toEqual(PAGES.filter((p) => p.nav === "primary").map((p) => p.id).sort());
+    expect(flat.sort()).toEqual(
+      PAGES.filter((p) => p.nav === "primary")
+        .map((p) => p.id)
+        .sort(),
+    );
   });
 });
 
