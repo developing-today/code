@@ -16,28 +16,10 @@ use wasmtime::{
 };
 
 /// Resource bounds applied to each guest invocation.
-#[derive(Clone, Copy, Debug)]
-pub struct SandboxLimits {
-    /// Maximum compiled Wasm module size, in bytes.
-    pub module_bytes: usize,
-    /// Maximum Wasm fuel for an invocation.
-    pub fuel: u64,
-    /// Maximum linear memory, in bytes.
-    pub memory_bytes: usize,
-    /// Maximum input or output payload, in bytes.
-    pub message_bytes: usize,
-}
-
-impl Default for SandboxLimits {
-    fn default() -> Self {
-        Self {
-            module_bytes: 16 * 1024 * 1024,
-            fuel: 10_000_000,
-            memory_bytes: 16 * 1024 * 1024,
-            message_bytes: 1024 * 1024,
-        }
-    }
-}
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::SandboxLimits;
 
 /// One kind of guest invocation, as counted by [`CallMetrics`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

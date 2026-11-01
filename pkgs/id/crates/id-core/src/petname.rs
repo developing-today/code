@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::directory::Refusal;
+use crate::Refusal;
 
 const MAX_PETNAME_CHARS: usize = 64;
 const FINGERPRINT_CHARS: usize = 6;
