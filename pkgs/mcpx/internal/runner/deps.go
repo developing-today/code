@@ -819,7 +819,7 @@ func installFrozenNPM(ctx context.Context, dir string, d *Deps, env map[string]s
 	defer unlock()
 
 	marker := filepath.Join(dir, ".mcpx-deps-installed")
-	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env)
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env, d.NPMRC)
 	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
 		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
 			return finaliseAddonsIfPresent(dir)
@@ -1040,6 +1040,15 @@ func mergeNodeModules(src, dst string) error {
 		if !isDir {
 			continue
 		}
+		if e.Name() == ".bin" {
+			// .bin is not a package: its entries are executable
+			// links into the packages beside it. Treating it as a
+			// conflicting package copied it after its packages had
+			// been moved out, leaving the links dangling into the
+			// scratch tree (Codex review, PR #2589). It is merged
+			// link-by-link below, after the packages are placed.
+			continue
+		}
 		if strings.HasPrefix(e.Name(), "@") {
 			inner, err := os.ReadDir(filepath.Join(src, e.Name()))
 			if err != nil {
@@ -1056,6 +1065,9 @@ func mergeNodeModules(src, dst string) error {
 			return err
 		}
 	}
+	if err := mergeBinDir(filepath.Join(src, ".bin"), filepath.Join(dst, ".bin"), src, dst); err != nil {
+		return err
+	}
 	for _, rel := range conflicts {
 		for _, host := range placed {
 			nested := filepath.Join(dst, host, "node_modules", rel)
@@ -1066,6 +1078,62 @@ func mergeNodeModules(src, dst string) error {
 				return err
 			}
 			if err := copyLocalArtifact(filepath.Join(src, rel), nested); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// mergeBinDir merges the executable links of a scratch
+// node_modules/.bin into the destination's .bin, recreating each
+// link against the merged tree: a link that pointed at a package in
+// the scratch tree points at the same package in the destination
+// tree, where the merge just placed it. Links whose name the
+// destination already provides are left alone -- the frozen tree's
+// own executables win, as its packages do in the merge above.
+// Non-link entries (platform shim files) are copied as files.
+func mergeBinDir(srcBin, dstBin, srcNM, dstNM string) error {
+	entries, err := os.ReadDir(srcBin)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(dstBin, 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		from := filepath.Join(srcBin, e.Name())
+		to := filepath.Join(dstBin, e.Name())
+		if _, err := os.Lstat(to); err == nil {
+			continue
+		}
+		if e.Type()&os.ModeSymlink == 0 {
+			if err := copyLocalArtifact(from, to); err != nil {
+				return err
+			}
+			continue
+		}
+		target, err := os.Readlink(from)
+		if err != nil {
+			return err
+		}
+		abs := target
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(srcBin, target)
+		}
+		abs = filepath.Clean(abs)
+		if rel, rerr := filepath.Rel(srcNM, abs); rerr == nil && !strings.HasPrefix(rel, "..") {
+			abs = filepath.Join(dstNM, rel)
+		}
+		relTarget, err := filepath.Rel(dstBin, abs)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(relTarget, to); err != nil {
+			if err := copyLocalArtifact(abs, to); err != nil {
 				return err
 			}
 		}
@@ -1180,7 +1248,7 @@ func runBunInstall(ctx context.Context, bunBin, dir string, d *Deps, frozen bool
 	defer unlock()
 
 	marker := filepath.Join(dir, ".mcpx-deps-installed-bun")
-	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env)
+	want := d.fingerprint() + "\x00env:" + installEnvIdentity(env, d.NPMRC)
 	if b, err := os.ReadFile(marker); err == nil && string(b) == want {
 		if st, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil && st.IsDir() {
 			if frozen {

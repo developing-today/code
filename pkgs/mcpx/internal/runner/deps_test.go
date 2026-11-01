@@ -803,6 +803,99 @@ func TestMaterialiseDepsCompatiblePinGovernsOverManifestRange(t *testing.T) {
 	}
 }
 
+func TestMergeNodeModulesMergesBinLinksAgainstMergedTree(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	// Scratch (additions) tree: package "tool" with an executable,
+	// linked from .bin.
+	if err := os.MkdirAll(filepath.Join(src, "tool"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "tool", "bin.js"), []byte("#!/usr/bin/env node\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "tool", "bin.js"), filepath.Join(src, ".bin", "tool")); err != nil {
+		t.Fatal(err)
+	}
+	// Destination (frozen) tree already has its own .bin -- the
+	// case that used to strand the additions' links.
+	if err := os.MkdirAll(filepath.Join(dst, ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dst, ".bin", "other"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeNodeModules(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dst, ".bin", "tool"))
+	if err != nil {
+		t.Fatalf("merged .bin link does not resolve: %v", err)
+	}
+	if string(content) != "#!/usr/bin/env node\n" {
+		t.Fatalf("merged .bin link resolves to the wrong content: %q", content)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "tool", "bin.js")); err != nil {
+		t.Fatalf("addition package was not placed: %v", err)
+	}
+}
+
+func TestLockScriptDirsAcquiresCrossedSetsWithoutDeadlock(t *testing.T) {
+	a := t.TempDir()
+	b := t.TempDir()
+	// Two runs holding crossed sets (a is one's script dir and the
+	// other's manifest dir) must serialize, not deadlock: whichever
+	// acquires first, the second waits for the whole set.
+	unlock, err := lockScriptDirs(context.Background(), b, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan func(), 1)
+	go func() {
+		u, lerr := lockScriptDirs(context.Background(), a, b)
+		if lerr == nil {
+			acquired <- u
+		}
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("crossed lock set acquired while the first set was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlock()
+	select {
+	case second := <-acquired:
+		second()
+	case <-time.After(5 * time.Second):
+		t.Fatal("crossed lock set never acquired after release")
+	}
+	// Duplicates and spelling differences collapse to one lock.
+	u2, err := lockScriptDirs(context.Background(), a, a+"/", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u2()
+}
+
+func TestInstallEnvIdentityIncludesNPMRCReferencedVars(t *testing.T) {
+	npmrc := []byte("omit=${DEPS_OMIT}\nregistry=https://example.invalid/\n")
+	dev := installEnvIdentity(map[string]string{"DEPS_OMIT": "dev"}, npmrc)
+	opt := installEnvIdentity(map[string]string{"DEPS_OMIT": "optional"}, npmrc)
+	if dev == "" || dev == opt {
+		t.Fatalf("runs differing only in an .npmrc-referenced variable share an identity: %q vs %q", dev, opt)
+	}
+	same := installEnvIdentity(map[string]string{"DEPS_OMIT": "dev"}, npmrc)
+	if dev != same {
+		t.Fatalf("identical referenced values must share an identity: %q vs %q", dev, same)
+	}
+	if got := installEnvIdentity(map[string]string{}, nil); got != "" {
+		t.Fatalf("no identity inputs should give an empty identity, got %q", got)
+	}
+}
+
 func TestLockScriptDirSerializes(t *testing.T) {
 	dir := t.TempDir()
 	unlock, err := lockScriptDir(context.Background(), dir)

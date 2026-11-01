@@ -212,11 +212,27 @@ func warnSink(opts Options) io.Writer {
 // and the install markers: sharing one tree made a development run
 // reuse a production install that had never laid its dev dependencies
 // down (Codex review, PR #2589).
-func installEnvIdentity(env map[string]string) string {
+func installEnvIdentity(env map[string]string, npmrc []byte) string {
 	var keys []string
+	seen := map[string]bool{}
 	for k := range env {
 		if k == "NODE_ENV" || strings.HasPrefix(k, "NPM_CONFIG_") {
 			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	// A transported .npmrc may interpolate arbitrary environment
+	// variables (${VAR} in npmrc values: omit=${DEPS_OMIT} and
+	// friends), which makes those variables installation-affecting
+	// too: two runs differing only in a referenced variable produce
+	// different installed trees and must not share an installation
+	// identity (Codex review, PR #2589). The effective value is the
+	// run env's override when present, else the process env's, which
+	// is exactly the environment installEnv hands the installer.
+	for _, name := range npmrcReferencedVars(npmrc) {
+		if !seen[name] {
+			keys = append(keys, name)
+			seen[name] = true
 		}
 	}
 	if len(keys) == 0 {
@@ -225,14 +241,54 @@ func installEnvIdentity(env map[string]string) string {
 	sort.Strings(keys)
 	var b strings.Builder
 	for _, k := range keys {
-		b.WriteString(k + "=" + env[k] + "\x00")
+		v, ok := env[k]
+		if !ok {
+			v = os.Getenv(k)
+		}
+		b.WriteString(k + "=" + v + "\x00")
 	}
 	return b.String()
 }
 
+// npmrcReferencedVars returns the variable names an .npmrc body
+// interpolates, in ${VAR} (optionally ${VAR:-default} and similar)
+// form -- the form npm documents for .npmrc values.
+func npmrcReferencedVars(npmrc []byte) []string {
+	var names []string
+	seen := map[string]bool{}
+	text := string(npmrc)
+	for i := 0; i+1 < len(text); i++ {
+		if text[i] != '$' || text[i+1] != '{' {
+			continue
+		}
+		j := i + 2
+		start := j
+		for j < len(text) && (text[j] == '_' || ('A' <= text[j] && text[j] <= 'Z') || ('a' <= text[j] && text[j] <= 'z') || ('0' <= text[j] && text[j] <= '9')) {
+			j++
+		}
+		if j == start {
+			continue
+		}
+		name := text[start:j]
+		if c := name[0]; !(c == '_' || ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')) {
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+		i = j - 1
+	}
+	return names
+}
+
 func workDirKeyMaterial(kind string, opts Options) string {
 	material := kind + "\x00" + opts.ClientSource + "\x00" + opts.Deps.fingerprint()
-	if id := installEnvIdentity(opts.Env); id != "" {
+	var npmrc []byte
+	if opts.Deps != nil {
+		npmrc = opts.Deps.NPMRC
+	}
+	if id := installEnvIdentity(opts.Env, npmrc); id != "" {
 		material += "\x00env:" + id
 	}
 	if kind == KindDeno && opts.Deps != nil {
@@ -430,7 +486,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			// script directory for the link's whole lifetime: the
 			// lock is taken before linking and released only when
 			// this Run returns, after the process has exited.
-			unlock, lerr2 := lockScriptDir(ctx, filepath.Dir(scriptPath))
+			// Both directories are locked in one globally sorted
+			// order (see lockScriptDirs): script-then-manifest
+			// ordering is not a global order -- crossed manifests
+			// (/a script + /b manifest vs /b script + /a manifest)
+			// could each hold one lock and wait forever on the
+			// other, and opts.Timeout applies only after these
+			// acquisitions, so it could not break the deadlock
+			// (Codex review, PR #2589).
+			lockDirs := []string{filepath.Dir(scriptPath)}
+			if md := opts.Deps.ManifestDir; md != "" {
+				lockDirs = append(lockDirs, md)
+			}
+			unlock, lerr2 := lockScriptDirs(ctx, lockDirs...)
 			if lerr2 != nil {
 				return nil, lerr2
 			}
@@ -444,15 +512,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			// it with ERR_MODULE_NOT_FOUND after a successful
 			// install (Codex review, PR #2589). The manifest
 			// directory's link is shared the same way, so it is
-			// taken under that directory's lock too (always in
-			// script-then-manifest order).
-			if md := opts.Deps.ManifestDir; md != "" && filepath.Clean(md) != filepath.Clean(filepath.Dir(scriptPath)) {
-				unlock2, lerr3 := lockScriptDir(ctx, md)
-				if lerr3 != nil {
-					return nil, lerr3
-				}
-				defer unlock2()
-			}
+			// taken under that directory's lock too.
 			if lerr := linkDepsForFileRun(filepath.Dir(scriptPath), opts.Deps.ManifestDir, workDir); lerr != nil {
 				return nil, fmt.Errorf("deps: link node_modules beside script: %w", lerr)
 			}
@@ -704,6 +764,42 @@ var fileScriptLocks sync.Map // map[string]chan struct{}
 // return promptly instead of blocking behind a long-running script
 // until that script exits, however long that takes (Codex review,
 // PR #2589).
+// lockScriptDirs acquires the per-directory locks for dirs in a
+// single globally consistent order -- cleaned, deduplicated and
+// sorted -- so concurrent runs whose directory sets overlap (a
+// script directory that is another run's manifest directory, and
+// vice versa) cannot deadlock by acquiring in opposite orders
+// (Codex review, PR #2589). The returned function releases every
+// acquired lock.
+func lockScriptDirs(ctx context.Context, dirs ...string) (func(), error) {
+	cleaned := make([]string, 0, len(dirs))
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		c := filepath.Clean(d)
+		if !seen[c] {
+			seen[c] = true
+			cleaned = append(cleaned, c)
+		}
+	}
+	sort.Strings(cleaned)
+	var unlocks []func()
+	for _, d := range cleaned {
+		unlock, err := lockScriptDir(ctx, d)
+		if err != nil {
+			for i := len(unlocks) - 1; i >= 0; i-- {
+				unlocks[i]()
+			}
+			return nil, err
+		}
+		unlocks = append(unlocks, unlock)
+	}
+	return func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}, nil
+}
+
 func lockScriptDir(ctx context.Context, dir string) (func(), error) {
 	c, _ := fileScriptLocks.LoadOrStore(dir, make(chan struct{}, 1))
 	ch := c.(chan struct{})
