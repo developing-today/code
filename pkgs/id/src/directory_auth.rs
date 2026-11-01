@@ -354,7 +354,12 @@ pub fn verify_signed(
 }
 
 fn hex_bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
-    if text.len() != N * 2 || !text.is_ascii() {
+    // Every byte must be an ASCII hex digit (#2517): u8::from_str_radix
+    // also accepts a leading '+', so without this gate a byte 0x00-0x0f
+    // has two accepted spellings ('0x' and '+x') — and the replay guard,
+    // keyed on the key string, would treat the '+' spelling of a
+    // captured request as a fresh id.
+    if text.len() != N * 2 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let mut out = [0_u8; N];
@@ -543,6 +548,60 @@ mod tests {
         let mut replays = ReplayGuard::after_boot(now(), Duration::ZERO);
         let signed = sign_request(&key, "GET", "/x", b"", now(), "z1");
         assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+    }
+
+    #[test]
+    fn hex_bytes_refuses_plus_encoded_pairs() {
+        // #2517: '+' pairs must not decode at either auth shape.
+        assert!(hex_bytes::<32>(&"+a".repeat(32)).is_none());
+        assert!(hex_bytes::<64>(&"+a".repeat(64)).is_none());
+        let mut mixed = "0a".repeat(64);
+        mixed.replace_range(0..2, "+a");
+        assert!(hex_bytes::<64>(&mixed).is_none());
+        // Canonical hex in either case still decodes, identically.
+        assert_eq!(
+            hex_bytes::<64>(&"0a".repeat(64)),
+            hex_bytes::<64>(&"0A".repeat(64))
+        );
+    }
+
+    #[test]
+    fn a_signed_request_replayed_in_plus_encoding_is_refused() {
+        // #2517: a byte below 0x10 has a canonical pair with a leading
+        // '0' ("07") and a '+' spelling ("+7") that decodes identically.
+        // Before the hexdigit gate, re-encoding a captured request's
+        // key that way verified again under a fresh replay-guard id
+        // (the guard keys on the key string); now it is refused.
+        // Find a signing key whose verifying-key hex has at least one
+        // pair with a leading '0' — each such pair has a '+' spelling.
+        let plus_encode = |hex: &str| -> String {
+            hex.as_bytes()
+                .chunks(2)
+                .map(|pair| {
+                    if pair[0] == b'0' {
+                        format!("+{}", pair[1] as char)
+                    } else {
+                        String::from_utf8(pair.to_vec()).unwrap()
+                    }
+                })
+                .collect()
+        };
+        let mut signed = None;
+        for seed in 0_u8..=255 {
+            let key = SigningKey::from_bytes(&[seed; 32]);
+            let candidate = sign_request(&key, "GET", "/x", b"", now(), "n1");
+            if plus_encode(&candidate.key) != candidate.key {
+                signed = Some(candidate);
+                break;
+            }
+        }
+        let signed = signed.expect("some seed's key has a '+'-spellable pair");
+        let mut replays = ReplayGuard::default();
+        assert!(verify_signed(&mut replays, &signed, "GET", "/x", b"", now()).is_ok());
+        let mut replayed = signed.clone();
+        replayed.key = plus_encode(&signed.key);
+        assert_ne!(replayed.key, signed.key);
+        assert!(verify_signed(&mut replays, &replayed, "GET", "/x", b"", now()).is_err());
     }
 
     #[test]

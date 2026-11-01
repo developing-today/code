@@ -47,8 +47,8 @@ impl Petnames {
 
     /// Open the store at `path`, replaying every line already there.
     ///
-    /// A torn final line — a partial record left by a crash mid-append,
-    /// unterminated and unparseable — is dropped and truncated away,
+    /// A torn final line — a record left by a crash mid-append, parseable
+    /// or not, without its terminating newline — is dropped and truncated away,
     /// mirroring `Outbox::open` and the world journal; any other
     /// malformed line still fails the open.
     ///
@@ -67,17 +67,19 @@ impl Petnames {
         };
         let mut kept = 0;
         for (number, line) in text.split_inclusive('\n').enumerate() {
+            let complete = line.ends_with('\n');
+            if !complete {
+                break;
+            }
             if line.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            let complete = line.ends_with('\n');
             match serde_json::from_str::<Record>(line.trim_end()) {
                 Ok(record) => {
                     store.apply(record);
                     kept += line.len();
                 }
-                Err(_) if !complete => break,
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("petname journal line {} is malformed", number + 1)
@@ -570,6 +572,44 @@ mod tests {
         store.set(OWNER, CAROL, "Carol", names()).unwrap();
         drop(store);
         let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, CAROL), Some("Carol"));
+    }
+
+    #[test]
+    fn a_parseable_torn_final_line_is_also_dropped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("petnames.jsonl");
+        let mut store = Petnames::open(&path).unwrap();
+        store.set(OWNER, ALICE, "Ali", names()).unwrap();
+        drop(store);
+        let good = std::fs::read_to_string(&path).unwrap();
+
+        // A healthy write produces a complete record; remove only its final
+        // newline to simulate a crash after the JSON bytes reached disk.
+        let scratch = TempDir::new().unwrap();
+        let mut other = Petnames::open(&scratch.path().join("petnames.jsonl")).unwrap();
+        other.set(OWNER, CAROL, "Carol", names()).unwrap();
+        drop(other);
+        let torn = std::fs::read_to_string(scratch.path().join("petnames.jsonl")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(torn.trim_end_matches('\n').as_bytes())
+            .unwrap();
+        drop(file);
+
+        let mut store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
+        assert!(store.get(OWNER, CAROL).is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+
+        // Truncation ensures the next record starts on its own line and
+        // survives another open.
+        store.set(OWNER, CAROL, "Carol", names()).unwrap();
+        drop(store);
+        let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
         assert_eq!(store.get(OWNER, CAROL), Some("Carol"));
     }
 

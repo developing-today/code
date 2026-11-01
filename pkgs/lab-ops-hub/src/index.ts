@@ -9,6 +9,7 @@ import {
   crawlArchiveKey,
   uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
   validateMachineBody,
   validateNoteBody,
   validateTaskBody,
@@ -278,20 +279,30 @@ export default {
         const b = parsed.body;
         const valid = validateMachineBody(b);
         if (!valid.ok) return json({ error: valid.error }, 400);
-        const r = await env.DB.prepare(
-          "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        )
-          .bind(
-            valid.values.name,
-            b.role ?? "compute",
-            b.cpu ?? null,
-            b.ram_gb ?? null,
-            b.storage ?? null,
-            b.gpu ?? null,
-            b.status ?? "planned",
-            b.notes ?? null,
+        let r;
+        try {
+          r = await env.DB.prepare(
+            "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
           )
-          .run();
+            .bind(
+              valid.values.name,
+              b.role ?? "compute",
+              b.cpu ?? null,
+              b.ram_gb ?? null,
+              b.storage ?? null,
+              b.gpu ?? null,
+              b.status ?? "planned",
+              b.notes ?? null,
+            )
+            .run();
+        } catch (e) {
+          // A duplicate name is a client conflict, not a server fault
+          // (#2631); every other DB failure keeps the outer 500.
+          if (isMachineNameConflict(e)) {
+            return json({ error: "machine name already exists", name: valid.values.name }, 409);
+          }
+          throw e;
+        }
         ctx.waitUntil(Promise.all([logUsage(env, "d1_write", "machine"), env.CACHE.delete("machines:all")]));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
       }

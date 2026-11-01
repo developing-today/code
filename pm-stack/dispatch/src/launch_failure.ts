@@ -9,8 +9,12 @@
 // drift from the synchronous one again.
 //
 // Both steps are best-effort: a cancellation failure does not suppress
-// the issue note, and neither failure suppresses the other. The
-// message is returned so the wait:true path can put it in its 502.
+// the issue note, and neither failure suppresses the other. The note
+// reports each step's actual outcome: it claims the task was cancelled
+// only when the cancellation succeeded; when cancellation failed it
+// says so and names the cancellation error, so a task that may still
+// be queued or claimed is never recorded as cleaned up. The message
+// is returned so the wait:true path can put it in its 502.
 
 /** The slice of the queue client launch-failure handling needs. */
 export interface LaunchFailureQueue {
@@ -31,18 +35,20 @@ export async function handleLaunchFailure(
   e: unknown,
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
+  let cancelError: string | null = null;
   try {
     await queue.cancelTask(taskId, `dispatch launch failed: ${msg}`);
-  } catch {
-    /* cancellation failed too — note the launch error regardless */
+  } catch (ce) {
+    /* cancellation failed too — the note below must say so, not claim success */
+    cancelError = ce instanceof Error ? ce.message : String(ce);
   }
   if (issueNumber != null) {
+    const note =
+      cancelError == null
+        ? `Dispatch launch FAILED and queue task #${taskId} was cancelled.\n\nError: ${msg}`
+        : `Dispatch launch FAILED and cancelling queue task #${taskId} FAILED — the task may still be queued or claimed and needs cleanup.\n\nError: ${msg}\nCancellation error: ${cancelError}`;
     try {
-      await github.comment(
-        repo,
-        issueNumber,
-        `Dispatch launch FAILED and queue task #${taskId} was cancelled.\n\nError: ${msg}`,
-      );
+      await github.comment(repo, issueNumber, note);
     } catch {
       /* issue note is best-effort on the failure path */
     }

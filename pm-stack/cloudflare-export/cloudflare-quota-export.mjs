@@ -404,7 +404,24 @@ export async function run({ token, accountId, now = new Date() } = {}) {
   });
   if (gql.status === 401 || gql.status === 403) throw scopeError("POST /graphql", gql.status);
   if (gql.status !== 200) throw new ExportError("fetch-failed", 7, `POST /graphql: HTTP ${gql.status}`);
-  const gqlErrors = gql.body?.errors ?? [];
+  // GraphQL errors: an array of {message: string} is the documented shape,
+  // and a single object with a string message is the same shape unwrapped -
+  // normalise it to the array so it classifies identically (#2608). Any
+  // other drift (errors as a string, null/non-object entries, a missing or
+  // non-string message) is a shape this parser does not know: fail closed
+  // as unparseable instead of throwing a bare TypeError that main() would
+  // misclassify as fetch-failed, or silently ignoring the error.
+  const rawErrors = gql.body?.errors ?? [];
+  const gqlErrors = Array.isArray(rawErrors) ? rawErrors : [rawErrors];
+  for (const e of gqlErrors) {
+    if (!e || typeof e !== "object" || typeof e.message !== "string") {
+      throw new ExportError(
+        "unparseable",
+        6,
+        "POST /graphql: malformed errors shape (expected an array of {message: string})",
+      );
+    }
+  }
   if (gqlErrors.length) {
     const msg = gqlErrors.map((e) => e.message.split("\n")[0]).join(" ; ");
     if (/auth|permission|scope/i.test(msg)) throw scopeError("POST /graphql", 403);

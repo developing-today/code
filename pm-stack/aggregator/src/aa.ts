@@ -1093,7 +1093,9 @@ export function isAaSection(v: unknown): v is AaFeedSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<AaSection> & Partial<AaAbsentSection>;
   if (s.status === "absent")
-    return typeof s.reason === "string" && typeof s.generatedAt === "string" && Number.isFinite(Date.parse(s.generatedAt));
+    return (
+      typeof s.reason === "string" && typeof s.generatedAt === "string" && Number.isFinite(Date.parse(s.generatedAt))
+    );
   if (s.status !== "ok") return false;
   return (
     typeof s.generatedAt === "string" &&
@@ -1105,7 +1107,37 @@ export function isAaSection(v: unknown): v is AaFeedSection {
       (r) => typeof r === "object" && r !== null && typeof r.testRunKey === "string" && typeof r.family === "string",
     ) &&
     Array.isArray(s.configs) &&
-    Array.isArray(s.testRuns)
+    Array.isArray(s.testRuns) &&
+    s.testRuns.every(
+      (r) =>
+        typeof r === "object" &&
+        r !== null &&
+        (typeof (r as { snapshotDate?: unknown }).snapshotDate === "string" ||
+          (r as { snapshotDate?: unknown }).snapshotDate === null),
+    ) &&
+    // #2415: summarizeAa iterates thresholds and the /aa renderer maps
+    // sources — a section missing either array (or carrying entries the
+    // consumers cannot dereference) passed this gate and threw in the
+    // render instead of degrading to the not-collected banner. Gate each
+    // field at the depth its consumer dereferences it; empty arrays stay
+    // valid (a batch can legitimately carry none).
+    Array.isArray(s.thresholds) &&
+    s.thresholds.every(
+      (t) =>
+        typeof t === "object" &&
+        t !== null &&
+        typeof (t as { testRunKey?: unknown }).testRunKey === "string" &&
+        Number.isFinite((t as { target?: unknown }).target) &&
+        typeof (t as { usable?: unknown }).usable === "boolean",
+    ) &&
+    Array.isArray(s.sources) &&
+    s.sources.every(
+      (src) =>
+        typeof src === "object" &&
+        src !== null &&
+        typeof (src as { name?: unknown }).name === "string" &&
+        typeof (src as { kind?: unknown }).kind === "string",
+    )
   );
 }
 
