@@ -230,6 +230,36 @@ jobs:
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
 
+  docs-history:
+    name: "basic: docs-history check"
+    # #1865: a PR that changes a compendium section's prose must carry
+    # a change fragment naming the section (docs/changes/<slug>.md) or
+    # the trivial marker (docs:trivial label). The workflow trigger
+    # already paths-filters to pkgs/mcpx/**; the diff narrows to docs.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - name: docs-history check
+        working-directory: pkgs/mcpx
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" -- docs/ > "$RUNNER_TEMP/docs.diff"
+          trivial=""
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'docs:trivial') }}" = "true" ]; then
+            trivial="--trivial"
+          fi
+          go run ./tools/docs-history check --diff "$RUNNER_TEMP/docs.diff" $trivial docs/*.md
+
   lint:
     name: "basic: lint"
     runs-on: ubuntu-latest
