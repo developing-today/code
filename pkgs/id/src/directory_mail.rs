@@ -11,7 +11,8 @@ use std::io::{BufRead, BufReader, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use rand::RngExt as _;
@@ -36,7 +37,7 @@ pub trait MailSink: Debug + Send + Sync {
     /// # Errors
     ///
     /// Fails if the message could not be written or the program did not
-    /// finish successfully.
+    /// finish successfully before its deadline.
     fn send(&self, mail: &Mail) -> Result<()>;
 }
 
@@ -90,10 +91,8 @@ impl CommandSink {
     pub const fn new(program: PathBuf, args: Vec<String>) -> Self {
         Self { program, args }
     }
-}
 
-impl MailSink for CommandSink {
-    fn send(&self, mail: &Mail) -> Result<()> {
+    fn send_with_timeout(&self, mail: &Mail, timeout: Duration) -> Result<()> {
         let mut child = Command::new(&self.program)
             .args(&self.args)
             .env("ID_MAIL_TO", &mail.to)
@@ -104,11 +103,52 @@ impl MailSink for CommandSink {
             .stderr(Stdio::null())
             .spawn()
             .with_context(|| format!("run {}", self.program.display()))?;
-        let status = child.wait().context("wait for mail program")?;
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().context("wait for mail program")? {
+                if started.elapsed() >= timeout {
+                    bail!("mail program timed out after {timeout:?}");
+                }
+                break status;
+            }
+
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                if let Err(kill_error) = child.kill() {
+                    let reaper = thread::Builder::new()
+                        .name("id-mail-reaper".to_owned())
+                        .spawn(move || {
+                            let _ = child.wait();
+                        });
+                    if let Err(reaper_error) = reaper {
+                        bail!(
+                            "mail program timed out after {timeout:?}; failed to kill child: {kill_error}; failed to start reaper: {reaper_error}"
+                        );
+                    }
+                    bail!(
+                        "mail program timed out after {timeout:?}; failed to kill child: {kill_error}; reaping in background"
+                    );
+                }
+                child.wait().context("reap timed-out mail program")?;
+                bail!("mail program timed out after {timeout:?}");
+            }
+
+            thread::sleep(Duration::from_millis(10).min(remaining));
+        };
         if !status.success() {
             bail!("mail program exited with {status}");
         }
         Ok(())
+    }
+}
+
+// Keep the configurable program on the same 10-second failure budget as the
+// loopback SMTP sink; its child must not pin a directory request indefinitely.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl MailSink for CommandSink {
+    fn send(&self, mail: &Mail) -> Result<()> {
+        self.send_with_timeout(mail, COMMAND_TIMEOUT)
     }
 }
 
@@ -321,11 +361,39 @@ mod tests {
         assert!(sink.send(&sample()).is_err());
     }
 
+    #[test]
+    fn a_command_that_exceeds_its_deadline_is_killed_and_reaped() {
+        let sink = CommandSink::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_owned(), "exec sleep 30".to_owned()],
+        );
+        let started = Instant::now();
+        let error = sink
+            .send_with_timeout(&sample(), Duration::from_millis(50))
+            .unwrap_err();
+        assert!(error.to_string().contains("mail program timed out"));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed-out command took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_slow_finite_command_completes_before_its_deadline() {
+        let sink = CommandSink::new(
+            PathBuf::from("/bin/sh"),
+            vec!["-c".to_owned(), "exec sleep 0.05".to_owned()],
+        );
+        sink.send_with_timeout(&sample(), Duration::from_secs(2))
+            .unwrap();
+    }
+
     /// A relay that records every line it is sent, refusing the recipient if asked.
     fn fake_relay(refuse_recipient: bool) -> (SocketAddr, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut writer = stream;
