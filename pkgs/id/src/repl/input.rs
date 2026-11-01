@@ -346,7 +346,6 @@ fn has_trailing_placeholder(cmd: &str) -> bool {
     t == "-" || t.ends_with(" -")
 }
 
-
 /// `cmd` with every here-string (`<<<` plus its content) removed.
 /// Here-string content is literal data, not command syntax: a `-`
 /// payload (`<<< -`) is not a trailing placeholder, and a quoted
@@ -831,10 +830,12 @@ mod tests {
         for quote in ['\'', '"'] {
             let line = format!("echo $(exit 3) <<< {quote}literal |> -{quote} |> put name -");
             let error = preprocess_repl_line(&line).unwrap_err().to_string();
-            assert!(error.contains("trailing '-' content placeholder"), "{error}");
+            assert!(
+                error.contains("trailing '-' content placeholder"),
+                "{error}"
+            );
         }
     }
-
 
     #[test]
     fn test_pipe_rhs_here_string_dash_payload_is_literal() {
@@ -904,15 +905,10 @@ mod tests {
         // the placeholder error must win and the file must not exist:
         // rejection precedes every stage that executes shell code
         // (Codex review, PR #3096).
-        let marker = std::env::temp_dir().join(format!(
-            "mcpx-repl-side-effect-{}",
-            std::process::id()
-        ));
+        let marker =
+            std::env::temp_dir().join(format!("mcpx-repl-side-effect-{}", std::process::id()));
         let _ = std::fs::remove_file(&marker);
-        let line = format!(
-            "echo $(touch {}) |> put name -",
-            marker.display()
-        );
+        let line = format!("echo $(touch {}) |> put name -", marker.display());
         let result = preprocess_repl_line(&line);
         assert!(
             result

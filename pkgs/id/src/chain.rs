@@ -737,7 +737,7 @@ mod golden {
     use dcbor::{ByteString, CBOR};
     use p2panda_core::{AnyHeader, Hash, Header, SigningKey};
 
-    use super::{decode, sign, ChainExt, Event, DOMAIN_TAG};
+    use super::{ChainExt, DOMAIN_TAG, Event, decode, sign};
 
     /// The test key: the 32 bytes 00 through 1f. It is not a real key.
     fn key() -> SigningKey {

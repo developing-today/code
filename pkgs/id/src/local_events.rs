@@ -936,9 +936,11 @@ mod tests {
         assert_eq!(record.heads, vec![merged]);
         assert_eq!(record.revisions.len(), 4);
         // A parent that is not a revision of this note is refused before signing.
-        assert!(events
-            .revise_note(note, "text/markdown", b"bad", &[id(222)])
-            .is_err());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"bad", &[id(222)])
+                .is_err()
+        );
     }
 
     #[test]
@@ -975,9 +977,11 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, note);
         assert!(events.note_history(note).is_ok());
-        assert!(events
-            .revise_note(note, "text/markdown", b"second", &[note])
-            .is_ok());
+        assert!(
+            events
+                .revise_note(note, "text/markdown", b"second", &[note])
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1085,11 +1089,13 @@ mod tests {
         );
         // The returned ID is the final chunk's, the one that completes the clear.
         assert_eq!(chunks.last().unwrap().0, event);
-        assert!(events
-            .tags_on(subject)
-            .unwrap()
-            .iter()
-            .all(|claim| claim.name != "topic"));
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
         // Other names, and the same name on other subjects, are untouched.
         assert_eq!(events.tags_on(subject).unwrap().len(), 1);
         assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);

@@ -565,10 +565,7 @@ mod list_tests {
         // stdin auto-detect (a lone `path:name` spec does not exist
         // as a file, so it would be read as a stdin blob name and
         // parse_put_spec would never run).
-        run_cmd_success(
-            &["put", &put_spec, test_file.to_str().unwrap()],
-            tmp.path(),
-        );
+        run_cmd_success(&["put", &put_spec, test_file.to_str().unwrap()], tmp.path());
 
         let output = run_cmd_success_stdout(&["list"], tmp.path());
         let rows: Vec<_> = output.lines().filter(|line| line.contains('\t')).collect();
@@ -590,7 +587,10 @@ mod list_tests {
                 quoted_names += 1;
             }
         }
-        assert_eq!(quoted_names, 1, "the unsafe name must appear quoted: {output:?}");
+        assert_eq!(
+            quoted_names, 1,
+            "the unsafe name must appear quoted: {output:?}"
+        );
     }
 }
 

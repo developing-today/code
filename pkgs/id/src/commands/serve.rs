@@ -1582,7 +1582,11 @@ async fn run_gossip_loop(
                             if heartbeat.verify() {
                                 debug!(
                                     "presence heartbeat from {}: {} channel(s)",
-                                    heartbeat.node.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                                    heartbeat
+                                        .node
+                                        .iter()
+                                        .map(|b| format!("{b:02x}"))
+                                        .collect::<String>(),
                                     heartbeat.channels.len()
                                 );
                                 recv_presence.update(heartbeat);
@@ -1591,18 +1595,15 @@ async fn run_gossip_loop(
                             }
                         } else {
                             match postcard::from_bytes::<PeerAnnouncement>(&msg.content) {
-                            Ok(announcement) => {
-                                debug!(
-                                    "peer announcement from {}: blob_count={}",
-                                    announcement.node_id, announcement.blob_count
-                                );
-                                recv_discovery.update(announcement);
-                            }
-                                Err(e) => {
+                                Ok(announcement) => {
                                     debug!(
-                                        "failed to deserialize peer announcement: {}",
-                                        e
+                                        "peer announcement from {}: blob_count={}",
+                                        announcement.node_id, announcement.blob_count
                                     );
+                                    recv_discovery.update(announcement);
+                                }
+                                Err(e) => {
+                                    debug!("failed to deserialize peer announcement: {}", e);
                                 }
                             }
                         }
@@ -1750,10 +1751,7 @@ mod tests {
         // used, unchanged.
         let custom = PathBuf::from("shared").join("relocated.jsonl");
         assert_eq!(serve_groups_log_path(Some(custom.clone())), custom);
-        assert_eq!(
-            serve_groups_log_path(None),
-            PathBuf::from(GROUPS_FILE_NAME)
-        );
+        assert_eq!(serve_groups_log_path(None), PathBuf::from(GROUPS_FILE_NAME));
     }
 
     #[test]
@@ -2000,7 +1998,10 @@ mod tests {
         // outright. Either way the assertion holds.
         #[cfg(unix)]
         {
-            assert!(is_process_alive(1), "pid 1 exists and must read as alive (EPERM is not death)");
+            assert!(
+                is_process_alive(1),
+                "pid 1 exists and must read as alive (EPERM is not death)"
+            );
         }
     }
 
