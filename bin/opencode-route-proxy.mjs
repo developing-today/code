@@ -12,7 +12,9 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger), and makes ONE plain
+// quota demotion from the route_attempt ledger), expands provider
+// routes (experimental.provider_routes, #3256) into their member
+// providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
 // credential from the OpenCode credential store (opencode.db). The
 // caller's messages are forwarded as-is — never flattened into a
@@ -63,8 +65,27 @@ const DB_PATH =
 
 // Providers built into OpenCode itself (no block in opencode.jsonc):
 // instanceOf targets resolve here when the config has no block either.
+// These entries are DEFAULTS, merged UNDER any config block: a block
+// that sets its own baseURL/npm/models always wins, but an empty-shell
+// block (models only, or instanceOf only) no longer dead-ends a leaf
+// the way it did for openai / openai.alternate in #3256 — OpenCode
+// tolerates those blocks via its built-in catalog, so the proxy must
+// resolve the same endpoints. Endpoint sources (fork
+// developing-today/opencode, packages/ai): openai —
+// src/protocols/openai-chat.ts DEFAULT_BASE_URL (the models.dev
+// catalog entry for @ai-sdk/openai carries no api URL; the SDK's own
+// default applies); deepseek / groq / openrouter / meta — the
+// baseURL constant in src/providers/<id>.ts of the same package.
+// openai.alternate needs no entry of its own: it is instanceOf
+// openai, and the chain below inherits this default through the
+// base block.
 const BUILTIN_PROVIDERS = {
   "opencode-go": { options: { baseURL: "https://opencode.ai/zen/go/v1" } },
+  openai: { options: { baseURL: "https://api.openai.com/v1" } },
+  deepseek: { options: { baseURL: "https://api.deepseek.com/v1" } },
+  groq: { options: { baseURL: "https://api.groq.com/openai/v1" } },
+  openrouter: { options: { baseURL: "https://openrouter.ai/api/v1" } },
+  meta: { options: { baseURL: "https://api.meta.ai/v1" } },
 };
 
 // Cloudflare-fronted endpoints (opencode.ai among them) reject default
@@ -148,6 +169,8 @@ const loadConfig = () => {
     path,
     mtimeMs: st.mtimeMs,
     providers: raw.provider || {},
+    providerRoutes:
+      raw.experimental?.provider_routes || raw.provider_routes || {},
     routes: raw.experimental?.model_routes || raw.model_routes || {},
     windows: raw.experimental?.model_route_windows || raw.model_route_windows || {},
     disabled: new Set(raw.disabled_providers || []),
@@ -163,14 +186,30 @@ const expandEnv = (s) =>
       )
     : s;
 
+// One provider block with the built-in defaults merged under it:
+// config fields (options included) win key by key; the built-in
+// table only fills what the block omits.
+const mergedDef = (cfg, id) => {
+  const raw = cfg.providers[id];
+  const builtin = BUILTIN_PROVIDERS[id];
+  if (!raw) return builtin || null;
+  if (!builtin) return raw;
+  return {
+    ...builtin,
+    ...raw,
+    options: { ...(builtin.options || {}), ...(raw.options || {}) },
+    models: raw.models || builtin.models,
+  };
+};
+
 // Effective provider definition, following instanceOf chains into the
 // config's base block or the built-in table.
 const providerDef = (cfg, id) => {
-  let def = cfg.providers[id];
+  let def = mergedDef(cfg, id);
   const seen = new Set([id]);
   while (def && def.instanceOf && !seen.has(def.instanceOf)) {
     seen.add(def.instanceOf);
-    const base = cfg.providers[def.instanceOf] || BUILTIN_PROVIDERS[def.instanceOf];
+    const base = mergedDef(cfg, def.instanceOf);
     if (!base) break;
     def = {
       ...base,
@@ -179,8 +218,7 @@ const providerDef = (cfg, id) => {
       models: def.models || base.models,
     };
   }
-  if (!def) def = BUILTIN_PROVIDERS[id] || null;
-  return def;
+  return def || null;
 };
 
 const providerBaseURL = (cfg, id) => {
@@ -213,7 +251,12 @@ const credentialKey = (providerId) => {
     if (row?.value) {
       try {
         const parsed = JSON.parse(row.value);
+        // API credentials store { key }; OAuth credentials (the plan
+        // providers, e.g. openai) store { access } instead — that
+        // access token is the member's bearer credential (#3256).
         if (typeof parsed?.key === "string" && parsed.key) key = parsed.key;
+        else if (typeof parsed?.access === "string" && parsed.access)
+          key = parsed.access;
       } catch {
         key = String(row.value);
       }
@@ -422,9 +465,75 @@ const weightedOrder = (targets, weights) => {
   return out;
 };
 
+// Provider routes (#3256; fork grammar from developing-today/opencode
+// PR #1134, experimental.provider_routes): a named group of concrete
+// providers — { providers: [...], selection, weights } — that a route
+// targets as an ordinary leaf, `<group>/<model>`. Resolution expands
+// the group, per model, into its members' concrete leaves for that
+// model, honoring the group's own selection: ordered = member order,
+// round-robin = rotation per group+model, weighted = weighted draw
+// with weights keyed by member provider id (re-keyed to
+// `<member>/<model>` for weightedOrder). The consuming route's
+// selection/weights apply to the group target as written, exactly as
+// for a nested route: this expansion runs inline at the target's
+// position in the route's ordered target list.
+// A concrete provider always wins a reference: an id that names a
+// config provider block (or a built-in) is never treated as a group.
+const providerRouteDef = (cfg, id) => {
+  if (cfg.providers[id] || BUILTIN_PROVIDERS[id]) return null;
+  const g = cfg.providerRoutes?.[id];
+  if (!g || !Array.isArray(g.providers)) return null;
+  return g;
+};
+
+// Expand one provider-route target into `out` (same leaf shape as
+// resolveRoute pushes). Member rules, mirroring the fork's v1:
+// duplicates drop; a member naming another provider route or
+// opencode-route drops (no nesting); an unknown member contributes
+// no leaves; disabled members are skipped; a member whose catalog
+// (its effective models map, instanceOf chains included) does not
+// offer the target model is skipped for this dispatch.
+const expandProviderRoute = (cfg, t, variant, out) => {
+  const group = providerRouteDef(cfg, t.providerId);
+  if (!group || cfg.disabled.has(t.providerId)) return;
+  const members = [...new Set(group.providers)].filter(
+    (m) =>
+      typeof m === "string" &&
+      m !== "opencode-route" &&
+      (cfg.providers[m] || BUILTIN_PROVIDERS[m]) &&
+      !cfg.disabled.has(m),
+  );
+  let leaves = [];
+  for (const m of members) {
+    const models = providerDef(cfg, m)?.models;
+    if (models && !Object.hasOwn(models, t.modelKey)) continue;
+    leaves.push({
+      providerId: m,
+      modelKey: t.modelKey,
+      variant,
+      refBase: `${m}/${t.modelKey}`,
+    });
+  }
+  if (group.selection === "round-robin")
+    leaves = rotate(leaves, `provider-route:${t.providerId}/${t.modelKey}`);
+  else if (group.selection === "weighted") {
+    const weights = {};
+    for (const [member, w] of Object.entries(group.weights || {}))
+      weights[`${member}/${t.modelKey}`] = w;
+    leaves = weightedOrder(leaves, weights);
+  }
+  for (const leaf of leaves)
+    out.push({
+      providerId: leaf.providerId,
+      modelKey: leaf.modelKey,
+      variant: leaf.variant,
+    });
+};
+
 // Resolve a route to its ordered leaf candidates:
-// [{ providerId, modelKey, variant }]. Nested routes recurse; disabled
-// providers are skipped; cycles are cut.
+// [{ providerId, modelKey, variant }]. Nested routes recurse; provider
+// routes expand to their member providers; disabled providers are
+// skipped; cycles are cut.
 const resolveRoute = (cfg, routeId, variantIn = null) => {
   const now = nowMs();
   const out = [];
@@ -446,6 +555,8 @@ const resolveRoute = (cfg, routeId, variantIn = null) => {
       if (t.variantMap && v && t.variantMap[v]) v = t.variantMap[v];
       if (t.variant) v = t.variant;
       if (t.providerId === "opencode-route") expand(t.modelKey, v, seen);
+      else if (providerRouteDef(cfg, t.providerId))
+        expandProviderRoute(cfg, t, v, out);
       else if (!cfg.disabled.has(t.providerId))
         out.push({ providerId: t.providerId, modelKey: t.modelKey, variant: v });
     }
