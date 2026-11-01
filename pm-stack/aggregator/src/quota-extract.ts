@@ -277,7 +277,7 @@ const extractCommandCode: Extractor = (s, now) => {
   // windows rather than presenting the older read as current (#3410).
   const stale = segments.some(
     (seg) =>
-      seg.date > latest.date &&
+      (seg.date > latest.date || (seg.date === latest.date && seg.index > latest.index)) &&
       parseRead(seg.text) === null &&
       /monthly/i.test(seg.text) &&
       /\d+(?:\.\d+)?\s*(%|percent)/i.test(seg.text),

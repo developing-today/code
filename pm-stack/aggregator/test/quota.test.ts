@@ -157,6 +157,15 @@ describe("quota extractors", () => {
     expect(p.windows).toEqual([]);
   });
 
+  test("command code: a later same-day unparseable read also invalidates the earlier one (#3410)", () => {
+    const sameDay = `
+### Command Code
+- **Usage / dates:** **Dated read (2026-10-30 09:00 CDT): monthly limit 55% used; weekly limit 20%; 5-hour limit 3%.** **Dated update (2026-10-30 12:00 CDT): monthly limit 100 percent used (the console printed the figure in words).**
+`;
+    const p = extractQuotaPools(sameDay, NOW).find((x) => x.id === "commandcode:go")!;
+    expect(p.windows).toEqual([]);
+  });
+
   test("command code never emits the top-up balance as quota (#3410)", () => {
     const balanceOnly = `
 ### Command Code
