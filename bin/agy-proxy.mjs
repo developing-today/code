@@ -724,14 +724,25 @@ const takeSpare = (fullName) => {
 const evictLiveWorkersIfNeeded = () => {
   const now = Date.now();
   for (const [lk, w] of liveWorkers) {
-    if (w.dead || now - w.lastUsedAt > SESSION_IDLE_TTL_MS) {
+    if (w.dead) {
+      w.kill();
+      liveWorkers.delete(lk);
+      continue;
+    }
+    // lastUsedAt is refreshed when a turn finishes, so an over-TTL worker
+    // can still be actively serving a long turn. Keep it until that turn
+    // settles; the next sweep can then apply the refreshed idle timestamp.
+    if (w.turnWaiter !== null) continue;
+    if (now - w.lastUsedAt > SESSION_IDLE_TTL_MS) {
       w.kill();
       liveWorkers.delete(lk);
     }
   }
-  const live = [...liveWorkers.entries()].sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
-  while (live.length >= MAX_LIVE_WORKERS) {
-    const [lk, w] = live.shift();
+  const idle = [...liveWorkers.entries()]
+    .filter(([, w]) => w.turnWaiter === null)
+    .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);
+  while (liveWorkers.size >= MAX_LIVE_WORKERS && idle.length > 0) {
+    const [lk, w] = idle.shift();
     w.kill();
     liveWorkers.delete(lk);
   }
