@@ -144,6 +144,12 @@ a { color: #58a6ff; }
 .badge.stalled { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.blocked { background: #f8514933; border-color: #f85149; color: #f85149; }
 .strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.today-health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0 0 12px; }
+.today-health-link { min-width: 0; border: 1px solid #30363d; border-radius: 7px; padding: 5px 8px; background: #161b22; text-decoration: none; overflow-wrap: anywhere; }
+.today-health-link.ok { border-color: #2ea04388; color: #3fb950; }
+.today-health-link.warn { border-color: #d29922; color: #e3b341; }
+.today-health-link.unknown { border-color: #6e7681; color: #c9d1d9; }
+@media (max-width: 480px) { .today-health-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; align-items: start; }
 .col { border: 1px solid #30363d; border-radius: 8px; padding: 8px; background: #0d1117; }
 .col h2 { margin: 2px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #8b949e; }
@@ -2783,12 +2789,74 @@ ${attentionFragment("sessions", skel("sessions"))}`;
 
 // --- Today view (slice 2, #898 §4) -------------------------------------------
 
+function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnavailable: boolean): string {
+  const compactAge = (ageMs: number) => ageMsText(ageMs).replace(/ old$/, "");
+  const stackServices = health?.services.filter((service) =>
+    service.def.probe !== "feed" && service.def.probe !== "section" && service.def.probe !== "off",
+  ) ?? [];
+  const stackUp = stackServices.filter((service) => service.ok === true).length;
+  const stackDown = stackServices.filter((service) => service.ok === false);
+  const stackUnknown = stackServices.filter((service) => service.ok === null);
+  const stackText =
+    !health || health.mode !== "live" || stackServices.length === 0
+      ? "stack unknown"
+      : `stack ${stackUp}/${stackServices.length} up${stackDown.length ? ` · ${stackDown.map((service) => service.def.name).join(", ")} down` : ""}${stackUnknown.length ? ` · unknown: ${stackUnknown.map((service) => service.def.name).join(", ")}` : ""}`;
+  const stackState = !health || health.mode !== "live" || stackServices.length === 0 ? "unknown" : stackDown.length ? "warn" : stackUnknown.length ? "unknown" : "ok";
+
+  const feedAge = health?.feed.ageMs;
+  const feedDown = health?.services.some((service) => service.def.id === "fleet-feed" && service.ok === false) ?? false;
+  const feedState = feedDown || (feedAge !== null && feedAge !== undefined && feedAge > 15 * 60_000)
+    ? "warn"
+    : feedAge === null || feedAge === undefined
+      ? "unknown"
+      : "ok";
+  const feedText = feedAge === null || feedAge === undefined ? "feed unknown" : `feed ${compactAge(feedAge)}`;
+
+  const orchestration = health?.jobs.orchestration;
+  const orchestrationState =
+    !orchestration || orchestration.state === "unknown"
+      ? "unknown"
+      : orchestration.state === "live" && orchestration.ageMs !== undefined
+        ? "ok"
+        : "warn";
+  const orchestrationText =
+    !orchestration || orchestration.state === "unknown"
+      ? "orchestrator unknown"
+      : orchestration.state === "live"
+        ? orchestration.ageMs === undefined
+          ? "orchestrator age unknown"
+          : `orchestrator ${compactAge(orchestration.ageMs)}`
+        : `orchestrator ${orchestration.state}`;
+
+  const quotaErrors = quota.gatherer
+    ? quota.gatherer.providers.filter((provider) => provider.state === "error").length
+    : quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error").length;
+  const quotaState = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0) ? "unknown" : quotaErrors ? "warn" : quota.gatherer?.ok === false ? "unknown" : "ok";
+  const quotaText = quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+    ? "quota unknown"
+    : quotaErrors
+      ? `quota errors ${quotaErrors}`
+      : quota.gatherer?.ok === false
+        ? "quota reads unknown"
+        : "quota reads OK";
+
+  const items = [
+    { text: stackText, state: stackState, href: "/health", title: "Stack service health" },
+    { text: feedText, state: feedState, href: "/health", title: "Fleet feed freshness" },
+    { text: orchestrationText, state: orchestrationState, href: "/health", title: "Orchestration freshness" },
+    { text: quotaText, state: quotaState, href: "/quota", title: "Quota read status" },
+  ];
+  return `<div class="today-health-strip" role="group" aria-label="System health">${items.map((item) => `<a class="today-health-link ${item.state}" href="${item.href}" title="${esc(item.title)}">${esc(item.text)}</a>`).join("")}</div>`;
+}
+
 /** The today page's body alone (#1444 fragment payload). */
 export function renderTodayBody(
   today: TodayView,
   attention: AttentionView,
   quota: QuotaView,
   coverage: SourceCoverage[],
+  health: HealthView | null = null,
+  quotaUnavailable = false,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const alerts: string[] = [];
@@ -2848,7 +2916,7 @@ export function renderTodayBody(
         })
         .join("")
     : `<p class="muted">No projects to measure yet.</p>`;
-  return `${provenanceLine}${alerts.join("")}
+  return `${todayHealthStrip(health, quota, quotaUnavailable)}${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
 ${actions}${coverageHtml(coverage)}`;
@@ -2862,10 +2930,12 @@ export function renderToday(
   coverage: SourceCoverage[],
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  health: HealthView | null = null,
+  quotaUnavailable = false,
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage)}`,
+    `<h1>Today</h1>${renderTodayBody(today, attention, quota, coverage, health, quotaUnavailable)}`,
     provenance,
     "/today",
     "",
@@ -2874,10 +2944,16 @@ export function renderToday(
 }
 
 /** The Datastar shell for /today (#1444). */
-export function renderTodayShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderTodayShell(
+  provenance: Provenance,
+  detail: ProvenanceDetail | undefined,
+  health: HealthView | null,
+  quota: QuotaView,
+  quotaUnavailable = false,
+): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')"><div class="skel">Loading today…</div></div>`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>`,
     provenance,
     "/today",
     "",
