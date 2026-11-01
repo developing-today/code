@@ -22,6 +22,12 @@
 //! genesis and concurred, `Agreed` when both claims concur on outcome
 //! and final-state hash, `Disputed` when both claims exist and differ
 //! (the wrong-winner negative case can never compute `Agreed`).
+//!
+//! Reconstruction is admission, not deserialization: derive conclusions from
+//! signature-verified authors and compare claims with the selected agreement.
+//! Reject, ignore, or dispute inconsistent input according to the API's rules;
+//! never silently repair it or let an input's own claims establish authority.
+//! New fields and restore paths must be checked against verifier-owned state.
 
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
