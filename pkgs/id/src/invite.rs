@@ -91,11 +91,11 @@ impl Invite {
             match field {
                 "key" => {
                     ensure!(key.is_none(), "duplicate key field in invite query");
-                    key = Some(value);
+                    key = Some(decode(value)?);
                 }
                 "node" => {
                     ensure!(node.is_none(), "duplicate node field in invite query");
-                    node = Some(value);
+                    node = Some(decode(value)?);
                 }
                 "name" => {
                     ensure!(name.is_none(), "duplicate name field in invite query");
@@ -107,7 +107,7 @@ impl Invite {
         let key = key.context("an invite has no key")?;
         let node = node.context("an invite has no node")?;
         let name = name.context("an invite has no name")?;
-        Self::new(key, node, &name)
+        Self::new(&key, &node, &name)
     }
 }
 
