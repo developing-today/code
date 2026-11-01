@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""test_drain_queue.py — regression tests for #3219 ack discipline
-and the #3326 owner allowlist.
+"""test_drain_queue.py — regression tests for #3219 ack discipline,
+the #3326 owner allowlist, and #3476 pagination.
 
 Drives the real drain_queue.main() with a stub Worker and a stub
 fetch_mirrors.fetch_repo, against a temp backup root:
@@ -47,6 +47,8 @@ class Harness:
         self.fetch_results = fetch_results  # repo -> "ok"|"fail"|"missing"
         self.fetch_calls = []
         self.ack_calls = []
+        self.queue_paths = []
+        self.queue_pages = None
         self._saved = (drain_queue.worker_req, drain_queue.load_config,
                        drain_queue.backup_root, fetch_mirrors.fetch_repo)
         drain_queue.worker_req = self._worker_req
@@ -62,6 +64,9 @@ class Harness:
         if path.endswith("/ack"):
             self.ack_calls.append(payload["ids"])
             return {}
+        self.queue_paths.append(path)
+        if self.queue_pages is not None:
+            return self.queue_pages[path]
         return {"events": self.events}
 
     def _fetch_repo(self, root, repo, state):
@@ -246,5 +251,30 @@ check("foreign-chronic: streak untouched",
       h.state()["drain_fail::stranger/pwned"]["count"]
       == drain_queue.CHRONIC_DRAIN_FAILURES - 1)
 check("foreign-chronic: no DRAIN-CHRONIC", "DRAIN-CHRONIC" not in h.fetch_log())
+
+
+# 14. cursor pagination reaches healthy events beyond 500 retained failures;
+#     only the successful repository is acked.
+failing_events = [ev(f"failed-{i}", "owner/failing") for i in range(500)]
+healthy_event = ev("healthy-later", "owner/healthy")
+h = Harness([], ["owner/failing", "owner/healthy"],
+            {"owner/failing": "fail", "owner/healthy": "ok"})
+h.queue_pages = {
+    "/queue": {"events": failing_events, "cursor": "page two/+", "list_complete": False},
+    "/queue?cursor=page+two%2F%2B": {
+        "events": [healthy_event], "cursor": None, "list_complete": True},
+}
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = h.run()
+check("pagination: exit 0", rc == 0)
+check("pagination: requests both cursor pages",
+      h.queue_paths == ["/queue", "/queue?cursor=page+two%2F%2B"])
+check("pagination: healthy later repo fetched", "owner/healthy" in h.fetch_calls)
+check("pagination: all retained failures stay unacked",
+      h.acked_ids() == ["healthy-later"])
+summary = json.loads(buf.getvalue().strip().splitlines()[-1])
+check("pagination: all 501 events handled in one run", summary["events"] == 501)
+
 
 print(f"\n{sum(1 for _, ok in PASS if ok)}/{len(PASS)} checks passed")
