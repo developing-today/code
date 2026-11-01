@@ -53,3 +53,41 @@ func TestRequestedCallTimeoutThreading(t *testing.T) {
 		t.Fatal("bare context gained a per-call request")
 	}
 }
+
+// The header value a script's calls ride on is exactly the caller's
+// header-origin overrides -- never the daemon's own layers -- so a
+// value can be forwarded to the generated client without leaking
+// daemon configuration into a script's environment.
+func TestCallSettingsHeaderValue(t *testing.T) {
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		set:    settings.NewSet(sch),
+		logger: log.New(io.Discard, "", 0),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/exec", nil)
+	req.Header.Set(CallSettingsHeader, `{"pool.callTimeout":"5s"}`)
+	if got := callSettingsHeaderValue(s.callSettings(req)); got != `{"pool.callTimeout":"5s"}` {
+		t.Fatalf("header request: got %q, want the header JSON back", got)
+	}
+
+	plain := httptest.NewRequest(http.MethodPost, "/v1/exec", nil)
+	if got := callSettingsHeaderValue(s.callSettings(plain)); got != "" {
+		t.Fatalf("no header: got %q, want empty", got)
+	}
+
+	own := settings.NewSet(sch).WithOverrides(map[string]string{"pool.callTimeout": "5s"}, "test")
+	if got := callSettingsHeaderValue(own); got != "" {
+		t.Fatalf("daemon-layer override leaked into the forwarded header: %q", got)
+	}
+
+	if got := callSettingsHeaderValue(nil); got != "" {
+		t.Fatalf("nil set: got %q, want empty", got)
+	}
+	if got := callSettingsHeaderValue(callSettingsFrom(withCallSettings(context.Background(), s.callSettings(req)))); got != `{"pool.callTimeout":"5s"}` {
+		t.Fatalf("context round trip: got %q", got)
+	}
+}

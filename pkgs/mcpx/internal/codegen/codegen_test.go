@@ -403,3 +403,18 @@ func TestArgsTypeMarksRuleRequiredAsMandatory(t *testing.T) {
 		t.Fatal("an anyOf branch requiring a prop must not demand the argument object")
 	}
 }
+
+// #1864 item 4: the generated clients carry the run's call settings
+// (MCPX_SETTINGS, set by the daemon or the CLI from the caller's
+// X-Mcpx-Settings header) back to the daemon on every call, so a
+// per-call pool.callTimeout governs a script's calls too.
+func TestGeneratedClientsForwardCallSettings(t *testing.T) {
+	ts := codegen.Module(nil, "http://127.0.0.1:0", "session")
+	if n := strings.Count(ts, `"x-mcpx-settings": env("MCPX_SETTINGS")`); n < 2 {
+		t.Fatalf("TypeScript client: x-mcpx-settings present %d times, want at least 2 (__call and batch)", n)
+	}
+	py := codegen.PythonModule(nil, "http://127.0.0.1:0", "session")
+	if !strings.Contains(py, `("x-mcpx-settings", os.environ.get("MCPX_SETTINGS", ""))`) {
+		t.Fatal("Python client: x-mcpx-settings header missing")
+	}
+}

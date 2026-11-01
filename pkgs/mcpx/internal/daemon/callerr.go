@@ -22,6 +22,40 @@ func withCallSettings(ctx context.Context, cs *settings.Set) context.Context {
 	return context.WithValue(ctx, callSetKey{}, cs)
 }
 
+// callSettingsFrom returns the call settings carried on ctx, or nil.
+func callSettingsFrom(ctx context.Context) *settings.Set {
+	cs, _ := ctx.Value(callSetKey{}).(*settings.Set)
+	return cs
+}
+
+// callSettingsHeaderValue renders the overrides in cs that arrived via
+// the call-settings header back into that header's JSON shape, so a
+// value a caller sent for one request can ride along to the calls a
+// script makes on that request's behalf (via MCPX_SETTINGS and the
+// generated client's x-mcpx-settings header). Only header-origin
+// values are the caller's; the daemon's own layers stay home.
+func callSettingsHeaderValue(cs *settings.Set) string {
+	if cs == nil {
+		return ""
+	}
+	ov := map[string]string{}
+	for _, decl := range cs.Schema().All() {
+		v, ok := cs.Value(decl.Path)
+		if !ok || v.Origin.Layer != settings.LayerRuntime || v.Origin.Detail != CallSettingsHeader {
+			continue
+		}
+		ov[decl.Path] = v.Raw
+	}
+	if len(ov) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ov)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // withRequestedCallTimeout threads a caller's requested pool.callTimeout
 // (#1864 item 4) from the request's call settings onto ctx, where the pool
 // reads it. Only a value that arrived in the call-settings header counts:

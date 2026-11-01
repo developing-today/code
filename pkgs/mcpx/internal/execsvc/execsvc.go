@@ -500,6 +500,14 @@ type Request struct {
 	// RunID, when set, is used instead of a fresh one: the daemon registers
 	// a script's run for question correlation before the script starts.
 	RunID string
+	// CallSettings, when set, is the caller's call-settings header JSON
+	// (X-Mcpx-Settings) for the request that asked for this run. It is
+	// handed to the script as MCPX_SETTINGS so the generated client's
+	// own calls carry it back to the daemon -- a per-call value the
+	// caller set for the run (e.g. a shorter pool.callTimeout, #1864
+	// item 4) governs the calls the run makes, not just the run's own
+	// request.
+	CallSettings string
 }
 
 // Sink receives frames in order. Returning an error stops the run, which is
@@ -568,8 +576,14 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		// whatever started the daemon.
 		Stdin: strings.NewReader(opts.Stdin),
 	}
-	if req.RunID != "" {
-		ropts.Env = map[string]string{"MCPX_RUN": req.RunID}
+	if req.RunID != "" || req.CallSettings != "" {
+		ropts.Env = map[string]string{}
+		if req.RunID != "" {
+			ropts.Env["MCPX_RUN"] = req.RunID
+		}
+		if req.CallSettings != "" {
+			ropts.Env["MCPX_SETTINGS"] = req.CallSettings
+		}
 	}
 	if ph := opts.Phases; ph != nil {
 		ropts.Phases = runner.Phases{Before: ph.Before, Prefix: ph.Prefix,

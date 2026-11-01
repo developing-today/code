@@ -991,6 +991,11 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Env: map[string]string{
 			"MCPX_SESSION": sessionKey,
 			"MCPX_RUN":     runID,
+			// The caller's call-scoped settings (--pool-call-timeout
+			// and friends) ride along so the generated client's calls
+			// carry them back to the daemon as x-mcpx-settings,
+			// exactly as a daemon-run script's do (#1864 item 4).
+			"MCPX_SETTINGS": c.callSettings,
 			// Whether artifact({path}) may hand the daemon a path instead of
 			// bytes. A socket is the evidence that the daemon shares this
 			// filesystem; a remote endpoint has none.

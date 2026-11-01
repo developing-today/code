@@ -714,6 +714,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
         "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
         "x-mcpx-ephemeral": env("MCPX_EPHEMERAL"),
         "x-mcpx-run": env("MCPX_RUN"),
+        "x-mcpx-settings": env("MCPX_SETTINGS"),
         "x-mcpx-input": env("MCPX_INPUT"),
       },
       body: JSON.stringify({ server, tool, args: args ?? {} }),
@@ -1437,6 +1438,7 @@ export async function batch(
       "x-mcpx-pid": env("MCPX_PID"),
       "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
       "x-mcpx-run": env("MCPX_RUN"),
+      "x-mcpx-settings": env("MCPX_SETTINGS"),
     },
     body: JSON.stringify({
       calls: calls.map((c) => ({
