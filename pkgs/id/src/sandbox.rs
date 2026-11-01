@@ -1265,6 +1265,64 @@ mod tests {
     }
 
     #[test]
+    fn bytes_per_frame_baseline_for_checked_in_examples() {
+        // F11.9 baseline: the full-screen frame size each checked-in example
+        // produces at rest (seed 7), at the two reference viewports. These
+        // numbers are the baseline Phase 12 delta frames (F12.11) must beat;
+        // the committed table lives in
+        // doc/2026-10-27T00-00-00Z_baseline_bytes_per_frame/README.md.
+        // Rerun with:
+        //   cargo test -p id --lib bytes_per_frame_baseline -- --nocapture
+        const EXAMPLES: [(&str, &[u8]); 7] = [
+            ("lounge", include_bytes!("../examples/lounge/lounge.wasm")),
+            (
+                "roc-chat",
+                include_bytes!("../examples/roc-chat/roc-chat.wasm"),
+            ),
+            (
+                "roc-counter",
+                include_bytes!("../examples/roc-counter/counter.wasm"),
+            ),
+            (
+                "roc-grid",
+                include_bytes!("../examples/roc-grid/roc-grid.wasm"),
+            ),
+            (
+                "roc-screen",
+                include_bytes!("../examples/roc-screen/roc-screen.wasm"),
+            ),
+            (
+                "territory",
+                include_bytes!("../examples/territory/territory.wasm"),
+            ),
+            (
+                "tic-tac-toe",
+                include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+            ),
+        ];
+        println!("| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |");
+        for (name, wasm) in EXAMPLES {
+            let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+            let mut live = runner.instantiate(7).unwrap();
+            let has_layout = live.layout.is_some();
+            let small = live.layout_at(80, 24).unwrap();
+            let large = live.layout_at(200, 60).unwrap();
+            println!(
+                "| {name} | {} | {} | {} |",
+                if has_layout { "yes" } else { "no (view fallback)" },
+                small.len(),
+                large.len()
+            );
+            if !has_layout {
+                // Without `plaza_layout`, layout_at falls back to view():
+                // the frame is the same bytes at both viewports.
+                assert_eq!(small, large, "{name}: view fallback must not reflow");
+                assert_eq!(small, live.view().unwrap(), "{name}: fallback is view()");
+            }
+        }
+    }
+
+    #[test]
     fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
