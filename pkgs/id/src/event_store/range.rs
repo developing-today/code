@@ -407,6 +407,20 @@ fn put_varint(out: &mut Vec<u8>, mut x: usize) {
     out.push(x as u8);
 }
 
+/// Refuses a bound longer than a key. The decoder rejects such bounds
+/// (see Reader::entry), so an encoder that wrote one would produce a
+/// frame its own reader refuses — and a bound of 256+ bytes would wrap
+/// the u8 length prefix encode_entry writes and garble the entry
+/// stream. Every encode-side gate shares this check (#2595).
+fn check_bound_len(bound: &[u8]) -> Result<()> {
+    ensure!(
+        bound.len() <= KEY_LEN,
+        "a bound of {} bytes is longer than a key ({KEY_LEN} bytes)",
+        bound.len()
+    );
+    Ok(())
+}
+
 fn encode_entry(e: &Entry) -> Vec<u8> {
     let mut out = Vec::new();
     match &e.upper {
@@ -439,12 +453,16 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Refuses an entry that does not fit a frame by itself.
+/// Refuses an entry that does not fit a frame by itself, and an entry
+/// whose upper bound is longer than a key.
 pub fn frames(msg: &[Entry], budget: usize) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let mut body: Vec<u8> = Vec::new();
     let mut count = 0usize;
     for entry in msg {
+        if let Some(bound) = &entry.upper {
+            check_bound_len(bound)?;
+        }
         let encoded = encode_entry(entry);
         ensure!(
             encoded.len() + FRAME_HEADER_RESERVE <= budget,
@@ -572,7 +590,8 @@ pub fn frame_entry_count(bytes: &[u8]) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Refuses a bound that does not increase, and an entry after +infinity.
+/// Refuses a bound that does not increase, a bound longer than a key,
+/// and an entry after +infinity.
 pub fn check_bounds(msg: &[Entry]) -> Result<()> {
     let mut prev: Option<&[u8]> = None;
     let mut ended = false;
@@ -581,6 +600,7 @@ pub fn check_bounds(msg: &[Entry]) -> Result<()> {
         match entry.upper.as_deref() {
             None => ended = true,
             Some(bound) => {
+                check_bound_len(bound)?;
                 if let Some(p) = prev {
                     ensure!(bound > p, "bounds do not increase");
                 }
@@ -999,6 +1019,35 @@ mod tests {
         assert!(check_bounds(&[skip(Some(vec![3])), skip(Some(vec![2]))]).is_err());
         assert!(check_bounds(&[skip(Some(vec![3])), skip(Some(vec![3]))]).is_err());
         assert!(check_bounds(&[skip(None), skip(Some(vec![1]))]).is_err());
+    }
+
+    /// #2595: a bound of exactly KEY_LEN round-trips; anything longer is
+    /// refused at both encode-side gates, including lengths that would
+    /// wrap the u8 length prefix (>= 256).
+    #[test]
+    fn test_bounds_over_key_len_are_refused_at_both_gates() {
+        let skip = |upper: Option<Vec<u8>>| Entry {
+            upper,
+            mode: Mode::Skip,
+        };
+        let ok = skip(Some(vec![0xAB; KEY_LEN]));
+        assert!(check_bounds(&[ok.clone()]).is_ok());
+        let wire = frames(&[ok], 4096).unwrap();
+        let (_, back) = decode_frame(&wire[0]).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].upper.as_ref().unwrap().len(), KEY_LEN);
+        for len in [KEY_LEN + 1, 100, 255, 256, 300] {
+            let e = skip(Some(vec![0xAB; len]));
+            let err = frames(&[e.clone()], 4096).unwrap_err();
+            assert!(
+                err.to_string().contains(&len.to_string()),
+                "frames error names the bound length {len}: {err}"
+            );
+            assert!(
+                check_bounds(&[e]).is_err(),
+                "check_bounds refuses a {len}-byte bound"
+            );
+        }
     }
 
     #[test]
