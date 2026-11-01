@@ -5573,7 +5573,7 @@ ${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") :
 ${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
 ${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
 <h2>Ledger — recent transitions</h2>
-<table><tr><th>at</th><th>kind</th><th>incident</th><th>source · key</th></tr>${events}</table>`;
+<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
   const script = `<script>
 const VAPID = ${JSON.stringify(vapidPublicKey)};
 async function post(path) { const r = await fetch(path, { method: "POST" }); if (!r.ok) alert("failed: HTTP " + r.status); location.reload(); }
