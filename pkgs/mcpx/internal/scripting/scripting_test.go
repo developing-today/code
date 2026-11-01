@@ -245,6 +245,13 @@ func TestValidationRegexLiteralsAreOpaque(t *testing.T) {
 		{"division inside nested class heritage with arrow body in nested object", "class C extends {x:[class extends {x:{f:()=>{}}}.x {} / 2]}.x {}\n"},
 		{"division after nested class heritage array operand with object second", "class C extends {x:[class extends [0,{C:Object}][1].C {} / 2]}.x {}\n"},
 		{"division after nested class heritage array operand with object first", "class C extends {x:[class extends [{C:Object},0][0].C {} / 2]}.x {}\n"},
+		{"division after nested class with class-expression heritage in heritage array", "class C extends {x:[class extends class {} {} / 2]}.x {}\n"},
+		{"division after nested class with function-expression heritage in heritage array", "class C extends {x:[class extends function(){} {} / 2]}.x {}\n"},
+		{"division after nested class with named class-expression heritage in heritage array", "class C extends {x:[class extends class D {} {} / 2]}.x {}\n"},
+		{"division after class expression with class-expression heritage", "const C = class extends class {} {} / 2;\n"},
+		{"division after class expression with function-expression heritage", "const C = class extends function() {} {} / 2;\n"},
+		{"division after instantiation with block comment before angle bracket", "const q = f1/*c*/<number> / 2;\n"},
+		{"division after instantiation with two block comments before angle bracket", "const q = f1/*a*//*b*/<number> / 2;\n"},
 		{"division after TypeScript instantiation on middle-dot digit-ending identifier", "const q = f\u00b71<number> / 2;\n"},
 		{"division after TypeScript instantiation on middle-dot digit-ending member", "const q = obj.f\u00b71<number> / 2;\n"},
 		{"division after TypeScript instantiation on ano-teleia digit-ending identifier", "const q = f\u03871<number> / 2;\n"},
@@ -417,5 +424,23 @@ func TestResolveProviderNamedDrivers(t *testing.T) {
 	}
 	if pAuto.Name() != "opencode" && pAuto.Name() != "claude" {
 		t.Fatalf("expected auto provider to be opencode or claude, got %s", pAuto.Name())
+	}
+}
+
+// The numeric-token guard consults the recorded block-comment
+// ranges for every '<': with a long comment history it must stay
+// correct (and, since the ranges are binary-searched, fast) --
+// Codex P2 on #3354 measured the old linear scan at ~25x slower
+// on 60k comments.
+func TestValidationNumericGuardWithLongCommentHistory(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("let a = 1, b = 2;\n")
+	for i := 0; i < 20000; i++ {
+		b.WriteString("/*c*/ a < b;\n")
+	}
+	b.WriteString("const q = f1<number> / 2;\n")
+	res := scripting.Validate(b.String(), nil)
+	if !res.Valid {
+		t.Fatalf("expected valid script, got: %s", res.Summary())
 	}
 }

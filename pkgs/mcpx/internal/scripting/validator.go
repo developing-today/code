@@ -472,7 +472,16 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 					if lastIdent == "class" {
 						inClassHeritage = true
 					}
-					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) {
+					// A class/function keyword right after 'extends'
+					// heads a heritage operand: always an expression,
+					// never a declaration, so it takes a pending
+					// frame even though 'extends' is not an
+					// expression keyword -- otherwise its body
+					// brace consumes the containing class
+					// expression's frame (Codex P2 on #3354:
+					// class C extends {x:[class extends class {}
+					// {} / 2]}.x {} and the function permutation).
+					if isExprPositionStart(lastIdentPrev, prevIdent, prevIdentPrev, prevIdentDotRun) || (prevIdent == "extends" && prevIdentPrev != '.' && prevIdentPrev != '#' && inClassHeritage) {
 						funcClassFrames = append(funcClassFrames, pendingBodyFrame{stackDepth: len(stack), arrayDepth: arrayDepth})
 					} else {
 						expectDeclBody = true
@@ -1418,12 +1427,24 @@ func prevTokenIsNumeric(chars []rune, lt int, comments []blockCommentRange) bool
 			end--
 		}
 		skippedComment := false
-		for j := len(comments) - 1; j >= 0; j-- {
-			if comments[j].end == end {
-				end = comments[j].start
-				skippedComment = true
-				break
+		// Comment ranges are recorded in scan order, so their
+		// ends are sorted: binary-search for the range ending
+		// exactly at end instead of scanning the whole history
+		// for every '<' -- the linear scan made validation
+		// quadratic in the number of block comments (Codex P2
+		// on #3354: 60k comments + comparisons, ~25x slower).
+		lo, hi := 0, len(comments)
+		for lo < hi {
+			mid := int(uint(lo+hi) >> 1)
+			if comments[mid].end < end {
+				lo = mid + 1
+			} else {
+				hi = mid
 			}
+		}
+		if lo < len(comments) && comments[lo].end == end {
+			end = comments[lo].start
+			skippedComment = true
 		}
 		if skippedComment {
 			continue
