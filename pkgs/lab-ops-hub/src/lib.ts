@@ -538,17 +538,18 @@ export function decodeHtmlEntities(data: string): string {
 }
 
 // A '/' marks a start tag self-closing only where a new attribute could
-// begin (after the tag name, whitespace, or a quoted value) AND only
-// whitespace follows it inside the tag. A '/' ending an UNQUOTED attribute
-// value is part of the value: <script src=/x/> is an open script tag, as
-// HTMLParser parses it, not a self-closing one.
+// begin (after the tag name, whitespace, or a quoted value) AND it is
+// the final character before '>': <script / > is an open script tag to
+// HTMLParser, not a self-closing one. A '/' ending an UNQUOTED attribute
+// value is part of the value: <script src=/x/> is likewise an open
+// script tag, not a self-closing one.
 function isSelfClosingTag(inner: string, nameEnd: number): boolean {
   let k = nameEnd;
   const len = inner.length;
   while (k < len) {
     while (k < len && /\s/.test(inner[k])) k += 1;
     if (k >= len) return false;
-    if (inner[k] === "/") return /^\s*$/.test(inner.slice(k + 1));
+    if (inner[k] === "/") return k === len - 1;
     while (k < len && !/[\s=/]/.test(inner[k])) k += 1; // attribute name
     let m = k;
     while (m < len && /\s/.test(inner[m])) m += 1;
@@ -656,7 +657,10 @@ export function extractHtml(html: string): { title: string; links: number; text:
       continue;
     }
     if (next === "/") {
-      const m = /^<\/([a-zA-Z][^\s/>]*)\s*\/?>/.exec(html.slice(i));
+      // End tags may carry (invalid but recoverable) attributes, which
+      // HTMLParser consumes rather than emitting as text: </p foo>
+      // still closes the paragraph.
+      const m = /^<\/([a-zA-Z][^\s/>]*)[^>]*>/.exec(html.slice(i));
       if (m === null) {
         handleData("<");
         i += 1;
