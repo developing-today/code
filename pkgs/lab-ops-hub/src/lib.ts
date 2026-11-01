@@ -528,7 +528,12 @@ export function decodeHtmlEntities(data: string): string {
       const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
       return String.fromCodePoint(normalizeNumericRef(code));
     }
-    return NAMED_ENTITIES[body] ?? whole;
+    // Own-property lookup only: a plain index would resolve inherited
+    // Object properties (&constructor;, &toString;) to JavaScript
+    // functions, where HTMLParser leaves unknown names literal.
+    return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, body)
+      ? NAMED_ENTITIES[body]
+      : whole;
   });
 }
 
@@ -608,8 +613,19 @@ export function extractHtml(html: string): { title: string; links: number; text:
       }
       handleData(html.slice(i, i + close.index));
       i += close.index;
+      // Consume the close tag here, tolerantly: HTMLParser accepts
+      // recoverable end tags carrying trailing attributes
+      // (</script foo>), which the strict end-tag pattern in the normal
+      // path rejects -- skipDepth would stay set and the rest of the
+      // document would be discarded.
+      const closeTag = new RegExp(`</${cdataTag}[^>]*>`, "i").exec(html.slice(i));
+      const closedTag = cdataTag;
       cdataTag = null;
-      continue; // the close tag itself is parsed by the normal path
+      if (closeTag !== null) {
+        handleEndTag(closedTag);
+        i += closeTag[0].length;
+      }
+      continue;
     }
     const lt = html.indexOf("<", i);
     if (lt === -1) {
@@ -655,12 +671,21 @@ export function extractHtml(html: string): { title: string; links: number; text:
       // attribute value end the tag early.
       let j = i + 1;
       let quote = "";
+      let lastSig = "";
       while (j < n) {
         const ch = html[j];
         if (quote !== "") {
-          if (ch === quote) quote = "";
-        } else if (ch === '"' || ch === "'") quote = ch;
-        else if (ch === ">") break;
+          if (ch === quote) {
+            quote = "";
+            lastSig = ch;
+          }
+        } else if ((ch === '"' || ch === "'") && lastSig === "=") {
+          // A quote opens a quoted value only where a value begins
+          // (right after '='); a quote inside an unquoted value, as in
+          // <a href=/it's>, is data, as HTMLParser tokenizes it.
+          quote = ch;
+        } else if (ch === ">") break;
+        else if (!/\s/.test(ch)) lastSig = ch;
         j += 1;
       }
       if (j >= n) {
