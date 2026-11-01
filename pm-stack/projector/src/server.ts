@@ -178,7 +178,12 @@ export async function handleRequest(req: Request, db: Client, env: ServerEnv): P
         return jsonResponse(400, { error: "invalid_json" });
       }
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
-      if (typeof subject !== "string" || subject.length === 0 || typeof ref !== "string" || !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)) {
+      if (
+        typeof subject !== "string" ||
+        subject.length === 0 ||
+        typeof ref !== "string" ||
+        !/^[\w.-]+\/[\w.-]+#\d+$/.test(ref)
+      ) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
       }
       // Validate the whole body before any store call (#2974): relation is

@@ -104,7 +104,12 @@ describe("POST /links whole-body validation", () => {
   });
 
   test("absent relation defaults to 'relates'; null note/createdBy accepted", async () => {
-    const r = await post({ subject: "kaneo:code/CODE-2", ref: "developing-today/code#2974", note: null, createdBy: null });
+    const r = await post({
+      subject: "kaneo:code/CODE-2",
+      ref: "developing-today/code#2974",
+      note: null,
+      createdBy: null,
+    });
     expect(r.status).toBe(201);
     expect(r.body.relation).toBe("relates");
   });
