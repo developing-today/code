@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  printf '%s\\n' '{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-astra","display_name":"GPT-6 Astra","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"},{"slug":"gpt-6-sol","display_name":"GPT-6 Sol","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"}],"default_reasoning_level":"medium"}]}'
+  exit 0
+fi
 prompt="$(cat)"
 resume=0
 for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
@@ -86,16 +90,30 @@ esac
 // agentMessage deltas, token usage, turn/completed. Behaviour is keyed on
 // markers in the turn text, mirroring the exec stub.
 // ---------------------------------------------------------------------------
-const wsServerFrame = (text) => {
-  const data = Buffer.from(text);
+const MAX_APP_SERVER_FRAME_BYTES = 1024 * 1024;
+
+const wsServerFrame = (text, { fin = true, opcode = 0x1 } = {}) => {
+  const data = Buffer.isBuffer(text) ? text : Buffer.from(text);
+  const first = (fin ? 0x80 : 0) | opcode;
   let header;
   if (data.length < 126) {
-    header = Buffer.from([0x81, data.length]);
-  } else {
+    header = Buffer.from([first, data.length]);
+  } else if (data.length <= 0xffff) {
     header = Buffer.alloc(4);
-    header[0] = 0x81; header[1] = 126; header.writeUInt16BE(data.length, 2);
+    header[0] = first; header[1] = 126; header.writeUInt16BE(data.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = first; header[1] = 127; header.writeBigUInt64BE(BigInt(data.length), 2);
   }
   return Buffer.concat([header, data]);
+};
+
+const wsServerLengthHeader = (length) => {
+  const header = Buffer.alloc(10);
+  header[0] = 0x81;
+  header[1] = 127;
+  header.writeBigUInt64BE(BigInt(length), 2);
+  return header;
 };
 
 const createFakeAppServer = () => {
@@ -105,6 +123,10 @@ const createFakeAppServer = () => {
   const sockets = new Set();
   const server = net.createServer((sock) => {
     sockets.add(sock);
+    // The proxy intentionally destroys the daemon socket on invalid framing.
+    sock.on('error', (err) => {
+      if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') throw err;
+    });
     sock.on('close', () => sockets.delete(sock));
     let buf = Buffer.alloc(0);
     let headersDone = false;
@@ -130,6 +152,26 @@ const createFakeAppServer = () => {
           return;
         }
         sendObj({ id: msg.id, result: { turn: { id: 'stub-turn-1' } } });
+        if (text.includes('ASOVERSIZEDFRAME')) {
+          sock.write(Buffer.concat([
+            wsServerLengthHeader(BigInt(MAX_APP_SERVER_FRAME_BYTES) + 1n),
+            wsServerFrame(JSON.stringify({ method: 'turn/completed', params: { threadId: msg.params.threadId, turn: { id: 'stub-turn-1', status: 'completed' } } }))
+          ]));
+          return;
+        }
+        if (text.includes('ASUNSAFEFRAME')) {
+          sock.write(wsServerLengthHeader(BigInt(Number.MAX_SAFE_INTEGER) + 1n));
+          return;
+        }
+        if (text.includes('ASFRAGMENTOVER')) {
+          const first = Buffer.alloc(600 * 1024, 0x61);
+          const second = Buffer.alloc(MAX_APP_SERVER_FRAME_BYTES - first.length + 1, 0x61);
+          sock.write(Buffer.concat([
+            wsServerFrame(first, { fin: false, opcode: 0x1 }),
+            wsServerFrame(second, { fin: true, opcode: 0x0 })
+          ]));
+          return;
+        }
         if (text.includes('ASKILL')) {
           // Daemon dies mid-turn: destroy the connection with no completion.
           setTimeout(() => { for (const s2 of sockets) s2.destroy(); }, 20);
@@ -238,10 +280,11 @@ const startProxy = async (reuse, extraEnv = {}, seedHome = null) => {
   return { port, tmp, home, stateHome, stop: () => child.kill('SIGKILL'), log: () => log };
 };
 
-const post = (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+const post = (port, body, options = {}) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body)
+  body: JSON.stringify(body),
+  ...options
 });
 
 const assertFailure = async (port, marker, detail) => {
@@ -560,6 +603,32 @@ test('app-server turn failure falls back to exec and still answers (#480)', asyn
   assert.equal(res.status, 200, 'a failed app-server turn must not fail the request');
   assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
 });
+
+for (const [marker, description, diagnostic] of [
+  ['ASOVERSIZEDFRAME', 'oversized claimed frame closes before a following valid frame is consumed', 'app-server frame length 1048577 exceeds 1048576-byte limit'],
+  ['ASUNSAFEFRAME', 'non-safe 64-bit frame length is rejected', 'app-server frame length 9007199254740992 exceeds 1048576-byte limit'],
+  ['ASFRAGMENTOVER', 'fragmented message exceeding the cap is rejected', 'app-server message length 1048577 exceeds 1048576-byte limit']
+]) {
+  test(`app-server ${description} and falls back to exec (#1839)`, async (t) => {
+    const fake = await createFakeAppServer();
+    t.after(fake.close);
+    const { port, stop, log } = await startProxy(null, AS_ENV(fake));
+    t.after(stop);
+    let res;
+    let body;
+    try {
+      res = await post(port, {
+        messages: [{ role: 'user', content: `please ${marker} now` }]
+      }, { signal: AbortSignal.timeout(5000) });
+      body = await res.text();
+    } catch (err) {
+      throw new Error(`${err.message}; fake requests=${JSON.stringify(fake.requests)}; proxy log=${log()}`);
+    }
+    assert.equal(res.status, 200, 'invalid framing must close the app-server and trigger exec fallback');
+    assert.equal(JSON.parse(body).choices[0].message.content, 'Hello world');
+    assert.ok(log().includes(diagnostic), `close reason should name claimed size and cap: ${log()}`);
+  });
+}
 
 test('app-server RPC failure falls back to exec and still answers (#480)', async (t) => {
   const fake = await createFakeAppServer();

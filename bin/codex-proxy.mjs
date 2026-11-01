@@ -512,6 +512,8 @@ const wsEncodeFrame = (payload, opcode = 0x1) => {
   return Buffer.concat([header, mask, masked]);
 };
 
+const MAX_APP_SERVER_FRAME_BYTES = 1024 * 1024;
+
 class AppServerClient {
   constructor(socketPath) {
     this.socketPath = socketPath;
@@ -523,6 +525,7 @@ class AppServerClient {
     this.loadedThreads = new Set();
     this.buffer = Buffer.alloc(0);
     this.fragments = [];
+    this.fragmentBytes = 0;
     this.handshaked = false;
   }
 
@@ -592,7 +595,16 @@ class AppServerClient {
     this.pending.clear();
     for (const st of this.turnStates.values()) st.fail(err);
     this.turnStates.clear();
+    this.buffer = Buffer.alloc(0);
+    this.fragments = [];
+    this.fragmentBytes = 0;
     if (appServerClient === this) appServerClient = null;
+  }
+
+  rejectFrameLength(length, kind = 'frame') {
+    const err = new Error(`app-server ${kind} length ${length} exceeds ${MAX_APP_SERVER_FRAME_BYTES}-byte limit`);
+    this.handleClose(err);
+    try { this.sock && this.sock.destroy(); } catch {}
   }
 
   send(obj) {
@@ -614,7 +626,20 @@ class AppServerClient {
         len = this.buffer.readUInt16BE(off); off += 2;
       } else if (len === 127) {
         if (this.buffer.length < off + 8) return;
-        len = Number(this.buffer.readBigUInt64BE(off)); off += 8;
+        const claimed = this.buffer.readBigUInt64BE(off); off += 8;
+        if (claimed > BigInt(Number.MAX_SAFE_INTEGER)) {
+          this.rejectFrameLength(claimed);
+          return;
+        }
+        len = Number(claimed);
+      }
+      if (len > MAX_APP_SERVER_FRAME_BYTES) {
+        this.rejectFrameLength(len);
+        return;
+      }
+      if (this.fragmentBytes + len > MAX_APP_SERVER_FRAME_BYTES) {
+        this.rejectFrameLength(this.fragmentBytes + len, 'message');
+        return;
       }
       if (b1 & 0x80) off += 4; // server frames are unmasked; skip mask if set
       if (this.buffer.length < off + len) return;
@@ -630,9 +655,11 @@ class AppServerClient {
         return;
       }
       this.fragments.push(payload);
+      this.fragmentBytes += payload.length;
       if (!fin) continue;
       const text = Buffer.concat(this.fragments).toString('utf-8');
       this.fragments = [];
+      this.fragmentBytes = 0;
       this.onMessage(text);
     }
   }
