@@ -892,12 +892,22 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 			// frame at its heritage brace, so its real body's '}'
 			// read as a block closure and the slash opened a
 			// phantom regex).
-			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && lastIdent != "extends"
+			// A heritage operand can also open with the 'new'
+			// keyword: in class C extends new {C:Object}.C {}
+			// the brace after 'new' is the constructor operand,
+			// not the class body (Codex P2 on #3354: nested as
+			// {x:[class extends new {C:Object}.C {} / 2]} the
+			// brace ate the inner class's frame and the real
+			// body's '}' opened a phantom regex at the slash).
+			// 'new' reached through member access (obj.new) is a
+			// property name, not the keyword.
+			heritageKeyword := lastIdent == "extends" || (lastIdent == "new" && lastIdentPrev != '.' && lastIdentPrev != '#')
+			frameBodyBrace := insideHeritageBrace && len(funcClassFrames) > heritageFrameFloor && funcClassFrames[len(funcClassFrames)-1].parenDepth == 0 && funcClassFrames[len(funcClassFrames)-1].arrayDepth == arrayDepth && !heritageKeyword
 			declBodyBrace := insideHeritageBrace && expectDeclBody && !heritageDeclPending && expectDeclParenDepth == 0
 			heritageExprBrace := inClassHeritage && !frameBodyBrace && !declBodyBrace && !prevTokenArrow &&
 				(topHeritageBrace ||
 					(heritageBraceDepth == 0 && prevSig == 'o' && prevChar != '>' && prevChar != ')' && prevChar != ']') ||
-					(heritageBraceDepth > 0 && prevSig == 'o' && lastIdent == "extends"))
+					(heritageBraceDepth > 0 && prevSig == 'o' && heritageKeyword))
 			heritageOwnsFloor := false
 			if heritageExprBrace {
 				// A heritage brace owns a floor snapshot when it
@@ -906,7 +916,7 @@ func checkSyntaxAndDelimiters(src string) []diagnose.Diagnostic {
 				// right after 'extends' inside an outer heritage
 				// expression. Plain braces nested inside an
 				// operand (object values) share its floor.
-				if heritageBraceDepth == 0 || (prevSig == 'o' && lastIdent == "extends") {
+				if heritageBraceDepth == 0 || (prevSig == 'o' && heritageKeyword) {
 					heritageFloorStack = append(heritageFloorStack, heritageFrameFloor)
 					heritageDeclStack = append(heritageDeclStack, heritageDeclPending)
 					heritageFrameFloor = len(funcClassFrames)
@@ -1248,14 +1258,18 @@ func isExprPositionStart(prev rune, prevIdent string, prevIdentPrev rune, prevId
 // isIdentChar reports whether ch can appear in a JavaScript identifier
 // as this scanner tracks it: letters, digits, '_' and '$', plus the
 // remaining IdentifierPart characters — combining marks (Mn, Mc),
-// connector punctuation (Pc), and the zero-width (non-)joiners U+200C and
+// connector punctuation (Pc), letter numbers (Nl, e.g. U+2160 —
+// ECMAScript ID_Start/ID_Continue include them, but Go's IsLetter and
+// IsDigit do not; leaving them out split the identifier Ⅰ1 into the
+// number 1 in the numeric-token scan, Codex P2 on #3354), and the
+// zero-width (non-)joiners U+200C and
 // U+200D. An identifier ending in one of those is still an operand, so a
 // '/' after it divides (Codex P2 on #1659: an identifier ending in
 // U+0301 fell out of the accumulation and the classification alike).
 func isIdentChar(ch rune) bool {
 	return unicode.IsLetter(ch) || unicode.IsDigit(ch) ||
 		ch == '_' || ch == '$' ||
-		unicode.In(ch, unicode.Mn, unicode.Mc, unicode.Pc) ||
+		unicode.In(ch, unicode.Mn, unicode.Mc, unicode.Pc, unicode.Nl) ||
 		ch == '\u200c' || ch == '\u200d'
 }
 
