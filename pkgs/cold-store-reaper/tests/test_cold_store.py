@@ -228,14 +228,56 @@ def make_handler(fake: FakeDrive):
     return Handler
 
 
+# ------------------------------------------------------------ template home
+# A fresh ColdStore home pays the full manifest-schema executescript
+# (cold_store.db) plus private-file creation — measured ~0.5s on the
+# laptop, ~1.7s on a slow VM — and ColdStoreTestBase used to pay it in
+# every setUp (#1435). Build one template home per process and copy it
+# per test instead: the schema is created once per run, while each test
+# still gets an isolated home it can mutate freely. Tests that exercise
+# first-run creation or manifest migrations build their own genuinely
+# fresh homes and never touch this fixture.
+_TEMPLATE_HOME_TMP = None
+_TEMPLATE_HOME = None
+
+
+def template_home() -> Path:
+    global _TEMPLATE_HOME_TMP, _TEMPLATE_HOME
+    if _TEMPLATE_HOME is None:
+        _TEMPLATE_HOME_TMP = tempfile.TemporaryDirectory(
+            prefix="cold-store-template-home-"
+        )
+        home = Path(_TEMPLATE_HOME_TMP.name) / "cold-store-home"
+        ColdStore(home).init()
+        _TEMPLATE_HOME = home
+    return _TEMPLATE_HOME
+
+
+def serve_fast(server) -> threading.Thread:
+    """Start serve_forever on a thread with a short shutdown poll.
+
+    The default poll_interval (0.5s) makes every tearDown's shutdown()
+    block for up to ~0.5s — with a server per test that rivals the
+    schema cost above (#1435). 0.05s keeps shutdown snappy without
+    changing what the server serves.
+    """
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+    )
+    thread.start()
+    return thread
+
+
 class ColdStoreTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "cold-store-home"
+        # Copy of the once-per-run template home (#1435); init() below
+        # revalidates it (a cheap no-op once the manifest exists).
+        shutil.copytree(template_home(), self.home)
         self.fake = FakeDrive()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.fake))
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.store = ColdStore(
             self.home,
@@ -868,10 +910,7 @@ class S3TestBase(ColdStoreTestBase):
         super().setUp()
         self.s3 = FakeS3()
         self.s3_server = ThreadingHTTPServer(("127.0.0.1", 0), make_s3_handler(self.s3))
-        self.s3_thread = threading.Thread(
-            target=self.s3_server.serve_forever, daemon=True
-        )
-        self.s3_thread.start()
+        self.s3_thread = serve_fast(self.s3_server)
         self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
         self.store.s3_base = self.s3_base_url
         # Transport retries must not slow the suite down.
@@ -954,10 +993,7 @@ class TestSyncManifest(ColdStoreTestBase):
         super().setUp()
         self.d1 = FakeD1()
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         a = self.write_src("a.txt", b"sync me " * 10)
         packed = self.store.pack([str(a)])
@@ -1255,10 +1291,7 @@ class TestBackupD1(ColdStoreTestBase):
             """
         )
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
 
     def tearDown(self):
@@ -2210,12 +2243,29 @@ class TestDrillCompare(ColdStoreTestBase):
     HASH_A = "a" * 64
     HASH_B = "b" * 64
 
+    _schema_template = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # The live DB is schema-only before seeding: build the schema
+        # once per class and backup-copy it per test (#1435) instead of
+        # paying the full executescript in every setUp.
+        cls._schema_template = sqlite3.connect(":memory:")
+        cls._schema_template.executescript(cold_store.SCHEMA_PATH.read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._schema_template.close()
+        cls._schema_template = None
+        super().tearDownClass()
+
     def setUp(self):
         super().setUp()
         self.d1 = FakeD1()
         # check_same_thread=False: the HTTP handler thread runs the queries.
         self.live = sqlite3.connect(":memory:", check_same_thread=False)
-        self.live.executescript(cold_store.SCHEMA_PATH.read_text())
+        type(self)._schema_template.backup(self.live)
         self.live.executemany(
             "INSERT INTO objects (hash, size, content_type, source_bucket,"
             " source_key, first_seen, state) VALUES (?, ?, ?, ?, ?, ?, 'cold')",
@@ -2257,10 +2307,7 @@ class TestDrillCompare(ColdStoreTestBase):
         self.live.commit()
         self.d1.db = self.live
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
 
     def tearDown(self):
         self.d1_server.shutdown()
@@ -2544,8 +2591,7 @@ class TestTursoExportScript(unittest.TestCase):
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", 0), make_turso_handler(self.fake)
         )
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
