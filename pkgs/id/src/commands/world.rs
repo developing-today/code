@@ -1766,20 +1766,18 @@ where
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        match pump_command(line, capability) {
-                            PumpLine::Send(frame) => frame,
-                            PumpLine::Say(text) => {
-                                eprintln!("{text}");
-                                continue;
-                            }
-                            PumpLine::Quit => break Ok(()),
-                        }
+                    let action = if command_mode {
+                        pump_command(line, capability)
                     } else {
-                        match line.strip_prefix("/input ") {
-                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                            None => serde_json::json!({"type": "chat", "text": line}),
+                        pump_plain(line)
+                    };
+                    let frame = match action {
+                        PumpLine::Send(frame) => frame,
+                        PumpLine::Say(text) => {
+                            eprintln!("{text}");
+                            continue;
                         }
+                        PumpLine::Quit => break Ok(()),
                     };
                     if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
@@ -1822,7 +1820,7 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
-/// What one stdin line does in the `id world join --command-mode` pump.
+/// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
     /// Send this session frame.
@@ -1866,6 +1864,23 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
         WorldLine::Quit => return PumpLine::Quit,
         WorldLine::Message(message) => return PumpLine::Say(message),
     })
+}
+
+/// Map the plain `id world join` input line, validating `/input` while
+/// leaving every other line as chat.
+fn pump_plain(line: &str) -> PumpLine {
+    use crate::world_line::{WorldLine, parse_line};
+
+    if line != "/input" && !line.starts_with("/input ") {
+        return PumpLine::Send(serde_json::json!({"type": "chat", "text": line}));
+    }
+    match parse_line(line) {
+        Some(WorldLine::Input(hex)) => {
+            PumpLine::Send(serde_json::json!({"type": "input", "data_hex": hex}))
+        }
+        Some(WorldLine::Message(message)) => PumpLine::Say(message),
+        _ => PumpLine::Say("usage: /input <hex>".to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -2019,6 +2034,33 @@ mod tests {
             );
         }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
+    }
+
+    #[test]
+    fn the_plain_pump_validates_input_and_preserves_chat() {
+        use super::pump_plain;
+        use serde_json::json;
+
+        for hex in ["00af", "00AF"] {
+            assert_eq!(
+                pump_plain(&format!("/input {hex}")),
+                PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+            );
+        }
+        assert_eq!(
+            pump_plain("/input  00AF"),
+            PumpLine::Send(json!({"type": "input", "data_hex": "00af"}))
+        );
+        for line in ["/input ZZ", "/input 0", "/input"] {
+            assert_eq!(
+                pump_plain(line),
+                PumpLine::Say("usage: /input <hex>".to_owned())
+            );
+        }
+        assert_eq!(
+            pump_plain("hello world"),
+            PumpLine::Send(json!({"type": "chat", "text": "hello world"}))
+        );
     }
 
     #[test]
