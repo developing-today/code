@@ -1477,6 +1477,7 @@ mod tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules: None,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
             admin_history: None,

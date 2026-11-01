@@ -152,6 +152,9 @@ fn every_server_frame_variant_is_in_the_contract_and_nothing_else_is() {
             sequence: 1,
             data: "x",
             surface: None,
+            view_revision: 0,
+            base_view_revision: None,
+            patch: None,
         },
         ServerFrame::RecordsTicket {
             ticket: "t".to_owned(),

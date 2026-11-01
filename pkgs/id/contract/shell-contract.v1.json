@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 3,
+  "revision": 4,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -43,7 +43,8 @@
       "opens": "joined",
       "fields": {
         "capability": { "type": "string", "max_bytes": 256 },
-        "after": "u64?"
+        "after": "u64?",
+        "screen_patches": { "type": "bool", "optional": true, "nullable": false }
       }
     },
     "info": {
@@ -285,7 +286,14 @@
     },
     "view": {
       "class": "ephemeral",
-      "fields": { "sequence": "u64", "data": "string", "surface": "object?" }
+      "fields": {
+        "sequence": "u64",
+        "data": "string",
+        "surface": "object?",
+        "view_revision": "u64",
+        "base_view_revision": "u64?",
+        "patch": "object?"
+      }
     },
     "program_changed": {
       "class": "reply",

@@ -2102,7 +2102,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.3"
+            "3 frames conform to shell contract v1.4"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

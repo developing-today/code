@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_accepts_v1_through_v3_headers_and_refuses_newer_at_the_header() {
+    fn restore_accepts_v1_through_v4_headers_and_refuses_newer_at_the_header() {
         // The issue-#227 rollback contract: this binary reads versions
         // 1..=MAX, and anything newer is refused at the header check —
         // which is exactly where a version-1 binary refuses a version-2
@@ -114,6 +114,7 @@ mod tests {
         for version in [
             JOURNAL_VERSION,
             JOURNAL_VERSION_EXECUTION_PROFILE,
+            JOURNAL_VERSION_REGION_HANDOFF,
             JOURNAL_VERSION_OPEN_PRESENCE,
         ] {
             let restored = WorldCore::restore(
@@ -142,6 +143,168 @@ mod tests {
                 .contains("unsupported world journal version"),
             "{error:#}"
         );
+    }
+
+    fn handoff_event() -> WorldEvent {
+        WorldEvent {
+            sequence: 0,
+            participant_id: 0,
+            kind: WorldEventKind::System {
+                event: "{\"handoff\":true}".to_owned(),
+            },
+        }
+    }
+
+    fn export_entry() -> JournalEntry {
+        JournalEntry::EntityExported {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            prior_owner_epoch: 4,
+            source_event: handoff_event(),
+            payload_schema: "entity/v1".to_owned(),
+            program_module_hash: "module".to_owned(),
+            payload: vec![1, 2, 3],
+            payload_digest: "digest".to_owned(),
+        }
+    }
+
+    #[test]
+    fn handoff_entries_require_journal_version_3() {
+        // #3870 phase 1: handoff kinds are the first entries a version-2
+        // binary cannot read, so they pin the header to version 3 — the
+        // same bump-on-first-write contract as the execution profile (#227).
+        assert_eq!(
+            journal_version_required_by(&export_entry()),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let entity_input = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&entity_input),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        let plain = JournalEntry::Committed {
+            event: WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::Chat("hi".to_owned()),
+            },
+        };
+        assert_eq!(journal_version_required_by(&plain), JOURNAL_VERSION);
+        // A checkpoint whose retained events include an EntityInput event
+        // requires version 3 even with no active handoff (PR #3922 Codex).
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            transfers: None,
+            admin_history: None,
+            open_presence: None,
+            snapshot: "s".to_owned(),
+            events: vec![WorldEvent {
+                sequence: 1,
+                participant_id: 7,
+                kind: WorldEventKind::EntityInput {
+                    entity_ref: "entity-1".to_owned(),
+                    input: vec![9],
+                },
+            }],
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_REGION_HANDOFF
+        );
+        // Coordinator records fix their wire shape in this packet too.
+        let started = CoordinatorJournalEntry::HandoffStarted {
+            handoff_id: "ab".repeat(16),
+            entity_ref: "entity-1".to_owned(),
+            source_region: "region-a".to_owned(),
+            target_region: "region-b".to_owned(),
+            expected_owner_epoch: 4,
+            region_map_epoch: 2,
+            program_module_hash: "module".to_owned(),
+            payload_schema: "entity/v1".to_owned(),
+            requested_at: 42,
+        };
+        let json = serde_json::to_string(&started).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CoordinatorJournalEntry>(&json).unwrap(),
+            started
+        );
+    }
+
+    #[test]
+    fn handoff_transfers_survive_restore_and_checkpoint_compaction() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            JournalEntry::EntityImported {
+                handoff_id: "cd".repeat(16),
+                entity_ref: "entity-2".to_owned(),
+                source_region: "region-b".to_owned(),
+                target_region: "region-a".to_owned(),
+                prior_owner_epoch: 1,
+                new_owner_epoch: 2,
+                program_module_hash: "module".to_owned(),
+                payload_schema: "entity/v1".to_owned(),
+                payload_digest: "digest-2".to_owned(),
+                destination_event: handoff_event(),
+            },
+        ];
+        let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+        let transfers = restored.core.handoff_transfers().to_vec();
+        assert_eq!(transfers.len(), 2);
+        assert_eq!(transfers[0].direction, HandoffDirection::Export);
+        assert_eq!(transfers[0].payload.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(transfers[1].direction, HandoffDirection::Import);
+        assert_eq!(transfers[1].new_owner_epoch, Some(2));
+
+        // Compaction must preserve active handoffs (fence, payload, receipt,
+        // epochs). New checkpoints also carry known-empty presence metadata,
+        // so their header uses version 4, above the handoff version 3.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(matches!(
+            compacted[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_OPEN_PRESENCE,
+                ..
+            }
+        ));
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.handoff_transfers(), transfers.as_slice());
+    }
+
+    #[test]
+    fn duplicate_handoff_export_in_journal_is_refused() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION_REGION_HANDOFF,
+            },
+            export_entry(),
+            export_entry(),
+        ];
+        let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
+        assert!(error.to_string().contains("twice"), "{error:#}");
     }
 
     #[test]
@@ -210,6 +373,11 @@ mod tests {
             match &event.kind {
                 WorldEventKind::Input(bytes) => {
                     let text = std::str::from_utf8(bytes)?;
+                    self.script = text.parse().unwrap_or(self.script);
+                    self.asks += 1;
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let text = std::str::from_utf8(input)?;
                     self.script = text.parse().unwrap_or(self.script);
                     self.asks += 1;
                 }
@@ -776,11 +944,11 @@ mod tests {
         ));
         let mut mislabeled = checkpoint.clone();
         if let Some(JournalEntry::Created { version, .. }) = mislabeled.first_mut() {
-            *version = JOURNAL_VERSION_EXECUTION_PROFILE;
+            *version = JOURNAL_VERSION_REGION_HANDOFF;
         }
         assert!(
             WorldCore::restore("presence-checkpoint", WorldLimits::default(), mislabeled).is_err(),
-            "a v2 header cannot silently carry v3 presence semantics"
+            "a v3 header cannot silently carry v4 presence semantics"
         );
 
         let reopened = WorldCore::restore(
@@ -833,13 +1001,13 @@ mod tests {
             }
         );
 
-        // A legacy v2 checkpoint has no dedicated presence field; if its
+        // A legacy v3 checkpoint has no dedicated presence field; if its
         // complete admin history is available, the open join remains
         // recoverable. Older checkpoints without complete history still load
         // as before, without guessing about truncated joins.
         let mut legacy = checkpoint;
         if let Some(JournalEntry::Created { version, .. }) = legacy.first_mut() {
-            *version = JOURNAL_VERSION_EXECUTION_PROFILE;
+            *version = JOURNAL_VERSION_REGION_HANDOFF;
         }
         if let Some(JournalEntry::Checkpoint { open_presence, .. }) = legacy.last_mut() {
             *open_presence = None;
@@ -895,7 +1063,7 @@ mod tests {
         ] {
             let mut legacy = checkpoint.clone();
             if let Some(JournalEntry::Created { version, .. }) = legacy.first_mut() {
-                *version = JOURNAL_VERSION_EXECUTION_PROFILE;
+                *version = JOURNAL_VERSION_REGION_HANDOFF;
             }
             if let Some(JournalEntry::Checkpoint {
                 admin_history,
@@ -2888,6 +3056,11 @@ mod tests {
                             self.asks += 1;
                         }
                     }
+                    WorldEventKind::EntityInput { input, .. } => {
+                        if input.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
                     WorldEventKind::System { event } => {
                         let value: serde_json::Value =
                             serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
@@ -3876,6 +4049,10 @@ mod schedule_tests {
                     let document: serde_json::Value = serde_json::from_slice(bytes)?;
                     self.requests = document["requests"].as_array().cloned().unwrap_or_default();
                 }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
                 WorldEventKind::System { event: text } => {
                     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                         return Ok(());
@@ -4444,6 +4621,7 @@ mod schedule_tests {
             execution_profile: None,
             caps_ceiling: None,
             schedules,
+            transfers: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
             admin_history: None,

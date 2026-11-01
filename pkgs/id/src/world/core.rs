@@ -70,6 +70,11 @@ pub struct WorldCore {
     pub(crate) open_presence: BTreeSet<u64>,
     pub(crate) directory: crate::directory::Directory,
     pub(crate) petnames: crate::petname::Petnames,
+    /// Active region-seam handoffs this world is a side of (#3870 phase 1,
+    /// design #2818 §3): export fences/payloads and import receipts,
+    /// rebuilt by journal replay and preserved across compaction by the
+    /// checkpoint's `transfers` field.
+    pub(crate) handoff_transfers: Vec<HandoffTransferState>,
 }
 
 impl WorldCore {
@@ -139,6 +144,7 @@ impl WorldCore {
             open_presence: BTreeSet::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
+            handoff_transfers: Vec::new(),
         };
         core.sync_ledger_ceiling();
         Ok(core)
@@ -340,6 +346,90 @@ impl WorldCore {
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
+                JournalEntry::EntityExported {
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    source_event,
+                    payload_schema,
+                    program_module_hash,
+                    payload,
+                    payload_digest,
+                } => {
+                    ensure!(
+                        source_event.sequence == 0 && source_event.participant_id == 0,
+                        "journal export event claims a sequence"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Export
+                        }),
+                        "journal exports handoff {handoff_id:?} twice"
+                    );
+                    core.handoff_transfers.push(HandoffTransferState {
+                        handoff_id,
+                        entity_ref,
+                        source_region,
+                        target_region,
+                        direction: HandoffDirection::Export,
+                        prior_owner_epoch,
+                        new_owner_epoch: None,
+                        program_module_hash,
+                        payload_schema,
+                        payload_digest,
+                        payload: Some(payload),
+                        event: source_event.clone(),
+                    });
+                    // Replay applies the ownership-changing event from the
+                    // same durable fact (design #2818 §3).
+                    replay.push(source_event);
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
+                JournalEntry::EntityImported {
+                    handoff_id,
+                    entity_ref,
+                    source_region,
+                    target_region,
+                    prior_owner_epoch,
+                    new_owner_epoch,
+                    program_module_hash,
+                    payload_schema,
+                    payload_digest,
+                    destination_event,
+                } => {
+                    ensure!(
+                        destination_event.sequence == 0 && destination_event.participant_id == 0,
+                        "journal import event claims a sequence"
+                    );
+                    ensure!(
+                        new_owner_epoch == prior_owner_epoch + 1,
+                        "journal import for handoff {handoff_id:?} does not advance the owner epoch"
+                    );
+                    ensure!(
+                        !core.handoff_transfers.iter().any(|t| {
+                            t.handoff_id == handoff_id && t.direction == HandoffDirection::Import
+                        }),
+                        "journal imports handoff {handoff_id:?} twice"
+                    );
+                    core.handoff_transfers.push(HandoffTransferState {
+                        handoff_id,
+                        entity_ref,
+                        source_region,
+                        target_region,
+                        direction: HandoffDirection::Import,
+                        prior_owner_epoch,
+                        new_owner_epoch: Some(new_owner_epoch),
+                        program_module_hash,
+                        payload_schema,
+                        payload_digest,
+                        payload: None,
+                        event: destination_event.clone(),
+                    });
+                    replay.push(destination_event);
+                    core.since_checkpoint = core.since_checkpoint.saturating_add(1);
+                }
                 // Audit-only: the install is carried by the `Committed`
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
@@ -391,7 +481,9 @@ impl WorldCore {
                             });
                             replay.clear();
                         }
-                        WorldEventKind::Input(_) => replay.push(event.clone()),
+                        WorldEventKind::Input(_) | WorldEventKind::EntityInput { .. } => {
+                            replay.push(event.clone())
+                        }
                         WorldEventKind::System { .. } => anyhow::bail!(
                             "host system events must use the unsequenced system journal entry"
                         ),
@@ -407,6 +499,7 @@ impl WorldCore {
                     execution_profile,
                     caps_ceiling,
                     schedules,
+                    transfers,
                     snapshot,
                     events,
                     admin_history,
@@ -520,6 +613,9 @@ impl WorldCore {
                         }
                         None => crate::world_caps::catalog_names(),
                     };
+                    // A checkpoint comes first in its journal, so its
+                    // transfer list is the whole active-handoff state.
+                    core.handoff_transfers = transfers.unwrap_or_default();
                     // The writer emits one `ScheduleSet` per pending schedule
                     // before the checkpoint, so the two must agree exactly.
                     let listed = schedules.unwrap_or_default();
@@ -660,6 +756,11 @@ impl WorldCore {
                 .map(|(id, at_ms)| (id.clone(), *at_ms))
                 .collect()
         });
+        // Active handoffs ride on the checkpoint, mirroring the ceiling and
+        // schedules: without them compaction could resurrect an exported
+        // entity, forget an import receipt, or drop an owner epoch.
+        let transfers: Option<Vec<HandoffTransferState>> =
+            (!self.handoff_transfers.is_empty()).then(|| self.handoff_transfers.clone());
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
@@ -668,6 +769,7 @@ impl WorldCore {
             execution_profile: Some(self.execution_profile),
             caps_ceiling,
             schedules,
+            transfers,
             snapshot,
             events: self.events.iter().cloned().collect(),
             admin_history: Some(JournalAdminHistory {
@@ -806,8 +908,13 @@ impl WorldCore {
         &self.world_id
     }
 
-    /// The per-world resource requests, independent of current server ceilings.
+    /// Active region-seam handoffs this world is a side of (#3870 phase 1).
     #[must_use]
+    pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
+        &self.handoff_transfers
+    }
+
+    /// The per-world resource requests, independent of current server ceilings.
     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
         self.execution_profile
     }

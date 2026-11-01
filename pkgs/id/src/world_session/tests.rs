@@ -70,13 +70,18 @@ mod tests {
                 .unwrap();
         }
 
-        async fn next(&mut self) -> Option<serde_json::Value> {
+        async fn next_text(&mut self) -> Option<String> {
             // An upload takes several seconds in a debug build, so 5 s was too
             // tight. The deadline still bounds a real hang.
-            let frame = tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
+            tokio::time::timeout(Duration::from_mins(1), self.from_server.recv())
                 .await
-                .expect("timed out waiting for a server frame")?;
-            Some(serde_json::from_str(&frame).unwrap())
+                .expect("timed out waiting for a server frame")
+        }
+
+        async fn next(&mut self) -> Option<serde_json::Value> {
+            self.next_text()
+                .await
+                .map(|frame| serde_json::from_str(&frame).unwrap())
         }
     }
 
@@ -119,6 +124,73 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn committed_event_burst_coalesces_views_but_keeps_event_frames_immediate() {
+        // Match the 383-byte roc-grid 80x24 guest frame in the F11.9 baseline
+        // table; this test compares the full JSON frames sent on the wire.
+        const F11_9_ROC_GRID_FRAME_BYTES: usize = 383;
+        struct ViewProgram;
+        impl crate::world::WorldProgram for ViewProgram {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some("x".repeat(F11_9_ROC_GRID_FRAME_BYTES)))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(ViewProgram),
+        );
+        let service = WorldService::new(world.clone(), None);
+        let (_, viewer) = world.issue("viewer", WorldScopes::GUEST).await.unwrap();
+        let (_, writer) = world.issue("writer", WorldScopes::GUEST).await.unwrap();
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":viewer.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+
+        for text in ["one", "two", "three"] {
+            world.chat(writer.clone(), text).await.unwrap();
+        }
+        let mut latest_sequence = 0;
+        let mut event_frame_bytes = 0;
+        for _ in 0..3 {
+            let frame = peer.next_text().await.unwrap();
+            event_frame_bytes += frame.len();
+            let event: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            assert_eq!(event["type"], "event");
+            latest_sequence = event["event"]["sequence"].as_u64().unwrap();
+        }
+        assert!(
+            peer.from_server.try_recv().is_err(),
+            "no view before the window"
+        );
+
+        tokio::time::advance(VIEW_COALESCE_WINDOW).await;
+        let view_frame = peer.next_text().await.unwrap();
+        let view_frame_bytes = view_frame.len();
+        let view: serde_json::Value = serde_json::from_str(&view_frame).unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(
+            view["data"].as_str().unwrap().len(),
+            F11_9_ROC_GRID_FRAME_BYTES
+        );
+        assert_eq!(view["sequence"].as_u64(), Some(latest_sequence));
+        let batched_bytes = event_frame_bytes + view_frame_bytes;
+        let unbatched_bytes = event_frame_bytes + 3 * view_frame_bytes;
+        assert_eq!(unbatched_bytes - batched_bytes, 2 * view_frame_bytes);
+
+        world.chat(writer, "after window").await.unwrap();
+        let event = peer.next().await.unwrap();
+        assert_eq!(event["type"], "event");
+        let latest_sequence = event["event"]["sequence"].as_u64().unwrap();
+        assert!(peer.from_server.try_recv().is_err());
+        tokio::time::advance(VIEW_COALESCE_WINDOW).await;
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["sequence"].as_u64(), Some(latest_sequence));
     }
 
     #[tokio::test]
@@ -964,6 +1036,9 @@ mod tests {
             sequence: 3,
             data: "count=1",
             surface: None,
+            view_revision: 0,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
@@ -981,6 +1056,9 @@ mod tests {
             sequence: 8,
             data,
             surface: Some(&surface),
+            view_revision: 1,
+            base_view_revision: None,
+            patch: None,
         })
         .unwrap();
         assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));

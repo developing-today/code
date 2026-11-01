@@ -342,6 +342,20 @@ pub enum WorldEventKind {
     Chat(String),
     /// Opaque input for a future game/world module.
     Input(Vec<u8>),
+    /// Entity-addressed input for region-sharded worlds (#3870, design
+    /// #2818): the input targets exactly one application-owned entity, so
+    /// the host can fence that `entity_ref` during a region-seam handoff
+    /// without inspecting the opaque bytes. Region-sharded mode rejects
+    /// legacy unscoped [`WorldEventKind::Input`] (phase 2 of #3870 wires
+    /// the gate; this packet adds the kind and its journal plumbing).
+    EntityInput {
+        /// Application-defined stable entity reference (not a world-local
+        /// participant ID).
+        entity_ref: String,
+        /// Opaque input bytes for the program, as with
+        /// [`WorldEventKind::Input`].
+        input: Vec<u8>,
+    },
     /// An event the host originated for the program: capability results,
     /// ticks, presence. Delivered with `participant_id` 0; never sequenced
     /// or broadcast to participant sessions. Admins may export these events
@@ -475,6 +489,144 @@ pub enum Authority {
     Admin,
     /// A signed request made with this public key, as lower-case hex.
     Signed(String),
+}
+
+/// Which side of a region-seam handoff a [`HandoffTransferState`] records
+/// (#3870, design #2818).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffDirection {
+    /// This world exported the entity (source side): it holds the fence and
+    /// the durable recovery payload until coordinator completion.
+    Export,
+    /// This world imported the entity (destination side): it holds the
+    /// dedupe receipt keyed by `handoff_id`.
+    Import,
+}
+
+/// One active region-seam handoff as a world journal records it (#3870
+/// phase 1, design #2818 §3). Carried in [`JournalEntry::Checkpoint`] so
+/// compaction preserves active export fences/payloads, import receipts and
+/// owner epochs exactly as the un-compacted journal would replay them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffTransferState {
+    /// Coordinator-generated random 128-bit handoff ID, as hex. Reused for
+    /// every retry of this crossing; a new crossing gets a new ID.
+    pub handoff_id: String,
+    /// Application-defined stable entity reference.
+    pub entity_ref: String,
+    /// Region (shard world) the entity leaves.
+    pub source_region: String,
+    /// Region (shard world) the entity enters.
+    pub target_region: String,
+    /// Which side of the seam this world is.
+    pub direction: HandoffDirection,
+    /// Owner epoch the entity had at the source before this handoff.
+    pub prior_owner_epoch: u64,
+    /// Owner epoch at the destination once the handoff completes
+    /// (`prior_owner_epoch + 1`); set on import records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_owner_epoch: Option<u64>,
+    /// Program module hash both regions must agree on for v1.
+    pub program_module_hash: String,
+    /// Versioned payload schema name.
+    pub payload_schema: String,
+    /// Digest of the complete entity payload.
+    pub payload_digest: String,
+    /// The complete entity payload. Present on export records (the source
+    /// is the durable recovery copy until completion); absent on import
+    /// records, whose payload rides inside `event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Vec<u8>>,
+    /// The host-originated system event that removes (export) or adds
+    /// (import) the entity in the program. Replay applies it from the same
+    /// durable fact as the journal entry itself.
+    pub event: WorldEvent,
+}
+
+/// One durable fact in the region coordinator's own journal (#3870 phase 1,
+/// design #2818 §3). The coordinator records and recovers handoff progress;
+/// it never stores entity payloads and never emulates a cross-region
+/// transaction. Phase 4 of #3870 builds the coordinator state machine on
+/// these records; this packet fixes their format.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case")]
+pub enum CoordinatorJournalEntry {
+    /// A handoff was requested. Persisted before any shard side effect.
+    HandoffStarted {
+        /// Random 128-bit handoff ID, as hex.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region the entity leaves.
+        source_region: String,
+        /// Region the entity enters.
+        target_region: String,
+        /// Owner epoch the coordinator expects at the source.
+        expected_owner_epoch: u64,
+        /// Region-map epoch observed when the transfer was requested.
+        region_map_epoch: u64,
+        /// Program module hash both regions must run for v1.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Unix milliseconds the handoff was requested (operator
+        /// visibility only; ordering comes from journal order).
+        requested_at: u64,
+    },
+    /// The coordinator verified the source's durable, applied export
+    /// receipt for this handoff.
+    HandoffExportObserved {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Digest of the exported payload.
+        payload_digest: String,
+        /// Unix milliseconds the receipt was observed.
+        observed_at: u64,
+    },
+    /// The coordinator verified the destination's durable, applied import
+    /// receipt for this handoff.
+    HandoffImportObserved {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Digest of the imported payload.
+        payload_digest: String,
+        /// Unix milliseconds the receipt was observed.
+        observed_at: u64,
+    },
+    /// The handoff completed: the destination's matching import is durable
+    /// and applied. Persisted before the coordinator changes its in-memory
+    /// owner map or exposes the destination.
+    HandoffCompleted {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region the entity left.
+        source_region: String,
+        /// Region the entity entered.
+        target_region: String,
+        /// Digest of the transferred payload.
+        payload_digest: String,
+        /// Owner epoch at the destination (`prior + 1`).
+        new_owner_epoch: u64,
+        /// Region-map epoch after this completion.
+        new_region_map_epoch: u64,
+        /// Program module hash the transfer ran under.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+    },
+    /// A handoff was cancelled. Legal only before the source export
+    /// committed; the coordinator must first prove no export exists.
+    HandoffCancelled {
+        /// Handoff ID.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Why the handoff was cancelled.
+        reason: String,
+    },
 }
 
 /// One durable fact about a world, in commit order.
@@ -625,6 +777,63 @@ pub enum JournalEntry {
         /// The fired schedule's id.
         id: String,
     },
+    /// An application-owned entity was exported to another region shard
+    /// (#3870 phase 1, design #2818 §3). Written persist-before-apply: once
+    /// this entry is durable the source is fenced for `entity_ref` and this
+    /// entry is the durable recovery copy of the payload until the
+    /// coordinator journals completion.
+    EntityExported {
+        /// Coordinator-generated handoff ID (hex); the receipt key.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region exporting the entity.
+        source_region: String,
+        /// Region importing the entity.
+        target_region: String,
+        /// Owner epoch at the source before this handoff.
+        prior_owner_epoch: u64,
+        /// The host-originated system event removing the entity; replay
+        /// applies it from this same durable fact.
+        source_event: WorldEvent,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Program module hash the destination must match.
+        program_module_hash: String,
+        /// The complete entity snapshot (bounded by the transfer payload
+        /// cap; the cap itself is enforced from phase 2 of #3870).
+        payload: Vec<u8>,
+        /// Digest of `payload`.
+        payload_digest: String,
+    },
+    /// An application-owned entity was imported from another region shard
+    /// (#3870 phase 1, design #2818 §3). Written persist-before-apply; the
+    /// durable receipt for `handoff_id`. An exact retry returns the
+    /// existing receipt; the same ID with a different digest is a hard
+    /// conflict (enforced from phase 3 of #3870).
+    EntityImported {
+        /// Coordinator-generated handoff ID (hex); the dedupe key.
+        handoff_id: String,
+        /// Application-defined stable entity reference.
+        entity_ref: String,
+        /// Region that exported the entity.
+        source_region: String,
+        /// Region importing the entity.
+        target_region: String,
+        /// Owner epoch at the source before this handoff.
+        prior_owner_epoch: u64,
+        /// Owner epoch at this destination (`prior_owner_epoch + 1`).
+        new_owner_epoch: u64,
+        /// Program module hash, matched against the export before commit.
+        program_module_hash: String,
+        /// Versioned payload schema name.
+        payload_schema: String,
+        /// Digest of the imported payload.
+        payload_digest: String,
+        /// The host-originated system event adding the entity (it carries
+        /// the payload, hex-encoded, per design #2818 §3).
+        destination_event: WorldEvent,
+    },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
     Checkpoint {
@@ -648,6 +857,13 @@ pub enum JournalEntry {
         /// and it must match the `ScheduleSet` entries before it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         schedules: Option<Vec<(String, u64)>>,
+        /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
+        /// export fences/payloads, import receipts/dedupe keys and owner
+        /// epochs, so compaction cannot resurrect an exported entity or
+        /// forget an import. Absent when no handoff is active, and in
+        /// checkpoints written before journal version 3.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transfers: Option<Vec<HandoffTransferState>>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -691,28 +907,63 @@ pub const JOURNAL_VERSION: u32 = 1;
 /// binary cannot read. See the contract on [`JOURNAL_VERSION`].
 pub const JOURNAL_VERSION_EXECUTION_PROFILE: u32 = 2;
 
+/// Header version of a journal that contains a region-seam handoff entry
+/// ([`JournalEntry::EntityExported`] / [`JournalEntry::EntityImported`], an
+/// entity-addressed [`WorldEventKind::EntityInput`] event, or a checkpoint
+/// carrying handoff transfers): the first entry kinds a version-2 binary
+/// cannot read (#3870 phase 1, design #2818 §3). See the contract on
+/// [`JOURNAL_VERSION`].
+pub const JOURNAL_VERSION_REGION_HANDOFF: u32 = 3;
+
 /// Header version of a checkpoint that carries open program-visible presence.
-/// Version-2 binaries would ignore the field and fail to close those joins on
-/// restart, so such checkpoints must be refused by them.
-pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 3;
+/// Version-3 binaries would ignore the field and fail to close those joins on
+/// restart, so such checkpoints must be refused by them. This follows the
+/// region-handoff journal version so both features retain distinct contracts.
+pub const JOURNAL_VERSION_OPEN_PRESENCE: u32 = 4;
 
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
 pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_OPEN_PRESENCE;
 
-/// The header version a journal must carry once it contains `entry`:
-/// [`JOURNAL_VERSION_EXECUTION_PROFILE`] for execution-profile entries,
-/// [`JOURNAL_VERSION_OPEN_PRESENCE`] for checkpoints with open presence, and
-/// [`JOURNAL_VERSION`] otherwise.
+/// The header version a journal must carry once it contains `entry`: version 2
+/// for execution-profile entries, version 3 for region-handoff entries, and
+/// version 4 for checkpoints with open-presence metadata. Checkpoints combine
+/// the requirements of their transfers, retained events and presence field.
 #[must_use]
-pub const fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
     match entry {
-        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
+            JOURNAL_VERSION_REGION_HANDOFF
+        }
+        JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
+            WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            _ => JOURNAL_VERSION,
+        },
+        // A checkpoint stands in for the entries it compacted, so it must
+        // require every version its contents require: its transfer list,
+        // and its retained events — a retained `EntityInput` event is a
+        // version-3 kind even when no handoff is active (Codex review on
+        // PR #3922).
         JournalEntry::Checkpoint {
-            open_presence: Some(_),
+            transfers,
+            events,
+            open_presence,
             ..
-        } => JOURNAL_VERSION_OPEN_PRESENCE,
+        } => {
+            if open_presence.is_some() {
+                JOURNAL_VERSION_OPEN_PRESENCE
+            } else if transfers.is_some()
+                || events
+                    .iter()
+                    .any(|event| matches!(event.kind, WorldEventKind::EntityInput { .. }))
+            {
+                JOURNAL_VERSION_REGION_HANDOFF
+            } else {
+                JOURNAL_VERSION
+            }
+        }
+        JournalEntry::ExecutionProfile { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
         _ => JOURNAL_VERSION,
     }
 }

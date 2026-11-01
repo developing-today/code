@@ -85,6 +85,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { buildEpicRollups, type EpicRollup } from "./epics.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
 import { type AuthorIdentity } from "./registry.ts";
@@ -163,6 +164,7 @@ meter { width: 140px; height: 14px; }
 .fchip.live { border-color: #2ea04388; }
 .fchip.stale { border-color: #d29922; color: #e3b341; }
 .fchip.invalid { border-color: #f85149; color: #f85149; }
+.fchip.error { border-color: #f85149; color: #f85149; }
 .fchip.absent { border-color: #d29922; color: #e3b341; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
 .dot.up, .dot.self { background: #3fb950; }
@@ -1705,7 +1707,79 @@ const GRAINS: [RoadmapGrain, string][] = [
   ["today", "Today"],
 ];
 
-function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<string, number>): string {
+/** One roadmap row's drill-down (#1168): its matched Project epic
+ *  (absent when the row is unmatched) and the epic's pool children —
+ *  the pool items whose epicRef names the epic (#2399). */
+export interface RoadmapDrill {
+  epic?: ProjectPoolItem;
+  children: ProjectPoolItem[];
+}
+
+/** Build the per-row drill-down index from a reconciliation and the
+ *  Project pool, keyed by the row's registry subject. Every row gets
+ *  an entry, so an unmatched row is distinguishable from drill data
+ *  never having been supplied. Callers pass no index at all when the
+ *  reconciliation is unavailable — a failed source read must not
+ *  masquerade as "no epic yet" (#1144's availability rule). */
+export function buildRoadmapDrill(
+  rows: RoadmapRow[],
+  reconciliation: RoadmapReconciliation,
+  pool: ProjectPoolItem[],
+): Map<string, RoadmapDrill> {
+  const epicByRow = new Map(reconciliation.matched.map((m) => [m.row.subject, m.epic] as const));
+  const childrenByEpic = new Map<string, ProjectPoolItem[]>();
+  for (const item of pool) {
+    if (!item.epicRef) continue;
+    const list = childrenByEpic.get(item.epicRef) ?? [];
+    list.push(item);
+    childrenByEpic.set(item.epicRef, list);
+  }
+  return new Map(
+    rows.map((row) => {
+      const epic = epicByRow.get(row.subject);
+      return [row.subject, { epic, children: epic ? (childrenByEpic.get(epic.ref) ?? []) : [] }] as const;
+    }),
+  );
+}
+
+function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
+  const parts: string[] = [];
+  if (!drill.epic) {
+    parts.push(`<p class="muted">No epic yet — no Project epic matches this roadmap row.</p>`);
+  } else {
+    const epic = drill.epic;
+    parts.push(
+      `<p>Epic: <a href="${esc(epic.issueUrl)}">${esc(epic.title)}</a> <span class="muted">${esc(epic.ref)} · ${esc(epic.state)}</span></p>`,
+    );
+    if (drill.children.length === 0) {
+      parts.push(`<p class="muted">No child issues in the Project pool for this epic yet.</p>`);
+    } else {
+      const done = drill.children.filter((c) => c.state === "closed" || c.state === "merged").length;
+      const total = drill.children.length;
+      const pct = Math.round((done / total) * 100);
+      parts.push(
+        `<p class="muted">Progress: ${done}/${total} child issues done</p><div class="progress"><progress value="${done}" max="${total}">${pct}%</progress></div>`,
+      );
+      parts.push(
+        `<ul>${drill.children
+          .map(
+            (c) =>
+              `<li><a href="${esc(c.issueUrl)}">${esc(c.title)}</a> <span class="badge ${esc(c.state)}">${esc(c.state)}</span> <span class="muted">${esc(c.ref)}</span></li>`,
+          )
+          .join("")}</ul>`,
+      );
+    }
+  }
+  if (row.notes.trim()) parts.push(`<p class="notes">${esc(row.notes)}</p>`);
+  return `<details class="roadmap-drill"><summary>Epic &amp; issues</summary>${parts.join("")}</details>`;
+}
+
+function roadmapCard(
+  row: RoadmapRow,
+  items: Map<RefKey, GhItem>,
+  counts?: Map<string, number>,
+  drill?: RoadmapDrill,
+): string {
   const refs = allRefs([row]);
   const refBadges = refs
     .map((r) => items.get(r))
@@ -1714,13 +1788,15 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}</div>`;
+  const expansion = drill ? roadmapDrilldown(drill, row) : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}${expansion}</div>`;
 }
 
 function timelineTable(
   tl: ReturnType<typeof buildTimeline>,
   items: Map<RefKey, GhItem>,
   counts?: Map<string, number>,
+  drill?: Map<string, RoadmapDrill>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1728,7 +1804,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)}</th>${cells}</tr>`;
@@ -1745,6 +1821,7 @@ export function renderRoadmap(
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
   reconciliation?: RoadmapReconciliation,
+  drill?: Map<string, RoadmapDrill>,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1760,15 +1837,15 @@ export function renderRoadmap(
   ).join("");
   let body: string;
   if (grain === "quarter") {
-    body = timelineTable(buildTimeline(rows), items, counts);
+    body = timelineTable(buildTimeline(rows), items, counts, drill);
   } else if (grain === "month") {
-    body = timelineTable(monthTimeline(rows), items, counts);
+    body = timelineTable(monthTimeline(rows), items, counts, drill);
   } else {
     const dg = roadmapDayGrain(rows, grain);
     const sections = dg.lanes
       .map(
         (lane) =>
-          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts)).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
+          `<h2>${esc(lane.label)}</h2>${lane.rows.length ? lane.rows.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject))).join("") : '<p class="muted">Nothing dated this day.</p>'}`,
       )
       .join("");
     const notes: string[] = [];
@@ -1806,6 +1883,18 @@ export interface ItemExtras {
   statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
   /** Outbound links to the live services this item lives in (#1136). */
   serviceLinks?: ItemServiceLink[];
+  /** Present when this item's Project-pool entry is an epic. */
+  epicRollup?: EpicRollup;
+}
+
+function epicRollupHtml(rollup: EpicRollup): string {
+  const statusMix = rollup.statusMix.length
+    ? rollup.statusMix.map(({ status, count }) => `${esc(status)} ${count}`).join(" · ")
+    : "none";
+  const children = rollup.total
+    ? `Children: <strong>${rollup.done}/${rollup.total} done</strong>`
+    : `Children: <strong>0 resolved</strong> · completion unknown`;
+  return `<p class="muted epic-rollup"><strong>Epic rollup</strong> — ${children} · Status mix: ${statusMix} · Blocked: ${rollup.blocked}</p>`;
 }
 
 export function renderItem(
@@ -1852,9 +1941,10 @@ export function renderItem(
   const svcLinks = extras?.serviceLinks?.length
     ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
     : "";
+  const epicRollup = extras?.epicRollup ? epicRollupHtml(extras.epicRollup) : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><caption>Activity stream</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
@@ -4983,10 +5073,14 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     .join("");
   const sectionRows = view.feed.sections.length
     ? view.feed.sections
-        .map(
-          (s) =>
-            `<tr><td><code>${esc(s.key)}</code></td><td>${s.present ? "present" : '<span class="badge stale">absent</span>'}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`,
-        )
+        .map((s) => {
+          let status: string;
+          if (s.status === "unknown") status = s.present ? "present" : '<span class="badge stale">absent</span>';
+          else if (s.status === "error") status = '<span class="badge stale">error</span>';
+          else if (s.status === "skipped") status = '<span class="muted">skipped</span>';
+          else status = s.present ? "present · ok" : "empty · ok";
+          return `<tr><td><code>${esc(s.key)}</code></td><td>${status}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`;
+        })
         .join("")
     : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
   const orch = view.jobs.orchestration;
@@ -5178,6 +5272,7 @@ export function projectsBodyHtml(
     })
     .join("");
   const shownWeights = summarizeWeights(shown);
+  const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
       const derived = derivedProjectState(p, opts.orchestration);
@@ -5200,7 +5295,9 @@ export function projectsBodyHtml(
       const statusCtl = opts.identities
         ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
         : "";
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${statusCtl}</div>`;
+      const rollup = p.kind === "Epic" ? epicRollups.get(p.ref) : undefined;
+      const epicRollup = rollup ? epicRollupHtml(rollup) : "";
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${epicRollup}${statusCtl}</div>`;
     })
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
@@ -5427,6 +5524,7 @@ export function renderProgramProject(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
+  epicPool: ProjectPoolItem[] = detail.poolItems,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -5480,10 +5578,13 @@ export function renderProgramProject(
     const allW = summarizeWeights(detail.poolItems);
     const epics = detail.poolItems.filter((p) => p.kind === "Epic");
     const epicW = summarizeWeights(epics);
+    const epicRollups = buildEpicRollups(epicPool);
     const epicRows = epics
       .map((p) => {
         const w = effortWeight(p.labels);
-        return `<div class="card"><strong>${esc(p.title)}</strong><br><span class="muted">weight: ${w === null ? "unsized" : w} · issue ${esc(p.state)}${p.status ? ` · status: ${esc(p.status)}` : ""} · <a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a></span></div>`;
+        const epicRollup = epicRollups.get(p.ref);
+        const rollup = epicRollup ? epicRollupHtml(epicRollup) : "";
+        return `<div class="card"><strong>${esc(p.title)}</strong><br><span class="muted">weight: ${w === null ? "unsized" : w} · issue ${esc(p.state)}${p.status ? ` · status: ${esc(p.status)}` : ""} · <a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a></span>${rollup}</div>`;
       })
       .join("");
     const epicHtml = epics.length

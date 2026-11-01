@@ -15,7 +15,10 @@ use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
 
 /// Largest Wasm world module that may be installed (16 MiB).
-pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
+///
+/// The definition lives in `id-core`'s `world_limits` since the Phase 1
+/// crate split (#3447); re-exported here at its historical path.
+pub use crate::world_limits::MAX_WORLD_MODULE_BYTES;
 
 /// Largest raw upload chunk; hex + JSON framing remains below [`MAX_FRAME_BYTES`].
 pub const MAX_WORLD_MODULE_CHUNK_BYTES: usize = 6 * 1024;
@@ -79,6 +82,9 @@ pub(crate) enum ClientFrame {
     Join {
         capability: String,
         after: Option<u64>,
+        /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
+        #[serde(default)]
+        screen_patches: bool,
     },
     Info {
         capability: String,
@@ -287,6 +293,14 @@ pub(crate) enum ServerFrame<'a> {
         /// Optional typed screen surface. Older clients can continue using `data`.
         #[serde(skip_serializing_if = "Option::is_none")]
         surface: Option<&'a crate::world_presentation::WorldSurface>,
+        /// Monotonic within this session; independent of the world event cursor.
+        view_revision: u64,
+        /// Present only when `patch` applies to this exact prior view revision.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_view_revision: Option<u64>,
+        /// A negotiated screen delta. `data` is empty and `surface` omitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        patch: Option<&'a crate::world_presentation::ScreenPatch>,
     },
     ModuleInfo {
         world_id: String,
