@@ -196,3 +196,20 @@ test('failed turn surfaces an error and the session is retryable', async (t) => 
   const j = await r.json();
   assert.ok(j.error.message.includes('stub failure') || j.error.message.length > 0);
 });
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { base, child } = await startProxy();
+  t.after(() => { child.kill('SIGKILL'); });
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
+});
