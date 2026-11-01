@@ -243,6 +243,8 @@ var EffectExemptions = map[string]string{
 	"protoTasks.maxTTL":                  "task-store limits: covered by internal/tasks store tests (TTL clamp), not by a settings with/without probe",
 	"protoTasks.maxPerRequestor":         "task-store limits: covered by internal/tasks store tests (per-requestor cap), not by a settings with/without probe",
 	"protoTasks.perMinute":               "task-store limits: covered by internal/tasks store tests (admission window), not by a settings with/without probe",
+	"completion.perMinute":               "completion rate limit: covered by internal/daemon handler tests (429 before the pool at the limit, admitted when disabled), not by a settings with/without probe",
+	"completion.serverPerMinute":         "completion rate limit: covered by internal/daemon handler tests (per-server window binds across callers), not by a settings with/without probe",
 	"upstream.protocol":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.probeTimeout":              "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
 	"upstream.eraCache":                  "upstream protocol detection: its effect needs a peer whose era must be probed, beyond what the fake server presents",
