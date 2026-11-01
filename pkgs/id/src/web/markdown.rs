@@ -854,7 +854,15 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        let indent = line.len() - line.trim_start_matches(' ').len();
+        // Indentation in COLUMNS, like the reference collector:
+        // a tab advances to the next multiple of 4, so a
+        // tab-indented line is indented code (indent 4), not a
+        // paragraph line at indent 0. Counting spaces only left
+        // `\tcode` looking like paragraph text, which refused
+        // the HTML block after it and recovered the definition-
+        // shaped line inside it as a footnote (Codex P2 on
+        // #1565's twentieth cut).
+        let indent = indentation_columns(line);
         let stripped = line.trim_start_matches(' ');
         // An already-open HTML block sees every line, however
         // indented: an indented closing marker still closes it,
@@ -995,7 +1003,18 @@ fn scan_footnote_definition_blocks(markdown: &str) -> Vec<FootnoteDefinitionBloc
             // A plain line is paragraph text (next line not
             // block-eligible) unless it starts a block itself (a
             // heading, a list item, a thematic break, ...).
-            at_block_start = starts_new_block(stripped);
+            // A setext underline also ends the paragraph when one
+            // precedes it, exactly as the reference collector
+            // handles it: `Body` / `===` is a heading, so a type-7
+            // HTML block may open on the next line and swallow a
+            // definition-shaped line as its literal interior;
+            // without this the underline left the paragraph open,
+            // the tag was refused, and the fake definition was
+            // recovered (Codex P2 on #1565's twentieth cut). A
+            // lone underline at a block start is paragraph text
+            // itself, so the gate is !at_block_start.
+            let setext_ends_paragraph = is_setext_underline(stripped) && !at_block_start;
+            at_block_start = starts_new_block(stripped) || setext_ends_paragraph;
             i += 1;
             continue;
         };
@@ -1124,6 +1143,24 @@ fn link_reference_definition_needs_more(after: &str) -> bool {
     // recovered footnote lost its link (Codex P2 on #1565's
     // seventeenth cut).
     !contains_unescaped(&title[1..], closer)
+}
+
+/// Whether an accumulated candidate is a VALID link reference
+/// definition: a destination is present and whatever follows it
+/// is empty or a complete title. `link_reference_definition_title_text`
+/// alone returns Some for ANY trailing text, including a bare word
+/// (`[bad]: /bad extra`), which is not a title at all -- such a
+/// line is no definition, and the lines around it stay one
+/// paragraph (Codex P2 on #1565's twentieth cut).
+fn link_reference_definition_is_valid(after: &str) -> bool {
+    let Some(title) = link_reference_definition_title_text(after) else {
+        return false;
+    };
+    if title.is_empty() {
+        return true;
+    }
+    matches!(title.as_bytes()[0], b'"' | 0x27 | b'(')
+        && !link_reference_definition_needs_more(after)
 }
 
 /// Whether anything follows the destination in the accumulated
@@ -1487,11 +1524,23 @@ fn collect_link_reference_definitions(markdown: &str) -> Vec<(usize, String)> {
                 }
                 break;
             }
-            if link_reference_definition_title_text(&after).is_some() {
+            if link_reference_definition_is_valid(&after) {
                 defs.push((i, block.join("\n")));
+                at_block_start = true;
+                i = j;
+            } else {
+                // Not a definition at all (twentieth cut): the
+                // opening line is paragraph text, so the next line
+                // is its continuation -- resetting block-start
+                // eligibility here collected the following line as
+                // its own definition (`[bad]: /bad extra` /
+                // `[url]: /target` are one paragraph; `[url]` in
+                // it is no definition), and synthesis then turned
+                // it into a real definition in the probe. Advance
+                // one line only, as paragraph text.
+                at_block_start = false;
+                i += 1;
             }
-            at_block_start = true;
-            i = j;
             continue;
         }
         // Any other line: headings and container lines end a
@@ -5517,6 +5566,80 @@ mod tests {
         );
         let (first, second) = two_saves(original);
         assert_eq!(first, second, "type-7-after-fence round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_setext_heading_resets_block_start_for_type7_html() {
+        // #1565 twentieth cut (Codex P2): a setext underline ends
+        // the paragraph it underlines, so `<em>` after `Body` /
+        // `===` opens a type-7 HTML block and the definition-
+        // shaped line is its literal interior. The footnote scan
+        // did not recognize setext underlines when updating
+        // paragraph eligibility (the reference collector already
+        // did), so the tag was refused and the fake definition
+        // recovered as a live footnote.
+        let original = "Body\n===\n<em>\n[^fake]: literal\n\n";
+        let doc = markdown_to_prosemirror(original);
+        assert!(
+            doc["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["type"] != "footnote_definition"),
+            "definition-shaped HTML interior after a setext heading is not synthesized: {doc}"
+        );
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "type-7-after-setext round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_tab_indented_code_resets_block_start_for_type7_html() {
+        // #1565 twentieth cut (Codex P2): a tab-indented first
+        // line is indented code (tab advances to column 4), so
+        // `<em>` after it opens an HTML block whose interior is
+        // literal. The footnote scan counted spaces only, treating
+        // the code line as paragraph content, refusing the tag,
+        // and recovering the fake definition. The four-space
+        // spelling is the control: both must scan identically.
+        for original in [
+            "\tcode\n<em>\n[^fake]: literal\n\n",
+            "    code\n<em>\n[^fake]: literal\n\n",
+        ] {
+            let doc = markdown_to_prosemirror(original);
+            assert!(
+                doc["content"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|n| n["type"] != "footnote_definition"),
+                "definition-shaped HTML interior after indented code is not synthesized: {doc}"
+            );
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "type-7-after-indented-code round-trip is a fixpoint");
+        }
+    }
+
+    #[test]
+    fn test_malformed_reference_candidate_does_not_split_paragraph() {
+        // #1565 twentieth cut (Codex P2): `[bad]: /bad extra` is
+        // no definition -- the bare trailing word is not a title --
+        // so it and `[url]: /target` form ONE paragraph and
+        // `[url]` inside it is not a definition either. The
+        // collector accepted the malformed candidate and reset
+        // paragraph state, collected `[url]` separately, and
+        // synthesis then resolved the recovered footnote's
+        // `[target][url]` into a hyperlink the document never had.
+        let original = "[bad]: /bad extra\n[url]: /target\n\n[^orphan]: [target][url]\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("\\[target\\]\\[url\\]"),
+            "unresolved reference stays literal in recovered footnote: {first:?}"
+        );
+        assert!(
+            !first.contains("[target]("),
+            "malformed-candidate reference is not promoted to a link: {first:?}"
+        );
+        assert_eq!(first, second, "malformed-candidate round-trip is a fixpoint");
     }
 
     #[test]
