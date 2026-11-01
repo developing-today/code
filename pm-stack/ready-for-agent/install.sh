@@ -3,9 +3,10 @@
 # on this host.
 #
 #   ./install.sh            install pinned package + unit, (re)start,
-#                           wait for the UI, print status
-#   ./install.sh clone      additionally clone (or fetch) the
-#                           repositories the harness serves into
+#                           wait for the UI, apply config.json
+#                           (./apply-config.sh, #1203), print status
+#   ./install.sh clone      additionally clone (or fetch) every
+#                           repository config.json serves into
 #                           ./repos/
 #
 # Registration note (learned 2026-10-24, first deployment): register
@@ -48,14 +49,24 @@ fi
 #    network-heavy step.
 if [[ ${1:-} == clone ]]; then
   mkdir -p "$DEPLOY_DIR/repos"
-  if [[ -d $DEPLOY_DIR/repos/code ]]; then
-    git -C "$DEPLOY_DIR/repos/code" fetch --all --prune
-    echo "fetched code"
-  else
-    GIT_TERMINAL_PROMPT=0 git clone \
-      https://github.com/developing-today/code.git "$DEPLOY_DIR/repos/code"
-    echo "cloned code"
-  fi
+  # Every repository the declarative config serves (#1203) — not
+  # only developing-today/code. Rows are localDir<TAB>cloneUrl.
+  while IFS=$'\t' read -r local_dir clone_url; do
+    [[ -n $local_dir ]] || continue
+    if [[ -d $DEPLOY_DIR/repos/$local_dir ]]; then
+      git -C "$DEPLOY_DIR/repos/$local_dir" fetch --all --prune
+      echo "fetched $local_dir"
+    else
+      GIT_TERMINAL_PROMPT=0 git clone "$clone_url" "$DEPLOY_DIR/repos/$local_dir"
+      echo "cloned $local_dir"
+    fi
+  done < <(python3 -c '
+import json
+with open("config.json") as f:
+    cfg = json.load(f)
+for repo in cfg["repositories"]:
+    print(repo["localDir"] + "\t" + repo["cloneUrl"])
+')
 fi
 
 # 3. systemd user unit.
@@ -65,13 +76,21 @@ systemctl --user daemon-reload
 systemctl --user enable --now ready-for-agent.service
 
 echo "waiting for the harness UI..."
+up=""
 for i in $(seq 1 30); do
   if curl --fail --silent http://127.0.0.1:6056/ >/dev/null; then
-    echo "ready-for-agent is up: http://127.0.0.1:6056"
-    systemctl --user --no-pager status ready-for-agent.service | head -5
-    exit 0
+    up=1
+    break
   fi
   sleep 5
 done
+if [[ -n $up ]]; then
+  echo "ready-for-agent is up: http://127.0.0.1:6056"
+  # Apply the declarative configuration (#1203): register the clones
+  # and converge the harness settings on config.json, idempotently.
+  ./apply-config.sh
+  systemctl --user --no-pager status ready-for-agent.service | head -5
+  exit 0
+fi
 echo "ready-for-agent did not come up; check: journalctl --user -u ready-for-agent" >&2
 exit 1
