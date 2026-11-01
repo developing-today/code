@@ -496,3 +496,114 @@ mod archive_name_tests {
         assert_eq!(name, "doc.archive.42");
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod probe_replacemeta_tests {
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::store::mem::MemStore;
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use crate::tags::TagStore;
+
+    async fn harness() -> (TagStore, Store, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let blobs: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), blobs.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ts = TagStore::init_in(&docs, "probe-node", dir.path().join(".iroh-meta"))
+            .await
+            .unwrap();
+        (ts, blobs, dir, endpoint, docs)
+    }
+
+    async fn dump(tags: &TagStore, subject: &str) -> Vec<String> {
+        let mut out: Vec<String> = tags
+            .get_tags(&tags.global, subject.as_bytes())
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| {
+                format!(
+                    "{}={}",
+                    String::from_utf8_lossy(t.key.as_bytes()),
+                    t.value
+                        .as_ref()
+                        .map(|v| String::from_utf8_lossy(v.as_bytes()).into_owned())
+                        .unwrap_or_default()
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    async fn seed(tags: &TagStore, store: &Store) {
+        let ops = FileOps::new(store, tags);
+        let h1 = store
+            .blobs()
+            .add_bytes(b"content-a".to_vec())
+            .await
+            .unwrap()
+            .hash;
+        let h2 = store
+            .blobs()
+            .add_bytes(b"content-b".to_vec())
+            .await
+            .unwrap()
+            .hash;
+        ops.put("a.md", h1).await.unwrap();
+        ops.put("b.md", h2).await.unwrap();
+        let ns = &tags.global;
+        tags.set_tag(ns, b"a.md", b"status", Some(b"wip"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(ns, b"b.md", b"status", Some(b"done"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(ns, b"b.md", b"color", Some(b"red"), b"")
+            .await
+            .unwrap();
+        tags.set_singleton(ns, b"a.md", b"created", Some(b"111"), b"")
+            .await
+            .unwrap();
+        tags.set_singleton(ns, b"b.md", b"created", Some(b"222"), b"")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_rename_onto_existing() {
+        let (tags, store, _dir, _ep, _docs) = harness().await;
+        seed(&tags, &store).await;
+        println!("BEFORE b.md: {:?}", dump(&tags, "b.md").await);
+        let ops = FileOps::new(&store, &tags);
+        let outcome = ops.rename("a.md", "b.md", false).await.unwrap();
+        println!("archived_replaced: {:?}", outcome.archived_replaced);
+        println!("AFTER-RENAME b.md: {:?}", dump(&tags, "b.md").await);
+        let arch = outcome.archived_replaced.clone().unwrap();
+        println!("ARCHIVE {arch} tags: {:?}", dump(&tags, &arch).await);
+    }
+
+    #[tokio::test]
+    async fn probe_copy_onto_existing() {
+        let (tags, store, _dir, _ep, _docs) = harness().await;
+        seed(&tags, &store).await;
+        let ops = FileOps::new(&store, &tags);
+        let outcome = ops.copy("a.md", "b.md").await.unwrap();
+        println!("archived_replaced: {:?}", outcome.archived_replaced);
+        println!("AFTER-COPY b.md: {:?}", dump(&tags, "b.md").await);
+        let arch = outcome.archived_replaced.clone().unwrap();
+        println!("ARCHIVE {arch} tags: {:?}", dump(&tags, &arch).await);
+    }
+}
