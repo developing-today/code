@@ -735,3 +735,31 @@ func TestHideSchemaPropsLiteralRefIsNotAReference(t *testing.T) {
 		t.Errorf("a different cursor value must stay rejected: %s", out)
 	}
 }
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): a oneOf
+// branch that also examines a caller-supplied property is not
+// decided by the full branch verdict, but its pinned conjuncts
+// still settle the branch whose discriminator the pin fails --
+// name-stripping both branches left two identical branches, and
+// the advertised oneOf rejected {"limit":1} although the merged
+// arguments match exactly one original branch.
+func TestHideSchemaPropsPinnedDropsConjunctDecidedBranches(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"tailnet":{"type":"string"},"limit":{"type":"integer"}},"additionalProperties":false,"oneOf":[{"properties":{"tailnet":{"const":"prod"}},"required":["tailnet","limit"]},{"properties":{"tailnet":{"const":"other"}},"required":["tailnet","limit"]}]}`)
+	out := hideSchemaPropsPinned(schema, []string{"tailnet"}, map[string]any{"tailnet": "prod"})
+	compiled, err := schemaval.Compile(out)
+	if err != nil {
+		t.Fatalf("compile %s: %v", out, err)
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{`{"limit":1}`, true},
+		{`{}`, false},
+	} {
+		err := compiled.ValidateJSON(json.RawMessage(tc.input))
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: valid=%v, err=%v; schema=%s", tc.input, tc.valid, err, out)
+		}
+	}
+}

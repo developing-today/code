@@ -1066,14 +1066,18 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 		}
 	}
 	// Every pin merges into the instance at this scope whether or
-	// not the scope declares the property, so the scope's
-	// property-count constraints are projected by the full pin
-	// count (Codex P2 on PR #2976).
+	// not the scope declares the property. Property-count
+	// constraints are projected per pin below: a pin the caller
+	// did not supply adds one to the merged count, while a pin
+	// the caller supplied itself is overwritten by the merge and
+	// adds nothing (Codex P2 on PR #2976).
 	pinnedCount := len(pinned)
 	out := make(map[string]any, len(m))
 	var promoted []string
 	var promotedSubs []any
 	var preserved map[string]any
+	var preservedBranches []preservedBranch
+	var branchRemaps []branchRemap
 	var unsatisfiable bool
 	for k, val := range m {
 		switch k {
@@ -1177,14 +1181,50 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 			// an invalid one never does.
 			kept := make([]any, 0, len(subs))
 			decidedValid := 0
-			for _, sub := range subs {
-				if valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, verdictRoot, resolving); decided {
+			for i, sub := range subs {
+				valid, decided := pinnedSchemaVerdict(sub, pinned, pinVals, verdictRoot, resolving)
+				if !decided {
+					// The branch's truth may still be
+					// settled against the caller by its
+					// pinned-only conjuncts: a oneOf
+					// branch whose pinned discriminator
+					// assertion fails can never match
+					// the merged instance, even though
+					// the branch also examines caller
+					// properties the full verdict must
+					// decline (Codex P2 on PR #2976).
+					if cv, cd := pinnedConjunctVerdict(sub, pinned, pinVals, verdictRoot, resolving); cd && !cv {
+						valid, decided = false, true
+					}
+				}
+				if decided {
 					if valid {
 						decidedValid++
 					} else if k == "allOf" {
 						unsatisfiable = true
 					}
+					if atResRoot {
+						pointer := "#/" + k + "/" + strconv.Itoa(i)
+						if schemaPointerReferenced(m, pointer) {
+							// Another schema in
+							// this resource
+							// references into the
+							// discarded branch:
+							// the branch is kept
+							// under $defs below
+							// and the references
+							// are rewritten
+							// there, instead of
+							// being left dangling
+							// (Codex P2 on
+							// PR #2976).
+							preservedBranches = append(preservedBranches, preservedBranch{pointer: pointer, value: sub})
+						}
+					}
 					continue
+				}
+				if atResRoot && len(kept) != i {
+					branchRemaps = append(branchRemaps, branchRemap{key: k, oldIndex: i, newIndex: len(kept)})
 				}
 				kept = append(kept, stripPinnedScopeRes(sub, pinned, pinVals, root, resRoot, resolving))
 			}
@@ -1231,22 +1271,26 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				out[k] = val
 				continue
 			}
-			n -= int64(pinnedCount)
-			if k == "minProperties" {
-				// A min that reaches zero is no constraint and
-				// is dropped.
-				if n > 0 {
-					out[k] = json.Number(strconv.FormatInt(n, 10))
-				}
-				continue
-			}
-			if n < 0 {
-				// The pins alone exceed the maximum: no caller
-				// input can satisfy this scope.
+			// The merged instance's property count is the
+			// caller's count plus the pins the caller did
+			// not supply: a pin is not necessarily hidden,
+			// and one the caller supplies itself is
+			// overwritten by the merge, not added (Codex
+			// P2 on PR #2976). The count is therefore
+			// projected as a conjunct branching on which
+			// pinned names the caller supplied, not by
+			// subtracting every pin from the bound.
+			switch conjunct := pinnedCountConjunct(k, n, sortedPinnedNames(pinned)); {
+			case conjunct == true:
+				// Every caller instance satisfies the
+				// merged count: no constraint survives.
+			case conjunct == false:
+				// The pins alone exceed the bound: no
+				// caller input can satisfy this scope.
 				unsatisfiable = true
-				n = 0
+			default:
+				promotedSubs = append(promotedSubs, conjunct)
 			}
-			out[k] = json.Number(strconv.FormatInt(n, 10))
 		case "not":
 			// A negation inverts the effect of the schemas inside
 			// it: stripping a pinned requirement there does not
@@ -1417,7 +1461,7 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 			out["allOf"] = append(wrapped, promotedSubs...)
 		}
 	}
-	if len(preserved) > 0 {
+	if len(preserved) > 0 || len(preservedBranches) > 0 {
 		defs := map[string]any{}
 		usable := true
 		if existing, present := out["$defs"]; present {
@@ -1453,10 +1497,31 @@ func stripPinnedScopeResAt(v any, pinned map[string]bool, pinVals map[string]any
 				})
 			}
 			out["$defs"] = defs
+			for _, pb := range preservedBranches {
+				base := "_mcpx_branch_" + strings.ReplaceAll(strings.TrimPrefix(pb.pointer, "#/"), "/", "_")
+				defName := base
+				for i := 1; ; i++ {
+					if _, exists := defs[defName]; !exists {
+						break
+					}
+					defName = fmt.Sprintf("%s_%d", base, i)
+				}
+				defs[defName] = pb.value
+				rewrites = append(rewrites, refRewrite{pb.pointer, "#/$defs/" + escapePointerSegment(defName)})
+			}
 			for _, rw := range rewrites {
 				rewriteArgumentRefs(out, true, rw.oldRef, rw.newRef)
 			}
 		}
+	}
+	// References to kept applicator branches use their original
+	// indices; dropping a decided branch shifts the survivors, so
+	// surviving references are remapped to the new positions.
+	// Remaps run in ascending original-index order: a remap's
+	// target index is always vacated (by an earlier drop or an
+	// earlier remap) before anything is rewritten into it.
+	for _, rm := range branchRemaps {
+		rewriteArgumentRefs(out, true, "#/"+rm.key+"/"+strconv.Itoa(rm.oldIndex), "#/"+rm.key+"/"+strconv.Itoa(rm.newIndex))
 	}
 	if unsatisfiable {
 		// A pin-decided branch already settles this schema against
@@ -2005,4 +2070,269 @@ func PinnedBranchVerdict(schema any, pinVals map[string]any, root map[string]any
 		set[name] = true
 	}
 	return pinnedSchemaVerdict(schema, set, pinVals, root, map[string]bool{})
+}
+
+// preservedBranch records an applicator branch the projection
+// discarded (its truth was decided by the pins) that another schema
+// in the same resource still references into: the branch is kept
+// under $defs and the references rewritten to it.
+type preservedBranch struct {
+	pointer string
+	value   any
+}
+
+// branchRemap records a kept applicator branch whose index in its
+// applicator changed when an earlier branch was discarded, so
+// references written against the original index can be rewritten.
+type branchRemap struct {
+	key      string
+	oldIndex int
+	newIndex int
+}
+
+func sortedPinnedNames(pinned map[string]bool) []string {
+	names := make([]string, 0, len(pinned))
+	for name := range pinned {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// pinnedCountConjunct returns a schema a caller instance satisfies
+// exactly when the merged instance (the caller's arguments with
+// every pin merged over them) satisfies the property-count keyword
+// kind with bound n. A pin the caller also supplies adds nothing
+// when it merges -- the merge overwrites it -- so the bound is
+// projected according to the overlap between the pinned names and
+// the caller's own properties: for each pin, the present branch
+// counts it in the caller's total and the absent branch counts it
+// as the merge's contribution (Codex P2 on PR #2976).
+func pinnedCountConjunct(kind string, n int64, pins []string) any {
+	if len(pins) == 0 {
+		switch kind {
+		case "minProperties":
+			if n <= 0 {
+				return true
+			}
+		case "maxProperties":
+			if n < 0 {
+				return false
+			}
+		}
+		return map[string]any{kind: json.Number(strconv.FormatInt(n, 10))}
+	}
+	present := conjoinCountSchemas(
+		map[string]any{"required": []any{pins[0]}},
+		pinnedCountConjunct(kind, n, pins[1:]))
+	absent := conjoinCountSchemas(
+		map[string]any{"not": map[string]any{"required": []any{pins[0]}}},
+		pinnedCountConjunct(kind, n-1, pins[1:]))
+	return map[string]any{"anyOf": []any{present, absent}}
+}
+
+// conjoinCountSchemas conjoins a small keyword map with a count
+// conjunct under construction: both must hold. A false conjunct
+// falsifies the whole; a true one drops out.
+func conjoinCountSchemas(a map[string]any, b any) any {
+	bm, ok := b.(map[string]any)
+	if !ok {
+		if bb, isBool := b.(bool); isBool && bb {
+			return a
+		}
+		return false
+	}
+	out := make(map[string]any, len(a)+len(bm))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range bm {
+		if k == "required" {
+			if existing, ok := out[k].([]any); ok {
+				if names, ok := v.([]any); ok {
+					out[k] = append(existing, names...)
+					continue
+				}
+			}
+		}
+		if _, clash := out[k]; clash {
+			return map[string]any{"allOf": []any{a, bm}}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// conditionNamesAllPinned reports whether a condition schema's
+// truth at its own instance scope depends only on pinned
+// properties (see collectConditionNames).
+func conditionNamesAllPinned(v any, pinned map[string]bool, root map[string]any, resolving map[string]bool) bool {
+	names := map[string]bool{}
+	if !collectConditionNames(v, root, resolving, names) {
+		return false
+	}
+	for name := range names {
+		if !pinned[name] {
+			return false
+		}
+	}
+	return true
+}
+
+// pinnedConjunctSchema extracts the sub-schema formed by v's
+// pinned-only conjuncts: the assertions at v's own instance scope
+// whose truth depends only on pinned properties -- a properties
+// entry for a pinned name, a required entry naming only pinned
+// names, a dependent* entry whose trigger and demands are all
+// pinned, an allOf member's own pinned conjuncts, a negation the
+// pins decide. It reports false when v carries no such conjunct.
+// The extraction conjoins parts of v, so when the pins decide it
+// false, v itself can never match the merged instance even though
+// the rest of v depends on caller-supplied properties the full
+// verdict must decline (Codex P2 on PR #2976).
+func pinnedConjunctSchema(v any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (any, bool) {
+	if b, isBool := v.(bool); isBool {
+		return b, true
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	if ref, isStr := m["$ref"].(string); isStr && strings.HasPrefix(ref, "#") && dialectIgnoresRefSiblings(root) {
+		// Draft-07 and earlier: the reference replaces the
+		// schema outright, so its siblings are not conjuncts
+		// of the branch at all.
+		return nil, false
+	}
+	out := map[string]any{}
+	for k, val := range m {
+		switch k {
+		case "properties":
+			props, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			kept := map[string]any{}
+			for name, sub := range props {
+				if pinned[name] {
+					kept[name] = sub
+				}
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
+		case "required":
+			names, ok := val.([]any)
+			if !ok {
+				continue
+			}
+			kept := make([]any, 0, len(names))
+			for _, e := range names {
+				if name, isStr := e.(string); isStr && pinned[name] {
+					kept = append(kept, e)
+				}
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
+		case "dependentRequired", "dependencies":
+			deps, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			kept := map[string]any{}
+			for trigger, depVal := range deps {
+				if !pinned[trigger] {
+					continue
+				}
+				switch dep := depVal.(type) {
+				case []any:
+					all := true
+					for _, e := range dep {
+						if name, isStr := e.(string); !isStr || !pinned[name] {
+							all = false
+							break
+						}
+					}
+					if all {
+						kept[trigger] = depVal
+					}
+				case map[string]any, bool:
+					if conditionNamesAllPinned(depVal, pinned, root, resolving) {
+						kept[trigger] = depVal
+					}
+				}
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
+		case "dependentSchemas":
+			subs, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			kept := map[string]any{}
+			for trigger, sub := range subs {
+				if pinned[trigger] && conditionNamesAllPinned(sub, pinned, root, resolving) {
+					kept[trigger] = sub
+				}
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
+		case "allOf":
+			subs, ok := val.([]any)
+			if !ok {
+				continue
+			}
+			kept := make([]any, 0, len(subs))
+			for _, sub := range subs {
+				if ex, has := pinnedConjunctSchema(sub, pinned, pinVals, root, resolving); has {
+					kept = append(kept, ex)
+				}
+			}
+			if len(kept) > 0 {
+				out[k] = kept
+			}
+		case "not":
+			// A negation the pins decide is itself a
+			// pinned-only conjunct: decided valid inside
+			// makes the conjunct false, decided invalid
+			// makes it true (it drops out).
+			if valid, decided := pinnedSchemaVerdict(val, pinned, pinVals, root, resolving); decided && valid {
+				out[k] = val
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// pinnedConjunctVerdict reports whether the pinned-only conjuncts
+// of a schema are decided by the pinned values alone, and if so
+// whether they hold: a decided-false conjunct settles the whole
+// schema against every caller, whatever its caller-dependent
+// remainder says.
+func pinnedConjunctVerdict(schema any, pinned map[string]bool, pinVals map[string]any, root map[string]any, resolving map[string]bool) (bool, bool) {
+	ex, has := pinnedConjunctSchema(schema, pinned, pinVals, root, resolving)
+	if !has {
+		return false, false
+	}
+	return pinnedSchemaVerdict(ex, pinned, pinVals, root, resolving)
+}
+
+// PinnedConjunctVerdict exposes pinnedConjunctVerdict for the
+// daemon's upstream projector, which must give a caller-dependent
+// applicator branch the same partial evaluation before projecting
+// it: projecting a branch whose pinned conjuncts already fail
+// strips the very assertions that distinguished it from its
+// siblings (Codex P2 on PR #2976).
+func PinnedConjunctVerdict(schema any, pinVals map[string]any, root map[string]any) (bool, bool) {
+	set := make(map[string]bool, len(pinVals))
+	for name := range pinVals {
+		set[name] = true
+	}
+	return pinnedConjunctVerdict(schema, set, pinVals, root, map[string]bool{})
 }

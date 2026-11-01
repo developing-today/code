@@ -1655,3 +1655,71 @@ func TestEffectiveSchemaPinnedLiteralRefIsNotAReference(t *testing.T) {
 		{`{"cursor":"x"}`, false},
 	})
 }
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): the count
+// projection subtracted every pin, but a pin that is not hidden
+// can be supplied by the caller itself -- merging overwrites it
+// instead of adding a property, so a caller supplying only the
+// pinned property stayed below the merged minimum enforcement
+// demands, while the advertised schema accepted the call.
+func TestEffectiveSchemaPinnedCountsCallerSuppliedPins(t *testing.T) {
+	reproCheckPinned(t, `{"properties":{"tailnet":{}},"minProperties":2}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+		{`{"tailnet":"prod"}`, false},
+		{`{"tailnet":"prod","limit":1}`, true},
+	})
+	reproCheckPinned(t, `{"properties":{"tailnet":{}},"maxProperties":1}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"limit":1}`, false},
+		{`{"tailnet":"prod"}`, true},
+		{`{"tailnet":"prod","limit":1}`, false},
+	})
+}
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): a branch
+// whose pinned assertions are mixed with caller-dependent
+// requirements is not decided by the full branch verdict, but its
+// pinned conjuncts still settle it: the branch whose discriminator
+// assertion the pin fails can never match the merged instance, and
+// projecting it by name-stripping alone left two identical oneOf
+// branches that between them rejected every satisfiable call.
+func TestEffectiveSchemaPinnedDropsConjunctDecidedBranches(t *testing.T) {
+	reproCheckPinned(t, `{"oneOf":[{"properties":{"tailnet":{"const":"-"}},"required":["tailnet","limit"]},{"properties":{"tailnet":{"const":"other"}},"required":["tailnet","limit"]}]}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, false},
+		{`{"limit":1}`, true},
+	})
+}
+
+// Codex P2 on PR #2976 (2026-11-01 fix-round review): discarding
+// a pin-decided applicator branch must not strand references into
+// it from elsewhere in the resource, and references to surviving
+// branches must follow them to their shifted indices.
+func TestEffectiveSchemaPinnedDiscardedBranchKeepsReferences(t *testing.T) {
+	reproCheckPinned(t, `{"allOf":[{"properties":{"tailnet":{"type":"string"}}}],"properties":{"cursor":{"$ref":"#/allOf/0/properties/tailnet"}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":"x"}`, true},
+		{`{"cursor":1}`, false},
+	})
+	reproCheckPinned(t, `{"allOf":[{"properties":{"tailnet":{"const":"-"}}},{"properties":{"limit":{"type":"number"}}}],"properties":{"cursor":{"$ref":"#/allOf/1/properties/limit"}}}`, []struct {
+		input string
+		valid bool
+	}{
+		{`{}`, true},
+		{`{"cursor":1}`, true},
+		{`{"cursor":"x"}`, false},
+		{`{"limit":"bad"}`, false},
+	})
+}

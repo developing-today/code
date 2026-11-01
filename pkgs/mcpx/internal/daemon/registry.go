@@ -748,6 +748,62 @@ func (p *schemaProjector) branchVerdict(sub any) (bool, bool) {
 	return config.PinnedBranchVerdict(sub, p.pinVals, verdictRoot)
 }
 
+// branchConjunctVerdict evaluates one applicator branch's
+// pinned-only conjuncts against the pinned values, for branches
+// whose full verdict the caller-dependent remainder leaves
+// undecided.
+func (p *schemaProjector) branchConjunctVerdict(sub any) (bool, bool) {
+	verdictRoot := make(map[string]any, len(p.resRoot)+1)
+	for k, v := range p.resRoot {
+		verdictRoot[k] = v
+	}
+	if dialect, ok := p.root["$schema"]; ok {
+		verdictRoot["$schema"] = dialect
+	}
+	return config.PinnedConjunctVerdict(sub, p.pinVals, verdictRoot)
+}
+
+// relPointer renders a document-absolute JSON Pointer relative to
+// the projector's current schema resource: references inside a
+// resource are written against the resource root.
+func (p *schemaProjector) relPointer(pointer string) string {
+	if p.resPath != "" && strings.HasPrefix(pointer, p.resPath+"/") {
+		return pointer[len(p.resPath):]
+	}
+	return pointer
+}
+
+// preserveDroppedBranch keeps an applicator branch the pins
+// decided (and the projection therefore discards) when another
+// schema in the same resource still references into it: the
+// branch moves into the resource's $defs and every reference to
+// it is rewritten there, so discarding the branch cannot strand
+// a reference (Codex P2 on PR #2976).
+func (p *schemaProjector) preserveDroppedBranch(key string, i int, sub any) {
+	rel := p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(i))
+	if !p.refUsed(rel) {
+		return
+	}
+	defs, ok := p.resRoot["$defs"].(map[string]any)
+	if !ok && p.resRoot["$defs"] != nil {
+		return
+	}
+	if !ok {
+		defs = map[string]any{}
+		p.resRoot["$defs"] = defs
+	}
+	base := "_mcpx_branch_" + key + "_" + strconv.Itoa(i)
+	defName := base
+	for n := 1; ; n++ {
+		if _, exists := defs[defName]; !exists {
+			break
+		}
+		defName = fmt.Sprintf("%s_%d", base, n)
+	}
+	defs[defName] = cloneSchemaValue(sub)
+	p.rewriteResourceRefs(rel, "/$defs/"+escapePointerSegment(defName))
+}
+
 func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 	savedResRoot, savedResPath := p.resRoot, p.resPath
 	if id, ok := m["$id"].(string); ok && id != "" {
@@ -887,19 +943,44 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 		}
 		kept := make([]any, 0, len(subs))
 		decidedValid := 0
+		var remaps [][2]string
 		for i, sub := range subs {
 			if len(p.pinVals) > 0 {
-				if valid, decided := p.branchVerdict(sub); decided {
+				valid, decided := p.branchVerdict(sub)
+				if !decided {
+					// The branch may still be
+					// settled against the caller
+					// by its pinned-only conjuncts:
+					// a branch whose pinned
+					// discriminator assertion
+					// fails can never match the
+					// merged instance, even though
+					// the branch also examines
+					// caller properties the full
+					// verdict must decline (Codex
+					// P2 on PR #2976).
+					if cv, cd := p.branchConjunctVerdict(sub); cd && !cv {
+						valid, decided = false, true
+					}
+				}
+				if decided {
 					if valid {
 						decidedValid++
 					} else if key == "allOf" {
 						unsatisfiable = true
 					}
+					p.preserveDroppedBranch(key, i, sub)
 					continue
 				}
 			}
 			if sm, ok := sub.(map[string]any); ok {
 				p.hidePropsAtPath(sm, p.path+"/"+key+"/"+strconv.Itoa(i))
+			}
+			if len(kept) != i {
+				remaps = append(remaps, [2]string{
+					p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(i)),
+					p.relPointer(p.path + "/" + key + "/" + strconv.Itoa(len(kept))),
+				})
 			}
 			kept = append(kept, sub)
 		}
@@ -940,6 +1021,9 @@ func (p *schemaProjector) hidePropsAtScope(m map[string]any) {
 			} else {
 				m[key] = kept
 			}
+		}
+		for _, rm := range remaps {
+			p.rewriteResourceRefs(rm[0], rm[1])
 		}
 	}
 	if unsatisfiable {
