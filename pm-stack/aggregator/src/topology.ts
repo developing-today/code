@@ -175,9 +175,9 @@ export function buildServices(cfg: Config): ServiceDef[] {
       name: "Fleet-feed collector",
       port: null,
       bind: "— (no listener)",
-      runsAs: "sandbox systemd timer (fleet-feed-collector, ~5 min cadence)",
+      runsAs: "laptop systemd user timer (fleet-feed-collector, ~5 min cadence; pm-stack NixOS module)",
       probe: "feed",
-      consumers: "the aggregator — most live facets read the feed it pushes",
+      consumers: "the aggregator — most live facets read the feed it writes",
       breaksIfDown: "feed-backed facets go stale, then fall back to fixtures",
     },
     {

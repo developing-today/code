@@ -3,6 +3,8 @@ package daemon
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -121,5 +123,57 @@ func TestHandleCompleteRateLimitCanonicalizesServerSpelling(t *testing.T) {
 	}
 	if w := post("ns"); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("namespace spelling after exhausting the name: got %d (%s), want 429 (shared budget)", w.Code, w.Body)
+	}
+}
+
+// #3783: a PIDShared PID is the daemon's own -- every /v1/exec run
+// reports it (MCPX_PID in the exec script env) -- so it must not key
+// the per-caller completion window. Session-less exec callers fall
+// through to their per-call ids and never refuse each other under
+// completion.perMinute; the per-server window remains the backstop.
+func TestCompletionCallerIgnoresSharedPID(t *testing.T) {
+	sharedA := config.CallContext{PID: 4242, PIDShared: true, CallID: "anon-a"}
+	sharedB := config.CallContext{PID: 4242, PIDShared: true, CallID: "anon-b"}
+	if got, want := completionCaller(sharedA), "call:anon-a"; got != want {
+		t.Fatalf("shared-pid caller A: got %q, want %q", got, want)
+	}
+	if completionCaller(sharedA) == completionCaller(sharedB) {
+		t.Fatal("two shared-pid callers with distinct call ids share a key")
+	}
+	if got, want := completionCaller(config.CallContext{PID: 4242, CallID: "anon-a"}), "pid:4242"; got != want {
+		t.Fatalf("own-pid caller: got %q, want %q", got, want)
+	}
+	withSession := config.CallContext{SessionID: "s1", PID: 4242, PIDShared: true, CallID: "anon-a"}
+	if got, want := completionCaller(withSession), "session:s1"; got != want {
+		t.Fatalf("session caller: got %q, want %q", got, want)
+	}
+}
+
+func TestHandleCompleteSharedPIDCallersDoNotRefuseEachOther(t *testing.T) {
+	s := &Server{set: completeLimitSet(t, "1", "0"), reg: &Registry{}}
+	post := func(call string) *httptest.ResponseRecorder {
+		body := `{"server":"nope","ref":{"type":"ref/prompt","name":"p"},` +
+			`"argument":{"name":"a","value":""}}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/complete", strings.NewReader(body))
+		// An exec-style caller: no session, and the PID it reports is
+		// the daemon's own (in-process here, so this test's pid),
+		// which callContext marks PIDShared.
+		req.Header.Set("X-Mcpx-Pid", strconv.Itoa(os.Getpid()))
+		req.Header.Set("X-Mcpx-Call", call)
+		w := httptest.NewRecorder()
+		s.handleComplete(w, req)
+		return w
+	}
+	if w := post("call-a"); w.Code != http.StatusBadRequest {
+		t.Fatalf("first exec caller: got %d (%s), want 400 (admitted, pool miss)", w.Code, w.Body)
+	}
+	if w := post("call-b"); w.Code != http.StatusBadRequest {
+		t.Fatalf("second exec caller: got %d (%s), want 400 (admitted, pool miss) -- a shared daemon PID must not spend another caller's per-caller budget", w.Code, w.Body)
+	}
+	// A repeat under the SAME call id is the same per-call key, so
+	// the window still binds it: the fix un-shares the daemon PID, it
+	// does not disable the per-caller window.
+	if w := post("call-a"); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("repeat same call id: got %d (%s), want 429 (same per-call key, limit 1)", w.Code, w.Body)
 	}
 }

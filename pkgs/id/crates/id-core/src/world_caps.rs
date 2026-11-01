@@ -38,6 +38,7 @@
 //! | `failed`         | The provider failed.                                                |
 //! | `actor_denied`   | The participant whose input caused the request lacks the scope.     |
 //! | `outside_ceiling`| The server or the world's capability ceiling excludes it.           |
+//! | `result_too_large`| The serialized result event exceeded the maximum event size.       |
 //!
 //! **Local, not signed.** The granted set, the policy and the usage counts
 //! ([`CapUsage`]) belong to the hosting node and are journaled there. None of
@@ -322,7 +323,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
     };
     let text = event.to_string();
     if text.len() > MAX_EVENT_BYTES {
-        return serde_json::json!({"cap":"result","id":id,"ok":false,"error":"result_too_large"})
+        return serde_json::json!({"cap":"result","id":id,"ok":false,"error":CapError::result_too_large().code()})
             .to_string();
     }
     text
@@ -369,6 +370,8 @@ pub enum CapErrorCode {
     ActorDenied,
     /// The server or the world's capability ceiling excludes it, even if granted.
     OutsideCeiling,
+    /// The serialized result event exceeded the maximum event size.
+    ResultTooLarge,
 }
 
 impl CapError {
@@ -435,6 +438,15 @@ impl CapError {
         }
     }
 
+    /// The serialized result event exceeded the maximum event size.
+    #[must_use]
+    pub const fn result_too_large() -> Self {
+        Self {
+            code: CapErrorCode::ResultTooLarge,
+            reason: None,
+        }
+    }
+
     /// The code a program sees.
     #[must_use]
     pub const fn code(&self) -> &'static str {
@@ -445,6 +457,7 @@ impl CapError {
             CapErrorCode::Failed => "failed",
             CapErrorCode::ActorDenied => "actor_denied",
             CapErrorCode::OutsideCeiling => "outside_ceiling",
+            CapErrorCode::ResultTooLarge => "result_too_large",
         }
     }
 
@@ -857,7 +870,13 @@ mod tests {
             "a",
             Ok(serde_json::Value::from("x".repeat(MAX_EVENT_BYTES))),
         );
-        assert!(huge.contains("result_too_large") && huge.len() < 200);
+        assert!(huge.len() < 200, "fallback event stays bounded: {huge}");
+        let huge: serde_json::Value = serde_json::from_str(&huge).unwrap();
+        assert_eq!(
+            (huge["ok"].as_bool(), huge["error"].as_str()),
+            (Some(false), Some(CapError::result_too_large().code())),
+            "the oversized fallback carries the documented ResultTooLarge code"
+        );
     }
 
     fn names(list: &[&str]) -> BTreeSet<String> {

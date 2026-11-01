@@ -10,13 +10,23 @@ keywords = ["p2p", "file-sharing", "iroh", "cli"]
 categories = ["command-line-utilities", "network-programming"]
 
 # =============================================================================
+# Workspace
+# =============================================================================
+# Phase 1 of the pkgs/id crate split (#3447): the leaf modules live in the
+# id-core sub-crate under crates/; this package is the workspace root.
+
+[workspace]
+members = ["crates/id-core"]
+default-members = [".", "crates/id-core"]
+
+# =============================================================================
 # Features
 # =============================================================================
 
 [features]
 default = ["sandbox", "world"]
-sandbox = ["dep:wasmtime", "world"]
-world = ["dep:sha2", "dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde"]
+sandbox = ["dep:wasmtime", "world", "id-core/sandbox"]
+world = ["dep:sha2", "dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde", "id-core/world"]
 ssh = ["world", "dep:russh"]
 web = [
   "world",
@@ -34,11 +44,16 @@ web = [
   "dep:hkdf",
   "dep:sha2",
   "dep:qrcode",
+  "id-core/web",
 ]
 # Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
 dht = ["dep:iroh-mainline-address-lookup"]
 
 [dependencies]
+# Foundation leaf modules extracted in Phase 1 of the crate split (#3447).
+# Features are forwarded explicitly (see [features]); the crate's modules
+# are re-exported at their historical crate:: paths in src/lib.rs.
+id-core = { path = "crates/id-core", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -122,17 +137,18 @@ wasmtime = { version = "=48.0.7", default-features = false, features = [
   "runtime",
   "std",
 ], optional = true }
-russh = { version = "=0.64.1", optional = true }
+russh = { version = "=0.65.0", optional = true }
 
 [dev-dependencies]
 # Paused-time session-driver tests. Dev only.
 tokio = { version = "1", features = ["test-util"] }
+# The root package's tests exercise dial deadlines using id-core's test-only helpers.
+id-core = { path = "crates/id-core", default-features = false, features = ["test-utils"] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
 rusqlite = { version = "0.32", features = ["bundled"] }
 wat = "=1.261.0"
 tokio-tungstenite = "0.29"
 vt100 = "=0.16.2"
-rqrr = { version = "0.11.0", default-features = false }
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"

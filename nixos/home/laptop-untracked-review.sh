@@ -26,7 +26,10 @@ REPORT="$REPORT_DIR/untracked-review-$DAY.md"
 BIG=20971520 # 20 MiB
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
 LINES=()
-say() { LINES+=("$1"); printf '%s\n' "$1"; }
+say() {
+  LINES+=("$1")
+  printf '%s\n' "$1"
+}
 say "# untracked review $DAY"
 review() {
   d="$1"
@@ -62,51 +65,51 @@ review() {
       extra=""
       if [ "$name" = ".openclaw" ]; then
         case "$f" in
-          tmp/* | cache/*) extra=" — NOT covered by openclaw-backup (excluded dir)" ;;
-          *) extra=" — covered by openclaw-backup" ;;
+        tmp/* | cache/*) extra=" — NOT covered by openclaw-backup (excluded dir)" ;;
+        *) extra=" — covered by openclaw-backup" ;;
         esac
       fi
       say "- $name: TOO BIG for git ($((sz / 1048576)) MiB), route to backup: $f$extra"
       continue
     fi
     case "$f" in
-      *.tmp | *.bak-* | *~ | .DS_Store | */.DS_Store)
-        case "$f" in
-          *'*'* | *'?'* | *'['* | *'\'* | '#'* | '!'* | *' ')
-            # Unsafe as a .gitignore pattern: written literally it would
-            # match more than this one path (glob characters), match
-            # nothing (a leading # is a comment, ! negates), or be
-            # trimmed (trailing space). Skip it rather than write a
-            # pattern that lies about what it ignores (code#1751).
-            say "- $name: junk NOT ignored (name is unsafe as a .gitignore pattern, left alone): $f"
-            ;;
-          *)
-            if [ "$gitignore_dirty" -eq 1 ]; then
-              ignored_skipped=$((ignored_skipped + 1))
-              say "- $name: junk NOT ignored (.gitignore has uncommitted changes, left untouched): $f"
-            elif ! grep -Fxq "$f" "$d/.gitignore" 2>/dev/null; then
-              printf '%s\n' "$f" >>"$d/.gitignore"
-              ignored_new=1
-              say "- $name: junk ignored: $f"
-            else
-              say "- $name: junk ignored: $f"
-            fi
-            ;;
-        esac
+    *.tmp | *.bak-* | *~ | .DS_Store | */.DS_Store)
+      case "$f" in
+      *'*'* | *'?'* | *'['* | *'\'* | '#'* | '!'* | *' ')
+        # Unsafe as a .gitignore pattern: written literally it would
+        # match more than this one path (glob characters), match
+        # nothing (a leading # is a comment, ! negates), or be
+        # trimmed (trailing space). Skip it rather than write a
+        # pattern that lies about what it ignores (code#1751).
+        say "- $name: junk NOT ignored (name is unsafe as a .gitignore pattern, left alone): $f"
         ;;
       *)
-        if [ "$mode" = "track" ]; then
-          if git -C "$d" --literal-pathspecs add -- "$f"; then
-            tracked_new=$((tracked_new + 1))
-            tracked_files+=("$f")
-            say "- $name: now tracking: $f"
-          else
-            say "- $name: FAILED to stage untracked file, left alone: $f"
-          fi
+        if [ "$gitignore_dirty" -eq 1 ]; then
+          ignored_skipped=$((ignored_skipped + 1))
+          say "- $name: junk NOT ignored (.gitignore has uncommitted changes, left untouched): $f"
+        elif ! grep -Fxq "$f" "$d/.gitignore" 2>/dev/null; then
+          printf '%s\n' "$f" >>"$d/.gitignore"
+          ignored_new=1
+          say "- $name: junk ignored: $f"
         else
-          say "- $name: untracked (public repo, report only): $f"
+          say "- $name: junk ignored: $f"
         fi
         ;;
+      esac
+      ;;
+    *)
+      if [ "$mode" = "track" ]; then
+        if git -C "$d" --literal-pathspecs add -- "$f"; then
+          tracked_new=$((tracked_new + 1))
+          tracked_files+=("$f")
+          say "- $name: now tracking: $f"
+        else
+          say "- $name: FAILED to stage untracked file, left alone: $f"
+        fi
+      else
+        say "- $name: untracked (public repo, report only): $f"
+      fi
+      ;;
     esac
   done < <(git -C "$d" ls-files --others --exclude-standard -z)
   if [ "$ignored_skipped" -gt 0 ]; then

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::directory::Refusal;
+use crate::Refusal;
 
 const MAX_PETNAME_CHARS: usize = 64;
 const FINGERPRINT_CHARS: usize = 6;
@@ -239,8 +239,9 @@ fn looks_like(name: &str) -> anyhow::Error {
 /// `char::is_control` covers only category Cc, and Cf characters are
 /// invisible or reorder the text around them, so a name carrying one
 /// can render exactly like another name. Ranges are the Cf set of
-/// Unicode 16.
-fn is_format_char(c: char) -> bool {
+/// Unicode 16. Shared with the other name boundaries (invite names,
+/// #1770) so every surface refuses the same set.
+pub fn is_format_char(c: char) -> bool {
     matches!(c,
         '\u{00AD}'
         | '\u{0600}'..='\u{0605}'
