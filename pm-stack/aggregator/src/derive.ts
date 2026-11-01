@@ -192,7 +192,8 @@ export const RETRY_LOOP_THRESHOLD = 3;
 
 /**
  * Classify one session feed entry. Ordering matters: the first rule that
- * matches wins, so a walled-spin with a question still surfaces the question.
+ * matches wins. Questions stay first; a retry loop outranks its last-turn
+ * error once the repeated-error threshold is reached.
  */
 export function classifyAttention(e: SessionFeedEntry, now = Date.now()): AttentionEntry {
   let state: AttentionState = "in-motion";
@@ -201,12 +202,12 @@ export function classifyAttention(e: SessionFeedEntry, now = Date.now()): Attent
   if (e.awaitingQuestion) {
     state = "stopped-for-question";
     evidence = `Waiting on: ${e.awaitingQuestion}`;
-  } else if (e.lastTurnError) {
-    state = "errored";
-    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if ((e.repeatedErrorCount ?? 0) >= RETRY_LOOP_THRESHOLD) {
     state = "stuck-retrying";
     evidence = `${e.repeatedErrorCount} consecutive identical errors, no progress.`;
+  } else if (e.lastTurnError) {
+    state = "errored";
+    evidence = `Last turn error: ${e.lastTurnError}`;
   } else if (e.longRunningCall && Date.parse(e.longRunningCall.startedAt) + CLI_STALL_MS < now) {
     state = "stalled-on-cli";
     evidence = `CLI running long: ${e.longRunningCall.command ?? "unknown"} (since ${e.longRunningCall.startedAt}).`;

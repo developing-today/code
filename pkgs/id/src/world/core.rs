@@ -180,6 +180,15 @@ impl WorldCore {
                     subject,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
+                    // #2972: participant 0 is the reserved host/system
+                    // identity. Mint can never issue it (ids start at 1),
+                    // so an Issued entry naming it is a forged host
+                    // capability with a journal-chosen digest — refuse
+                    // the whole restore before anything is applied.
+                    ensure!(
+                        participant.id != 0,
+                        "participant 0 is the reserved host identity and cannot be issued"
+                    );
                     ensure!(
                         !core.capabilities.contains_key(&participant.id),
                         "participant {} issued twice",

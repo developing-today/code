@@ -38,6 +38,7 @@ import { githubCommentUrl } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
+import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { HealthView, PageHealth } from "./health.ts";
 import {
@@ -634,10 +635,10 @@ function layout(
   const dropdown = pageDropdown(active);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} · aggregator</title><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
+<title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><style>${CSS}</style><script type="module" src="/assets/datastar.js"></script></head>
 <body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main>${extra}</body></html>`;
+</main><script src="/assets/push-client.js" defer></script>${extra}</body></html>`;
 }
 
 // --- Dashboard comments (#906 §2) ------------------------------------------
@@ -665,7 +666,9 @@ export function commentBadge(objectRef: string, counts?: Map<string, number>): s
 
 export function authorBadge(a: DashAuthor): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
-  const link = a.sessionId ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
+  const link = a.sessionId
+    ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
+    : "";
   return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
 }
 
@@ -5037,10 +5040,16 @@ function coverageSectionHtml(coverage: CoverageSnapshotFile | null | undefined):
   if (!coverage) return "";
   const { current, baseline } = coverage;
   const delta = diffCoverage(current, baseline);
-  const cell = (repo: string, v: number | null, key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea"): string => {
+  const cell = (
+    repo: string,
+    v: number | null,
+    key: "openIssues" | "gateNow" | "gateNext" | "poolItems" | "poolUnsetStatus" | "poolUnsetArea",
+  ): string => {
     if (v === null) return "—";
     const d = delta.get(repo)?.[key];
-    return d === undefined || d === null || d === 0 ? `${v}` : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
+    return d === undefined || d === null || d === 0
+      ? `${v}`
+      : `${v} <span class="muted">(${d > 0 ? "+" : ""}${d})</span>`;
   };
   const rows = current.repos
     .map(
@@ -5096,8 +5105,8 @@ export function projectsBodyHtml(
   ].join("");
   if (!pool.length) {
     return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
-        .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
-        .join(" · ")}</p>`;
+      .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
+      .join(" · ")}</p>`;
   }
   const areaWeights = areas
     .map((a) => {
@@ -5486,4 +5495,128 @@ ${editorialHtml}`;
     "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
+}
+
+// --- Alerts page (#3676, the alert throat) ---------------------------------
+
+export interface AlertsPageView {
+  available: boolean;
+  incidents: Incident[];
+  events: IncidentEvent[];
+  subscriptions: PushSubscriptionRow[];
+  ackWindowMin: number;
+}
+
+function incidentCard(i: Incident): string {
+  const sev = i.severity === "critical" ? "closed" : i.severity === "warning" ? "implementing" : "open";
+  const times = [
+    `first seen ${fmtDate(i.first_seen_at)}`,
+    i.occurrences > 1 ? `${i.occurrences} occurrences, last ${fmtDate(i.last_seen_at)}` : null,
+    i.delivered_at
+      ? `pushed ${fmtDate(i.delivered_at)}`
+      : i.severity === "critical" && i.status === "open"
+        ? "not yet pushed"
+        : null,
+    i.escalated_at ? `escalated ${fmtDate(i.escalated_at)}` : null,
+    i.acked_at ? `acked ${fmtDate(i.acked_at)}` : null,
+    i.closed_at ? `closed ${fmtDate(i.closed_at)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const actions =
+    i.status === "open"
+      ? `<button data-ack="${esc(i.id)}">Ack</button> <button data-close="${esc(i.id)}">Close</button>`
+      : i.status === "acked"
+        ? `<button data-close="${esc(i.id)}">Close</button>`
+        : "";
+  return `<div class="card incident" id="incident-${esc(i.id)}">
+<strong>${esc(i.title)}</strong> <span class="badge ${sev}">${esc(i.severity)}</span> <span class="badge">${esc(i.status)}</span>
+${i.body ? `<br>${esc(i.body)}` : ""}
+<br><span class="muted">source <code>${esc(i.source)}</code> · key <code>${esc(i.incident_key)}</code> · ${esc(times)}</span>
+${actions ? `<br>${actions}` : ""}
+</div>`;
+}
+
+function subscriptionRow(s: PushSubscriptionRow): string {
+  let host = s.endpoint;
+  try {
+    host = new URL(s.endpoint).host;
+  } catch {}
+  const classes = Object.entries(s.classes ?? {})
+    .map(([k, v]) => `${esc(k)}: ${v ? "on" : "off"}`)
+    .join(", ");
+  return `<div class="card"><strong>${esc(host)}</strong> <span class="muted">subscribed ${fmtDate(s.created_at)} · classes ${esc(classes || "—")} · quiet ${esc(s.quiet?.start ?? "?")}–${esc(s.quiet?.end ?? "?")} ${esc(s.quiet?.tz ?? "")}${s.gone_count ? ` · gone ×${s.gone_count}` : ""}</span>
+<br><span class="muted">${esc(s.user_agent ?? "")}</span>
+<br><button data-unsub="${esc(s.endpoint)}">Remove this subscription</button></div>`;
+}
+
+export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapidPublicKey: string): string {
+  if (!view.available) {
+    return layout(
+      "Alerts",
+      `<h1>Alerts</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
+      provenance,
+      "/alerts",
+    );
+  }
+  const open = view.incidents.filter((i) => i.status !== "closed");
+  const closed = view.incidents.filter((i) => i.status === "closed");
+  const events = view.events
+    .map(
+      (e) =>
+        `<tr><td>${fmtDate(e.at)}</td><td>${esc(e.kind)}</td><td>${esc(e.title ?? e.incident_id)}</td><td class="muted">${esc(e.source ?? "")}${e.incident_key ? ` · ${esc(e.incident_key)}` : ""}</td></tr>`,
+    )
+    .join("");
+  const body = `<h1>Alerts</h1>
+<p class="muted">The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after ${view.ackWindowMin} minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: <a href="/api/alerts.json">/api/alerts.json</a>.</p>
+<style>.incident:target { outline: 2px solid #1f6feb; }</style>
+<h2>Push delivery on this browser</h2>
+<div class="card" id="push-panel">
+<span id="push-status" class="muted">checking…</span><br>
+<button id="push-enable">Enable push on this browser</button>
+<label><input type="checkbox" id="push-class-incident" checked> incident class</label>
+<label>quiet <input type="time" id="push-quiet-start" value="23:00">–<input type="time" id="push-quiet-end" value="07:00"></label>
+<button id="push-save-prefs">Save preferences</button>
+<button id="push-disable">Disable push on this browser</button>
+</div>
+<h2>Subscriptions (${view.subscriptions.length})</h2>
+${view.subscriptions.length ? view.subscriptions.map(subscriptionRow).join("") : `<p class="muted">No push subscriptions yet — enable push above (on the phone, install the PWA first: Web Push on iOS requires the installed app).</p>`}
+<h2>Open incidents (${open.length})</h2>
+${open.length ? open.map(incidentCard).join("") : `<p class="muted">No open incidents. Silence is golden.</p>`}
+${closed.length ? `<h2>Closed (recent)</h2>${closed.map(incidentCard).join("")}` : ""}
+<h2>Ledger — recent transitions</h2>
+<table><caption>Recent alert-ledger transitions</caption><tr><th scope="col">at</th><th scope="col">kind</th><th scope="col">incident</th><th scope="col">source · key</th></tr>${events}</table>`;
+  const script = `<script>
+const VAPID = ${JSON.stringify(vapidPublicKey)};
+async function post(path) { const r = await fetch(path, { method: "POST" }); if (!r.ok) alert("failed: HTTP " + r.status); location.reload(); }
+document.querySelectorAll("[data-ack]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.ack + "/ack")));
+document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => post("/api/alerts/" + b.dataset.close + "/close")));
+document.querySelectorAll("[data-unsub]").forEach((b) => b.addEventListener("click", async () => {
+  await fetch("/api/push/subscriptions", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ endpoint: b.dataset.unsub }) });
+  location.reload();
+}));
+const status = document.getElementById("push-status");
+async function refreshStatus() {
+  if (!window.pmPush || !window.pmPush.supported()) { status.textContent = "Web Push is not supported in this browser (on iOS, install the PWA first)."; return; }
+  const sub = await window.pmPush.current().catch(() => null);
+  status.textContent = sub ? "This browser is subscribed — pushes will land here." : "This browser is not subscribed yet.";
+}
+refreshStatus();
+function prefs() {
+  return {
+    classes: { incident: document.getElementById("push-class-incident").checked },
+    quiet: { start: document.getElementById("push-quiet-start").value || "23:00", end: document.getElementById("push-quiet-end").value || "07:00", tz: "America/Chicago" },
+  };
+}
+document.getElementById("push-enable").addEventListener("click", async () => {
+  try { await window.pmPush.subscribe(VAPID, prefs()); location.reload(); } catch (e) { alert(String(e)); }
+});
+document.getElementById("push-save-prefs").addEventListener("click", async () => {
+  try { await window.pmPush.updatePrefs(prefs()); location.reload(); } catch (e) { alert(String(e)); }
+});
+document.getElementById("push-disable").addEventListener("click", async () => {
+  try { await window.pmPush.unsubscribe(); location.reload(); } catch (e) { alert(String(e)); }
+});
+</script>`;
+  return layout("Alerts", body, provenance, "/alerts", script);
 }

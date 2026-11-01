@@ -3,6 +3,8 @@ package catalog
 import (
 	"database/sql"
 	"encoding/binary"
+	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -12,6 +14,27 @@ import (
 )
 
 const VectorDim = 384
+
+// DimensionError reports a vector whose length does not match the index
+// dimension (VectorDim). Writes carrying such a vector are rejected, so a
+// mismatched embedding can never enter the index silently and then vanish
+// on reload (loadFromDB can only load VectorDim rows).
+type DimensionError struct {
+	Expected int
+	Actual   int
+}
+
+func (e *DimensionError) Error() string {
+	return fmt.Sprintf("catalog: vector dimension mismatch: expected %d dimensions, got %d", e.Expected, e.Actual)
+}
+
+// checkDim returns a *DimensionError when vec is not exactly VectorDim long.
+func checkDim(vec Vector) error {
+	if len(vec) != VectorDim {
+		return &DimensionError{Expected: VectorDim, Actual: len(vec)}
+	}
+	return nil
+}
 
 // Vector is a normalized dense embedding vector of float32s.
 type Vector []float32
@@ -128,6 +151,16 @@ type VectorIndex struct {
 	mu      sync.RWMutex
 	vectors map[string]Vector
 	db      *sql.DB
+	// droppedOnLoad counts persisted rows loadFromDB skipped because their
+	// blob was not a VectorDim vector.
+	droppedOnLoad int
+}
+
+// DroppedOnLoad reports how many persisted rows loadFromDB skipped because
+// they were not VectorDim vectors (rows written before the dimension
+// contract, or by another writer). Zero for an in-memory-only index.
+func (idx *VectorIndex) DroppedOnLoad() int {
+	return idx.droppedOnLoad
 }
 
 // NewVectorIndex creates a vector index, optionally backed by SQLite dbPath.
@@ -162,6 +195,7 @@ func (idx *VectorIndex) loadFromDB() {
 	}
 	rows, err := idx.db.Query("SELECT key, vector FROM tool_embeddings")
 	if err != nil {
+		log.Printf("catalog: vector index: query persisted vectors: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -169,14 +203,28 @@ func (idx *VectorIndex) loadFromDB() {
 	for rows.Next() {
 		var key string
 		var blob []byte
-		if err := rows.Scan(&key, &blob); err == nil && len(blob) == VectorDim*4 {
-			vec := make(Vector, VectorDim)
-			for i := 0; i < VectorDim; i++ {
-				bits := binary.LittleEndian.Uint32(blob[i*4 : (i+1)*4])
-				vec[i] = math.Float32frombits(bits)
-			}
-			idx.vectors[key] = vec
+		if err := rows.Scan(&key, &blob); err != nil {
+			idx.droppedOnLoad++
+			continue
 		}
+		if len(blob) != VectorDim*4 {
+			// Not silently droppable: count and report below. Such rows
+			// predate the dimension contract or came from another writer.
+			idx.droppedOnLoad++
+			continue
+		}
+		vec := make(Vector, VectorDim)
+		for i := 0; i < VectorDim; i++ {
+			bits := binary.LittleEndian.Uint32(blob[i*4 : (i+1)*4])
+			vec[i] = math.Float32frombits(bits)
+		}
+		idx.vectors[key] = vec
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("catalog: vector index: read persisted vectors: %v", err)
+	}
+	if idx.droppedOnLoad > 0 {
+		log.Printf("catalog: vector index: skipped %d persisted vector row(s) whose dimension is not %d; they were not loaded", idx.droppedOnLoad, VectorDim)
 	}
 }
 
@@ -200,8 +248,13 @@ func (idx *VectorIndex) IndexTool(key, text string) Vector {
 	return vec
 }
 
-// Put stores an explicit vector for a key in memory and on disk.
+// Put stores an explicit vector for a key in memory and on disk. A vector
+// whose length is not VectorDim is rejected with a *DimensionError: storing
+// it would persist a row loadFromDB cannot load back.
 func (idx *VectorIndex) Put(key string, vec Vector) error {
+	if err := checkDim(vec); err != nil {
+		return err
+	}
 	idx.mu.Lock()
 	idx.vectors[key] = vec
 	idx.mu.Unlock()
