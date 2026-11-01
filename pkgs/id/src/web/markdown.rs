@@ -139,10 +139,13 @@ pub fn markdown_to_prosemirror(markdown: &str) -> Value {
 /// (`](<...>)` inline, `]: <...>` reference definition) with a token
 /// comrak keeps verbatim in the parsed URL, returning the protected
 /// source and the token used (`None` when no destination needed
-/// protection). Fenced code blocks are skipped — a destination-shaped
-/// string inside a fence is literal text, not a link. A candidate
-/// destination that hits a blank line or another `<` before its
-/// closing `>` is not a destination and is left alone.
+/// protection). Literal contexts are skipped — a destination-shaped
+/// string inside a fenced code block, an inline code span, or an
+/// indented code block is literal text, not a link (#1707). Fence
+/// tracking respects the opening fence's character and length. A
+/// candidate destination that hits a blank line — including a
+/// whitespace-only one — or another `<` before its closing `>` is
+/// not a destination and is left alone.
 fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
     if !markdown.contains('\n') {
         return (markdown.to_string(), None);
@@ -154,31 +157,67 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
         token = format!("idweb-newline-{counter}-token");
     }
     let bytes = markdown.as_bytes();
-    let fence = "`".repeat(3);
-    let tilde_fence = "~".repeat(3);
     let mut out = String::with_capacity(markdown.len());
     let mut i = 0;
-    let mut in_fence = false;
+    // The open fence, when inside one: its character and run length.
+    // A closing fence must use the same character and be at least as
+    // long as the opener — a shorter fence line inside a longer
+    // fence is literal content, not the end of the block (#1707).
+    let mut fence: Option<(u8, usize)> = None;
+    // The open inline code span's backtick run length, when inside
+    // one: span content is literal text, so a destination-shaped
+    // string inside it must not be protected (#1707).
+    let mut span: Option<usize> = None;
+    // Whether the current line is an indented code block line
+    // (4+ space indent at the start of a block): literal text too.
+    let mut in_indented = false;
+    let mut prev_line_blank = true;
+    let mut prev_line_indented = false;
     let mut protected_any = false;
     while i < bytes.len() {
-        // Fence tracking is line-based: a line whose first non-space
-        // characters (up to 3 spaces) are ``` or ~~~ toggles fence state.
+        // Line-start classification: fences, indented code blocks.
         if i == 0 || bytes[i - 1] == b'\n' {
             let mut j = i;
-            while j < bytes.len() && bytes[j] == b' ' && j - i < 3 {
+            while j < bytes.len() && bytes[j] == b' ' {
                 j += 1;
             }
-            if markdown[j..].starts_with(&fence) || markdown[j..].starts_with(&tilde_fence) {
-                in_fence = !in_fence;
+            let indent = j - i;
+            let line_blank = j >= bytes.len() || bytes[j] == b'\n';
+            // Fences are recognised at up to 3 spaces of indent.
+            let fence_run = if indent <= 3 && j < bytes.len() && (bytes[j] == b'`' || bytes[j] == b'~') {
+                let ch = bytes[j];
+                let mut n = 0;
+                while j + n < bytes.len() && bytes[j + n] == ch {
+                    n += 1;
+                }
+                if n >= 3 { Some((ch, n)) } else { None }
+            } else {
+                None
+            };
+            match (fence, fence_run) {
+                (None, Some(open)) => fence = Some(open),
+                (Some((ch, n)), Some((cch, cn))) if cch == ch && cn >= n => fence = None,
+                _ => {}
             }
+            // An indented code block starts on a 4+ indented line
+            // after a blank line (or at the start, or continuing an
+            // indented block); a 4+ indented line inside a paragraph
+            // is a lazy continuation, not code.
+            in_indented = indent >= 4 && fence.is_none() && (prev_line_blank || prev_line_indented);
+            prev_line_indented = in_indented || (indent >= 4 && line_blank && prev_line_indented);
+            prev_line_blank = line_blank;
         }
-        if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
+        let literal_line = fence.is_some() || in_indented;
+        if !literal_line && span.is_none() && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
             let lt = if markdown[i..].starts_with("](<") {
                 i + 2
             } else {
                 i + 3
             };
-            // Find the closing '>' before any blank line or nested '<'.
+            // Find the closing '>' before any blank line (a line of
+            // only spaces/tabs between the newlines is blank too —
+            // the paragraph break ends any destination, #1707) or a
+            // nested '<'.
             let mut end = None;
             let mut k = lt + 1;
             while k < bytes.len() {
@@ -188,7 +227,16 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                         break;
                     }
                     b'<' => break,
-                    b'\n' if k + 1 < bytes.len() && bytes[k + 1] == b'\n' => break,
+                    b'\n' => {
+                        let mut m = k + 1;
+                        while m < bytes.len() && (bytes[m] == b' ' || bytes[m] == b'\t' || bytes[m] == b'\r') {
+                            m += 1;
+                        }
+                        if m >= bytes.len() || bytes[m] == b'\n' {
+                            break;
+                        }
+                        k += 1;
+                    }
                     _ => k += 1,
                 }
             }
@@ -202,6 +250,27 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
                     continue;
                 }
             }
+        }
+        // Inline code span tracking (#1707): a run of backticks
+        // outside fences/indented code opens a span closed by a run
+        // of the same length; everything between is literal. Fence
+        // lines were already classified at line start, so a run seen
+        // here at a line start is a span only when it did not form a
+        // fence (shorter than 3, or inside a fence — but fence lines
+        // never reach here as non-literal).
+        if !literal_line && bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            match span {
+                None => span = Some(n),
+                Some(open) if n == open => span = None,
+                _ => {}
+            }
+            out.push_str(&markdown[i..i + n]);
+            i += n;
+            continue;
         }
         let Some(ch) = markdown[i..].chars().next() else {
             break;
@@ -3654,6 +3723,59 @@ mod tests {
         assert_eq!(
             doc["content"][0]["content"][0]["attrs"]["src"], "a\nb.png",
             "PM src unmutated (newline)"
+        );
+    }
+
+    #[test]
+    fn test_newline_destination_protection_skips_literal_contexts() {
+        // #1707: protect_newline_destinations must leave
+        // destination-shaped strings in literal contexts untouched
+        // and must stop the destination scan at whitespace-only
+        // blank lines.
+        for literal in [
+            // Inline code span.
+            "`[x](<a\nb>)`\n",
+            // Indented code block.
+            "para\n\n    [x](<a\nb>)\n",
+            // A shorter fence line inside a longer fence does not
+            // end the literal block.
+            "````\n```\n[x](<a\nb>)\n````\n",
+            // Plain fenced block (pre-existing behaviour).
+            "```\n[x](<a\nb>)\n```\n",
+        ] {
+            let (protected, token) = protect_newline_destinations(literal);
+            assert_eq!(protected, literal, "literal context rewritten: {literal:?}");
+            assert!(token.is_none(), "no token for literal context: {literal:?}");
+            // End to end: no converted node may carry the token.
+            let doc = markdown_to_prosemirror(literal);
+            assert!(
+                !doc.to_string().contains("idweb-newline"),
+                "token leaked into converted doc for {literal:?}: {doc}"
+            );
+        }
+        // A whitespace-only blank line ends the destination: the
+        // shape is not a link, so nothing is protected and comrak
+        // keeps it literal text (no link mark is invented).
+        let broken = "[x](<a\n \nb>)\n";
+        let (protected, token) = protect_newline_destinations(broken);
+        assert_eq!(protected, broken, "scan crossed a whitespace-only blank line");
+        assert!(token.is_none());
+        let doc = markdown_to_prosemirror(broken);
+        assert!(
+            !doc.to_string().contains("\"link\""),
+            "paragraph-broken destination became a link: {doc}"
+        );
+        // Controls: a genuine newline destination is still
+        // protected, and a genuine one after a literal block is too.
+        let (protected, token) = protect_newline_destinations("[x](<a\nb>)\n");
+        assert!(token.is_some(), "genuine destination unprotected");
+        assert!(protected.contains("idweb-newline"), "genuine destination not tokenised: {protected:?}");
+        let mixed = "```\n[x](<a\nb>)\n```\n\n[y](<c\nd>)\n";
+        let (protected, token) = protect_newline_destinations(mixed);
+        assert!(token.is_some(), "destination after fence unprotected");
+        assert!(
+            protected.starts_with("```\n[x](<a\nb>)\n```\n"),
+            "fenced literal rewritten in mixed doc: {protected:?}"
         );
     }
 
