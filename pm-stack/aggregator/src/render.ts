@@ -38,6 +38,7 @@ import { githubCommentUrl } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { HealthView, PageHealth } from "./health.ts";
@@ -2544,8 +2545,9 @@ export function renderAttention(
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
   act?: AttentionAct,
+  census?: NeedsDrewCensus | null,
 ): string {
-  const sections = attentionSections(view, coverage, counts, act);
+  const sections = attentionSections(view, coverage, counts, act, census);
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>. Incident alerts (watchdog push + ack) live on <a href="/alerts">Alerts</a>.</p>
@@ -2555,6 +2557,42 @@ ${sections.header}${sections.queues}${sections.sessions}`,
     act?.identities ? ACTION_SCRIPT + COMMENT_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
+}
+
+/**
+ * The Needs-Drew label census section (#1226): open user/review +
+ * user/escalated items across the four repos, straight from GitHub —
+ * the labels are the system of record and this view only reads them.
+ * census === null means the source cannot census: the section says
+ * "unavailable" rather than rendering an empty, confident zero.
+ * census === undefined means the caller predates the census (tests,
+ * fragments) and the section is omitted entirely.
+ */
+export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined): string {
+  if (census === undefined) return "";
+  if (census === null) {
+    return `<h2 id="needs-drew-census">Needs Drew — GitHub label census</h2><p class="muted">Unavailable — this source cannot census the user/review and user/escalated labels, so this queue cannot be reported here.</p>`;
+  }
+  const failed = census.sources.filter((x) => !x.ok || x.truncated);
+  const failureNote = failed.length
+    ? `<div class="banner">Label census incomplete — ${failed
+        .map(
+          (x) =>
+            `${esc(x.repo)} ${esc(x.label)}: ${esc(x.ok ? "page cap reached, count is a floor" : (x.error ?? "failed"))}`,
+        )
+        .join("; ")}. The list below may be missing items from those sources.</div>`
+    : "";
+  const rows = census.items.length
+    ? `<ul>${census.items
+        .map(
+          (i) =>
+            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+              .map((l) => `<code>${esc(l)}</code>`)
+              .join(" ")} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**
@@ -2569,6 +2607,7 @@ export function attentionSections(
   coverage: SourceCoverage[],
   counts?: Map<string, number>,
   act?: AttentionAct,
+  census?: NeedsDrewCensus | null,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -2744,7 +2783,7 @@ ${delegationDefault}`;
     ? `<details class="hiddenstrip"><summary><strong>Dismissed / done by you (${hiddenList.length})</strong> — hidden from the queues; restore any of them to re-review or add a note</summary>${hiddenList.map((e) => stripCardHtml(e, act?.identities)).join("")}</details>`
     : "";
   const queues = `${needsOrderHtml(act)}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}`;
+${snoozedStrip}${hiddenStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}${needsDrewCensusHtml(census)}`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts, sessionAct)).join("")
     : `<p class="muted">No current sessions.</p>`;

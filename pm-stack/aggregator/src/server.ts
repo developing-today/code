@@ -21,6 +21,7 @@ import {
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
+import type { NeedsDrewCensus } from "./needs-drew.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -401,12 +402,20 @@ async function deriveWatchdogItems(diagnosis?: ReturnType<NonNullable<Source["di
 }
 
 async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
+  const [feed, summary, coverage, census] = await Promise.all([
+    source.attention(),
+    source.orchestration(),
+    source.coverage(),
+    // #1226: the Needs-Drew label census rides the attention context;
+    // a source without the census (or a failed sweep) yields null and
+    // the view renders it as unavailable, never as an empty queue.
+    (source.needsDrew?.() ?? Promise.resolve(null)).catch(() => null) as Promise<NeedsDrewCensus | null>,
+  ]);
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   const watchdog = await deriveWatchdogItems(diagnosis);
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage, census };
 }
 
 /**
@@ -449,7 +458,7 @@ async function boardRender() {
  *  the view, the action/comment stores grouped by object, and the
  *  effective Needs-you order preference (#1456). */
 async function attentionRender() {
-  const { view, coverage } = await attentionContext();
+  const { view, coverage, census } = await attentionContext();
   const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
     commentFormOpts(),
     actionsStore.byObject(),
@@ -466,7 +475,7 @@ async function attentionRender() {
     needsOrder: order.order,
     needsOrderPending: order.pending,
   };
-  return { view, coverage, counts, act };
+  return { view, coverage, counts, act, census };
 }
 
 async function todayContext() {
@@ -705,14 +714,14 @@ async function handler(req: Request): Promise<Response> {
     if (url.searchParams.get("full") !== "1") {
       return html(renderAttentionShell(prov(), provDetail()));
     }
-    const { view, coverage, counts, act } = await attentionRender();
-    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
+    const { view, coverage, counts, act, census } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act, census));
   }
   const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
   if (attnFragMatch) {
     const section = attnFragMatch[1] as "header" | "queues" | "sessions";
-    const { view, coverage, counts, act } = await attentionRender();
-    const sections = attentionSections(view, coverage, counts, act);
+    const { view, coverage, counts, act, census } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act, census);
     return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
   }
   if (path === "/assets/datastar.js") {
@@ -920,6 +929,15 @@ async function handler(req: Request): Promise<Response> {
       .map((metricId) => ({ metricId, pace: projectPace(history, metricId) }))
       .filter((p) => p.pace);
     return json({ service: svc, history, paces });
+  }
+  if (path === "/api/needs-drew.json") {
+    // #1226: the Needs-Drew label census as data — open user/review +
+    // user/escalated items across the four repos with per-source
+    // status and freshness. 503 when this source cannot census, so a
+    // consumer never mistakes "unavailable" for "nothing waiting".
+    const census = (await source.needsDrew?.().catch(() => null)) ?? null;
+    if (!census) return json({ error: "needs-drew census unavailable from this source" }, 503);
+    return json(census);
   }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only
