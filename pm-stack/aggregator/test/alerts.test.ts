@@ -156,27 +156,32 @@ const tickConfig = {
   alerts: { ackWindowMin: 30, tickMs: 60_000 },
 } as Config;
 
-function alertTickStore(options: { deliveries?: Incident[]; escalations?: Incident[]; noSubscriptions?: boolean } = {}) {
+function alertTickStore(
+  options: { deliveries?: Incident[]; escalations?: Incident[]; noSubscriptions?: boolean } = {},
+) {
   const calls = {
     delivered: [] as Array<{ id: string; detail: Record<string, unknown> }>,
     escalated: [] as Array<{ id: string; detail: Record<string, unknown> }>,
     sends: [] as Array<{ outcome: string; incidentId?: string }>,
   };
   const store = {
-    listSubscriptions: async () => options.noSubscriptions ? [] : [
-      {
-        id: "sub-1",
-        endpoint: "https://push.example/sub-1",
-        p256dh: "p256dh",
-        auth: "auth",
-        classes: { incident: true },
-        quiet: { start: "23:00", end: "07:00", tz: "UTC" },
-        user_agent: null,
-        created_at: "2026-11-01T00:00:00Z",
-        last_seen_at: "2026-11-01T00:00:00Z",
-        gone_count: 0,
-      },
-    ],
+    listSubscriptions: async () =>
+      options.noSubscriptions
+        ? []
+        : [
+            {
+              id: "sub-1",
+              endpoint: "https://push.example/sub-1",
+              p256dh: "p256dh",
+              auth: "auth",
+              classes: { incident: true },
+              quiet: { start: "23:00", end: "07:00", tz: "UTC" },
+              user_agent: null,
+              created_at: "2026-11-01T00:00:00Z",
+              last_seen_at: "2026-11-01T00:00:00Z",
+              gone_count: 0,
+            },
+          ],
     pendingDeliveries: async () => (calls.delivered.length ? [] : (options.deliveries ?? [incident])),
     pendingEscalations: async () => (calls.escalated.length ? [] : (options.escalations ?? [])),
     markDelivered: async (id: string, detail: Record<string, unknown>) => {
