@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dezren39/mcpx/internal/recipes"
+	"github.com/developing-today/code/pkgs/mcpx/internal/recipes"
 )
 
 const stale = `// Close stale issues in a repository.
@@ -127,6 +127,60 @@ func TestAnEmailAddressIsNotAPlaceholder(t *testing.T) {
 	}
 }
 
+func TestMentionsInCommentsAndStringsAreNotPlaceholders(t *testing.T) {
+	// #1670: refs() always promised to ignore comments and strings and
+	// never did, so a thank-you in a comment became a required input and
+	// Render spliced the value inside string literals. Each source below
+	// mentions @name somewhere it is not code; none may yield a
+	// placeholder, and rendering must leave the source untouched.
+	sources := map[string]string{
+		"line comment":       "// thanks @alice for the review\nawait demo.echo({ ok: true });",
+		"trailing comment":   "await demo.echo({ ok: true }); // cc @alice",
+		"block comment":      "/* ping @alice */\nawait demo.echo({ ok: true });",
+		"block comment span": "/* ping\n@alice\n*/\nawait demo.echo({ ok: true });",
+		"double quoted":      "const note = \"ask @admin first\";\nconsole.log(note);",
+		"single quoted":      "const note = 'ask @admin first';\nconsole.log(note);",
+		"escaped quote":      "const note = \"ask \\\"@admin\\\" first\";\nconsole.log(note);",
+		"template literal":   "const note = `ask @admin first`;\nconsole.log(note);",
+		"template span":      "const note = `ask\n@admin first`;\nconsole.log(note);",
+	}
+	for name, src := range sources {
+		t.Run(name, func(t *testing.T) {
+			r := recipes.Parse("x", "/tmp/x.ts", src)
+			if len(r.Placeholders) != 0 {
+				t.Fatalf("placeholders = %+v", r.Placeholders)
+			}
+			out, err := r.Render(map[string]any{"alice": "x", "admin": "root"})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			if out != src+"\n" {
+				t.Fatalf("render changed a comment/string mention:\n got %q\nwant %q", out, src+"\n")
+			}
+		})
+	}
+}
+
+func TestACodeReferenceBesideAStringMentionStillWorks(t *testing.T) {
+	// The string mention is prose; the code-position reference beside it
+	// is the placeholder, and only it is substituted.
+	src := "const note = \"ask @who first\";\nawait demo.echo({ message: @who });"
+	r := recipes.Parse("x", "/tmp/x.ts", src)
+	if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+		t.Fatalf("placeholders = %+v", r.Placeholders)
+	}
+	out, err := r.Render(map[string]any{"who": "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `const note = "ask @who first";`) {
+		t.Errorf("the string literal was rewritten:\n%s", out)
+	}
+	if !strings.Contains(out, `message: "hi"`) {
+		t.Errorf("the code reference was not substituted:\n%s", out)
+	}
+}
+
 func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 	r := recipes.Parse("x", "/tmp/x.ts",
 		"// @tool false\nawait demo.echo({ message: \"hi\" });")
@@ -135,6 +189,91 @@ func TestAToolMarkerIsNotAPlaceholder(t *testing.T) {
 	}
 	if len(r.Placeholders) != 0 {
 		t.Fatalf("the @tool marker is metadata, not an input: placeholders = %+v", r.Placeholders)
+	}
+}
+
+func TestACRLFLineContinuationKeepsTheStringOpen(t *testing.T) {
+	// Codex P2 on PR 2957: in a single- or double-quoted string, a
+	// backslash continuation on a CRLF line escaped only the \r, so
+	// the \n ended the string early and the real closing quote
+	// opened a new one -- the code after it, @who included, was
+	// scanned as string text and never substituted.
+	for _, q := range []string{"\"", "'"} {
+		src := "const note = " + q + "hello\\\r\nworld" + q + "; await demo.echo({ message: @who });"
+		r := recipes.Parse("x", "/tmp/x.ts", src)
+		if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+			t.Fatalf("quote %s: placeholders = %+v", q, r.Placeholders)
+		}
+		out, err := r.Render(map[string]any{"who": "hi"})
+		if err != nil {
+			t.Fatalf("quote %s: render: %v", q, err)
+		}
+		if !strings.Contains(out, `message: "hi"`) {
+			t.Errorf("quote %s: the code reference was not substituted:\n%q", q, out)
+		}
+		if !strings.Contains(out, "hello\\\r\nworld") {
+			t.Errorf("quote %s: the continued string was rewritten:\n%q", q, out)
+		}
+	}
+}
+
+func TestALineCommentEndsAtEveryJavaScriptLineTerminator(t *testing.T) {
+	// Codex P2 on PR 2957: JavaScript ends a // comment at CR,
+	// U+2028 and U+2029 as well as LF. The scanner ended it only at
+	// LF, so code after a standalone CR was lexed as comment text
+	// and its placeholder was never discovered or substituted.
+	for name, term := range map[string]string{
+		"CR":     "",
+		"U+2028": " ",
+		"U+2029": " ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := "// note" + term + "await demo.echo({ message: @who });"
+			r := recipes.Parse("x", "/tmp/x.ts", src)
+			if len(r.Placeholders) != 1 || r.Placeholders[0].Name != "who" {
+				t.Fatalf("placeholders = %+v", r.Placeholders)
+			}
+			out, err := r.Render(map[string]any{"who": "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, `message: "hi"`) {
+				t.Errorf("the code reference after the terminator was not substituted:\n%q", out)
+			}
+		})
+	}
+}
+
+func TestADeclarationLineCannotLexTheBody(t *testing.T) {
+	// Codex P2 on PR 2957: refs and Render skip declaration lines,
+	// but the shared scan lexed their prose as script, so a /* in a
+	// @param description opened a block comment over the body.
+	src := "# @param path:string -- glob such as /tmp/*\nawait demo.echo({ path: @path });"
+	r := recipes.Parse("x", "/tmp/x.ts", src)
+	out, err := r.Render(map[string]any{"path": "/tmp/x"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, `path: "/tmp/x"`) {
+		t.Errorf("the declaration prose swallowed the body reference:\n%s", out)
+	}
+	// The undeclared-reference form: the swallowed name must still
+	// be discovered as a placeholder.
+	src = "# @param note:string -- see /* details\nawait demo.echo({ message: @who });"
+	r = recipes.Parse("x", "/tmp/x.ts", src)
+	names := map[string]bool{}
+	for _, p := range r.Placeholders {
+		names[p.Name] = true
+	}
+	if !names["who"] {
+		t.Fatalf("placeholders = %+v, want who among them", r.Placeholders)
+	}
+	out, err = r.Render(map[string]any{"note": "n", "who": "hi"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, `message: "hi"`) {
+		t.Errorf("the code reference was not substituted:\n%s", out)
 	}
 }
 

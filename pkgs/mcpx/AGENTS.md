@@ -27,7 +27,7 @@ working directory, then `~/.config/mcpx/scripts/`. Nearest wins.
 
 Scripts are TypeScript on a real runtime (deno, else bun, else node). They get
 the full runtime: filesystem, network, subprocesses. Relative paths resolve
-against *your* working directory, not the script's.
+against _your_ working directory, not the script's.
 
 `log`, `emit`, `tools` and every namespace are already on `globalThis`, so a
 script needs no imports at all. `log(msg)` is `log.info(msg)`. Importing works
@@ -110,6 +110,17 @@ Do not ask the person to paste a secret into the conversation, and do not put on
 in a tool argument or on a command line. Ask them to give it through OpenChamber
 or to run `mcpx secrets set <NAME>` themselves, then try again. `mcpx secrets list`
 shows which names have a value.
+
+## Packaging test
+
+`packaging-test.sh` (beside this file) tests the built artifact, not the
+source tree: version, wrapper PATH, man page and completions, and a stdio
+serve handshake, all with an empty HOME (#1981).
+
+    nix build .#packages.x86_64-linux.mcpx
+    pkgs/mcpx/packaging-test.sh ./result
+
+CI runs the same script as the flake check `checks.mcpx-packaging`.
 
 ## Do not
 

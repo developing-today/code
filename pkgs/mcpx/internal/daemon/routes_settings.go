@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/adapter"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
 // CallSettingsHeader carries a client's call-scoped settings with a request.
@@ -70,7 +70,11 @@ func (s *Server) callSettings(r *http.Request) *settings.Set {
 	ov := map[string]string{}
 	for path, v := range given {
 		decl, ok := sch.Lookup(path)
-		if !ok || decl.Scope != settings.ScopeCall {
+		// CallRequest settings are admitted as requests, not orders:
+		// pool.callTimeout's only reader from a call set clamps it to the
+		// pool's configured value before use (#1864 item 4), so admitting
+		// it here cannot raise the daemon's bound.
+		if !ok || (decl.Scope != settings.ScopeCall && !decl.CallRequest) {
 			continue
 		}
 		nv, err := settings.Normalize(*decl, v)
@@ -585,6 +589,19 @@ func ServerEntry(req addServerReq) (map[string]any, error) {
 	return entry, nil
 }
 
+// pointsAtOwnEndpoint reports whether a server entry's URL is this
+// daemon's own HTTP endpoint (or a path under it): the literal
+// self-connection #1877 names, refused at add time and flagged at
+// reload time. The pool's identity guard refuses the same loop for
+// entries that arrive by file edit or report a spoofed path.
+func (s *Server) pointsAtOwnEndpoint(rawURL string) bool {
+	if rawURL == "" || s.endpoint == "" {
+		return false
+	}
+	u := strings.TrimSuffix(rawURL, "/")
+	return u == s.endpoint || strings.HasPrefix(u, s.endpoint+"/")
+}
+
 func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 	var req addServerReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body,
@@ -597,6 +614,18 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if s.pointsAtOwnEndpoint(req.URL) {
+		err := fmt.Errorf("server %q: refusing self-connection: url %s is this daemon's own MCP endpoint; mcpx as its own upstream would grow tools/list on every reload (#1877)", req.Name, req.URL)
+		s.logger.Printf("%v", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// The file write and the reload are one transaction: two live
+	// changes racing would otherwise read the same declarations and
+	// overwrite each other's file edit while both report success
+	// (#2674). The adapters handlers hold reloadMu the same way.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	scope := config.WriteScope(req.Scope)
 	if scope == "" {
 		scope = config.ScopeProject
@@ -622,6 +651,12 @@ func (s *Server) handleServersAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleServersRemove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	// The defining-file lookup, the file write and the reload are one
+	// transaction under reloadMu, like the add handler (#2674): a
+	// concurrent add must not resurrect what this removes, and a
+	// concurrent remove must not be overwritten by this reload.
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	path := ""
 	if scope := config.WriteScope(r.URL.Query().Get("scope")); scope != "" {
 		p, err := config.ResolveWritePath(scope, s.configPathFor(scope))
@@ -778,6 +813,15 @@ func (s *Server) reloadConfig() (added, removed []string, err error) {
 	cfg, err := config.Load(explicit)
 	if err != nil {
 		return nil, nil, err
+	}
+	// Flag a self entry on every reload (#1877): the file may have
+	// been edited behind the API's back, so the add-time refusal
+	// cannot be the only word. The pool refuses to start such an
+	// entry; this line is the reason in the daemon's log.
+	for name, srv := range cfg.MCPServers {
+		if srv != nil && s.pointsAtOwnEndpoint(srv.URL) {
+			s.logger.Printf("self-connection entry %q points at this daemon's own MCP endpoint %s; its pool will refuse to start (#1877)", name, srv.URL)
+		}
 	}
 	// A reload re-reads the file and would otherwise drop whatever the
 	// environment, a flag or a runtime override said about the pool.

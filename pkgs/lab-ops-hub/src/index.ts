@@ -4,8 +4,15 @@ import {
   computeBudget,
   crawlFetcher,
   fetchFollowingValidatedRedirects,
+  parseJsonObjectBody,
   readResponseTextCapped,
+  crawlArchiveKey,
+  uploadKey,
   validateCrawlUrl,
+  isMachineNameConflict,
+  validateMachineBody,
+  validateNoteBody,
+  validateTaskBody,
 } from "./lib";
 
 // ---------------------------------------------------------------------------
@@ -267,21 +274,35 @@ export default {
         return new Response(body, { headers: { "content-type": "application/json", "x-cache": "MISS" } });
       }
       if (p === "/api/machines" && req.method === "POST") {
-        const b = (await req.json()) as Record<string, unknown>;
-        const r = await env.DB.prepare(
-          "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-        )
-          .bind(
-            b.name,
-            b.role ?? "compute",
-            b.cpu ?? null,
-            b.ram_gb ?? null,
-            b.storage ?? null,
-            b.gpu ?? null,
-            b.status ?? "planned",
-            b.notes ?? null,
+        const parsed = await parseJsonObjectBody(req);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const b = parsed.body;
+        const valid = validateMachineBody(b);
+        if (!valid.ok) return json({ error: valid.error }, 400);
+        let r;
+        try {
+          r = await env.DB.prepare(
+            "INSERT INTO machines (name, role, cpu, ram_gb, storage, gpu, status, notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
           )
-          .run();
+            .bind(
+              valid.values.name,
+              b.role ?? "compute",
+              b.cpu ?? null,
+              b.ram_gb ?? null,
+              b.storage ?? null,
+              b.gpu ?? null,
+              b.status ?? "planned",
+              b.notes ?? null,
+            )
+            .run();
+        } catch (e) {
+          // A duplicate name is a client conflict, not a server fault
+          // (#2631); every other DB failure keeps the outer 500.
+          if (isMachineNameConflict(e)) {
+            return json({ error: "machine name already exists", name: valid.values.name }, 409);
+          }
+          throw e;
+        }
         ctx.waitUntil(Promise.all([logUsage(env, "d1_write", "machine"), env.CACHE.delete("machines:all")]));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
       }
@@ -294,9 +315,13 @@ export default {
         return json({ notes: results });
       }
       if (p === "/api/notes" && req.method === "POST") {
-        const b = (await req.json()) as { title: string; body: string; tags?: string };
+        const parsed = await parseJsonObjectBody(req);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const b = parsed.body;
+        const valid = validateNoteBody(b);
+        if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO notes (title, body, tags) VALUES (?1,?2,?3)")
-          .bind(b.title, b.body, b.tags ?? "")
+          .bind(valid.values.title, valid.values.text, b.tags ?? "")
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "note"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
@@ -326,9 +351,13 @@ export default {
         return json({ tasks: results });
       }
       if (p === "/api/tasks" && req.method === "POST") {
-        const b = (await req.json()) as { title: string; machine_id?: number; due?: string };
+        const parsed = await parseJsonObjectBody(req);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const b = parsed.body;
+        const valid = validateTaskBody(b);
+        if (!valid.ok) return json({ error: valid.error }, 400);
         const r = await env.DB.prepare("INSERT INTO tasks (title, machine_id, due) VALUES (?1,?2,?3)")
-          .bind(b.title, b.machine_id ?? null, b.due ?? null)
+          .bind(valid.values.title, b.machine_id ?? null, b.due ?? null)
           .run();
         ctx.waitUntil(logUsage(env, "d1_write", "task"));
         return json({ ok: true, id: r.meta.last_row_id }, 201);
@@ -344,7 +373,7 @@ export default {
         const file = form.get("file") as File | null;
         if (!file) return json({ error: "multipart field 'file' required" }, 400);
         const buf = await file.arrayBuffer();
-        const key = `uploads/${Date.now()}-${file.name.replace(/[^\w.\-]+/g, "_")}`;
+        const key = uploadKey(file.name, Date.now(), crypto.randomUUID());
         await env.FILES.put(key, buf, { httpMetadata: { contentType: file.type || "application/octet-stream" } });
         const r = await env.DB.prepare("INSERT INTO files (r2_key, filename, content_type, size) VALUES (?1,?2,?3,?4)")
           .bind(key, file.name, file.type || null, buf.byteLength)
@@ -377,8 +406,10 @@ export default {
 
       // Crawl (Container first, Worker fallback; full text archived to R2)
       if (p === "/api/crawl" && req.method === "POST") {
-        const b = (await req.json()) as { url: string; via?: string };
-        if (!b.url) return json({ error: "url required" }, 400);
+        const parsed = await parseJsonObjectBody(req);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const b = parsed.body as { url: string; via?: string };
+        if (typeof b.url !== "string" || !b.url) return json({ error: "url required" }, 400);
         // SSRF guard (#441): both crawlers only fetch public http(s)
         // targets; the container re-validates independently.
         const target = validateCrawlUrl(b.url);
@@ -396,7 +427,7 @@ export default {
           containerError = String(e).slice(0, 300);
           result = await crawlFallback(b.url);
         }
-        const key = `crawls/${Date.now()}.json`;
+        const key = crawlArchiveKey(Date.now(), crypto.randomUUID());
         await env.FILES.put(key, JSON.stringify({ url: b.url, source, ...result }, null, 2), {
           httpMetadata: { contentType: "application/json" },
         });

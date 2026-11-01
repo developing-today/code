@@ -131,6 +131,9 @@ const STATIC_MODELS = [
 ];
 
 const findCodexBinary = () => {
+  // Explicit override first: the test suite points this at its stub so
+  // a host-installed codex can never shadow it (#694).
+  if (process.env.CODEX_PROXY_CODEX_BIN) return process.env.CODEX_PROXY_CODEX_BIN;
   const candidates = [
     '/run/current-system/sw/bin/codex',
     `${process.env.HOME}/.local/bin/codex`,
@@ -977,7 +980,9 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
           ? spawnError.message
           : signal
             ? `codex exec terminated by signal ${signal}`
-            : `codex exec exited with code ${code}`;
+            : turnFailedMessage !== null && code === 0
+              ? 'codex turn failed (turn.failed event carried no error message)'
+              : `codex exec exited with code ${code}`;
         const detail = (turnFailedMessage || stderrLine || fallback).trim();
         done({
           ok: false,
@@ -1082,6 +1087,12 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `Invalid JSON body: ${err.message}` } }));
+        return;
+      }
+
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Invalid JSON body: expected an object' } }));
         return;
       }
 

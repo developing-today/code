@@ -83,8 +83,16 @@ async function getJson<T>(target: OpenCodeTarget, path: string, timeoutMs = 10_0
   }
 }
 
-const iso = (ms: number | undefined): string | null =>
-  typeof ms === "number" && ms > 0 ? new Date(ms).toISOString() : null;
+// JS Dates cover +/-8.64e15 ms; a server-supplied stamp outside
+// that range makes toISOString() throw RangeError, and one bad
+// session used to drop every session from its server (#2286).
+// One shared predicate gates both iso() and the freshness
+// inclusion below: finite, positive, in Date range.
+const MAX_DATE_MS = 8.64e15;
+const validMs = (ms: number | undefined): boolean =>
+  typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_DATE_MS;
+
+const iso = (ms: number | undefined): string | null => (validMs(ms) ? new Date(ms as number).toISOString() : null);
 
 function errText(e: unknown): string | null {
   if (!e) return null;
@@ -143,7 +151,7 @@ export async function mapServerSessions(
       (s) =>
         activeIds.has(s.id) ||
         pendingBySession.has(s.id) ||
-        (typeof s.time?.updated === "number" && now - s.time.updated <= ATTENTION_WINDOW_MS),
+        (validMs(s.time?.updated) && now - (s.time?.updated as number) <= ATTENTION_WINDOW_MS),
     )
     .sort((a, b) => (b.time?.updated ?? 0) - (a.time?.updated ?? 0))
     .slice(0, opts.maxDetailed ?? 60);

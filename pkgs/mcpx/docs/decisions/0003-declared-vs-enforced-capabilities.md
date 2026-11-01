@@ -23,7 +23,7 @@ code:     05c78b2
 - #82, approach C: "Capabilities become declarable. The plugin manifest says
   what it intends to use … and the daemon can report and later enforce that.
   Declaring is useful even before enforcing, because it is documentation the
-  daemon can print." And: "capability *enforcement* is security work and is out
+  daemon can print." And: "capability _enforcement_ is security work and is out
   of scope here".
 - #181 row 10: "Nobody owns the declared-vs-enforced capability boundary …
   The deferral has nowhere to land."
@@ -31,7 +31,7 @@ code:     05c78b2
   indistinguishable from success".
 - `docs/protocol.md:18-32`: "Accept liberally, send conservatively … a
   notification or a server-initiated request that the peer did not negotiate
-  *and* did not declare is a lie about what was agreed". Capabilities that
+  _and_ did not declare is a lie about what was agreed". Capabilities that
   depend on a push are "declared only when a notifier is behind them"
   (`:108-110`).
 - `internal/api/ops.go:59-67`: `Admin` is "carried here so a later OAuth pass
@@ -67,7 +67,7 @@ Streamable HTTP transport (2025-11-25, §"Security Warning") says servers
 "**MUST** validate the `Origin` header on all incoming connections to prevent
 DNS rebinding attacks. If the `Origin` header is present and invalid, servers
 **MUST** respond with HTTP 403 Forbidden." The OpenAPI text does mention the
-TCP listener, but only to say that binding it *wider* than loopback is a
+TCP listener, but only to say that binding it _wider_ than loopback is a
 deliberate act — it treats loopback as private, and loopback is not private:
 every other user on a shared host can reach it, and so can a web page, subject
 only to whatever the browser does about pages reaching the local network,
@@ -91,6 +91,17 @@ directory: `--runtime deno --permissions strict` fails with `NotCapable`;
 `script.runtime: auto`, whether `strict` holds depends on whether Deno happens
 to be installed, which on a Nix install it always is (#181 row 11), so nobody
 testing through the flake sees it.
+
+> **Supersession note (2026-10-31, #3246):** the paragraph above describes
+> the state when this record was written. It no longer holds as written:
+> the profiles now live in `internal/defaults/defaults.json`, enforcement
+> is rendered per runtime in `internal/runner/runtimes.go`, node enforces
+> `readnet` / `read-net` via `--permission --allow-fs-read=*`, and a named
+> profile with no entry for the chosen runtime is refused with an error
+> rather than run unenforced. The corrected per-runtime description is
+> the "is it safe?" answer in [`docs/faq.md`](../faq.md). The original
+> text above is kept unchanged as the record of the problem this decision
+> addressed.
 
 **3. `servers.<name>.auth` does nothing.** `config.Server.Auth`
 (`internal/config/config.go:141`) is the only non-test reference to package
@@ -130,7 +141,7 @@ A non-hot setting written at runtime is not applied and the answer says
 `restartRequired` (`routes_settings.go:216-227`). The socket and its directory
 are `0600`/`0700` (`server.go:202`, `paths.go:144-160`). Capabilities to peers
 follow the promise rule in `docs/protocol.md` §2.2 and §4. `ExecOptions`'
-`capabilities: ["artifacts"]` is the *caller's* declaration and is trusted by
+`capabilities: ["artifacts"]` is the _caller's_ declaration and is trusted by
 design, because remoteness cannot be read off a transport
 (`internal/execsvc/execsvc.go:65-72`). None of the restrictions in this
 paragraph — the header filter, the socket's mode, the directory's mode — has a
@@ -149,7 +160,7 @@ true, false, and phrased like rules.
 
 Strip the "Privileged" label, the audience reasons and #82's manifest
 capabilities until something enforces them. It throws away real value: the
-MCP annotations are hints *by specification*, a model is better for reading
+MCP annotations are hints _by specification_, a model is better for reading
 them, and #82 is right that a declaration the daemon can print is
 documentation. It also would not have caught findings 1–3, which are not
 early declarations but broken ones.
@@ -172,11 +183,11 @@ it; guard both states.
 
 ### Three kinds of declaration
 
-| kind | says | rule |
-| --- | --- | --- |
-| **promise** | mcpx will do X: a capability to a peer, a setting's effect, a config field's effect, a documented behaviour | delivered. There is no advisory promise; an undelivered one is a bug (#177), not a state. |
+| kind            | says                                                                                                                          | rule                                                                                                                                                                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **promise**     | mcpx will do X: a capability to a peer, a setting's effect, a config field's effect, a documented behaviour                   | delivered. There is no advisory promise; an undelivered one is a bug (#177), not a state.                                                                                                                                             |
 | **restriction** | X will be refused: a sandbox profile, a scope filter, a ceiling, a plugin's capability list, an auth scope, an access control | **enforced** — mcpx, or something it drives, refuses X, and a test tries X and sees the refusal — or **advisory** — nothing refuses X, and every surface that shows the restriction says `advisory` in the same text. No third state. |
-| **hint** | X is probably true, act accordingly: MCP annotations, the admin label, an elicitation's audience | true, and recognisable as a hint: a field the specification defines as one (MCP's `*Hint`), or the word `advisory` beside it. A false hint is a bug. |
+| **hint**        | X is probably true, act accordingly: MCP annotations, the admin label, an elicitation's audience                              | true, and recognisable as a hint: a field the specification defines as one (MCP's `*Hint`), or the word `advisory` beside it. A false hint is a bug.                                                                                  |
 
 **"Declarable now, enforceable later" is `advisory`**, and it may be declared
 today — on the condition that the word is on every surface that shows it. It
@@ -232,7 +243,7 @@ that acceptance is not effect:
 
 1. **`TestEveryEnforcedBoundaryRefuses`**, end to end, against the real binary:
    one case per enforced row, each doing the forbidden thing and asserting the
-   refusal *and* that the same action without the restriction succeeds (#75's
+   refusal _and_ that the same action without the restriction succeeds (#75's
    with-and-without). Its first cases: a daemon-scoped setting in
    `X-Mcpx-Settings` leaves the daemon's value unchanged; a read outside the
    working directory under `script.permissions: strict`, **for every runtime
@@ -252,16 +263,16 @@ and cannot be declared at all without saying which it is.
 With the state each has when the table and its tests land together — which
 they must, since an enforced row without its case fails test 2.
 
-| row | declares | state | refusal case, or until |
-| --- | --- | --- | --- |
-| `daemon.access` | only a process that can open the socket or read the daemon record — or was given its token — can use the API | **enforced after the fix below** | TCP without the token; foreign `Origin` |
-| `settings.callScope` | a caller's header changes only call-scoped settings | enforced | daemon-scoped key in the header |
-| `script.permissions` | a script cannot exceed its profile | **enforced after the fix below** | outside read, per runtime |
-| `op.admin` | admin operations would need a separate grant | advisory | the OAuth pass — a new issue under #181 |
-| `elicit.audience` | a question routed to a human is answered by one | advisory | #82, once answerers have an identity |
-| `plugin.capabilities` | a plugin uses only what its manifest lists | advisory | #82, one capability at a time |
-| `autonomy.max` | mcpx does not act above the ceiling on its own | enforced, from the day it lands | 0002's end-to-end case |
-| `hooks.failClosed` | a failing fail-closed hook refuses its operation | enforced, from the day it lands | 0001's hook dispatcher |
+| row                   | declares                                                                                                     | state                            | refusal case, or until                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------- | --------------------------------------- |
+| `daemon.access`       | only a process that can open the socket or read the daemon record — or was given its token — can use the API | **enforced after the fix below** | TCP without the token; foreign `Origin` |
+| `settings.callScope`  | a caller's header changes only call-scoped settings                                                          | enforced                         | daemon-scoped key in the header         |
+| `script.permissions`  | a script cannot exceed its profile                                                                           | **enforced after the fix below** | outside read, per runtime               |
+| `op.admin`            | admin operations would need a separate grant                                                                 | advisory                         | the OAuth pass — a new issue under #181 |
+| `elicit.audience`     | a question routed to a human is answered by one                                                              | advisory                         | #82, once answerers have an identity    |
+| `plugin.capabilities` | a plugin uses only what its manifest lists                                                                   | advisory                         | #82, one capability at a time           |
+| `autonomy.max`        | mcpx does not act above the ceiling on its own                                                               | enforced, from the day it lands  | 0002's end-to-end case                  |
+| `hooks.failClosed`    | a failing fail-closed hook refuses its operation                                                             | enforced, from the day it lands  | 0001's hook dispatcher                  |
 
 ### What changes now
 
@@ -333,36 +344,36 @@ to get round.
 
 **Deferred**: authenticating callers — who is calling, not just whether they
 can reach the socket — to the OAuth pass the ops table already anticipates.
-Until then every row about *who* may do something is advisory, and says so.
+Until then every row about _who_ may do something is advisory, and says so.
 
 ---
 
 ## Mapping
 
-| term | from | kind | state |
-| --- | --- | --- | --- |
-| "the socket's file permissions are the access control" | `openapi.go:38`, `registry.go:354` | restriction | not true of the TCP listener → `daemon.access`, enforced after the fix |
-| loopback TCP listener | `server.go:209-213` | — | the unguarded half of `daemon.access` |
-| `Origin` validation | MCP Streamable HTTP, 2025-11-25 | restriction | missing; a MUST |
-| capabilities declared to a client | `docs/protocol.md` §2.2 | promise | delivered |
-| `sampling` declared to servers | `docs/protocol.md:271`, #39 | promise | delivered only with a handler |
-| "send conservatively" | `docs/protocol.md:18-32` | promise, on the wire | PROTOCOL's guards |
-| `readOnlyHint`, `destructiveHint`, `openWorldHint` | `ops.go:659-667` | hint | specification-defined; true |
-| `idempotentHint` | `ops.go:664` | hint | false for `restart` → explicit field |
-| `Admin`, `x-mcpx-admin` | `ops.go:59-62`, `openapi.go:58` | hint | the OpenAPI text says so |
-| "Privileged:" in a tool description | `ops.go:676` | hint | now says `advisory` |
-| `Mutating`, `Destructive` | `ops.go:63-67` | hint | through the annotations |
-| call-scope filter on `X-Mcpx-Settings` | `routes_settings.go:64-72` | restriction | enforced; gains its refusal case |
-| `Hot` | `schema.go:183-188`, `routes_settings.go:216-227` | promise | delivered: not applied, and the answer says so. The field's comment says the API "refuses it" (`schema.go:187`); it answers 200 with `applied: false` |
-| socket mode | `server.go:202`, `paths.go:156-160` | restriction | enforced by the OS |
-| `script.permissions` | `registry.go:183`, `runner.go:41-101` | restriction | Deno only → refuse elsewhere |
-| elicitation audience | `elicit.go:74-84`, `:491-514` | hint | advisory until #82 |
-| `servers.<name>.auth` | `config.go:141`, `docs/story.md:2013` | promise | undelivered → wire or remove |
-| `NeedsOAuth`, "says so before the first request" | `mcpauth.go:59-64`, `:84-86` | promise | undelivered |
-| OAuth "declared and not performed" | `docs/protocol.md:378` | a documented gap | honest; a gap written down is not a promise |
-| `ExecOptions.capabilities` | `execsvc.go:65-72` | the caller's promise | trusted by design |
-| manifest `capabilities` | #82, approach C | restriction | advisory until #82 enforces each |
-| "declarable now, enforceable later" | #82 | — | `advisory` |
-| `ClampedBy`, `autonomy.max` | [0002](0002-autonomy-dial.md) | restriction | enforced from the day it lands |
-| `failure: closed` | [0001](0001-hook-vocabulary.md) | restriction | enforced from the day it lands |
-| "Security/auth deferred; see tracker" | every issue's footer | — | an advisory row naming its issue |
+| term                                                   | from                                              | kind                 | state                                                                                                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "the socket's file permissions are the access control" | `openapi.go:38`, `registry.go:354`                | restriction          | not true of the TCP listener → `daemon.access`, enforced after the fix                                                                                |
+| loopback TCP listener                                  | `server.go:209-213`                               | —                    | the unguarded half of `daemon.access`                                                                                                                 |
+| `Origin` validation                                    | MCP Streamable HTTP, 2025-11-25                   | restriction          | missing; a MUST                                                                                                                                       |
+| capabilities declared to a client                      | `docs/protocol.md` §2.2                           | promise              | delivered                                                                                                                                             |
+| `sampling` declared to servers                         | `docs/protocol.md:271`, #39                       | promise              | delivered only with a handler                                                                                                                         |
+| "send conservatively"                                  | `docs/protocol.md:18-32`                          | promise, on the wire | PROTOCOL's guards                                                                                                                                     |
+| `readOnlyHint`, `destructiveHint`, `openWorldHint`     | `ops.go:659-667`                                  | hint                 | specification-defined; true                                                                                                                           |
+| `idempotentHint`                                       | `ops.go:664`                                      | hint                 | false for `restart` → explicit field                                                                                                                  |
+| `Admin`, `x-mcpx-admin`                                | `ops.go:59-62`, `openapi.go:58`                   | hint                 | the OpenAPI text says so                                                                                                                              |
+| "Privileged:" in a tool description                    | `ops.go:676`                                      | hint                 | now says `advisory`                                                                                                                                   |
+| `Mutating`, `Destructive`                              | `ops.go:63-67`                                    | hint                 | through the annotations                                                                                                                               |
+| call-scope filter on `X-Mcpx-Settings`                 | `routes_settings.go:64-72`                        | restriction          | enforced; gains its refusal case                                                                                                                      |
+| `Hot`                                                  | `schema.go:183-188`, `routes_settings.go:216-227` | promise              | delivered: not applied, and the answer says so. The field's comment says the API "refuses it" (`schema.go:187`); it answers 200 with `applied: false` |
+| socket mode                                            | `server.go:202`, `paths.go:156-160`               | restriction          | enforced by the OS                                                                                                                                    |
+| `script.permissions`                                   | `registry.go:183`, `runner.go:41-101`             | restriction          | Deno only → refuse elsewhere                                                                                                                          |
+| elicitation audience                                   | `elicit.go:74-84`, `:491-514`                     | hint                 | advisory until #82                                                                                                                                    |
+| `servers.<name>.auth`                                  | `config.go:141`, `docs/story.md:2013`             | promise              | undelivered → wire or remove                                                                                                                          |
+| `NeedsOAuth`, "says so before the first request"       | `mcpauth.go:59-64`, `:84-86`                      | promise              | undelivered                                                                                                                                           |
+| OAuth "declared and not performed"                     | `docs/protocol.md:378`                            | a documented gap     | honest; a gap written down is not a promise                                                                                                           |
+| `ExecOptions.capabilities`                             | `execsvc.go:65-72`                                | the caller's promise | trusted by design                                                                                                                                     |
+| manifest `capabilities`                                | #82, approach C                                   | restriction          | advisory until #82 enforces each                                                                                                                      |
+| "declarable now, enforceable later"                    | #82                                               | —                    | `advisory`                                                                                                                                            |
+| `ClampedBy`, `autonomy.max`                            | [0002](0002-autonomy-dial.md)                     | restriction          | enforced from the day it lands                                                                                                                        |
+| `failure: closed`                                      | [0001](0001-hook-vocabulary.md)                   | restriction          | enforced from the day it lands                                                                                                                        |
+| "Security/auth deferred; see tracker"                  | every issue's footer                              | —                    | an advisory row naming its issue                                                                                                                      |

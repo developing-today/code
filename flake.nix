@@ -22,6 +22,7 @@ rec {
       lib.make-root-apps
       lib.make-id
       lib.make-mcpx-overlay
+      lib.make-laptop-backups-checks
     ];
   inputs = {
     nixgl = {
@@ -116,6 +117,7 @@ rec {
     # and nothing here builds from it.
     dezren39-nix = {
       url = "github:dezren39/nix";
+      inputs.opencode.follows = "opencode";
     };
     systems = {
       # TODO: use this?

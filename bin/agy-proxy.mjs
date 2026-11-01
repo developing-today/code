@@ -24,6 +24,16 @@
 //     or times out is killed and never reused; the next request respawns
 //     (spares replenish automatically). Live session workers are evicted
 //     after an idle TTL / past a live-worker cap.
+// Cached-token accounting (#480, settled 2026-11-01): the agy CLI's
+// stream-json `result.usage` DOES carry a cached-input figure —
+// `cache_read_tokens`, cumulative over the session like its sibling
+// counters (verified against the real CLI's result shape on the
+// laptop: usage keys are input_tokens, output_tokens,
+// thinking_tokens, cache_read_tokens, total_tokens). The per-turn
+// delta is emitted as `prompt_tokens_details.cached_tokens` in both
+// response shapes when > 0, matching the sibling proxies'
+// opencode#394 contract; when the CLI reports none, the field is
+// omitted entirely rather than reporting a fabricated zero split.
 // Failure semantics are unchanged from #678: a failed turn is an error
 // (502 non-stream, SSE error event + [DONE] stream), never a 'stop'
 // carrying partial output; a failed resume retries once as a fresh
@@ -96,6 +106,10 @@ const FALLBACK_MODELS = [
 ];
 
 const findAgyBinary = () => {
+  // Explicit override first: the test suite points this at its stub so
+  // a host-installed agy can never shadow it (#3355, mirroring
+  // CODEX_PROXY_CODEX_BIN in codex-proxy.mjs, #694).
+  if (process.env.AGY_PROXY_AGY_BIN) return process.env.AGY_PROXY_AGY_BIN;
   const candidates = [
     '/run/current-system/sw/bin/agy',
     `${process.env.HOME}/.gemini/bin/agy`,
@@ -480,7 +494,7 @@ class AgyWorker {
     this.stderrTail = '';
     this.turnWaiter = null;
     this.ready = false; // set when the init event arrives
-    this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+    this.prevUsage = { input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_tokens: 0 };
 
     const args = [
       '--dangerously-skip-permissions',
@@ -528,6 +542,11 @@ class AgyWorker {
       this._fail(turnError(err.message, { isSpawnError: true }));
     });
     child.on('close', (code, signal) => {
+      // Flush any unterminated final line before judging the exit
+      // (#683): a partial delta that never got its newline is real
+      // output, and the resume-retry gate reads hasOutput from the
+      // deltas this flush delivers.
+      this._flushLineBuffer();
       // Failure is judged by the child's exit (#678): the last stderr
       // line names the cause when there is one, then the signal, then
       // the exit code — the same detail ladder the cold path used.
@@ -554,12 +573,23 @@ class AgyWorker {
     this.lineBuffer += chunk.toString();
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let obj;
-      try { obj = JSON.parse(line); } catch { continue; }
-      this._onEvent(obj);
-    }
+    for (const line of lines) this._processLine(line);
+  }
+
+  _processLine(line) {
+    if (!line.trim()) return;
+    let obj;
+    try { obj = JSON.parse(line); } catch { return; }
+    this._onEvent(obj);
+  }
+
+  // The child can exit mid-line: whatever tail is still buffered is a
+  // complete final line for judging purposes (#683) -- run it through
+  // the same path a terminated line takes before any close judgment.
+  _flushLineBuffer() {
+    const tail = this.lineBuffer;
+    this.lineBuffer = '';
+    if (tail.trim()) this._processLine(tail);
   }
 
   _onEvent(obj) {
@@ -600,12 +630,14 @@ class AgyWorker {
       const deltaUsage = {
         input_tokens: Math.max(0, (cum.input_tokens || 0) - this.prevUsage.input_tokens),
         output_tokens: Math.max(0, (cum.output_tokens || 0) - this.prevUsage.output_tokens),
-        total_tokens: Math.max(0, (cum.total_tokens || 0) - this.prevUsage.total_tokens)
+        total_tokens: Math.max(0, (cum.total_tokens || 0) - this.prevUsage.total_tokens),
+        cache_read_tokens: Math.max(0, (cum.cache_read_tokens || 0) - this.prevUsage.cache_read_tokens)
       };
       this.prevUsage = {
         input_tokens: cum.input_tokens || 0,
         output_tokens: cum.output_tokens || 0,
-        total_tokens: cum.total_tokens || 0
+        total_tokens: cum.total_tokens || 0,
+        cache_read_tokens: cum.cache_read_tokens || 0
       };
       this.turns += 1;
       this.lastUsedAt = Date.now();
@@ -844,6 +876,12 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON request body: expected an object' }));
+        return;
+      }
+
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
       await ensureInitialModels();
@@ -1030,7 +1068,8 @@ const server = http.createServer((req, res) => {
               usage: {
                 prompt_tokens: result.usage?.input_tokens || 0,
                 completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0
+                total_tokens: result.usage?.total_tokens || 0,
+                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
               }
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -1063,7 +1102,8 @@ const server = http.createServer((req, res) => {
               usage: {
                 prompt_tokens: result.usage?.input_tokens || 0,
                 completion_tokens: result.usage?.output_tokens || 0,
-                total_tokens: result.usage?.total_tokens || 0
+                total_tokens: result.usage?.total_tokens || 0,
+                ...(result.usage?.cache_read_tokens > 0 ? { prompt_tokens_details: { cached_tokens: result.usage.cache_read_tokens } } : {})
               }
             }, null, 2));
           }

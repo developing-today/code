@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 )
 
 func recv(t *testing.T, s *events.Subscription) events.Event {
@@ -120,6 +120,27 @@ func TestAGapBeyondHistoryIsReportedRatherThanHidden(t *testing.T) {
 	defer s.Close()
 	if !gap {
 		t.Error("seven events fell out of history; that should be reported")
+	}
+}
+
+func TestExplicitZeroReportsAGapAfterTrim(t *testing.T) {
+	// #1679: the gap check was gated on since > 0, so an explicit
+	// position zero after the retained history had been trimmed
+	// replayed from mid-history and reported no gap -- events the
+	// subscriber had never seen vanished silently, while since=1 in
+	// the same state (the control in
+	// TestAGapBeyondHistoryIsReportedRatherThanHidden) did report.
+	b := events.New(3)
+	for i := 0; i < 10; i++ {
+		b.Publish(events.Event{Kind: events.CallFinished})
+	}
+	s, gap := b.SubscribeFrom(events.Filter{}, 0, true)
+	defer s.Close()
+	if !gap {
+		t.Error("events 1-7 fell out of history before position zero; that should be reported")
+	}
+	if e := recv(t, s); e.Seq != 8 {
+		t.Fatalf("replay should start at the oldest retained event (seq 8), got seq %d", e.Seq)
 	}
 }
 

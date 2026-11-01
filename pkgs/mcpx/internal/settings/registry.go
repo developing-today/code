@@ -1,6 +1,6 @@
 package settings
 
-import "github.com/dezren39/mcpx/internal/defaults"
+import "github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 // Registry is every setting mcpx has.
 //
@@ -107,7 +107,7 @@ func poolSettings() []Setting {
 		},
 		{
 			Path: "pool.callTimeout", Kind: KindDuration, Default: pool.CallTimeout,
-			Scope: ScopeDaemon, Hot: true,
+			Scope: ScopeDaemon, Hot: true, CallRequest: true,
 			Commands: []string{"run", "exec", "call", "daemon", "status", "restart"},
 			Name:     "Call timeout", Short: "how long one tool call may take",
 		},
@@ -259,6 +259,31 @@ func scriptSettings() []Setting {
 				"read, readnet, strict, or one defined in script.profiles. raw: " +
 				"introduces flags passed through verbatim and takes the rest of the " +
 				"value. The default is wide open because the scripts are yours.",
+		},
+		{
+			Path: "script.interpreter", Commands: runCommands, Kind: KindString, Default: "",
+			Scope:       ScopeClient,
+			FlagAliases: []string{"interpreter", "shell"},
+			Name:        "Interpreter", Short: "command line that runs scripts instead of a JavaScript runtime",
+			Long: "Dispatch order for a script: a #! shebang in the source or file wins, " +
+				"then this command line (the script path is appended), then the configured " +
+				"TypeScript runtime (script.runtime). A non-JavaScript interpreter gets " +
+				"MCPX_ENDPOINT, MCPX_SESSION and MCPX_SOCKET in its environment and the " +
+				"same output, exit-code and timeout handling, but no generated client, " +
+				"and script.permissions profiles -- JavaScript runtime flags -- are not " +
+				"enforced for it. --shell and --interpreter are aliases of this one " +
+				"setting; there is no per-language flag family.",
+		},
+		{
+			Path: "script.cwd", Commands: runCommands, Kind: KindEnum, Default: "caller",
+			Scope: ScopeClient,
+			Enum:  []string{"caller", "script", "config", "workdir"},
+			Name:  "Script working directory", Short: "where a script runs: caller, script, config or workdir",
+			Long: "caller: the directory the caller runs in (Options.Dir, or inherited) -- " +
+				"the historical behaviour. script: the directory holding the script file. " +
+				"config: the directory holding the mcpx configuration in force. workdir: " +
+				"the runner's working directory for the run, where snippets and the " +
+				"generated client live.",
 		},
 		{
 			Path: "script.profiles", Commands: runCommands, Kind: KindString, Default: "",

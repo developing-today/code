@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/elicit"
-	"github.com/dezren39/mcpx/internal/mcpserver"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // InputHeader is how a caller of /v1/call says it cannot answer a question
@@ -78,7 +78,7 @@ func (r *Registry) CallReporting(ctx context.Context, id, server, tool string, c
 	}
 	r.beginAsk(id, server, key, cc.SessionID)
 	defer r.endAsk(id)
-	res, err := p.Call(ctx, key, tool, args)
+	res, err := p.Call(withRequestedCallTimeout(ctx), key, tool, args)
 	if err != nil {
 		return nil, r.explainCall(ctx, server, tool, args, err)
 	}
@@ -102,11 +102,27 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 	// (StartWithDeadline), and the same span then serves as the
 	// result's retention from completion, per the task store's TTL
 	// semantics (#1653).
+	// The task counts against the caller's session, else its run --
+	// the same fallback the explicit-task branch in handleCall uses.
+	// Charging the session alone put every session-less reporting
+	// call in the shared unbound bucket, so one run's pending call
+	// could refuse another run's first (Codex review, PR #2869).
+	// It charges in the REPORT role, not the caller role: a /v1/exec
+	// wrapper task holds its session's caller slot for the whole run,
+	// and the script's tool calls arrive here under that same session,
+	// so one shared ledger let the wrapper starve its own calls -- at
+	// a per-requestor cap of 1 the first reporting call was refused
+	// (Codex review, PR #2869). The report ledger is still capped per
+	// identity; it is a separate ledger, not an exemption.
+	reportingRequestor := tasks.Report(cc.SessionID)
+	if cc.SessionID == "" {
+		reportingRequestor = tasks.Report(run)
+	}
 	askTTL := s.set.Duration("proto.askTTL")
-	t := s.taskStore().StartWithDeadline(askTTL.Milliseconds(), askTTL,
+	t, terr := s.taskStore().StartWithDeadline(reportingRequestor, askTTL.Milliseconds(), askTTL,
 		func(ctx context.Context) (any, *tasks.Fault) {
 			id := <-ready
-			callCtx := withRun(ctx, run)
+			callCtx := withCallSettings(withRun(ctx, run), s.callSettings(r))
 			res, err := s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
 			// This path returns before handleCall's own reporting, so
 			// report the completed call here: an exec run whose calls
@@ -120,6 +136,11 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 			return map[string]any{"result": res, "kind": "tools/call", "server": req.Server,
 				"durationMs": time.Since(start).Milliseconds()}, nil
 		})
+	if terr != nil {
+		// The store's per-requestor cap (protoTasks.maxPerRequestor).
+		writeErr(w, http.StatusTooManyRequests, terr)
+		return
+	}
 	ready <- t.TaskID
 
 	// Polled rather than signalled: the call registers itself only once its

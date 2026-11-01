@@ -121,8 +121,33 @@ export class CommentsStore {
     let raw: string;
     try {
       raw = await readFile(this.file, "utf8");
-    } catch {
-      this.comments = []; // no store yet — the first write creates it
+    } catch (err) {
+      if ((err as { code?: unknown })?.code === "ENOENT") {
+        this.comments = []; // no store yet — the first write creates it
+        return;
+      }
+      // #2980: a non-ENOENT read failure (EACCES, a transient I/O error,
+      // a directory in place of the file, ...) is NOT "no store yet":
+      // the on-disk audit history may be intact but unread. Handle it
+      // like the corrupt case below — quarantine the original bytes
+      // before starting empty, and log loudly — so the next persist
+      // cannot silently overwrite history the read never saw.
+      this.comments = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[comments] WARNING: comments store ${this.file} could not be read (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
       return;
     }
     try {
@@ -237,10 +262,51 @@ export class CommentsStore {
     await this.load();
     const c = this.comments.find((x) => x.id === id);
     if (!c || c.kind !== "github") return null;
+    // A result report carries exactly one outcome (#1686): a url
+    // (posted) or an error (failed). A report with neither — or
+    // both — states no outcome and is refused with the state
+    // unchanged (the endpoint maps the throw to a 400): the old
+    // code mapped any url-less report to failed, so an empty {}
+    // wrote a pending comment off unposted, and flipped a posted
+    // comment back to failed with its githubUrl still set.
+    if (!result.url && !result.error) {
+      throw new Error("github result needs a url or an error");
+    }
+    if (result.url && result.error) {
+      throw new Error("github result cannot carry both a url and an error");
+    }
     if (result.url) {
+      if (c.githubState === "posted") {
+        // Posted is terminal. A repeat of the same url is an
+        // idempotent no-op; a different url is a conflicting
+        // report — the first posted result stands. The no-op still
+        // persists first: the original report may have flipped the
+        // in-memory state and then failed its write, and
+        // acknowledging success here without flushing would leave
+        // the on-disk comment pending — a restart would post it
+        // again and duplicate the GitHub comment (#1686).
+        if (c.githubUrl === result.url) {
+          await this.persist();
+          return c;
+        }
+        throw new Error("github comment already posted with a different url");
+      }
+      // From pending — or from failed, when a retry actually
+      // landed the comment: failed is not terminal against
+      // success.
       c.githubState = "posted";
       c.githubUrl = result.url;
     } else {
+      // An error report never moves a posted comment backwards.
+      if (c.githubState === "posted") {
+        throw new Error("github comment already posted; a later failure cannot un-post it");
+      }
+      if (c.githubState === "failed") {
+        // Repeat failure: idempotent — but persist first, for the
+        // same reason as the posted repeat above (#1686).
+        await this.persist();
+        return c;
+      }
       c.githubState = "failed";
     }
     await this.persist();

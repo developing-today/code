@@ -29,8 +29,8 @@ default-export shapes:
 ```
 
 Only `default` is read (`Module = Schema.Struct({ default: ... })`). Failure to
-match aborts the module with *"Plugin must export a default definition with an
-id and an effect or setup function."* Consequences for the port:
+match aborts the module with _"Plugin must export a default definition with an
+id and an effect or setup function."_ Consequences for the port:
 
 - the `plugin/opencode/mcpx/` subdirectory workaround is unnecessary in v2,
   but the v1 tree keeps its layout until v2 is what runs;
@@ -44,15 +44,15 @@ id and an effect or setup function."* Consequences for the port:
 
 `promise/plugin.ts:26-73` (the `setup` variant of `Context`):
 
-| port need | v2 surface |
-| --- | --- |
-| daemon choice remembered across sessions | `ctx.storage.get/set/remove/scan` (Promise, `schema.Json` values) |
+| port need                                        | v2 surface                                                                                     |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| daemon choice remembered across sessions         | `ctx.storage.get/set/remove/scan` (Promise, `schema.Json` values)                              |
 | session id (the thing `shell.env` used to carry) | `ctx.session.hook(...)` inputs carry `sessionID`; `ctx.session.context({sessionID})` reads one |
-| system-prompt line | `ctx.session.hook("context", input => …)` mutating `input.system` |
-| opt-in tools | `ctx.tool.transform(editor => …)`, `editor.namespace(...)` + `editor.add(...)` |
-| tool timing | `ctx.tool.hook("execute.after", …)` — a **union on `status`** |
-| a line to the user | `ctx.tui`? no — server plugins get the SDK `client.tui.*` only (unchanged from v1) |
-| headless detection | unchanged problem; no `isMainThread` trick in v2's two-process model |
+| system-prompt line                               | `ctx.session.hook("context", input => …)` mutating `input.system`                              |
+| opt-in tools                                     | `ctx.tool.transform(editor => …)`, `editor.namespace(...)` + `editor.add(...)`                 |
+| tool timing                                      | `ctx.tool.hook("execute.after", …)` — a **union on `status`**                                  |
+| a line to the user                               | `ctx.tui`? no — server plugins get the SDK `client.tui.*` only (unchanged from v1)             |
+| headless detection                               | unchanged problem; no `isMainThread` trick in v2's two-process model                           |
 
 `ctx.generate` (one-shot completion), `ctx.mcp.transform`, `ctx.permission.hook("evaluate")`
 and the TUI `select()` picker are the **SET-REMAINDER** — deliberately not used
@@ -125,16 +125,16 @@ process, but the core rewrite should make rung 4 optional (off unless
 
 Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/`:
 
-| file | contents | acceptance it satisfies |
-| --- | --- | --- |
-| `index.ts` | `export default { id: "mcpx", setup }` | loads via `{id, setup}` |
-| `options.ts` | the v1 `Options` type + `pluginSettings()`-declared variable names, ported verbatim | settings guard |
-| `session-env.ts` | first-sighting → `PUT /api/session/:id/environment` with the **full** env | once per session, no per-command `shell.env` |
-| `context.ts` | `session.hook("context")` appending one idempotent paragraph | system line |
-| `tools.ts` | `tool.transform` with namespace + `discover`/`exec`/`observe`/`daemon_*` | namespaced registration |
-| `timing.ts` | `tool.hook("execute.after")` recording both statuses | failures recorded |
-| `remember.ts` | `ctx.storage` remembered daemon | no state file |
-| `daemon.ts` | re-export of `../../mcpx/daemon.ts` | core reuse |
+| file             | contents                                                                            | acceptance it satisfies                      |
+| ---------------- | ----------------------------------------------------------------------------------- | -------------------------------------------- |
+| `index.ts`       | `export default { id: "mcpx", setup }`                                              | loads via `{id, setup}`                      |
+| `options.ts`     | the v1 `Options` type + `pluginSettings()`-declared variable names, ported verbatim | settings guard                               |
+| `session-env.ts` | first-sighting → `PUT /api/session/:id/environment` with the **full** env           | once per session, no per-command `shell.env` |
+| `context.ts`     | `session.hook("context")` appending one idempotent paragraph                        | system line                                  |
+| `tools.ts`       | `tool.transform` with namespace + `discover`/`exec`/`observe`/`daemon_*`            | namespaced registration                      |
+| `timing.ts`      | `tool.hook("execute.after")` recording both statuses                                | failures recorded                            |
+| `remember.ts`    | `ctx.storage` remembered daemon                                                     | no state file                                |
+| `daemon.ts`      | re-export of `../mcpx/daemon.ts`                                                    | core reuse                                   |
 
 Tests follow the existing `bun test` style in `plugin/opencode/mcpx/*.test.ts`
 (`daemon.test.ts`, `ops.test.ts`, `ceiling.test.ts`), stubbing the context

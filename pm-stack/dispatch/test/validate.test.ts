@@ -27,6 +27,13 @@ describe("priority mapping", () => {
     for (const v of [10, 20, 30, 40, 50, 70, 90]) expect(resolvePriority(v)).toBe(v);
   });
 
+  test("decimal integer strings follow the numeric scale and validation", () => {
+    for (let v = 10; v <= 90; v++) expect(resolvePriority(String(v))).toBe(resolvePriority(v));
+    for (const v of ["5", "95", "50.5", "", "0x32", "5e1"]) {
+      expect(() => resolvePriority(v)).toThrow(ValidationError);
+    }
+  });
+
   test("off-scale integers in range snap to the nearest scale value", () => {
     expect(resolvePriority(15)).toBe(10); // tie -> down
     expect(resolvePriority(16)).toBe(20);
@@ -42,6 +49,35 @@ describe("priority mapping", () => {
     expect(() => resolvePriority(40.5)).toThrow(ValidationError);
     expect(() => resolvePriority("urgent")).toThrow(ValidationError);
     expect(() => resolvePriority(true)).toThrow(ValidationError);
+  });
+
+  test("prototype spellings are rejected, not resolved through the prototype chain (#2757)", () => {
+    // PRIORITY_NAMES is a plain object: without the own-key guard these
+    // returned inherited members (the Object constructor function,
+    // Object.prototype, ...) - non-numbers that flowed toward
+    // Packet.priority / p_priority. Every spelling that trims/lowercases
+    // to an inherited member must take the ordinary unknown-name 400.
+    for (const name of [
+      "constructor",
+      "Constructor",
+      " CONSTRUCTOR ",
+      "__proto__",
+      "__PROTO__",
+      "toString",
+      "valueOf",
+      "hasOwnProperty",
+      "isPrototypeOf",
+      "propertyIsEnumerable",
+      "toLocaleString",
+      "__defineGetter__",
+      "__lookupGetter__",
+    ]) {
+      expect(() => resolvePriority(name)).toThrow(ValidationError);
+      expect(() => resolvePriority(name)).toThrow(/unknown name/);
+    }
+    // The four real names still resolve.
+    expect(resolvePriority("critical")).toBe(10);
+    expect(resolvePriority(" low ")).toBe(70);
   });
 });
 
@@ -77,6 +113,21 @@ describe("model parsing", () => {
 });
 
 describe("request validation", () => {
+  test("action-shaped priority strings resolve for both request types", () => {
+    for (const [priority, expected] of [
+      ["10", 10],
+      ["45", 40],
+      ["50", 50],
+      ["90", 90],
+      ["high", 20],
+      [undefined, 40],
+    ] as const) {
+      // Both actions use jq --arg, which serializes priority as a JSON string.
+      const payload = JSON.parse(JSON.stringify({ repo: "developing-today/code", title: "t", prompt: "p", priority }));
+      expect(parseTaskRequest(payload).priority).toBe(expected);
+      expect(parseSessionRequest(payload).priority).toBe(expected);
+    }
+  });
   test("sessions require repo and prompt; defaults issue+wait on", () => {
     const r = parseSessionRequest({ repo: "developing-today/code", prompt: "do the thing" });
     expect(r.issue).toBe(true);
@@ -85,6 +136,23 @@ describe("request validation", () => {
     expect(() => parseSessionRequest({ prompt: "x" })).toThrow(/repo/);
     expect(() => parseSessionRequest({ repo: "developing-today/code" })).toThrow(/prompt/);
     expect(() => parseSessionRequest("nope")).toThrow(ValidationError);
+  });
+
+  test("a prototype-spelling priority 400s at parse time, so no non-number reaches the packet (#2757)", () => {
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "constructor" })).toThrow(
+      ValidationError,
+    );
+    expect(() => parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "__proto__" })).toThrow(
+      ValidationError,
+    );
+    expect(() =>
+      parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "constructor" }),
+    ).toThrow(ValidationError);
+    expect(() =>
+      parseTaskRequest({ repo: "developing-today/code", title: "t", prompt: "p", priority: "__proto__" }),
+    ).toThrow(ValidationError);
+    // A valid named priority still parses to a number.
+    expect(parseSessionRequest({ repo: "developing-today/code", prompt: "x", priority: "high" }).priority).toBe(20);
   });
 
   test("tasks accept prompt or body, default kind triage and issue off", () => {
@@ -160,7 +228,76 @@ describe("session directory scoping (issue #2903)", () => {
     expect(resolveSessionDirectory("bearer", code, undefined, repoDirs)).toBe("/home/user/git/code");
   });
 
-  test("bearer + foreign directory is the documented deliberate choice", () => {
-    expect(resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toBe("/tmp/ops-scratch");
+  test("bearer foreign directory is rejected too (issue #2664: one rule for both caller types)", () => {
+    expect(() => resolveSessionDirectory("bearer", code, "/tmp/ops-scratch", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/etc", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/opencode", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("blank directory resolves to the repo clone for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "", repoDirs)).toBe("/home/user/git/code");
+    expect(resolveSessionDirectory("bearer", code, "   ", repoDirs)).toBe("/home/user/git/code");
+  });
+
+  test("a directory inside the repo clone is accepted for both caller types (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(resolveSessionDirectory("bearer", code, "/home/user/git/code/pkgs/", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+  });
+
+  test("paths are normalized before the containment check (issue #2664)", () => {
+    expect(resolveSessionDirectory("oidc", code, "/home/user/git/code/./pkgs/../pkgs", repoDirs)).toBe(
+      "/home/user/git/code/pkgs",
+    );
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code/../opencode", repoDirs)).toThrow(
+      ValidationError,
+    );
+    expect(() => resolveSessionDirectory("bearer", code, "/home/user/git/code/../../etc", repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("relative directories are rejected for both caller types (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "pkgs/id", repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, "./pkgs", repoDirs)).toThrow(ValidationError);
+  });
+
+  test("a sibling whose name shares the clone prefix is not inside it (issue #2664)", () => {
+    expect(() => resolveSessionDirectory("oidc", code, "/home/user/git/code-evil", repoDirs)).toThrow(ValidationError);
+  });
+});
+
+describe("session blank title/directory parsing (issue #2664)", () => {
+  test("empty and whitespace-only title/directory parse as omitted", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  ",
+      directory: "",
+    });
+    expect(r.title).toBeUndefined();
+    expect(r.directory).toBeUndefined();
+    const r2 = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "",
+      directory: " \t ",
+    });
+    expect(r2.title).toBeUndefined();
+    expect(r2.directory).toBeUndefined();
+  });
+
+  test("nonblank title and directory are preserved verbatim", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "My session",
+      directory: "/home/user/git/code/pkgs",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
   });
 });

@@ -115,6 +115,21 @@ interface TriageMessage {
   date?: string;
 }
 
+/**
+ * The day a Gmail message counts as a charge on (#2448): the triage
+ * record's local day when present, else the parsed message date.
+ * A missing or garbled date yields "" (the caller's format check then
+ * counts the message as skipped) — never a throw: isoDay on an
+ * invalid Date raises RangeError, and letting that escape here would
+ * discard the whole Gmail candidate batch for one bad message.
+ */
+export function gmailMessageDay(m: Pick<TriageMessage, "message_sent_at" | "date">): string {
+  const local = (m.message_sent_at?.user_local ?? "").slice(0, 10);
+  if (local) return local;
+  const parsed = new Date(m.date ?? "");
+  return Number.isNaN(parsed.getTime()) ? "" : isoDay(parsed);
+}
+
 const AMOUNT_RE = /\$([\d,]+\.\d{2})/;
 
 /** "Oct 25, 2026" / "2026-10-25" as a merchant is a parse failure, not a merchant. */
@@ -144,15 +159,43 @@ function merchantFromSubject(subject: string): string | undefined {
   );
 }
 
-/** Subjects that are not charges: money back, money movement, marketing. */
-function isNotChargeSubject(subject: string): boolean {
+/** Subjects that are not charges: money back, money movement, marketing,
+ * failed/declined purchase attempts, and amounts merely due (#3120: a
+ * declined alert parses like a purchase — amount + merchant via the
+ * at/was fallback — and an "amount due" subject is an outstanding
+ * invoice, not money spent). */
+export function isNotChargeSubject(subject: string): boolean {
   return (
     /cancellation|refund/i.test(subject) ||
-    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment/i.test(
+    /declined|payment failed|purchase failed|transaction failed|unsuccessful|not approved/i.test(subject) ||
+    /last payment|payment received|payment was received|payment has posted|thank you for your payment|thanks for your payment|payment is due|payment reminder|payment coming due|autopay payment|amount due|balance due/i.test(
       subject,
     ) ||
     /% off|coupon|save \d|free .* with .* purchase/i.test(subject)
   );
+}
+
+/** Body amount for a receipt whose subject carried none. Explicit
+ * paid/charged labels win; a standalone "total" label is next — word-
+ * boundaried, so the "total" inside "Subtotal" can never match it
+ * (#3121: a Subtotal-first body recorded the subtotal as the charge,
+ * and the wrong amount then defeated cross-source dedupe); any $
+ * amount in the body is the last resort. */
+export function amountFromBody(text: string): string | undefined {
+  const paid =
+    /(?:amount paid|amount charged|total charged|transaction amount)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    // Verb evidence ("You were charged $20.00", "Paid $20.00") is explicit
+    // payment confirmation too — it must win over a trailing due line
+    // (#3120, Codex P2 on PR #3193).
+    /\b(?:charged|paid)[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1] ??
+    /\btotal[:\s]*\$([\d,]+\.\d{2})/i.exec(text)?.[1];
+  if (paid !== undefined) return paid;
+  // #3120: due language is not payment evidence. An invoice body whose
+  // only amount is an amount/balance DUE (no paid/charged/total label
+  // above) must not fall through to the bare-amount fallback and become
+  // a charge candidate.
+  if (/amount due|balance due|total due|payment due/i.test(text)) return undefined;
+  return AMOUNT_RE.exec(text)?.[1];
 }
 
 async function gmailCandidates(
@@ -190,7 +233,7 @@ async function gmailCandidates(
       skipped++;
       continue;
     }
-    const at = (m.message_sent_at?.user_local ?? "").slice(0, 10) || isoDay(new Date(m.date ?? ""));
+    const at = gmailMessageDay(m);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) {
       skipped++;
       continue;
@@ -204,10 +247,7 @@ async function gmailCandidates(
           maxBuffer: 16 * 1024 * 1024,
         });
         const text = (JSON.parse(body) as { body_text?: string }).body_text ?? "";
-        amount ??=
-          /(?:amount paid|amount charged|total charged|transaction amount|total)[:\s]*\$([\d,]+\.\d{2})/i.exec(
-            text,
-          )?.[1] ?? AMOUNT_RE.exec(text)?.[1];
+        amount ??= amountFromBody(text);
         merchant ??= cleanMerchant(/\bmerchant[:\s]+([A-Za-z0-9][A-Za-z0-9 .&'*+-]{1,40})/i.exec(text)?.[1]);
       } catch {
         /* unreadable body: counted as skipped below */
@@ -257,4 +297,4 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (import.meta.main) await main();

@@ -33,6 +33,8 @@
 //! original bytes can parse it as JSON. Values with no structure-breaking
 //! character are the common case and stay unwrapped, exactly as before.
 
+use std::fmt::Display;
+
 /// Returns `true` for characters that could break a tab-separated row.
 ///
 /// Control characters cover `LF`, `CR`, `TAB`, NUL and every other C0/C1
@@ -85,6 +87,11 @@ pub fn plain_field(value: &str) -> String {
     }
     rendered.push('"');
     rendered
+}
+
+/// Formats one tab-separated row whose name field may contain untrusted text.
+pub fn tsv_row(hash: impl Display, name: &str) -> String {
+    format!("{hash}\t{}", plain_field(name))
 }
 
 #[cfg(test)]
@@ -149,5 +156,19 @@ mod tests {
         );
         assert_eq!(rendered.matches('\t').count(), 0);
         assert!(!rendered.contains('\n'));
+    }
+
+    #[test]
+    fn tsv_row_keeps_control_characters_inside_the_name_field() {
+        let row = tsv_row("hash", "x\nforged\tcolumn");
+        assert_eq!(row, format!("hash\t{}", r#""x\nforged\tcolumn""#));
+        assert_eq!(
+            row.matches('\t').count(),
+            1,
+            "only the real delimiter remains"
+        );
+        assert!(!row.contains('\n'), "the name cannot add a physical row");
+
+        assert_eq!(tsv_row("hash", "ordinary name"), "hash\tordinary name");
     }
 }

@@ -27,9 +27,22 @@ impl Invite {
     /// # Errors
     ///
     /// Fails if either key is not 64 hex characters, or the name is empty or too long.
+    /// Also fails if the name carries a control (category Cc) or format
+    /// (category Cf) character anywhere, checked on the raw name before
+    /// trimming: an edge tab or newline is refused, not trimmed away —
+    /// the name lands on the `/invite` trust prompt and is prefilled as
+    /// a petname, and petnames refuse the same characters (#1770).
     pub fn new(key: &str, node: &str, name: &str) -> Result<Self> {
         let key = hex_key(key).context("the account key")?;
         let node = hex_key(node).context("the node ID")?;
+        ensure!(
+            !name.chars().any(char::is_control),
+            "an invite name cannot contain control characters"
+        );
+        ensure!(
+            !name.chars().any(crate::petname::is_format_char),
+            "an invite name cannot contain format characters"
+        );
         let name = name.trim();
         ensure!(!name.is_empty(), "an invite needs a name");
         ensure!(
@@ -91,11 +104,11 @@ impl Invite {
             match field {
                 "key" => {
                     ensure!(key.is_none(), "duplicate key field in invite query");
-                    key = Some(value);
+                    key = Some(decode(value)?);
                 }
                 "node" => {
                     ensure!(node.is_none(), "duplicate node field in invite query");
-                    node = Some(value);
+                    node = Some(decode(value)?);
                 }
                 "name" => {
                     ensure!(name.is_none(), "duplicate name field in invite query");
@@ -107,7 +120,7 @@ impl Invite {
         let key = key.context("an invite has no key")?;
         let node = node.context("an invite has no node")?;
         let name = name.context("an invite has no name")?;
-        Self::new(key, node, &name)
+        Self::new(&key, &node, &name)
     }
 }
 
@@ -235,11 +248,11 @@ mod tests {
         let err = Invite::from_query(&format!("key={KEY}&key={other_key}&node={NODE}&name=Ann"))
             .unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
-        let err = Invite::from_query(&format!("key=invalid&key={KEY}&node={NODE}&name=Ann"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key=invalid&key={KEY}&node={NODE}&name=Ann")).unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
-        let err = Invite::from_query(&format!("key={KEY}&key=invalid&node={NODE}&name=Ann"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key={KEY}&key=invalid&node={NODE}&name=Ann")).unwrap_err();
         assert!(format!("{err:#}").contains("key"), "{err:#}");
 
         // Duplicate node (both valid, invalid first, invalid last)
@@ -254,8 +267,8 @@ mod tests {
         assert!(format!("{err:#}").contains("node"), "{err:#}");
 
         // Duplicate name
-        let err = Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=Eve"))
-            .unwrap_err();
+        let err =
+            Invite::from_query(&format!("key={KEY}&node={NODE}&name=Ann&name=Eve")).unwrap_err();
         assert!(format!("{err:#}").contains("name"), "{err:#}");
         // Invalid escapes are refused whether they occur first or last
         assert!(Invite::from_query(&format!("key={KEY}&node={NODE}&name=%zz&name=Eve")).is_err());
@@ -267,5 +280,80 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(invite.name, "Ann");
+    }
+
+    #[test]
+    fn control_characters_are_refused_before_trimming() {
+        // Embedded Cc, and Cc at the edges where trim() would
+        // otherwise have removed it silently (#1770).
+        for name in [
+            "Ann\tLee",
+            "Ann\nLee",
+            "Ann\rLee",
+            "Ann\u{7}Lee",
+            "\tAnn",
+            "Ann\n",
+            "\rAnn Lee",
+            "\u{b}Ann",
+        ] {
+            assert!(
+                Invite::new(KEY, NODE, name).is_err(),
+                "control character accepted in {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_characters_are_refused() {
+        // Representative Cf: soft hyphen, zero-width space, a bidi
+        // override, the BOM/zero-width no-break space, a tag char.
+        for name in [
+            "Ann\u{ad}Lee",
+            "Ann\u{200b}Lee",
+            "Ann\u{202e}Lee",
+            "\u{feff}Ann",
+            "Ann\u{e0041}",
+        ] {
+            assert!(
+                Invite::new(KEY, NODE, name).is_err(),
+                "format character accepted in {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn control_and_format_characters_are_refused_through_queries() {
+        // The same refusals through the percent-encoded parse paths:
+        // %09 tab, %0A newline, %0D CR, %E2%80%8B U+200B, %C2%AD
+        // U+00AD — at the edges as well as embedded.
+        for encoded in [
+            "Ann%09Lee",
+            "Ann%0ALee",
+            "Ann%0DLee",
+            "%09Ann",
+            "Ann%0A",
+            "Ann%E2%80%8BLee",
+            "%C2%ADAnn",
+        ] {
+            let query = format!("key={KEY}&node={NODE}&name={encoded}");
+            assert!(
+                Invite::from_query(&query).is_err(),
+                "encoded control/format character accepted in {encoded}"
+            );
+            assert!(
+                Invite::parse(&format!("id:invite?{query}")).is_err(),
+                "encoded control/format character accepted via parse in {encoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_spaces_still_trim() {
+        // The Cc/Cf refusal is on the raw name; plain spaces keep the
+        // long-standing trim behaviour (#1770).
+        let invite = Invite::new(KEY, NODE, "  Ann Lee  ").unwrap();
+        assert_eq!(invite.name, "Ann Lee");
+        let invite = Invite::from_query(&format!("key={KEY}&node={NODE}&name=+Ann+Lee+")).unwrap();
+        assert_eq!(invite.name, "Ann Lee");
     }
 }

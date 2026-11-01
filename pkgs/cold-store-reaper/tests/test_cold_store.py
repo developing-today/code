@@ -43,6 +43,7 @@ class FakeDrive:
         self.trashed_calls = []  # [{id, body}] from files.update PATCHes
         self.counter = 0
         self.clock = 0
+        self.page_cap = None  # optional maximum files per Drive list response
 
     def next_id(self, prefix):
         self.counter += 1
@@ -119,7 +120,8 @@ def make_handler(fake: FakeDrive):
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/drive/v3/files":
-                q = urllib.parse.parse_qs(parsed.query).get("q", [""])[0]
+                qs = urllib.parse.parse_qs(parsed.query)
+                q = qs.get("q", [""])[0]
                 name_m = re.search(r"name = '([^']+)'", q)
                 parent_m = re.search(r"'([^']+)' in parents", q)
                 out = []
@@ -148,7 +150,19 @@ def make_handler(fake: FakeDrive):
                                 "createdTime": meta.get("createdTime", ""),
                             }
                         )
-                self._send(200, {"files": out})
+                response = {"files": out}
+                if parent_m and "pageSize" in qs:
+                    page_size = int(qs["pageSize"][0])
+                    if fake.page_cap is not None:
+                        page_size = min(page_size, fake.page_cap)
+                    page_token = qs.get("pageToken", ["offset:0"])[0]
+                    offset = int(page_token.removeprefix("offset:"))
+                    response["files"] = out[offset : offset + page_size]
+                    next_offset = offset + page_size
+                    fields = qs.get("fields", [""])[0]
+                    if next_offset < len(out) and "nextPageToken" in fields:
+                        response["nextPageToken"] = f"offset:{next_offset}"
+                self._send(200, response)
                 return
             m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
             if m:
@@ -228,14 +242,56 @@ def make_handler(fake: FakeDrive):
     return Handler
 
 
+# ------------------------------------------------------------ template home
+# A fresh ColdStore home pays the full manifest-schema executescript
+# (cold_store.db) plus private-file creation — measured ~0.5s on the
+# laptop, ~1.7s on a slow VM — and ColdStoreTestBase used to pay it in
+# every setUp (#1435). Build one template home per process and copy it
+# per test instead: the schema is created once per run, while each test
+# still gets an isolated home it can mutate freely. Tests that exercise
+# first-run creation or manifest migrations build their own genuinely
+# fresh homes and never touch this fixture.
+_TEMPLATE_HOME_TMP = None
+_TEMPLATE_HOME = None
+
+
+def template_home() -> Path:
+    global _TEMPLATE_HOME_TMP, _TEMPLATE_HOME
+    if _TEMPLATE_HOME is None:
+        _TEMPLATE_HOME_TMP = tempfile.TemporaryDirectory(
+            prefix="cold-store-template-home-"
+        )
+        home = Path(_TEMPLATE_HOME_TMP.name) / "cold-store-home"
+        ColdStore(home).init()
+        _TEMPLATE_HOME = home
+    return _TEMPLATE_HOME
+
+
+def serve_fast(server) -> threading.Thread:
+    """Start serve_forever on a thread with a short shutdown poll.
+
+    The default poll_interval (0.5s) makes every tearDown's shutdown()
+    block for up to ~0.5s — with a server per test that rivals the
+    schema cost above (#1435). 0.05s keeps shutdown snappy without
+    changing what the server serves.
+    """
+    thread = threading.Thread(
+        target=lambda: server.serve_forever(poll_interval=0.05), daemon=True
+    )
+    thread.start()
+    return thread
+
+
 class ColdStoreTestBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "cold-store-home"
+        # Copy of the once-per-run template home (#1435); init() below
+        # revalidates it (a cheap no-op once the manifest exists).
+        shutil.copytree(template_home(), self.home)
         self.fake = FakeDrive()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.fake))
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self.store = ColdStore(
             self.home,
@@ -699,6 +755,12 @@ class FakeS3:
         # list_attempts counts every listing call, failed or not.
         self.list_failures = []
         self.list_attempts = 0
+        # Broken-pagination injection for LIST responses: None serves
+        # well-behaved advancing tokens; "missing" truncates with no
+        # NextContinuationToken, "empty" with an empty one, "repeat"
+        # with the token the current page was requested with (no
+        # progress). A correct client aborts; a broken one loops.
+        self.list_token_mode = None
 
     def put(self, key, body: bytes, last_modified: str):
         self.objects[key] = {"body": body, "last_modified": last_modified}
@@ -767,12 +829,19 @@ def make_s3_handler(fake: FakeS3):
                     f"<Size>{len(fake.objects[k]['body'])}</Size></Contents>"
                     for k in page
                 )
-                token = (
-                    f"<NextContinuationToken>{start + fake.page_size}"
-                    "</NextContinuationToken>"
-                    if truncated
-                    else ""
-                )
+                if not truncated:
+                    token = ""
+                elif fake.list_token_mode == "missing":
+                    token = ""
+                elif fake.list_token_mode == "empty":
+                    token = "<NextContinuationToken></NextContinuationToken>"
+                elif fake.list_token_mode == "repeat":
+                    token = f"<NextContinuationToken>{start}</NextContinuationToken>"
+                else:
+                    token = (
+                        f"<NextContinuationToken>{start + fake.page_size}"
+                        "</NextContinuationToken>"
+                    )
                 body = (
                     '<?xml version="1.0" encoding="UTF-8"?>'
                     '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
@@ -855,10 +924,7 @@ class S3TestBase(ColdStoreTestBase):
         super().setUp()
         self.s3 = FakeS3()
         self.s3_server = ThreadingHTTPServer(("127.0.0.1", 0), make_s3_handler(self.s3))
-        self.s3_thread = threading.Thread(
-            target=self.s3_server.serve_forever, daemon=True
-        )
-        self.s3_thread.start()
+        self.s3_thread = serve_fast(self.s3_server)
         self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
         self.store.s3_base = self.s3_base_url
         # Transport retries must not slow the suite down.
@@ -935,16 +1001,32 @@ class TestBackups(ColdStoreTestBase):
         self.assertEqual(len(only), 1)
         self.assertEqual(only[0]["db"], "supabase")
 
+    def test_list_backups_follows_drive_pages(self):
+        folder = self.store.ensure_folders()["db-backups/supabase"]
+        self.fake.page_cap = 2
+        names = [
+            "supabase-20260301T020000Z-export.sql",
+            "supabase-20260302T020000Z-export.sql",
+            "supabase-20260303T020000Z-export.sql",
+        ]
+        for day, name in enumerate(names, start=1):
+            self.seed_drive_file(
+                name,
+                folder,
+                created=f"2026-03-0{day}T02:00:00.000Z",
+            )
+
+        rows = self.store.list_backups("supabase")
+
+        self.assertEqual([row["name"] for row in rows], list(reversed(names)))
+
 
 class TestSyncManifest(ColdStoreTestBase):
     def setUp(self):
         super().setUp()
         self.d1 = FakeD1()
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
         a = self.write_src("a.txt", b"sync me " * 10)
         packed = self.store.pack([str(a)])
@@ -1118,6 +1200,7 @@ class TestPruneBackups(ColdStoreTestBase):
 
     def test_prune_dry_run_plan(self):
         ids = self._seed_series()
+        self.fake.page_cap = 2
         self.seed_drive_file("d1-random.sql", self.d1_folder, data=b"?")
         self.seed_drive_file("notes.txt", self.d1_folder, data=b"?")
         trashed_id = self.seed_drive_file(
@@ -1176,6 +1259,59 @@ class TestPruneBackups(ColdStoreTestBase):
             self.assertEqual(r["direction"], "trash")
         # after applying, the folder's visible set is exactly the keepers
         self.assertEqual(len(self.store.list_backups("d1")), 32)
+
+    def test_prune_apply_mid_run_failure_keeps_completed_rows(self):
+        """#2550: a failing PATCH mid-series must not roll back the
+        ledger rows of files already trashed — Drive and ledger stay
+        consistent for completed work, and a retry sees the rest."""
+        ids = self._seed_series()
+        real_http = cold_store.http_request
+        patch_count = {"n": 0}
+
+        def flaky_http(method, url, headers=None, data=None, timeout=120):
+            if method == "PATCH":
+                patch_count["n"] += 1
+                if patch_count["n"] == 2:
+                    return 500, {}, b"boom"
+            return real_http(method, url, headers=headers, data=data, timeout=timeout)
+
+        with mock.patch.object(cold_store, "http_request", flaky_http):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.prune_backups("d1", apply=True)
+
+        # exactly one file was trashed in Drive, and exactly that
+        # file's ledger row survived the failure (committed per-file)
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+        trashed_id = self.fake.trashed_calls[0]["id"]
+        trashed_name = {v: k for k, v in ids.items()}[trashed_id]
+        self.assertIn(trashed_name, self.EXPECTED_PRUNE)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual([r["ref"] for r in rows], [trashed_name])
+
+        # the unattempted candidates are still visible to a retry plan
+        plan = self.store.prune_backups("d1")[0]
+        self.assertEqual(
+            {f["name"] for f in plan["prune"]},
+            self.EXPECTED_PRUNE - {trashed_name},
+        )
+
+        # retry with a healthy Drive completes the set, no duplicates
+        self.store.prune_backups("d1", apply=True)
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), len(self.EXPECTED_PRUNE))
+        self.assertEqual({r["ref"] for r in rows}, self.EXPECTED_PRUNE)
+        self.assertEqual(
+            {c["id"] for c in self.fake.trashed_calls},
+            {ids[name] for name in self.EXPECTED_PRUNE},
+        )
 
     def test_prune_long_history_oldest_pruned(self):
         end = date(2026, 3, 31)
@@ -1242,10 +1378,7 @@ class TestBackupD1(ColdStoreTestBase):
             """
         )
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
         self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
 
     def tearDown(self):
@@ -1329,6 +1462,41 @@ class TestS3Client(S3TestBase):
         for o in objects:
             self.assertEqual(o["size"], 1)
             self.assertIsNotNone(o["last_modified"])
+
+    def _list_calls(self):
+        return [r for r in self.s3.requests if r["path"] == "/supabase-backups"]
+
+    def _put_five_for_pagination(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+
+    def test_list_pagination_missing_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "missing"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("missing or empty", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)  # aborts on page 1
+
+    def test_list_pagination_empty_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "empty"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertEqual(len(self._list_calls()), 1)
+
+    def test_list_pagination_repeated_token_aborts(self):
+        self._put_five_for_pagination()
+        self.s3.list_token_mode = "repeat"
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        self.assertIn("supabase-backups", str(ctx.exception))
+        self.assertIn("non-advancing", str(ctx.exception))
+        # Page 1 hands back token "0"; the re-request returns it again
+        # and the guard fires — two calls, never a third.
+        self.assertEqual(len(self._list_calls()), 2)
 
     def test_missing_credentials_error(self):
         env = {
@@ -1860,9 +2028,7 @@ class TestOffsetLessLastModified(EvictTestBase):
     as too-young, which is non-evictable by construction."""
 
     def _listed(self):
-        return {
-            o["key"]: o for o in self.store.s3_list_objects("supabase-backups")
-        }
+        return {o["key"]: o for o in self.store.s3_list_objects("supabase-backups")}
 
     def test_offset_less_stamp_parses_to_none(self):
         body = (
@@ -1909,9 +2075,7 @@ class TestOffsetLessLastModified(EvictTestBase):
         scan = self.scan_by_key()
         for name in ("young", "oldtimer", "evict1", "evict2"):
             self.assertEqual(scan[self.keys[name]]["verdict"], "too-young")
-        self.assertEqual(
-            scan[self.keys["unverified"]]["verdict"], "bundle-unverified"
-        )
+        self.assertEqual(scan[self.keys["unverified"]]["verdict"], "bundle-unverified")
         self.assertEqual(self.s3.deleted, [])
 
     def test_aware_stamps_unchanged_in_listing(self):
@@ -1920,6 +2084,77 @@ class TestOffsetLessLastModified(EvictTestBase):
             listed[self.keys["oldtimer"]]["last_modified"],
             datetime(2026, 6, 1, tzinfo=timezone.utc),
         )
+
+
+class TestS3ListPageValidation(unittest.TestCase):
+    """#2733: _parse_s3_list_page must fail closed with ColdStoreError.
+
+    A malformed or shape-drifted body must never escape as a raw
+    ParseError/ValueError, and a wrong-root document must never be
+    read as an empty bucket (backup + eviction plan from this list).
+    """
+
+    def _page(self, contents="", root="ListBucketResult", extra=""):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<{root} xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            f"<Name>b</Name>{extra}{contents}</{root}>"
+        ).encode()
+
+    def _entry(self, size_marker):
+        return (
+            "<Contents><Key>a.bin</Key>"
+            "<LastModified>2026-10-01T00:00:00.000Z</LastModified>"
+            f"{size_marker}</Contents>"
+        )
+
+    def test_non_xml_body_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(b'{"error": "nope"}')
+
+    def test_wrong_root_raises_cold_store_error(self):
+        body = b"<html><body>proxy error</body></html>"
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(body)
+
+    def test_non_numeric_size_raises(self):
+        for bad in ("abc", "1.5"):
+            with self.subTest(size=bad):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    cold_store._parse_s3_list_page(
+                        self._page(self._entry(f"<Size>{bad}</Size>"))
+                    )
+
+    def test_negative_size_raises(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            cold_store._parse_s3_list_page(self._page(self._entry("<Size>-5</Size>")))
+
+    def test_missing_size_keeps_default_zero(self):
+        objects, truncated, token = cold_store._parse_s3_list_page(
+            self._page(self._entry(""))
+        )
+        self.assertEqual(objects[0]["size"], 0)
+        self.assertFalse(truncated)
+        self.assertIsNone(token)
+
+    def test_valid_page_pagination_and_stamp_unchanged(self):
+        body = self._page(
+            self._entry("<Size>3</Size>"),
+            extra=(
+                "<IsTruncated>true</IsTruncated>"
+                "<NextContinuationToken>tok2</NextContinuationToken>"
+            ),
+        )
+        objects, truncated, token = cold_store._parse_s3_list_page(body)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0]["key"], "a.bin")
+        self.assertEqual(objects[0]["size"], 3)
+        self.assertEqual(
+            objects[0]["last_modified"],
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self.assertTrue(truncated)
+        self.assertEqual(token, "tok2")
 
 
 class TestOffsetLessBackupPick(S3TestBase):
@@ -1935,14 +2170,10 @@ class TestOffsetLessBackupPick(S3TestBase):
         # a later wall-clock reading, but its zone is unknown, so it
         # is not evidence of newness and must not win the pick
         self.s3.put(naive_key, naive_body, "2026-10-23T02:00:00.000")
-        self.s3.put(
-            "pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z"
-        )
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
         result = self.store.backup_supabase()
         self.assertEqual(result["source_key"], aware_key)
-        self.assertEqual(
-            result["sha256"], hashlib.sha256(aware_body).hexdigest()
-        )
+        self.assertEqual(result["sha256"], hashlib.sha256(aware_body).hexdigest())
 
 
 class TestEvictApply(EvictTestBase):
@@ -2090,12 +2321,29 @@ class TestDrillCompare(ColdStoreTestBase):
     HASH_A = "a" * 64
     HASH_B = "b" * 64
 
+    _schema_template = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # The live DB is schema-only before seeding: build the schema
+        # once per class and backup-copy it per test (#1435) instead of
+        # paying the full executescript in every setUp.
+        cls._schema_template = sqlite3.connect(":memory:")
+        cls._schema_template.executescript(cold_store.SCHEMA_PATH.read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._schema_template.close()
+        cls._schema_template = None
+        super().tearDownClass()
+
     def setUp(self):
         super().setUp()
         self.d1 = FakeD1()
         # check_same_thread=False: the HTTP handler thread runs the queries.
         self.live = sqlite3.connect(":memory:", check_same_thread=False)
-        self.live.executescript(cold_store.SCHEMA_PATH.read_text())
+        type(self)._schema_template.backup(self.live)
         self.live.executemany(
             "INSERT INTO objects (hash, size, content_type, source_bucket,"
             " source_key, first_seen, state) VALUES (?, ?, ?, ?, ?, ?, 'cold')",
@@ -2137,10 +2385,7 @@ class TestDrillCompare(ColdStoreTestBase):
         self.live.commit()
         self.d1.db = self.live
         self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
-        self.d1_thread = threading.Thread(
-            target=self.d1_server.serve_forever, daemon=True
-        )
-        self.d1_thread.start()
+        self.d1_thread = serve_fast(self.d1_server)
 
     def tearDown(self):
         self.d1_server.shutdown()
@@ -2424,8 +2669,7 @@ class TestTursoExportScript(unittest.TestCase):
         self.server = ThreadingHTTPServer(
             ("127.0.0.1", 0), make_turso_handler(self.fake)
         )
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self.thread = serve_fast(self.server)
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -2650,5 +2894,149 @@ class TestWorkerDecoder(unittest.TestCase):
         self.assertIn("PASS", proc.stdout)
 
 
+class TestD1ResponseShapes(ColdStoreTestBase):
+    """Regression (#2618): D1 response handling must not assume object
+    shapes — malformed bodies raise ColdStoreError (or fall back to raw
+    text in d1_error_message), never AttributeError."""
+
+    def _select_with_body(self, body: bytes):
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.object(
+            cold_store, "http_request", return_value=(200, {}, body)
+        ):
+            return self.store._d1_select("SELECT 1")
+
+    def test_d1_error_message_malformed_shapes_fall_back_to_raw_text(self):
+        for body in (
+            b'["not", "an", "object"]',
+            b'"just a string"',
+            b"42",
+            b'{"errors": [null]}',
+            b'{"errors": ["boom"]}',
+            b'{"errors": [{"code": 1}]}',
+        ):
+            with self.subTest(body=body):
+                message = cold_store.d1_error_message(body)
+                self.assertEqual(message, body.decode()[:200])
+
+    def test_d1_error_message_controls_unchanged(self):
+        self.assertEqual(
+            cold_store.d1_error_message(
+                b'{"success": false, "errors": [{"message": "api says no"}]}'
+            ),
+            "api says no",
+        )
+        self.assertEqual(
+            cold_store.d1_error_message(b"gateway exploded"), "gateway exploded"
+        )
+
+    def test_d1_select_non_object_payloads_raise_cold_store_error(self):
+        for body in (b'["x"]', b'"x"', b"42"):
+            with self.subTest(body=body):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self._select_with_body(body)
+
+    def test_d1_select_rejected_with_malformed_errors_is_unknown_error(self):
+        for errors in ('["nope"]', "[null]", "[]"):
+            body = ('{"success": false, "errors": ' + errors + "}").encode()
+            with self.subTest(errors=errors):
+                with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                    self._select_with_body(body)
+                self.assertIn("unknown error", str(ctx.exception))
+
+    def test_d1_select_non_object_result_entry_raises_cold_store_error(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self._select_with_body(b'{"success": true, "result": ["x"]}')
+
+    def test_d1_select_controls_unchanged(self):
+        rows = self._select_with_body(
+            b'{"success": true, "result": [{"results": [{"a": 1}]}]}'
+        )
+        self.assertEqual(rows, [{"a": 1}])
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self._select_with_body(
+                b'{"success": false, "errors": [{"message": "bad sql"}]}'
+            )
+        self.assertIn("bad sql", str(ctx.exception))
+
+    def test_sync_loop_non_object_body_raises_cold_store_error(self):
+        self.store.build_sync_statements = lambda: (
+            [{"sql": "INSERT INTO meta VALUES (?)", "params": ["x"], "table": "meta"}],
+            {"meta": {"rows": 1, "statements": 1}},
+        )
+        self.store._d1_endpoint = lambda: ("fake-token", "http://d1.invalid/query")
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake"}):
+            with mock.patch.object(
+                cold_store, "http_request", return_value=(200, {}, b'["x"]')
+            ):
+                with self.assertRaises(cold_store.ColdStoreError):
+                    self.store.sync_manifest()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestResumableUploadStalls(ColdStoreTestBase):
+    """#2797: a 308 whose Range stops advancing must not loop forever,
+    and a Range-less 308 must not count unacknowledged bytes as sent."""
+
+    def _upload_with_puts(self, put_behavior, data=b"x" * 1000):
+        blob = Path(self.tmp.name) / "blob.bin"
+        blob.write_bytes(data)
+        puts = []
+
+        def fake_http(method, url, headers=None, data=None, timeout=120):
+            if method == "POST" and "uploadType=resumable" in url:
+                return 200, {"Location": "https://upload.example/session"}, b""
+            if method == "POST":
+                # the OAuth token refresh _auth_headers performs first
+                body = json.dumps({"access_token": "tok", "expires_in": 3600})
+                return 200, {}, body.encode()
+            puts.append(headers.get("Content-Range", ""))
+            return put_behavior(len(puts), headers, data)
+
+        with mock.patch.object(cold_store, "http_request", fake_http):
+            try:
+                return puts, self.store._resumable_upload(blob, "blob.bin", "parent")
+            except cold_store.ColdStoreError as e:
+                return puts, e
+
+    def test_fixed_range_308_raises_after_bounded_puts(self):
+        puts, result = self._upload_with_puts(
+            lambda n, h, d: (308, {"Range": "bytes=0-0"}, b"")
+        )
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        # 1 advancing PUT (0 -> 1) + 3 consecutive non-advancing 308s.
+        self.assertEqual(len(puts), 4)
+
+    def test_missing_range_308_never_advances_sent(self):
+        puts, result = self._upload_with_puts(lambda n, h, d: (308, {}, b""))
+        self.assertIsInstance(result, cold_store.ColdStoreError)
+        self.assertIn("stalled", str(result))
+        self.assertEqual(len(puts), 3)
+        # Every PUT resends from the acknowledged offset 0: nothing the
+        # server did not acknowledge is ever skipped.
+        self.assertTrue(all(p.startswith("bytes 0-") for p in puts))
+
+    def test_advancing_range_308s_complete_upload(self):
+        received = {"acked": 0}
+
+        def advancing(n, h, d):
+            start = int(h["Content-Range"].split(" ")[1].split("-")[0])
+            end = start + len(d)
+            if end >= 1000:
+                return 201, {}, json.dumps({"id": "file-x"}).encode()
+            received["acked"] = min(end, received["acked"] + 100)
+            return 308, {"Range": f"bytes=0-{received['acked'] - 1}"}, b""
+
+        old_chunk = cold_store.UPLOAD_CHUNK_BYTES
+        cold_store.UPLOAD_CHUNK_BYTES = 100
+        try:
+            puts, result = self._upload_with_puts(advancing)
+        finally:
+            cold_store.UPLOAD_CHUNK_BYTES = old_chunk
+        self.assertEqual(result, "file-x")
+        starts = [int(p.split(" ")[1].split("-")[0]) for p in puts]
+        self.assertEqual(starts, [0, 100, 200, 300, 400, 500, 600, 700, 800, 900])

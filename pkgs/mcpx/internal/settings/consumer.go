@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // AutonomyLevels is the one autonomy dial, least to most

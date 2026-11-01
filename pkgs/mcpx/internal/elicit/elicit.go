@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 
 	_ "modernc.org/sqlite"
 	"os"
@@ -778,11 +778,10 @@ func Route(r Request) (Audience, string) {
 	}
 	fields := schemaFields(r.Schema)
 	for _, f := range fields {
-		lower := strings.ToLower(f.name)
-		switch {
-		case f.format == "password":
-			return ToHuman, "a password field cannot be answered by a model"
-		case containsAny(lower, "password", "secret", "token", "apikey", "api_key", "credential"):
+		if IsSensitiveField(f.name, f.format) {
+			if f.format == "password" {
+				return ToHuman, "a password field cannot be answered by a model"
+			}
 			return ToHuman, "the field " + f.name + " looks like a credential"
 		}
 	}
@@ -793,6 +792,19 @@ func Route(r Request) (Audience, string) {
 		return ToHuman, "a confirmation is consent, which is not the agent's to give"
 	}
 	return ToAgent, "the agent has the context that raised this"
+}
+
+// IsSensitiveField reports whether a form field looks like a credential:
+// declared format "password", or a name carrying a credential-shaped
+// substring. It is the one copy of the heuristics Route routes on, exported
+// so the CLI can mask the same fields in its answer review (#1678) instead
+// of growing a second, drifting copy.
+func IsSensitiveField(name, format string) bool {
+	if format == "password" {
+		return true
+	}
+	return containsAny(strings.ToLower(name),
+		"password", "secret", "token", "apikey", "api_key", "credential")
 }
 
 type field struct{ name, typ, format string }

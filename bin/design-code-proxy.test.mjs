@@ -40,12 +40,30 @@ const freePort = () => new Promise((resolve, reject) => {
 });
 
 const startStub = (name) => new Promise((resolve) => {
-  const stub = { name, mode: 'ok', calls: 0, port: 0, stop: () => {} };
+  const stub = { name, mode: 'ok', calls: 0, port: 0, remotePorts: [], stop: () => {} };
   const server = http.createServer((req, res) => {
     let bodyText = '';
     req.on('data', c => { bodyText += c; });
     req.on('end', () => {
       stub.calls += 1;
+      stub.remotePorts.push(req.socket.remotePort);
+      if (stub.mode === 'error-mid-stream') {
+        // Send a head and a partial body, then destroy the socket:
+        // the proxy's backend response errors mid-stream (#782).
+        if (bodyText.includes('"stream":true')) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          const chunk = {
+            id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 0, model: 'stub-model',
+            choices: [{ index: 0, delta: { content: `partial from ${name}` }, finish_reason: null }]
+          };
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.write('{"id":"chatcmpl-stub","partial":');
+        }
+        setTimeout(() => { res.socket.destroy(); }, 25);
+        return;
+      }
       if (stub.mode === 'quota-body') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { code: 429, message: `${name} quota`, type: 'insufficient_quota' } }));
@@ -234,4 +252,77 @@ test('streaming success is unchanged', async (t) => {
   const sse = await res.text();
   assert.match(sse, /hello from primary/);
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
+});
+
+// Keep-alive pool + response-error contracts (#768, per #782). The
+// stub records the source port of each backend connection: a reused
+// pooled socket arrives from the same port, a fresh handshake from a
+// new one.
+test('sequential requests reuse the keep-alive pool (#782)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy();
+  t.after(stop);
+  const first = await post(port);
+  assert.equal(first.status, 200);
+  await first.text();
+  const second = await post(port);
+  assert.equal(second.status, 200);
+  await second.text();
+  assert.equal(primary.calls, 2);
+  assert.equal(fallback.calls, 0);
+  assert.equal(primary.remotePorts.length, 2);
+  assert.equal(primary.remotePorts[0], primary.remotePorts[1],
+    `expected one pooled socket, saw source ports ${primary.remotePorts}`);
+});
+
+test('backend response error before headers falls back (#782)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy();
+  t.after(stop);
+  primary.mode = 'error-mid-stream';
+  // Non-stream: the proxy sends no head until the backend body is
+  // complete, so a mid-stream backend error is still "before headers"
+  // for the client and must fall back, not hang or tear down.
+  const res = await post(port);
+  assert.equal(res.status, 200);
+  const body = JSON.parse(await res.text());
+  assert.equal(body.choices[0].message.content, 'hello from fallback');
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 1);
+});
+
+test('backend response error after headers tears the client response down (#782)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy();
+  t.after(stop);
+  primary.mode = 'error-mid-stream';
+  // Stream: the head is written up front, so a mid-stream backend
+  // error is "after headers" — the client response must be destroyed
+  // promptly (its body read fails), never left hanging and never
+  // completed as if the stream had ended cleanly.
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  const startedAt = Date.now();
+  await assert.rejects(res.text());
+  // The rejection must come from the proxy tearing the response down,
+  // not from the client's own 5s abort: a proxy that simply hangs
+  // would also reject, but only at the abort deadline.
+  assert.ok(Date.now() - startedAt < 3000,
+    `client response was not torn down promptly (${Date.now() - startedAt}ms)`);
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 0);
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

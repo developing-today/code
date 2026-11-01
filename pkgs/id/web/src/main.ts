@@ -14,6 +14,8 @@ import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
+import { resolveSaveFilename } from "./save-filename";
+import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -1050,8 +1052,7 @@ async function init(): Promise<void> {
       const editorContainer = document.getElementById("editor-container");
       if (!editorContainer) return { ok: false };
 
-      const filenameEncoded = editorContainer.dataset.docId;
-      const filename = filenameEncoded ? decodeURIComponent(filenameEncoded) : null;
+      const filename = resolveSaveFilename(editorContainer.dataset);
       const hash = editorContainer.dataset.hash;
 
       if (!filename || !hash) {
@@ -1341,22 +1342,34 @@ async function init(): Promise<void> {
       if (this.autoSave) {
         this.autoSave.saveNow();
       } else if (this.collab?.editor) {
-        // Fallback: direct save if AutoSaveManager not yet initialized
-        this.saveFile().then((result) => {
-          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
-          if (!btn) return;
-          if (result.ok) {
-            btn.textContent = "saved \u2713";
-            setTimeout(() => {
-              btn.textContent = "save";
-            }, 2000);
-          } else if (!result.retryAfterMs) {
+        // Fallback: direct save if AutoSaveManager not yet initialized.
+        // saveFile() resolves with { ok: false } for handled failures, but a
+        // rejection must not go unhandled (#1494): surface it as a save error.
+        this.saveFile()
+          .then((result) => {
+            const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+            if (!btn) return;
+            if (result.ok) {
+              btn.textContent = "saved \u2713";
+              setTimeout(() => {
+                btn.textContent = "save";
+              }, 2000);
+            } else if (!result.retryAfterMs) {
+              btn.textContent = "error!";
+              setTimeout(() => {
+                btn.textContent = "save";
+              }, 2000);
+            }
+          })
+          .catch((err: unknown) => {
+            console.error("[id] Save error:", err);
+            const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+            if (!btn) return;
             btn.textContent = "error!";
             setTimeout(() => {
               btn.textContent = "save";
             }, 2000);
-          }
-        });
+          });
       }
     },
   };
@@ -1436,7 +1449,7 @@ async function init(): Promise<void> {
 
   // Ctrl+S to save, Enter to submit tags
   document.addEventListener("keydown", (event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+    if (isSaveShortcut(event)) {
       event.preventDefault();
       if (app.collab?.editor && app.autoSave) {
         app.autoSave.saveNow();

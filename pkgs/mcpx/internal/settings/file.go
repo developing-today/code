@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dezren39/mcpx/internal/refdoc"
+	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 )
 
 func mustJSON(v any) string {

@@ -34,6 +34,7 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  coverageSnapshotFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
   kaneo: {
@@ -60,6 +61,16 @@ export interface Config {
   readyForAgent: {
     baseUrl: string;
   };
+  /** Canonical HTTPS origin for the PWA + push deep links (#3316 §4):
+   * Tailscale Serve fronts the aggregator at this origin; the
+   * plain-HTTP tailnet listener is not a secure context and can
+   * never hold a service worker or a push subscription. */
+  publicOrigin: string;
+  /** Alert throat (#3676): escalation ack window + engine cadence. */
+  alerts: {
+    ackWindowMin: number;
+    tickMs: number;
+  };
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -83,15 +94,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ),
     ),
     cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
-    supabaseExportFile: s(
-      env.PM_AGG_SUPABASE_EXPORT,
-      join(homedir(), "atlas/supabase-export/latest.json"),
-    ),
+    supabaseExportFile: s(env.PM_AGG_SUPABASE_EXPORT, join(homedir(), "atlas/supabase-export/latest.json")),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
@@ -122,6 +131,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     readyForAgent: {
       baseUrl: s(env.PM_AGG_RFA_URL, "http://127.0.0.1:6056"),
+    },
+    publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
+    alerts: {
+      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      tickMs: 60_000,
     },
   };
 }

@@ -37,6 +37,9 @@
 //                                    relative to this file)
 //   OPENCODE_ROUTE_PROXY_DB          opencode.db path (default:
 //                                    ~/.local/share/opencode/opencode.db)
+//   OPENCODE_ROUTE_PROXY_NOW_MS      pin the clock (epoch ms) used for
+//                                    route window gates — tests and
+//                                    incident replay; unset = wall clock
 import { createServer } from "node:http";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -146,6 +149,7 @@ const loadConfig = () => {
     mtimeMs: st.mtimeMs,
     providers: raw.provider || {},
     routes: raw.experimental?.model_routes || raw.model_routes || {},
+    windows: raw.experimental?.model_route_windows || raw.model_route_windows || {},
     disabled: new Set(raw.disabled_providers || []),
   };
   return cfgCache;
@@ -312,11 +316,81 @@ const parseTargetRef = (ref) => {
   return { providerId: ref.slice(0, s), modelKey: ref.slice(s + 1), variant };
 };
 
-const normalizeTarget = (t) => {
-  if (typeof t === "string") return { ...parseTargetRef(t), variantMap: null };
-  if (t && typeof t.model === "string")
-    return { ...parseTargetRef(t.model), variantMap: t.variants || null };
+// Route target window gates (#3225): a target may carry
+// `window: "<name>"` or `window: { name, invert: true }`, naming a
+// window in experimental.model_route_windows
+// ({ daysOfWeek: ["mon", ...], start: "HH:MM", end: "HH:MM",
+// timezone }). The gate survives normalization — dropping it here was
+// the bug — and resolveRoute expands a gated target only while its
+// window is active (or, with invert, only while it is NOT). A gate
+// naming an unknown window never matches: fail closed, so a config
+// typo surfaces as a loud no-members route instead of silently
+// ungating the target.
+const normalizeWindowGate = (w) => {
+  if (typeof w === "string" && w) return { name: w, invert: false };
+  if (w && typeof w.name === "string" && w.name)
+    return { name: w.name, invert: w.invert === true };
   return null;
+};
+
+const normalizeTarget = (t) => {
+  if (typeof t === "string")
+    return { ...parseTargetRef(t), variantMap: null, windowGate: null };
+  if (t && typeof t.model === "string")
+    return {
+      ...parseTargetRef(t.model),
+      variantMap: t.variants || null,
+      windowGate: normalizeWindowGate(t.window),
+    };
+  return null;
+};
+
+// Clock for window evaluation. OPENCODE_ROUTE_PROXY_NOW_MS pins
+// "now" (epoch ms) for tests and incident replay; unset = wall clock.
+const nowMs = () => {
+  const pinned = Number(process.env.OPENCODE_ROUTE_PROXY_NOW_MS);
+  return Number.isFinite(pinned) && pinned > 0 ? pinned : Date.now();
+};
+
+const parseHHMM = (s) => {
+  const m = /^([0-9]{1,2}):([0-9]{2})$/.exec(typeof s === "string" ? s.trim() : "");
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+
+// Is window `win` active at `now` (epoch ms)? Day and wall time are
+// read in the window's own timezone; start inclusive, end exclusive;
+// an end at or before start wraps past midnight.
+const windowActive = (win, now) => {
+  if (!win || typeof win !== "object") return false;
+  const start = parseHHMM(win.start);
+  const end = parseHHMM(win.end);
+  if (start === null || end === null) return false;
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: win.timezone || "UTC",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(now));
+  } catch {
+    return false;
+  }
+  const get = (type) => parts.find((part) => part.type === type)?.value;
+  const day = String(get("weekday") || "").slice(0, 3).toLowerCase();
+  if (Array.isArray(win.daysOfWeek) && win.daysOfWeek.length) {
+    const days = win.daysOfWeek.map((d) => String(d).slice(0, 3).toLowerCase());
+    if (!days.includes(day)) return false;
+  }
+  const mins = Number(get("hour")) * 60 + Number(get("minute"));
+  return start <= end ? mins >= start && mins < end : mins >= start || mins < end;
+};
+
+const targetEligible = (cfg, t, now) => {
+  if (!t.windowGate) return true;
+  const active = windowActive(cfg.windows?.[t.windowGate.name], now);
+  return t.windowGate.invert ? !active : active;
 };
 
 const rotation = new Map(); // routeId -> counter
@@ -352,6 +426,7 @@ const weightedOrder = (targets, weights) => {
 // [{ providerId, modelKey, variant }]. Nested routes recurse; disabled
 // providers are skipped; cycles are cut.
 const resolveRoute = (cfg, routeId, variantIn = null) => {
+  const now = nowMs();
   const out = [];
   const expand = (rid, vIn, seen) => {
     if (seen.has(rid)) return;
@@ -361,6 +436,7 @@ const resolveRoute = (cfg, routeId, variantIn = null) => {
     let targets = (route.targets || [])
       .map(normalizeTarget)
       .filter(Boolean)
+      .filter((t) => targetEligible(cfg, t, now))
       .map((t) => ({ ...t, refBase: `${t.providerId}/${t.modelKey}` }));
     if (route.selection === "round-robin") targets = rotate(targets, rid);
     else if (route.selection === "weighted")

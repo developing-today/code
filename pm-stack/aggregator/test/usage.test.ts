@@ -3,14 +3,14 @@
 // projections, and the hub/detail renders. The sample view below
 // carries the same dated-read phrasing quota-view.md uses, trimmed.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
-import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
+import { countedEstimate, type QuotaView, type SnapshotRecord, type UsageView } from "../src/model.ts";
 import { renderQuota, renderServiceDetail, fmtMetricValue, freshnessStamp } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
-import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
+import { isSnapshotRecord, SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
 
 const VIEW = `
@@ -105,18 +105,34 @@ describe("saas extraction (Part b)", () => {
 
   test("fail-soft on an empty document", () => {
     const shells = extractSaasServices("nothing here");
-    expect(shells.length).toBe(8);
+    expect(shells.length).toBe(11);
     expect(shells.every((s) => s.measuredAt === null)).toBe(true);
+  });
+
+  test("candidates: B2, Fly.io, Baseten are explicit candidate shells, never held (#1058)", () => {
+    for (const id of ["backblaze-b2", "fly-io", "baseten"]) {
+      const s = byId.get(id)!;
+      expect(s).toBeDefined();
+      expect(s.status).toBe("candidate");
+      expect(s.metrics).toEqual([]);
+      expect(s.measuredAt).toBeNull();
+      expect(s.plan).toContain("Candidate — not held");
+    }
+  });
+
+  test("sources provenance: tracker row, baseline, quota-view section (#1058)", () => {
+    const t = byId.get("turso")!;
+    expect(t.sources?.quotaViewSection).toBe("### Turso");
+    expect(t.sources?.trackerRow).toBe("Turso");
+    expect(t.sources?.baselineDoc).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(byId.get("fly-io")!.sources?.trackerRow).toBeNull();
   });
 
   test("modal: monthly console read carries a dated used-credits value", () => {
     const view = VIEW.replace(
       "- **Usage / dates:** Percentage/pace unknown; monthly grant, exact reset/credit expiry date unknown.",
       "- **Usage / dates:** $12.50 compute credits used on 2026-10-24; monthly grant, exact reset unknown.",
-    ).replace(
-      "- **Last checked:** 2026-10-22 (Tracker).",
-      "- **Last checked:** console read 2026-10-24.",
-    );
+    ).replace("- **Last checked:** 2026-10-22 (Tracker).", "- **Last checked:** console read 2026-10-24.");
     const modal = new Map(extractSaasServices(view).map((s) => [s.id, s])).get("modal")!;
     const credits = modal.metrics.find((m) => m.id === "compute-credits")!;
     expect(credits.used).toBe(12.5);
@@ -199,8 +215,21 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     ]);
   });
 
+  test("subscriptions: a non-calendar renews date is null, a leap day is kept (#2206)", () => {
+    const wispr = (date: string) =>
+      extractSubscriptions(`### Wispr Flow
+- **Plan:** Flow Pro annual $151.91/yr charged; renews ${date}.`).find((s) => s.name === "Wispr Flow");
+    expect(wispr("2026-02-30")?.renewsAt).toBeNull();
+    expect(wispr("2026-04-31")?.renewsAt).toBeNull();
+    expect(wispr("2026-13-01")?.renewsAt).toBeNull();
+    expect(wispr("2024-02-29")?.renewsAt).toBe("2024-02-29");
+    expect(wispr("2027-10-09")?.renewsAt).toBe("2027-10-09");
+  });
+
   test("subscriptions strip is renewal-only rows from the records", () => {
-    const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
+    const subs = extractSubscriptions(
+      `${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`,
+    );
     expect(subs).toEqual([
       { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
       { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
@@ -234,7 +263,15 @@ describe("bubble rules (§1.3)", () => {
       services: [],
       payg: [
         { id: "a", label: "A", accruedUsd: null, unbilledUsd: 5, note: "", measuredAt: null, sourceClass: "estimate" },
-        { id: "b", label: "B", accruedUsd: null, unbilledUsd: 5.01, note: "", measuredAt: null, sourceClass: "estimate" },
+        {
+          id: "b",
+          label: "B",
+          accruedUsd: null,
+          unbilledUsd: 5.01,
+          note: "",
+          measuredAt: null,
+          sourceClass: "estimate",
+        },
       ],
     });
     expect(flags.filter((f) => f.kind === "payg-unbilled").map((f) => f.label)).toEqual(["B"]);
@@ -256,6 +293,30 @@ describe("snapshot store (§4)", () => {
     expect(snapshotFileFor("2026-10-25T09:38:00-05:00")).toBe("usage-2026-10.jsonl");
     expect(snapshotFileFor("2026-09-30T12:00:00Z")).toBe("usage-2026-09.jsonl");
   });
+  test("validator refuses negative numeric pct values, other units unchanged (#2346)", () => {
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", -1e9))).toBe(false);
+    expect(isSnapshotRecord(rec("2026-10-25T12:00:00Z", 0))).toBe(true);
+    expect(isSnapshotRecord({ ...rec("2026-10-25T12:00:00Z", -5), unit: "usd" })).toBe(true);
+  });
+  test("stored poisoned pct records read back through readAll never make projectPace throw (#2346)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
+    try {
+      // Written directly to the month file, bypassing append: records
+      // stored before the validator guard existed.
+      const poison = [rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)];
+      await writeFile(join(dir, "usage-2026-10.jsonl"), poison.map((r) => JSON.stringify(r)).join("\n") + "\n");
+      const all = await new SnapshotStore(dir).readAll();
+      expect(() => projectPace(all, "usage")).not.toThrow();
+      // The primary guard itself, for a poisoned set that reaches
+      // projectPace in memory: no projection, no throw.
+      const pace = projectPace(poison, "usage")!;
+      expect(pace.projectedExhaustionAt).toBeNull();
+      expect(pace.slopePerDay).toBe(0.5);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   test("append is idempotent and reads survive a fresh store instance", async () => {
     const dir = await mkdtemp(join(tmpdir(), "hub-snaps-"));
     try {
@@ -273,7 +334,15 @@ describe("snapshot store (§4)", () => {
     try {
       const store = new SnapshotStore(dir);
       await store.append([
-        { ts: "2026-10-25T12:00:00Z", serviceId: "cloudflare", metricId: "est", value: { low: 29.6, high: 45.1 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+        {
+          ts: "2026-10-25T12:00:00Z",
+          serviceId: "cloudflare",
+          metricId: "est",
+          value: { low: 29.6, high: 45.1 },
+          unit: "usd-est",
+          source: "estimate",
+          observedBy: "test",
+        },
       ]);
       const all = await store.readAll();
       expect(all[0].value).toEqual({ low: 29.6, high: 45.1 });
@@ -308,17 +377,52 @@ describe("pace + freshness (§4, §1.1)", () => {
     expect(pace.projectedPercentAtReset).toBe(80);
     expect(resetMarkers(recs, "weekly")).toHaveLength(1);
   });
+  test("pace: out-of-domain pct yields no projection and never throws (#2346)", () => {
+    // -1e9 -> -999999999 over 2 days: slope 0.5/day passes the slope
+    // gate; the unguarded extrapolation threw RangeError.
+    const poison = projectPace([rec("2026-10-22T00:00:00Z", -1e9), rec("2026-10-24T00:00:00Z", -999999999)], "weekly")!;
+    expect(poison.projectedExhaustionAt).toBeNull();
+    expect(poison.slopePerDay).toBe(0.5);
+    // -5000 -> -4999.88 over 2 days: slope 0.06/day; previously
+    // projected exhaustion in the year 2259.
+    const far = projectPace([rec("2026-10-22T00:00:00Z", -5000), rec("2026-10-24T00:00:00Z", -4999.88)], "weekly")!;
+    expect(far.projectedExhaustionAt).toBeNull();
+    // Happy-path control: 30 -> 40 over 2 days projects as before.
+    const ok = projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 40)], "weekly")!;
+    expect(ok.projectedExhaustionAt?.slice(0, 10)).toBe("2026-11-05");
+  });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
-    expect(
-      projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly"),
-    ).toBeNull();
+    expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
   });
   test("freshness: older than cadence is stale; same-day is not", () => {
     const now = new Date("2026-10-26T12:00:00Z");
     expect(freshness("2026-10-25", 7, now)).toEqual({ stale: false, ageDays: 1 });
     expect(freshness("2026-10-01", 7, now).stale).toBe(true);
     expect(freshness(null, 7, now)).toEqual({ stale: true, ageDays: null });
+  });
+  test("freshness: date-only stamps age by the Chicago calendar day (#1629)", () => {
+    // 19:30 CDT on 2026-10-25 is already 2026-10-26 in UTC. A read
+    // dated today (Chicago) is 0 days old for the whole Chicago day;
+    // the UTC-day age called it 1d old -- and stale at cadence 0 --
+    // from 19:00 Chicago onward.
+    const cdtEvening = new Date("2026-10-26T00:30:00Z");
+    expect(freshness("2026-10-25", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-25", 0, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-10-24", 7, cdtEvening)).toEqual({ stale: false, ageDays: 1 });
+    expect(freshness("2026-10-24", 0, cdtEvening)).toEqual({ stale: true, ageDays: 1 });
+    // Still today at 23:59 Chicago.
+    expect(freshness("2026-10-25", 7, new Date("2026-10-26T04:59:00Z"))).toEqual({
+      stale: false,
+      ageDays: 0,
+    });
+    // The CST evening of the same shape: 19:00 CST on 2026-01-14 is
+    // 2026-01-15 in UTC.
+    const cstEvening = new Date("2026-01-15T01:00:00Z");
+    expect(freshness("2026-01-14", 7, cstEvening)).toEqual({ stale: false, ageDays: 0 });
+    expect(freshness("2026-01-13", 7, cstEvening)).toEqual({ stale: false, ageDays: 1 });
+    // Tomorrow's Chicago date is still within the future tolerance.
+    expect(freshness("2026-10-26", 7, cdtEvening)).toEqual({ stale: false, ageDays: 0 });
   });
   test("freshness: a far-future stamp is stale with unknown age (#1568)", () => {
     const now = new Date("2026-10-26T12:00:00Z");
@@ -390,6 +494,45 @@ describe("hub renders", () => {
     const src = fixtureSource();
     const html = renderQuota(await src.quota(), src.provenance());
     expect(html).toContain("Quota + throughput");
+  });
+  test("hub sources section + candidate cards visible; detail sources block (#1058)", async () => {
+    const src = fixtureSource();
+    const usage: UsageView = {
+      services: extractSaasServices(VIEW),
+      payg: extractPaygLines(VIEW, REGISTRY),
+      charges: [],
+      attention: [],
+      domains: null,
+      subscriptions: [],
+      history: {},
+    };
+    const quota: QuotaView = { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } };
+    const html = renderQuota(quota, src.provenance(), usage);
+    expect(html).toContain("free-services-to-check.md");
+    expect(html).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    expect(html).toContain("Backblaze B2");
+    expect(html).toContain("Fly.io");
+    expect(html).toContain("Baseten");
+    expect(html).toContain("candidate");
+    const turso = usage.services.find((s) => s.id === "turso")!;
+    const detail = renderServiceDetail(turso, [], src.provenance());
+    expect(detail).toContain("Sources");
+    expect(detail).toContain("Summary (b) — Turso");
+    expect(detail).toContain("### Turso");
+    expect(detail).toContain("evidence-and-interpretation-baseline-2026-10-20.md");
+    const fly = usage.services.find((s) => s.id === "fly-io")!;
+    const flyDetail = renderServiceDetail(fly, [], src.provenance());
+    expect(flyDetail).toContain("candidate / not held");
+    // An active service with no Summary (b) row is not thereby a candidate:
+    // ownership is never inferred from a missing tracker row (Codex, PR #3677).
+    const rowless = {
+      ...turso,
+      sources: turso.sources ? { ...turso.sources, trackerRow: null } : turso.sources,
+    };
+    expect(rowless.status).toBe("active");
+    const rowlessDetail = renderServiceDetail(rowless, [], src.provenance());
+    expect(rowlessDetail).toContain("none — no Summary (b) row");
+    expect(rowlessDetail).not.toContain("candidate / not held");
   });
   test("service detail: full metrics, chart, reads, conflicts", async () => {
     const src = fixtureSource();

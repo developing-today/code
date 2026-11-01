@@ -159,6 +159,10 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
+    /// Serializes upload name resolution, tag assignment and metadata writes
+    /// across clones of this state. Independently constructed states, other
+    /// processes and non-upload tag writers do not participate in this lock.
+    pub(crate) upload_name_lock: Arc<Mutex<()>>,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
     /// Node-signed event log used to publish durable document revisions.
@@ -238,6 +242,7 @@ impl AppState {
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
+            upload_name_lock: Arc::new(Mutex::new(())),
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
             local_events,
             world: None,
@@ -389,7 +394,10 @@ mod tests {
         limiter.record("a.txt").await;
         let remaining = limiter.check("a.txt").await.unwrap_err();
         assert!(remaining <= Duration::from_secs(5) && !remaining.is_zero());
-        assert!(limiter.check("b.txt").await.is_ok(), "other files are not limited");
+        assert!(
+            limiter.check("b.txt").await.is_ok(),
+            "other files are not limited"
+        );
     }
 
     #[tokio::test]
@@ -410,7 +418,10 @@ mod tests {
         let limiter = SaveRateLimiter::new(Duration::from_millis(60));
         limiter.record("a.txt").await;
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(limiter.check("a.txt").await.is_ok(), "the cooldown has lapsed");
+        assert!(
+            limiter.check("a.txt").await.is_ok(),
+            "the cooldown has lapsed"
+        );
         assert!(limiter.last_save.lock().await.is_empty());
     }
 

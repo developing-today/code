@@ -712,11 +712,28 @@ in
   # proxy, per the normal flake service pattern (cf. mcpx/openchamber).
 
   # CLI proxy workroots (muse / commandcode / claude-code): the three
-  # units below point their *_PROXY_WORKDIR overrides at the shared
-  # state dir ~/.local/state/cli-proxies, so runtime session state
-  # (warm-session maps, per-conversation workdirs) lives outside the
-  # checkout. The scripts' default (bin/work inside ~/code) dirtied
-  # the primary checkout with every session and blocked pm-git-sync.
+  # units below point their *_PROXY_WORKDIR overrides at per-proxy
+  # subtrees of the state dir ~/.local/state/cli-proxies
+  # (cli-proxies/commandcode, cli-proxies/claude-code,
+  # cli-proxies/muse), so runtime session state (warm-session maps,
+  # per-conversation workdirs) lives outside the checkout. The
+  # scripts' default (bin/work inside ~/code) dirtied the primary
+  # checkout with every session and blocked pm-git-sync. The subtrees
+  # are per-proxy (#2785): commandcode and claude-code derive identical
+  # sessions/<sha256(key)[:16]> workdirs for overlapping keys, and
+  # muse uses its workroot as the session cwd/workspaceRoot, so one
+  # shared root let the proxies mutate each other's session state.
+  # Only the workroots moved: pre-#2785 state under the shared root is
+  # left in place (unattributable between the proxies by construction)
+  # and each proxy re-warms fresh state in its own subtree.
+  #
+  # The commandcode + claude-code units additionally pin their shared
+  # key->session map via *_PROXY_SESSION_FILE to
+  # ~/.local/state/cli-proxies/sessions.json (#3067): that map was
+  # anchored to the scripts' own directory (bin/sessions.json) rather
+  # than the workroot, so the #2782 move missed it and the primary
+  # checkout kept dirtying. Both units MUST name the same file -- the
+  # two proxies share one map (mirrored key space).
 
   # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
   # Provider API rejects the Go plan, so OpenCode talks to the CLI via
@@ -749,7 +766,8 @@ in
       Environment = [
         "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
         "COMMANDCODE_PROXY_HOST=127.0.0.1"
-        "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
+        "COMMANDCODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/commandcode"
+        "COMMANDCODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
         "COMMANDCODE_PROXY_MAX_TURNS=1"
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
@@ -778,7 +796,8 @@ in
       Environment = [
         "CLAUDE_CODE_PROXY_PORT=${toString claudeCodeProxyPort}"
         "CLAUDE_CODE_PROXY_HOST=127.0.0.1"
-        "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
+        "CLAUDE_CODE_PROXY_WORKDIR=%h/.local/state/cli-proxies/claude-code"
+        "CLAUDE_CODE_PROXY_SESSION_FILE=%h/.local/state/cli-proxies/sessions.json"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -815,7 +834,7 @@ in
       Environment = [
         "MUSE_PROXY_PORT=${toString museProxyPort}"
         "MUSE_PROXY_HOST=127.0.0.1"
-        "MUSE_PROXY_WORKDIR=%h/.local/state/cli-proxies"
+        "MUSE_PROXY_WORKDIR=%h/.local/state/cli-proxies/muse"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -1101,6 +1120,12 @@ in
   # doc/2026-10-26T21-18-21Z_feature_t3code-v2-integration/ for the
   # coexistence line with OpenChamber.
   #
+  # --tailscale-serve-port 8443 is load-bearing (dezren39/nix#1279): without
+  # it t3 configures Tailscale Serve on the default HTTPS port 443, which on
+  # this host belongs to the PM stack aggregator (127.0.0.1:4870) -- every
+  # t3code (re)start stole :443 back (hit twice on 2026-10-31). 8443 is
+  # T3 Code's tailnet port; :443 must stay with the aggregator.
+  #
   # --tailscale-serve is a first-class upstream flag ("Configure Tailscale Serve
   # to expose this backend over HTTPS on the Tailnet"), so no tunnel, no
   # reverse proxy and no public exposure: the listener stays on loopback and
@@ -1123,7 +1148,7 @@ in
     Service = {
       # `serve` rather than `start`: start opens a browser, which is meaningless
       # for a background unit.
-      ExecStart = "${latestCli.t3}/bin/t3 serve --tailscale-serve --no-browser";
+      ExecStart = "${latestCli.t3}/bin/t3 serve --tailscale-serve --tailscale-serve-port 8443 --no-browser";
       Restart = "on-failure";
       RestartSec = 5;
       # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).

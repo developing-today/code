@@ -593,3 +593,46 @@ fn test_search_by_subject_kind_matches_only_events_of_that_kind() {
     .unwrap();
     assert!(hits.is_empty());
 }
+
+#[test]
+fn test_search_terms_without_kind_succeeds_even_when_subject_event_is_missing() {
+    let mut author = Writer::new(1);
+    // Subject is a raw hash whose event was never delivered to the store.
+    let uningested_subject = Hash::digest(b"nonexistent-event-subject");
+    let on_nonexistent = author.set(uningested_subject, "city", Some("Seattle"), vec![]);
+
+    let (_dir, mut store) = open();
+    deliver(&mut store, &on_nonexistent);
+
+    // Verify the subject's event is indeed missing in the store.
+    assert!(store.event_by_id(&uningested_subject).unwrap().is_none());
+
+    // Searching by name/value or author must succeed without kind terms.
+    let a_key = *author.key.verifying_key().as_bytes();
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::Name {
+                name: "city",
+                value: ValueMatch::Exact("Seattle"),
+            },
+            Term::Author(a_key),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        shape(&hits),
+        vec![(uningested_subject, vec![on_nonexistent.id])]
+    );
+
+    // Empty term set must also succeed without querying subject kinds.
+    let hits = search_store_terms(&store, &[]).unwrap();
+    assert_eq!(
+        shape(&hits),
+        vec![(uningested_subject, vec![on_nonexistent.id])]
+    );
+
+    // Adding a kind term requires resolving the kind, so the uningested subject won't match.
+    let hits = search_store_terms(&store, &[Term::SubjectKind(DOCUMENT_KIND)]).unwrap();
+    assert!(hits.is_empty());
+}

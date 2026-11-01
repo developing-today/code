@@ -9,6 +9,7 @@ Short answers here; the long ones live in the pages each answer links to. Every
 question keeps the wording it was written in.
 
 <a id="do-you-like-mcp"></a>
+
 ## "so why'd you get rid of all the mcp and then make one, do you like mcp or not"
 
 We like MCP fine. What we got rid of is tool schemas sitting in the model's
@@ -24,6 +25,7 @@ one tool that matters.
 More: [the story](./story.md).
 
 <a id="opencode-code-mode"></a>
+
 ## "i mean, opencodemode is right there"
 
 It is, and not only in v2. opencode v1 ships code mode behind
@@ -40,12 +42,24 @@ loop, and use mcpx for stateful servers and everything outside a turn.
 More: [the opencode plugin](./opencode-plugin.md).
 
 <a id="is-it-safe"></a>
+
 ## "is it safe?", no.
 
 No. Scripts run on a real runtime with your authority — filesystem, network,
-subprocesses. `script.permissions` defaults to `all`, and the narrower profiles
-(`net`, `read`, `read-net`, `strict`) apply only on Deno: bun and node run with
-the user's own authority whatever you ask for. The daemon API is
+subprocesses. `script.permissions` defaults to `all`. What a narrower profile
+does depends on the runtime, and the defaults say so exactly
+(`internal/defaults/defaults.json`): on Deno the profiles become Deno
+permission flags, and on node `readnet` / `read-net` are enforced with
+`--permission --allow-fs-read=*`. `net`, `read`, and `strict` are defined for
+Deno only. Ask for a named profile that has no entry for the runtime you
+chose and mcpx refuses to run the script at all — "permission profile %q
+defines no flags for %s, so %s cannot enforce it"
+(`internal/runner/runtimes.go`) — it never runs the script unenforced and
+pretends otherwise. Bun has no permission model, so no narrower profile is
+defined for it and every narrower ask there is refused the same way. The
+profiles that are defined for bun and node — `all`, `none`, `off`,
+`unsandboxed` — carry an empty flag list by design: defined, and
+deliberately unrestricted, not enforcement. The daemon API is
 unauthenticated. It listens on loopback and on a socket only you can open, and
 binding it wider prints a warning. `mcpx prompt` hands you a generated script
 instead of running it, because generated code runs with your credentials. So
@@ -56,6 +70,7 @@ answer.
 More: [the script contract](../AGENTS.md).
 
 <a id="why"></a>
+
 ## "but why would you.."
 
 Three reasons, then the history. Context cost: tool schemas sit in every
@@ -71,6 +86,7 @@ actually need (more than one Chrome)".
 More: [the assessment](../ASSESSMENT.md).
 
 <a id="examples"></a>
+
 ## "but can i get some examples?"
 
 Yes. `examples/` holds short scripts that CI runs on every change, against a

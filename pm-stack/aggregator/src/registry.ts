@@ -98,7 +98,11 @@ export function parseLaunchRecords(jsonl: string): SessionRecord[] {
     try {
       const parsed: unknown = JSON.parse(t);
       if (typeof parsed === "object" && parsed !== null && typeof (parsed as ClaudeLaunchRecord).id === "string") {
-        out.push(recordFromLaunch(parsed as ClaudeLaunchRecord));
+        // #2376: route through the same hygiene filter as the store/feed
+        // paths — a launch record carrying a non-string lastSeenAt or
+        // startedAt must not reach mergeRecords' string-only sort.
+        const rec = recordFromLaunch(parsed as ClaudeLaunchRecord);
+        if (isSessionRecord(rec)) out.push(rec);
       }
     } catch {
       /* a torn final line must not lose the registry */
@@ -151,7 +155,24 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
 export function isSessionRecord(v: unknown): v is SessionRecord {
   if (typeof v !== "object" || v === null) return false;
   const r = v as Partial<SessionRecord>;
-  return typeof r.id === "string" && typeof r.source === "string" && typeof r.label === "string";
+  // #2376: mergeRecords compares lastSeenAt with string-only methods
+  // (localeCompare / >=), so a present-but-non-string timestamp passes
+  // this filter today and throws TypeError once the sort reaches it.
+  // Timestamps must be string-or-absent; a poisoned record is rejected,
+  // not coerced (the #2347 load-filter precedent).
+  return (
+    typeof r.id === "string" &&
+    typeof r.source === "string" &&
+    typeof r.label === "string" &&
+    (r.lastSeenAt === undefined || typeof r.lastSeenAt === "string") &&
+    (r.startedAt === undefined || typeof r.startedAt === "string") &&
+    // #2408: mergeRecords spreads taskRefs as an array, so a present-but-
+    // non-array taskRefs throws TypeError on the duplicate-key merge (and
+    // a string silently spreads into single-character refs). The validator
+    // owns the rule, per the #2347/#2376 precedent above: taskRefs must be
+    // absent or an array of strings; anything else rejects the record.
+    (r.taskRefs === undefined || (Array.isArray(r.taskRefs) && r.taskRefs.every((t) => typeof t === "string")))
+  );
 }
 
 /** Standing fleet identities + one per registry session, for comment authorship. */

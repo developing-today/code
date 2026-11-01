@@ -7,8 +7,11 @@ import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectPoolItem } from "./projects.ts";
+import { isRepoCensus, type RepoCensus } from "./coverage.ts";
+import { arrayOf, isFiniteNumber, isIsoDate, isRecord, isStringArray, isTimestampNotFuture } from "./validate.ts";
 import type {
   AaFeedSection,
+  BurnSegment,
   ChargeRow,
   DnsSection,
   GoalMeasurement,
@@ -17,7 +20,9 @@ import type {
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
+  QuotaPool,
   QuotaView,
+  QuotaWindow,
   SaasService,
   SessionFeedEntry,
   SessionRecord,
@@ -33,6 +38,20 @@ export interface FleetFeed {
    *  in feeds written before the drift check existed. */
   checkout?: CheckoutDrift;
   quota: QuotaView;
+  /** Element drops loadFeed's quota sanitization made (#2429), set
+   * only on feeds returned by loadFeed; absent on raw parsed feeds. */
+  quotaDropped?: { pools: number; windows: number; burn: number };
+  /** Element drops loadFeed's chargesAttention sanitization made
+   * (#2439), set only when at least one entry dropped; absent on raw
+   * parsed feeds and on feeds whose entries all survived. */
+  chargesAttentionDropped?: number;
+  /** Subscription rows loadFeed's sanitization dropped (#2446), set
+   * only when at least one row (or a non-array section) was dropped;
+   * absent on raw parsed feeds and on clean loads. */
+  subscriptionsDropped?: number;
+  /** Rows loadFeed's charges sanitization dropped (#2445), set only
+   * when drops occurred; absent on raw parsed feeds and clean loads. */
+  chargesDropped?: number;
   /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
@@ -69,7 +88,12 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
-  /** AA cost explorer section: the ainventory (AA workbook) data read
+  /** Project #4 coverage census (#1220): per-repo open-issue and
+   * gate-label counts from the collector's Search API reads, embedded
+   * beside the projects section. Absent when the collector had no
+   * GitHub token or the census failed. */
+  coverage?: RepoCensus[];
+  /** AA cost explorer section: the ainventory (AA import) data read
    * by the collector from Supabase, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
    * ({status:"absent", reason}) when Supabase was unreachable — the
@@ -134,7 +158,7 @@ export function orchestrationSectionProblem(v: unknown): string | null {
   if (typeof v !== "object" || v === null) return "not an object";
   const s = v as Partial<OrchestrationSection>;
   if (s.version !== 1) return "version";
-  if (typeof s.generatedAt !== "string" || !Number.isFinite(Date.parse(s.generatedAt))) return "generatedAt";
+  if (!isIsoDate(s.generatedAt)) return "generatedAt";
   if (typeof s.runId !== "string") return "runId";
   if (!isProvenance(s.provenance)) return "provenance";
   if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
@@ -246,24 +270,266 @@ export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): Proje
   return raw.filter(isProjectPoolItem);
 }
 
+/** Whether the feed actually carries a projects section. The collector
+ * omits the section entirely when its Project read fails, so presence
+ * is the availability signal: an absent (or malformed) section means
+ * the pool is unavailable, which coverage must not render as zero
+ * items (#1220, PR #3309). A present array is available even when
+ * individual malformed items drop in poolFromFeed. */
+export function poolAvailableFromFeed(feed: Partial<FleetFeed> | null | undefined): boolean {
+  return Array.isArray(feed?.projects);
+}
+
+/** Fail-soft read of the coverage census from a parsed feed: absent
+ * or malformed sections yield null (the panel then renders backlog
+ * counts as unavailable), malformed rows drop individually. */
+export function coverageFromFeed(feed: Partial<FleetFeed> | null | undefined): RepoCensus[] | null {
+  const raw = feed?.coverage;
+  if (raw === undefined) return null;
+  if (!Array.isArray(raw)) return null;
+  const rows = raw.filter(isRepoCensus);
+  return rows.length ? rows : null;
+}
+
+/** One quota window as the renderers dereference it (#2429): `limit`
+ * is read arithmetically by windowPercent, `used` is rendered, and a
+ * non-object element crashes both renderQuota and buildAttentionFlags. */
+export function isQuotaWindow(v: unknown): v is QuotaWindow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" &&
+    (v.unit === "requests" || v.unit === "tokens" || v.unit === "usd" || v.unit === "messages" || v.unit === "other") &&
+    (v.limit === null || isFiniteNumber(v.limit)) &&
+    isFiniteNumber(v.used) &&
+    (v.resetsAt === null || typeof v.resetsAt === "string") &&
+    (v.percent === undefined || isFiniteNumber(v.percent))
+  );
+}
+
+const QUOTA_STATES = ["healthy", "near", "walled", "error", "stale"];
+
+/** One quota pool whose own shape is safe to hand to the renderers
+ * (#2429): an object with a `windows` ARRAY — a non-array windows value
+ * must never be iterated as a collection of windows (it fabricated
+ * attention flags). Window ELEMENTS are filtered by sanitizeQuotaView,
+ * so a pool survives one bad window. Credential rows, when present,
+ * must at least be records holding a windows array; their elements are
+ * filtered the same way. */
+export function isQuotaPool(v: unknown): v is QuotaPool {
+  if (!isRecord(v)) return false;
+  if (typeof v.id !== "string" || typeof v.provider !== "string" || typeof v.plan !== "string") return false;
+  if (typeof v.state !== "string" || !QUOTA_STATES.includes(v.state)) return false;
+  if (!Array.isArray(v.windows)) return false;
+  if (v.credentials !== undefined) {
+    if (!Array.isArray(v.credentials)) return false;
+    for (const row of v.credentials) {
+      if (!isRecord(row) || !Array.isArray(row.windows)) return false;
+    }
+  }
+  return true;
+}
+
+/** One historical burn segment as renderQuota maps it (#2429). */
+export function isBurnSegment(v: unknown): v is BurnSegment {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.provider === "string" &&
+    typeof v.pool === "string" &&
+    typeof v.from === "string" &&
+    typeof v.to === "string" &&
+    isFiniteNumber(v.tokens)
+  );
+}
+
+/** One unmatched-charge entry as the live source dereferences it
+ * (#2439): merchant and at are interpolated, amountUsd is formatted
+ * with toFixed and used as a severity, so those three must be a
+ * string, a finite number, and a string. normalized/source are not
+ * gate-required: the consumer tolerates any source value and never
+ * dereferences normalized. */
+export function isUnmatchedCharge(v: unknown): v is UnmatchedCharge {
+  if (!isRecord(v)) return false;
+  return typeof v.merchant === "string" && isFiniteNumber(v.amountUsd) && typeof v.at === "string";
+}
+
+/** One charges-evidence row as the /quota charges strip renders it
+ * (#2445): a record with string at/label/method/source and a
+ * finite-number amountUsd (ChargeRow, model.ts). Built on the shared
+ * validate.ts primitives, like the quota element validators above. */
+export function isChargeRow(v: unknown): v is ChargeRow {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.at === "string" &&
+    typeof v.label === "string" &&
+    isFiniteNumber(v.amountUsd) &&
+    typeof v.method === "string" &&
+    typeof v.source === "string"
+  );
+}
+
+/** The choices block renderQuota dereferences (hasHeadroom et al.). */
+function isQuotaChoices(v: unknown): boolean {
+  if (!isRecord(v)) return false;
+  return isStringArray(v.hasHeadroom) && isStringArray(v.burnBeforeReset) && isStringArray(v.doNotStart);
+}
+
+export interface QuotaSanitization {
+  view: QuotaView;
+  droppedPools: number;
+  droppedWindows: number;
+  droppedBurn: number;
+}
+
+/** Drop-and-count sanitization of a gate-passed quota section (#2429,
+ * following poolFromFeed's per-element pattern, built on the shared
+ * arrayOf primitive from #2577): malformed pools and burn segments
+ * drop individually, malformed windows drop out of their pool, and the
+ * well-formed remainder renders. The counts ride out on the result so
+ * the caller surfaces them, never swallows them. */
+export function sanitizeQuotaView(quota: QuotaView): QuotaSanitization {
+  const pools = arrayOf(isQuotaPool)(quota.pools);
+  let droppedWindows = 0;
+  const keptPools: QuotaPool[] = (pools?.values ?? []).map((pool) => {
+    const windows = arrayOf(isQuotaWindow)(pool.windows);
+    droppedWindows += windows?.dropped ?? 0;
+    let out: QuotaPool = { ...pool, windows: windows?.values ?? [] };
+    if (pool.credentials !== undefined) {
+      const rows = pool.credentials.map((row) => {
+        const rowWindows = arrayOf(isQuotaWindow)(row.windows);
+        droppedWindows += rowWindows?.dropped ?? 0;
+        return { ...row, windows: rowWindows?.values ?? [] };
+      });
+      out = { ...out, credentials: rows };
+    }
+    return out;
+  });
+  const burn = arrayOf(isBurnSegment)(quota.burn);
+  const droppedPools = pools?.dropped ?? 0;
+  const droppedBurn = burn?.dropped ?? 0;
+  // Guidance must describe the surviving usable pools only: the
+  // retained choices were computed over the pre-sanitization pools,
+  // and computeChoices() (quota-guidance.ts) gives no guidance for a
+  // pool with no windows — so filter every list to kept pools that
+  // still have windows. A pool whose data was discarded must not
+  // stay recommended under hasHeadroom or burnBeforeReset.
+  const usable = new Set(keptPools.filter((p) => p.windows.length > 0).map((p) => p.id));
+  const choices = {
+    hasHeadroom: quota.choices.hasHeadroom.filter((id) => usable.has(id)),
+    burnBeforeReset: quota.choices.burnBeforeReset.filter((id) => usable.has(id)),
+    doNotStart: quota.choices.doNotStart.filter((id) => usable.has(id)),
+  };
+  const view: QuotaView = { ...quota, pools: keptPools, burn: burn?.values ?? [], choices };
+  // Surface the loss on the view itself (its consumers project the
+  // view, e.g. /api/quota.json), not only on the feed wrapper.
+  if (droppedPools + droppedWindows + droppedBurn > 0) {
+    view.dropped = { pools: droppedPools, windows: droppedWindows, burn: droppedBurn };
+  }
+  return {
+    view,
+    droppedPools,
+    droppedWindows,
+    droppedBurn,
+  };
+}
+
 export function isFleetFeed(v: unknown): v is FleetFeed {
   if (typeof v !== "object" || v === null) return false;
   const f = v as Partial<FleetFeed>;
+  if (!(typeof f.quota === "object" && f.quota !== null)) return false;
+  const q = f.quota as QuotaView;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" &&
-    Number.isFinite(Date.parse(f.generatedAt)) &&
-    typeof f.quota === "object" &&
-    f.quota !== null &&
-    Array.isArray((f.quota as QuotaView).pools) &&
-    Array.isArray(f.attention)
+    // A generatedAt implausibly in the future is invalid, not
+    // "maximally fresh" (#2242, via the shared primitive).
+    isTimestampNotFuture(f.generatedAt) &&
+    Array.isArray(q.pools) &&
+    // burn and choices are mandatory in QuotaView and dereferenced
+    // unguarded by renderQuota (#2429): a feed without them is an old
+    // collector's shape and is rejected whole, like other invalid
+    // feeds, rather than crashing /quota.
+    Array.isArray(q.burn) &&
+    isQuotaChoices(q.choices) &&
+    Array.isArray(f.attention) &&
+    // chargesAttention is optional, but a present non-array value is
+    // a shape failure, not data (#2439): the live source maps it
+    // unguarded, so — like burn/choices above — the feed is rejected
+    // whole. Malformed ELEMENTS inside an array are loadFeed's
+    // drop-and-count concern, not the gate's.
+    (f.chargesAttention === undefined || Array.isArray(f.chargesAttention))
   );
+}
+
+export interface SubscriptionSanitization {
+  /** Sanitized rows, or undefined when the section is absent (or was
+   * dropped whole) — consumers already treat absence as an empty strip. */
+  rows?: { name: string; plan: string; renewsAt: string | null }[];
+  dropped: number;
+}
+
+/** One subscription row safe to hand to the renderers (#2446): the
+ * strip maps esc(s.name)/esc(s.plan) and reads renewsAt unguarded, so
+ * a null row or a non-string field 500s /quota and is served verbatim
+ * by /api/quota.json. */
+export function isSubscriptionRow(v: unknown): v is { name: string; plan: string; renewsAt: string | null } {
+  if (!isRecord(v)) return false;
+  return (
+    typeof v.name === "string" && typeof v.plan === "string" && (typeof v.renewsAt === "string" || v.renewsAt === null)
+  );
+}
+
+/** Drop malformed subscription rows at the loadFeed boundary (#2446,
+ * the #2429 pattern): the section is optional and unvalidated by
+ * isFleetFeed, so element-level damage is dropped here rather than
+ * rejecting the whole feed for one bad row. A non-array section is
+ * dropped whole (treated as absent, counted as one drop). */
+export function sanitizeSubscriptions(v: unknown): SubscriptionSanitization {
+  if (v === undefined) return { dropped: 0 };
+  if (!Array.isArray(v)) return { dropped: 1 };
+  const rows = v.filter(isSubscriptionRow);
+  return { rows, dropped: v.length - rows.length };
 }
 
 export async function loadFeed(path: string): Promise<FleetFeed | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isFleetFeed(parsed) ? parsed : null;
+    if (!isFleetFeed(parsed)) return null;
+    // The gate pins the section-level shape; element-level damage is
+    // dropped here so every loadFeed consumer (live source, server)
+    // sees only renderer-safe pools/windows (#2429). Drop counts are
+    // attached to the feed so they are visible, not swallowed.
+    const san = sanitizeQuotaView(parsed.quota);
+    // Same drop-and-count treatment for chargesAttention elements
+    // (#2439): the gate has already pinned the section to array-or-
+    // absent, so arrayOf cannot return null here; malformed entries
+    // drop individually and well-formed siblings still surface.
+    const charges =
+      parsed.chargesAttention === undefined ? undefined : arrayOf(isUnmatchedCharge)(parsed.chargesAttention);
+    const subs = sanitizeSubscriptions(parsed.subscriptions);
+    // Charges rows get the same drop-and-count treatment at this same
+    // shared gate (#2445): the section is optional, so absence stays
+    // absent; a non-array section drops whole (counted as one dropped
+    // section) instead of silently emptying the charges strip or
+    // crashing a consumer; malformed rows drop individually. The
+    // count rides out on the feed when drops occur, never swallowed.
+    let chargesPart: { charges?: ChargeRow[]; chargesDropped?: number } = {};
+    if (parsed.charges !== undefined) {
+      const rows = arrayOf(isChargeRow)(parsed.charges);
+      if (rows === null) {
+        chargesPart = { charges: [], chargesDropped: 1 };
+      } else {
+        chargesPart = { charges: rows.values, ...(rows.dropped > 0 ? { chargesDropped: rows.dropped } : {}) };
+      }
+    }
+    return {
+      ...parsed,
+      quota: san.view,
+      quotaDropped: { pools: san.droppedPools, windows: san.droppedWindows, burn: san.droppedBurn },
+      ...(charges ? { chargesAttention: charges.values } : {}),
+      ...(charges && charges.dropped > 0 ? { chargesAttentionDropped: charges.dropped } : {}),
+      subscriptions: subs.rows,
+      ...(subs.dropped > 0 ? { subscriptionsDropped: subs.dropped } : {}),
+      ...chargesPart,
+    };
   } catch {
     return null;
   }

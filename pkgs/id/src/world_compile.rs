@@ -27,7 +27,9 @@ pub const MAX_COMPILE_FILE_BYTES: usize = 128 * 1024;
 pub const MAX_COMPILE_TOTAL_BYTES: usize = 256 * 1024;
 /// Wall-clock budget per compilation.
 pub const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
-/// Largest captured compiler output, per stream, in bytes.
+/// Largest captured compiler stderr, in bytes. Only this tail is ever
+/// used for diagnostics, so the reader retains nothing more; compiler
+/// stdout is not captured at all (it goes to /dev/null).
 const MAX_CAPTURE_BYTES: usize = 64 * 1024;
 /// Initial linear memory for Wasm apps: 129 pages, inside the sandbox's 16 MiB.
 /// Roc's default (1024 pages) would trap when the module instantiates.
@@ -118,11 +120,19 @@ fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
 pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String]) -> Result<()> {
     for (name, content) in &spec.files {
         for line in content.lines() {
-            let Some(rest) = line.trim_start().strip_prefix("import ") else {
+            // Token-based recognition: any run of whitespace (spaces, tabs)
+            // between the import keyword and the path is the same import to
+            // Roc (roc fmt normalizes it), so a literal single-space prefix
+            // would let ungranted imports through (#2095).
+            let mut tokens = line.trim_start().split_whitespace();
+            if tokens.next() != Some("import") {
+                continue;
+            }
+            let Some(path_token) = tokens.next() else {
                 continue;
             };
-            let path = rest
-                .split(|c: char| c.is_whitespace() || matches!(c, '[' | '{' | '('))
+            let path = path_token
+                .split(|c: char| matches!(c, '[' | '{' | '('))
                 .next()
                 .unwrap_or_default();
             for segment in path.split('.') {
@@ -264,7 +274,7 @@ pub async fn compile(
             .env("HOME", &job_dir)
             .env("XDG_CACHE_HOME", job_dir.join("cache"))
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::piped());
         #[cfg(unix)]
         {
@@ -277,22 +287,13 @@ pub async fn compile(
             }
         }
         let mut child = command.spawn().context("spawn the Roc compiler")?;
-        let mut stdout = child.stdout.take().context("compiler stdout")?;
         let mut stderr = child.stderr.take().context("compiler stderr")?;
-        let readers = (
-            std::thread::spawn(move || {
-                let mut out = Vec::new();
-                use std::io::Read;
-                let _ = stdout.read_to_end(&mut out);
-                out
-            }),
-            std::thread::spawn(move || {
-                let mut err = Vec::new();
-                use std::io::Read;
-                let _ = stderr.read_to_end(&mut err);
-                err
-            }),
-        );
+        // Drain stderr on a thread while polling the deadline below. The
+        // reader keeps only the last MAX_CAPTURE_BYTES: a spewing compiler
+        // can neither OOM this process nor block on a full pipe, and the
+        // diagnostics tail is the only part ever consumed.
+        let stderr_reader =
+            std::thread::spawn(move || read_capture_tail(&mut stderr, MAX_CAPTURE_BYTES));
         let deadline = std::time::Instant::now() + timeout;
         let status = loop {
             if let Some(status) = child.try_wait().context("wait for the compiler")? {
@@ -305,11 +306,10 @@ pub async fn compile(
             }
             std::thread::sleep(Duration::from_millis(25));
         };
-        let captured_err = readers.1.join().unwrap_or_default();
-        let captured_out = readers.0.join().unwrap_or_default();
-        Ok((status, captured_err, captured_out, stable_arguments))
+        let captured_err = stderr_reader.join().unwrap_or_default();
+        Ok((status, captured_err, stable_arguments))
     });
-    let (status, captured_err, _captured_out, arguments) = run
+    let (status, captured_err, arguments) = run
         .await
         .context("compile task")?
         .map_err(|error| error.context("compilation failed"))?;
@@ -515,6 +515,32 @@ fn sanitize_file_name(name: &str) -> Result<String> {
     Ok(name.to_owned())
 }
 
+/// Read `reader` to EOF, retaining only the last `cap` bytes.
+///
+/// Draining never stops at the cap: the writer (a compiler child on a
+/// pipe) must never block on a full pipe, and the retained memory stays
+/// bounded at `cap` bytes plus one read chunk no matter how much the
+/// writer emits. Interrupted reads are retried (as `read_to_end` does);
+/// any other read error ends the capture with what was retained.
+fn read_capture_tail(reader: &mut impl std::io::Read, cap: usize) -> Vec<u8> {
+    let mut retained = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                retained.extend_from_slice(&chunk[..read]);
+                if retained.len() > cap {
+                    retained.drain(..retained.len() - cap);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    retained
+}
+
 fn tail(bytes: &[u8], max: usize) -> String {
     let bytes = if bytes.len() > max {
         &bytes[bytes.len() - max..]
@@ -595,6 +621,88 @@ mod tests {
             seed: 1,
             native: false,
         }
+    }
+
+    /// A reader that generates `total` bytes of a deterministic pattern
+    /// without storing them, counting how many bytes were consumed so a
+    /// test can prove the capture drained it to EOF.
+    struct Spew {
+        produced: usize,
+        total: usize,
+    }
+
+    impl std::io::Read for Spew {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = buffer.len().min(self.total - self.produced);
+            for slot in &mut buffer[..count] {
+                *slot = (self.produced % 251) as u8;
+                self.produced += 1;
+            }
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn capture_tail_stays_bounded_when_the_compiler_spews() {
+        // >>64 KiB of stderr (the triage probe used a 200 MiB spew through
+        // a real child pipe): the retained capture must stay at the cap,
+        // hold exactly the LAST cap bytes, and the reader must have
+        // drained the stream to EOF so the child never blocks.
+        let total = 4 * 1024 * 1024;
+        let mut spew = Spew { produced: 0, total };
+        let captured = read_capture_tail(&mut spew, MAX_CAPTURE_BYTES);
+        assert_eq!(spew.produced, total, "the stream must be drained to EOF");
+        assert_eq!(captured.len(), MAX_CAPTURE_BYTES);
+        let expected: Vec<u8> = ((total - MAX_CAPTURE_BYTES)..total)
+            .map(|position| (position % 251) as u8)
+            .collect();
+        assert_eq!(captured, expected, "the retained bytes are the tail");
+        // And the diagnostics path renders exactly that tail (lossy UTF-8,
+        // so compare against the lossy rendering, not a byte length).
+        assert_eq!(
+            tail(&captured, MAX_CAPTURE_BYTES),
+            String::from_utf8_lossy(&expected).into_owned()
+        );
+    }
+
+    #[test]
+    fn capture_tail_keeps_small_output_whole() {
+        let mut small = std::io::Cursor::new(b"error: nope\n".to_vec());
+        assert_eq!(
+            read_capture_tail(&mut small, MAX_CAPTURE_BYTES),
+            b"error: nope\n"
+        );
+        let mut empty = std::io::Cursor::new(Vec::new());
+        assert!(read_capture_tail(&mut empty, MAX_CAPTURE_BYTES).is_empty());
+    }
+
+    /// A reader whose first read fails with `Interrupted`, then yields
+    /// its bytes: the capture must retry, not stop draining.
+    struct InterruptedOnce {
+        interrupted: bool,
+        inner: std::io::Cursor<Vec<u8>>,
+    }
+
+    impl std::io::Read for InterruptedOnce {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn capture_tail_retries_interrupted_reads() {
+        let mut reader = InterruptedOnce {
+            interrupted: false,
+            inner: std::io::Cursor::new(b"diagnostics after EINTR\n".to_vec()),
+        };
+        assert_eq!(
+            read_capture_tail(&mut reader, MAX_CAPTURE_BYTES),
+            b"diagnostics after EINTR\n"
+        );
     }
 
     #[test]
@@ -1280,6 +1388,37 @@ restore = |text| match U64.from_str(text) {
             ("Helper.roc", "module []\n"),
         ]);
         assert!(check_imports(&app, &modules, &[]).is_ok());
+    }
+
+    #[test]
+    fn an_ungranted_platform_import_with_extra_whitespace_is_refused_by_name() {
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        // Roc accepts every spelling below and roc fmt normalizes them to
+        // the single-space form, so the gate must recognize them all (#2095).
+        for spelling in [
+            "import  pf.Screen",
+            "import\tpf.Screen",
+            "import \t pf.Screen",
+            "  import  pf.Screen",
+        ] {
+            let app = spec(vec![("main.roc", &format!("{spelling}\napp [x] {{}}"))]);
+            let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
+            assert!(refused.contains("main.roc imports Screen"), "{spelling}: {refused}");
+            assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(), "{spelling}");
+            assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok(), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_sibling_file_cannot_smuggle_an_ungranted_import_with_extra_whitespace() {
+        let modules = vec!["Key".to_owned()];
+        for spelling in ["import  pf.Key", "import\tpf.Key"] {
+            let app = spec(vec![
+                ("main.roc", "app [x] {}"),
+                ("Helper.roc", &format!("{spelling}\n")),
+            ]);
+            assert!(check_imports(&app, &modules, &[]).is_err(), "{spelling}");
+        }
     }
 
     #[test]

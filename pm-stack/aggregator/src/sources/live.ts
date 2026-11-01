@@ -15,14 +15,25 @@ import {
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
+  coverageFromFeed,
+  poolAvailableFromFeed,
   poolFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
+import type { RepoCensus } from "../coverage.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { applyCloudflareExport, applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import {
+  applyCloudflareExport,
+  applySupabaseExport,
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+} from "../saas-extract.ts";
+import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
@@ -35,6 +46,7 @@ import {
   type AaFeedSection,
   type AttentionFlag,
   type BoardItem,
+  type ChargeRow,
   type Comment,
   type DnsSection,
   type GhItem,
@@ -691,7 +703,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         let merged = board;
         if (cfg.projector.baseUrl) {
           merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-          provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+          provenance.board =
+            "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
         // In-flight lane (see inFlightBoardItems above): synthetic
         // entries from the fleet feed's orchestration section — the
@@ -791,6 +804,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const feed = await getFeed();
       return poolFromFeed(feed);
     },
+    async projectsAvailable(): Promise<boolean> {
+      const feed = await getFeed();
+      return poolAvailableFromFeed(feed);
+    },
+    async coverageCensus(): Promise<RepoCensus[] | null> {
+      const feed = await getFeed();
+      return coverageFromFeed(feed);
+    },
     async comments(refs) {
       if (cfg.projector.baseUrl) {
         const live = await projectorComments(cfg.projector.baseUrl, refs);
@@ -816,6 +837,10 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         view = feed.quota;
+        const dropped = feed.quotaDropped;
+        if (dropped && dropped.pools + dropped.windows + dropped.burn > 0) {
+          provenance.quota += ` · sanitized at load: dropped ${dropped.pools} pool(s), ${dropped.windows} window(s), ${dropped.burn} burn segment(s) (#2429)`;
+        }
       } else {
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();
@@ -862,8 +887,33 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
         .then((text) => JSON.parse(text) as SupabaseExportDoc)
         .catch(() => null);
+      // Charges evidence + unmatched-charge flags (#3124): computed
+      // once, before the branch. The feed's charge data is not a
+      // byproduct of the saas section, so every return path below
+      // consumes it — previously both lived only inside the saas
+      // gate, and a feed with charges but no saas (or a quota-view
+      // fallback) silently dropped every auto-matched charge.
+      const feedCharges: ChargeRow[] = feed?.charges ?? [];
+      // Charges auto-matching (#1057): the feed carries only
+      // first-time unmatched SaaS/AI charges (the collector's
+      // surfaced-state guarantees exactly-once), so each becomes
+      // an attention flag here and never repeats on later feeds.
+      // Charges sanitization loss (#2445): rows loadFeed dropped are
+      // counted on the feed; surface that count in the usage
+      // provenance on every return path below, never swallow it.
+      const chargesDroppedNote = feed?.chargesDropped
+        ? ` · sanitized at load: dropped ${feed.chargesDropped} malformed charge row(s) (#2445)`
+        : "";
+      const feedChargeFlags: AttentionFlag[] = (feed?.chargesAttention ?? []).map((u) => ({
+        kind: "unmatched-charge",
+        label: `${u.merchant} — unrecognized SaaS/AI charge`,
+        detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
+        href: "/quota",
+        severity: u.amountUsd,
+      }));
       if (feed?.saas && feed.saas.length) {
-        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        provenance.usage =
+          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})` + chargesDroppedNote;
         // The Cloudflare live export overlays tracker prose on BOTH
         // service sources — a healthy fleet feed must not keep stale
         // prose values when a fresh export exists (Codex, PR #2228).
@@ -873,27 +923,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           payg: feed.payg ?? [],
-          charges: feed.charges ?? [],
+          charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
-        // Charges auto-matching (#1057): the feed carries only
-        // first-time unmatched SaaS/AI charges (the collector's
-        // surfaced-state guarantees exactly-once), so each becomes
-        // an attention flag here and never repeats on later feeds.
         partial.services = await tursoOverlay(cfg, partial.services);
-        const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
-          kind: "unmatched-charge",
-          label: `${u.merchant} — unrecognized SaaS/AI charge`,
-          detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
-          href: "/quota",
-          severity: u.amountUsd,
-        }));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: [...buildAttentionFlags(feed.quota, partial), ...chargeFlags],
+          attention: [...buildAttentionFlags(feed.quota, partial), ...feedChargeFlags],
           domains,
           history,
         };
@@ -906,27 +945,45 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
           .then((text) => JSON.parse(text) as CloudflareExportDoc)
           .catch(() => null);
+        // #3124: the feed's charges win/merge here too — prose
+        // extraction is the fallback for when the feed carries none,
+        // never a reason to drop the ones it does carry. The merge is
+        // charge-level (mergeChargeRows): the same charge recorded in
+        // both places differs in label/date/source strings, so
+        // full-row equality would display it twice; automatic
+        // evidence (the feed rows) takes precedence.
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           payg: extractPaygLines(doc, registryText),
-          charges: extractCharges(doc, registryText),
+          charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
         partial.services = await tursoOverlay(cfg, partial.services);
-        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
+        provenance.usage =
+          "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)" +
+          chargesDroppedNote;
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial),
+          attention: [...buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial), ...feedChargeFlags],
           domains,
           history,
         };
       } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)";
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)" + chargesDroppedNote;
         const fallback = await fix.usage();
-        return { ...fallback, history: Object.keys(history).length ? history : fallback.history };
+        // #3124: even the fixtures fallback keeps the feed's charge
+        // evidence when a feed exists — fixtures stand in for the
+        // sections that are missing, not for the ones that arrived.
+        return {
+          ...fallback,
+          charges: feedCharges.length ? feedCharges : fallback.charges,
+          chargesNote: feedCharges.length ? undefined : fallback.chargesNote,
+          attention: [...fallback.attention, ...feedChargeFlags],
+          history: Object.keys(history).length ? history : fallback.history,
+        };
       }
     },
     async attention() {

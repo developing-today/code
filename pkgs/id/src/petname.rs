@@ -47,8 +47,8 @@ impl Petnames {
 
     /// Open the store at `path`, replaying every line already there.
     ///
-    /// A torn final line — a partial record left by a crash mid-append,
-    /// unterminated and unparseable — is dropped and truncated away,
+    /// A torn final line — a record left by a crash mid-append, parseable
+    /// or not, without its terminating newline — is dropped and truncated away,
     /// mirroring `Outbox::open` and the world journal; any other
     /// malformed line still fails the open.
     ///
@@ -67,17 +67,19 @@ impl Petnames {
         };
         let mut kept = 0;
         for (number, line) in text.split_inclusive('\n').enumerate() {
+            let complete = line.ends_with('\n');
+            if !complete {
+                break;
+            }
             if line.trim().is_empty() {
                 kept += line.len();
                 continue;
             }
-            let complete = line.ends_with('\n');
             match serde_json::from_str::<Record>(line.trim_end()) {
                 Ok(record) => {
                     store.apply(record);
                     kept += line.len();
                 }
-                Err(_) if !complete => break,
                 Err(error) => {
                     return Err(error).with_context(|| {
                         format!("petname journal line {} is malformed", number + 1)
@@ -119,7 +121,7 @@ impl Petnames {
     ///
     /// Fails with a [`Refusal::Conflict`] if another contact already has the
     /// name, or if it is confusable with another contact's name. Fails with a
-    /// plain error if the name is empty, too long, or has control characters.
+    /// plain error if the name is empty, too long, or has control or format characters.
     pub fn set<'a>(
         &mut self,
         owner: &str,
@@ -231,12 +233,51 @@ fn looks_like(name: &str) -> anyhow::Error {
     Refusal::Conflict(format!("that name looks too much like {name}")).into()
 }
 
+/// Whether `c` is a Unicode format character (general category Cf):
+/// zero-width spaces and joiners, bidi controls and isolates, the word
+/// joiner, soft hyphen, and the rest of the category. Rust's
+/// `char::is_control` covers only category Cc, and Cf characters are
+/// invisible or reorder the text around them, so a name carrying one
+/// can render exactly like another name. Ranges are the Cf set of
+/// Unicode 16. Shared with the other name boundaries (invite names,
+/// #1770) so every surface refuses the same set.
+pub(crate) fn is_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}'
+        | '\u{0600}'..='\u{0605}'
+        | '\u{06DD}'
+        | '\u{070F}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{08E2}'
+        | '\u{180E}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206F}'
+        | '\u{FEFF}'
+        | '\u{FFF9}'..='\u{FFFB}'
+        | '\u{110BD}'
+        | '\u{110CD}'
+        | '\u{13430}'..='\u{1343F}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D182}'
+        | '\u{E0001}'
+        | '\u{E0020}'..='\u{E007F}')
+}
+
+/// The name with every format character (category Cf) removed, for the
+/// comparison path: a petname stored before Cf was refused, or an
+/// alleged name carrying Cf, must compare by what it renders as.
+fn strip_format_chars(name: &str) -> String {
+    name.chars().filter(|&c| !is_format_char(c)).collect()
+}
+
 /// The name, trimmed, if it is usable as a petname.
 ///
 /// # Errors
 ///
 /// Fails if the name is empty, longer than 64 characters, or has control
-/// characters.
+/// or format characters.
 pub fn normalize_name(name: &str) -> Result<String> {
     let name = name.trim();
     ensure!(!name.is_empty(), "a petname cannot be empty");
@@ -248,26 +289,36 @@ pub fn normalize_name(name: &str) -> Result<String> {
         !name.chars().any(char::is_control),
         "a petname cannot contain control characters"
     );
+    ensure!(
+        !name.chars().any(is_format_char),
+        "a petname cannot contain format characters"
+    );
     Ok(name.to_owned())
 }
 
 /// The name in lower case, for comparing two names as the same spelling.
+///
+/// Format characters are stripped first, so a name stored with one
+/// (before they were refused) cannot spoof by the comparison path.
 #[must_use]
 pub fn fold(name: &str) -> String {
-    name.to_lowercase()
+    strip_format_chars(name).to_lowercase()
 }
 
 /// The name with look-alike characters mapped to one form, so `PayPa1` and
-/// `PayPal` compare equal.
+/// `PayPal` compare equal. The fold lowercases first, so capital `I` lands
+/// in the `i` class and maps to `l` with `1` and `|` (#2069); `8` maps to
+/// `b`, symmetric with the other mapped digits.
 #[must_use]
 pub fn skeleton(name: &str) -> String {
     let mapped: String = fold(name)
         .chars()
         .map(|c| match c {
             '0' => 'o',
-            '1' | '|' => 'l',
+            '1' | '|' | 'i' => 'l',
             '3' => 'e',
             '5' | '$' => 's',
+            '8' => 'b',
             '@' => 'a',
             other => other,
         })
@@ -328,18 +379,19 @@ pub fn fingerprint(id: &str) -> String {
 }
 
 /// How each contact is shown: its petname if it has one, otherwise its
-/// alleged name marked unverified. Petnames that collide after folding get a
-/// fingerprint on both contacts.
+/// alleged name marked unverified. Petnames that collide by skeleton
+/// (look-alike) comparison get a fingerprint on both contacts, so a legacy
+/// stored name that `set` would now refuse still renders distinctly (#2069).
 #[must_use]
 pub fn labels(contacts: &[Contact<'_>]) -> Vec<Label> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for petname in contacts.iter().filter_map(|contact| contact.petname) {
-        *counts.entry(fold(petname)).or_default() += 1;
+        *counts.entry(skeleton(petname)).or_default() += 1;
     }
     contacts
         .iter()
         .map(|contact| match contact.petname {
-            Some(petname) if counts.get(&fold(petname)).copied().unwrap_or(0) > 1 => {
+            Some(petname) if counts.get(&skeleton(petname)).copied().unwrap_or(0) > 1 => {
                 Label::SharedPetname {
                     name: petname.to_owned(),
                     fingerprint: fingerprint(contact.id),
@@ -393,6 +445,26 @@ mod tests {
         let mut store = Petnames::new();
         let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
         let error = store.set(OWNER, CAROL, "PayPa1", alleged).unwrap_err();
+        assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
+        assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn test_a_capital_i_confusable_name_is_refused() {
+        // #2069: PayPaI must be refused exactly like PayPa1.
+        let mut store = Petnames::new();
+        let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
+        let error = store.set(OWNER, CAROL, "PayPaI", alleged).unwrap_err();
+        assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
+        assert!(store.get(OWNER, CAROL).is_none());
+    }
+
+    #[test]
+    fn test_an_eight_confusable_name_is_refused() {
+        // #2069: 8ob must be refused exactly like B0b.
+        let mut store = Petnames::new();
+        let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
+        let error = store.set(OWNER, CAROL, "8ob", alleged).unwrap_err();
         assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
         assert!(store.get(OWNER, CAROL).is_none());
     }
@@ -505,6 +577,44 @@ mod tests {
     }
 
     #[test]
+    fn a_parseable_torn_final_line_is_also_dropped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("petnames.jsonl");
+        let mut store = Petnames::open(&path).unwrap();
+        store.set(OWNER, ALICE, "Ali", names()).unwrap();
+        drop(store);
+        let good = std::fs::read_to_string(&path).unwrap();
+
+        // A healthy write produces a complete record; remove only its final
+        // newline to simulate a crash after the JSON bytes reached disk.
+        let scratch = TempDir::new().unwrap();
+        let mut other = Petnames::open(&scratch.path().join("petnames.jsonl")).unwrap();
+        other.set(OWNER, CAROL, "Carol", names()).unwrap();
+        drop(other);
+        let torn = std::fs::read_to_string(scratch.path().join("petnames.jsonl")).unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(torn.trim_end_matches('\n').as_bytes())
+            .unwrap();
+        drop(file);
+
+        let mut store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
+        assert!(store.get(OWNER, CAROL).is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), good);
+
+        // Truncation ensures the next record starts on its own line and
+        // survives another open.
+        store.set(OWNER, CAROL, "Carol", names()).unwrap();
+        drop(store);
+        let store = Petnames::open(&path).unwrap();
+        assert_eq!(store.get(OWNER, ALICE), Some("Ali"));
+        assert_eq!(store.get(OWNER, CAROL), Some("Carol"));
+    }
+
+    #[test]
     fn a_petname_is_trimmed_and_bounded() {
         assert_eq!(normalize_name("  Mom  ").unwrap(), "Mom");
         assert!(normalize_name("   ").is_err());
@@ -576,5 +686,107 @@ mod tests {
         assert_eq!(skeleton("PayPa1"), skeleton("PayPal"));
         assert_eq!(skeleton("Rnoon"), skeleton("moon"));
         assert_ne!(skeleton("Carol"), skeleton("Bob"));
+    }
+
+    #[test]
+    fn test_the_skeleton_maps_capital_i_and_eight_together() {
+        // #2069: fold() lowercases I to i before the map, so the i class
+        // must land on l or PayPaI slips past the guard that refuses
+        // PayPa1; 8 maps to b like the other mapped digits.
+        assert_eq!(skeleton("PayPaI"), skeleton("PayPal"));
+        assert_eq!(skeleton("AIice"), skeleton("Alice"));
+        assert_eq!(skeleton("8ob"), skeleton("Bob"));
+    }
+
+    #[test]
+    fn test_skeleton_colliding_petnames_both_get_a_fingerprint() {
+        // #2069: labels() keys collisions on skeleton(), so stored
+        // petnames that differ only by a look-alike (PayPal vs PayPaI)
+        // render with fingerprints instead of identically.
+        let contacts = [
+            Contact {
+                id: ALICE,
+                alleged: "Alice",
+                petname: Some("PayPal"),
+            },
+            Contact {
+                id: BOB,
+                alleged: "Bob",
+                petname: Some("PayPaI"),
+            },
+            Contact {
+                id: CAROL,
+                alleged: "Carol",
+                petname: Some("Dana"),
+            },
+        ];
+        let shown = labels(&contacts);
+        assert_eq!(
+            shown[0],
+            Label::SharedPetname {
+                name: "PayPal".to_owned(),
+                fingerprint: "aa11aa".to_owned(),
+            }
+        );
+        assert_eq!(shown[1].text(), "PayPaI bb22bb");
+        assert_eq!(shown[2], Label::Petname("Dana".to_owned()));
+    }
+
+    #[test]
+    fn format_characters_are_refused_by_normalize() {
+        // Every codepoint the issue names, plus one per Cf range the
+        // category check must cover in full (task 1875: the full
+        // category, not only the named codepoints).
+        for bad in [
+            "Pay\u{200B}Pal",
+            "Pay\u{202A}Pal",
+            "Pay\u{202E}Pal",
+            "Pay\u{2060}Pal",
+            "Pay\u{FEFF}Pal",
+            "Pay\u{00AD}Pal",
+            "Pay\u{0600}Pal",
+            "Pay\u{180E}Pal",
+            "Pay\u{FFF9}Pal",
+            "Pay\u{E0001}Pal",
+            "Pay\u{E0041}Pal",
+        ] {
+            assert!(normalize_name(bad).is_err(), "{bad:?} must be refused");
+        }
+        // Ordinary punctuation and spaces are unaffected.
+        assert!(normalize_name("Bo b-Real_O'Neil!").is_ok());
+    }
+
+    #[test]
+    fn a_format_character_spoof_is_refused_by_set() {
+        let alleged = [(ALICE, "PayPal"), (BOB, "Bob")];
+        let mut store = Petnames::new();
+        for spoof in ["PayPal\u{200B}", "PayPal\u{2060}", "Pay\u{202E}Pal"] {
+            let error = store.set(OWNER, CAROL, spoof, alleged).unwrap_err();
+            assert!(
+                matches!(refusal(&error), Some(Refusal::Conflict(_)))
+                    || store.get(OWNER, CAROL).is_none(),
+                "{spoof:?} must not be stored"
+            );
+            assert!(store.get(OWNER, CAROL).is_none());
+        }
+    }
+
+    #[test]
+    fn a_stored_format_character_name_cannot_spoof_via_comparison() {
+        // Pre-fix data: a petname stored with Cf in it. Inserted
+        // directly, bypassing normalize_name as the old code allowed.
+        let mut store = Petnames::new();
+        store.names.insert(
+            (OWNER.to_owned(), ALICE.to_owned()),
+            "PayPal\u{200B}".to_owned(),
+        );
+        // fold/skeleton strip Cf, so the stored name compares equal to
+        // the clean spelling and a second contact cannot take it, and
+        // the clean spelling cannot be set against it either.
+        assert_eq!(fold("PayPal\u{200B}"), fold("PayPal"));
+        assert_eq!(skeleton("PayPal\u{200B}"), skeleton("PayPal"));
+        let alleged = [(BOB, "Bob")];
+        let error = store.set(OWNER, BOB, "PayPal", alleged).unwrap_err();
+        assert!(matches!(refusal(&error), Some(Refusal::Conflict(_))));
     }
 }

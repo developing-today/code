@@ -7,6 +7,8 @@
 // whose behaviour is keyed on markers in the prompt: a run that exits
 // non-zero used to be reported as a successful 'stop' — empty when it
 // produced nothing, and carrying the truncated text when it produced
+// (startProxy additionally pins the stub via CODEX_PROXY_CODEX_BIN so a
+// host-installed codex can never shadow it, #694.)
 // partial output.
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
@@ -56,6 +58,15 @@ case "$prompt" in
     exit 0 ;;
   *INBANDFAIL*)
     printf '%s\\n' '{"type":"turn.failed","error":{"message":"stub codex: model overloaded"}}'
+    exit 0 ;;
+  *INBANDSTR*)
+    printf '%s\\n' '{"type":"turn.failed","error":"stub codex: string overload"}'
+    exit 0 ;;
+  *INBANDNONE*)
+    printf '%s\\n' '{"type":"turn.failed"}'
+    exit 0 ;;
+  *INBANDOBJ*)
+    printf '%s\\n' '{"type":"turn.failed","error":{}}'
     exit 0 ;;
   *SIGKILLME*)
     kill -9 $$ ;;
@@ -207,6 +218,7 @@ const startProxy = async (reuse, extraEnv = {}, seedHome = null) => {
       HOME: home,
       XDG_STATE_HOME: stateHome,
       CODEX_PROXY_PORT: String(port),
+      CODEX_PROXY_CODEX_BIN: path.join(home, '.local', 'bin', 'codex'),
       ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -274,6 +286,34 @@ test('successful run is unchanged in both modes', async (t) => {
   assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
 });
 
+test('CLI transport: cached_input_tokens surfaces as prompt_tokens_details.cached_tokens (#3114)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  // Non-stream: the exec stub's turn.completed carries cached_input_tokens 93.
+  const plainRes = await post(port, { messages: TURN1 });
+  assert.equal(plainRes.status, 200);
+  const plain = JSON.parse(await plainRes.text());
+  assert.equal(plain.usage.prompt_tokens_details.cached_tokens, 93, 'CLI transport must surface cached_input_tokens as prompt_tokens_details.cached_tokens (opencode #394)');
+
+  // The resumed turn's stub usage has NO cached_input_tokens: the detail
+  // object must be omitted entirely, not emitted as 0.
+  const r2 = await post(port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  const resumed = JSON.parse(await r2.text());
+  assert.equal(resumed.choices[0].message.content, 'resumed answer');
+  assert.equal(resumed.usage.prompt_tokens_details, undefined, 'absent cache value must omit prompt_tokens_details entirely');
+
+  // Stream: the end chunk carries the same cached_tokens for a fresh run.
+  const streamRes = await post(port, { messages: [{ role: 'user', content: 'gamma streaming question' }], stream: true });
+  assert.equal(streamRes.status, 200);
+  const sse = await streamRes.text();
+  const events = sse.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]')).map(l => JSON.parse(l.slice('data: '.length)));
+  const endChunk = events.find(e => e.usage);
+  assert.ok(endChunk, 'stream end chunk must carry usage');
+  assert.equal(endChunk.usage.prompt_tokens_details.cached_tokens, 93, 'streaming CLI transport must surface cached_tokens');
+});
+
 test('execution failure with no output: 500 non-stream, SSE error + [DONE] stream (#676)', async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
@@ -296,6 +336,24 @@ test('partial output then turn.failed with exit 0: masked success becomes an err
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'INBANDPARTIAL', /Codex execution failed: stub codex: run failed midway/);
+});
+
+test('turn.failed with a bare-string error: the string is the detail on both transports (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDSTR', /Codex execution failed: stub codex: string overload/);
+});
+
+test('turn.failed with no error message: fallback names the in-band failure, not exit 0 (#694)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDNONE', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+  await assertFailure(port, 'INBANDOBJ', /Codex execution failed: codex turn failed \(turn\.failed event carried no error message\)/);
+
+  const plainRes = await post(port, { messages: [{ role: 'user', content: 'please INBANDNONE now' }] });
+  assert.equal(plainRes.status, 500);
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.doesNotMatch(plainBody.error.message, /exited with code 0/, 'message-less in-band failure must not blame a successful exit');
 });
 
 test('empty-stderr fallback names the killing signal, not code null (#676)', async (t) => {
@@ -622,4 +680,21 @@ test('token sync failure is logged, not swallowed (#2533)', async (t) => {
   const started = await startProxy(null, {}, (home) => { seedSyncHome(home, { corruptDb: true }); });
   t.after(started.stop);
   assert.match(started.log(), /codex-token-sync FAILED:/);
+});
+
+test('non-object JSON body is a 400 and the proxy stays alive (#2816)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  for (const bad of ['null', '[1,2]', '"x"', '42']) {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: bad
+    });
+    assert.equal(res.status, 400, `body ${bad} must be a 400, got ${res.status}`);
+    await res.text();
+  }
+  const alive = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad json'
+  });
+  assert.equal(alive.status, 400, 'proxy must still serve after non-object bodies');
+  await alive.text();
 });

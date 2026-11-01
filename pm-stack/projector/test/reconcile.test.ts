@@ -3,7 +3,7 @@ import { createClient, type Client } from "@libsql/client";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, getItems, getComments } from "../src/store";
+import { migrate, getItems, getComments, getSyncCursor } from "../src/store";
 import { listResource, type GitHubAuth } from "../src/github";
 import { reconcileRepos } from "../src/reconcile";
 
@@ -123,5 +123,39 @@ describe("reconcileRepos against a fake GitHub", () => {
     expect(seen.some((u) => u.includes("/pulls/comments"))).toBe(true);
     expect(seen.some((u) => u.includes("/issue_comments"))).toBe(false);
     expect(seen.some((u) => u.includes("api.github.com/https"))).toBe(false);
+  });
+});
+
+describe("reconcileRepos reviews stream per-PR guard (#2745)", () => {
+  test("[ok, 500, ok]: both ok PRs' reviews are stored, exactly one per-PR error is reported, written counts actual upserts, cursor advances over upserted reviews", async () => {
+    const repo = "developing-today/reviews-guard";
+    const review = (id: number, at: string) => ({
+      id,
+      body: `review ${id}`,
+      user: { login: "drew" },
+      state: "APPROVED",
+      submitted_at: at,
+      html_url: `https://github.com/${repo}/pull/1#pullrequestreview-${id}`,
+    });
+    const fetchFn = (async (url: string) => {
+      if (url.includes("/pulls/2/reviews")) return new Response("boom", { status: 500 });
+      if (url.includes("/pulls/1/reviews")) return jsonRes([review(101, "2026-10-05T00:00:00Z")]);
+      if (url.includes("/pulls/3/reviews")) return jsonRes([review(103, "2026-10-06T00:00:00Z")]);
+      if (url.includes("/pulls?")) return jsonRes([{ number: 1 }, { number: 2 }, { number: 3 }]);
+      return jsonRes([]);
+    }) as unknown as typeof fetch;
+
+    const result = await reconcileRepos(db, { PM_REPOS: repo, GITHUB_TOKEN: "test-token" }, fetchFn);
+
+    expect(result.ok).toBe(true);
+    const reviews = (result.streams as Record<string, any>[]).find((s) => s.stream === "reviews");
+    expect(reviews).toBeDefined();
+    expect(reviews!.error).toBeUndefined();
+    expect(reviews!.written).toBe(2);
+    expect(reviews!.errors).toEqual([{ pr: 2, error: "github_api_500" }]);
+    expect(reviews!.cursor).toBe("2026-10-06T00:00:00Z");
+    expect((await getComments(db, [`${repo}#1`])).map((c) => c.id)).toEqual(["101"]);
+    expect((await getComments(db, [`${repo}#3`])).map((c) => c.id)).toEqual(["103"]);
+    expect(await getSyncCursor(db, repo, "reviews")).toBe("2026-10-06T00:00:00Z");
   });
 });

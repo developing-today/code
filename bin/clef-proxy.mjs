@@ -6,6 +6,10 @@ import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
+// Test seam (#692): point the gateway base at a stub upstream via
+// CLEF_PROXY_GATEWAY_BASE; the Cloudflare gateway stays the default
+// and the URL shape after the base is unchanged.
+const GATEWAY_BASE = (process.env.CLEF_PROXY_GATEWAY_BASE || 'https://gateway.ai.cloudflare.com/v1').replace(/\/+$/, '');
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
 // Warm connections (#480): upstream calls go through fetch, whose bundled
@@ -91,6 +95,17 @@ const getCredentials = (authHeader) => {
 
   return { accountId, gatewayId, token };
 };
+
+// The resolved model is interpolated raw into the gateway run URL, so it
+// must be confined to the Clef family in the cloudflare namespace with
+// plain name characters only (#2410): no '/', no dot segments, no '?',
+// '#', whitespace, or control characters are representable in this
+// grammar, so a hostile model cannot rewrite the upstream path/query or
+// spend the proxy's token on a non-Clef model. This is a deterministic
+// grammar check, deliberately NOT a gate on the live model list (that
+// list is async/TTL'd display machinery for /v1/models and must not
+// become a data-path dependency).
+const CLEF_MODEL_GRAMMAR = /^@cf\/cloudflare\/clef[A-Za-z0-9._-]*$/;
 
 const resolveModel = (model) => {
   if (!model || typeof model !== 'string') return '@cf/cloudflare/clef-flash';
@@ -224,7 +239,12 @@ const server = http.createServer(async (req, res) => {
         }
 
         const model = resolveModel(body.model);
-        const cfUrl = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/workers-ai/run/${model}`;
+        if (!CLEF_MODEL_GRAMMAR.test(model)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Refused model '${model}': only Clef-family models (@cf/cloudflare/clef*) are served by this proxy` }));
+          return;
+        }
+        const cfUrl = `${GATEWAY_BASE}/${accountId}/${gatewayId}/workers-ai/run/${model}`;
 
         const payload = {
           state: body.state || {},

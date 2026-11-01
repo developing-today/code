@@ -219,6 +219,15 @@ func ScriptEnv() []EnvVar {
 			ReadBy:  client + ", " + nested + ", the plugin",
 		},
 		{
+			Name:  "MCPX_SETTINGS",
+			SetBy: []Setter{SetByCLI, SetByExec},
+			When:  "only when the caller sent call settings with the run (for example a requested pool.callTimeout)",
+			Meaning: "the call-settings header for this run, carried into the script so the " +
+				"generated client forwards the caller's per-call requests on the " +
+				"calls it makes on the script's behalf",
+			ReadBy: client + ", which sends it as the x-mcpx-settings header",
+		},
+		{
 			Name:    "MCPX_ARTIFACTS_LOCAL",
 			SetBy:   []Setter{SetByCLI, SetByExec},
 			Meaning: "1 when the daemon shares this filesystem, so artifact({path}) may hand over a path instead of the bytes",
@@ -273,8 +282,15 @@ func ScriptEnv() []EnvVar {
 		{
 			Name:    "MCPX_RUNTIME",
 			SetBy:   []Setter{SetByRunner},
-			Meaning: "deno, bun or node",
-			ReadBy:  client,
+			Meaning: "deno, bun or node; on a dispatched run, the interpreter's name (sh, python3)",
+			ReadBy:  client + "; on a dispatched run, the script itself",
+		},
+		{
+			Name:    "MCPX_DISPATCH",
+			SetBy:   []Setter{SetByRunner},
+			When:    "only on a dispatched (non-JavaScript) run",
+			Meaning: "how the interpreter was chosen: shebang or interpreter (script.interpreter)",
+			ReadBy:  "the script itself, and anyone reading its environment",
 		},
 		{
 			Name:    "MCPX_ALLOW_READ",

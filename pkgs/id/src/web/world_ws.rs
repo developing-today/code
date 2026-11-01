@@ -1063,6 +1063,26 @@ mod tests {
         }
     }
 
+    /// Read one presentation frame and assert its data is a `pf.Screen`
+    /// frame whose rows show the counter at `count`. Since the pf.Screen
+    /// migration the roc-counter view returns screen JSON, not the bare
+    /// `count=N` text these tests originally asserted.
+    #[cfg(feature = "sandbox")]
+    async fn assert_screen_data(client: &mut Client, count: u8) {
+        let frame = next_frame(client).await.unwrap();
+        let screen: serde_json::Value =
+            serde_json::from_str(frame["data"].as_str().unwrap()).unwrap();
+        assert_eq!(screen["kind"], "screen", "{frame}");
+        assert!(
+            screen["rows"].as_array().unwrap().iter().any(|row| {
+                row.as_str()
+                    .unwrap_or_default()
+                    .contains(&format!("count={count}"))
+            }),
+            "no screen row shows count={count}: {screen}"
+        );
+    }
+
     fn join(capability: &JoinCapability, after: Option<u64>) -> serde_json::Value {
         serde_json::json!({
             "type": "join",
@@ -1270,7 +1290,7 @@ mod tests {
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
-        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=0");
+        assert_screen_data(&mut player, 0).await;
         player
             .send(ClientMessage::Text(
                 r#"{"type":"input","data_hex":"696e63"}"#.into(),
@@ -1278,7 +1298,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
-        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=1");
+        assert_screen_data(&mut player, 1).await;
     }
 
     #[cfg(feature = "sandbox")]
@@ -1314,6 +1334,13 @@ mod tests {
         ))
         .unwrap();
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        // roc-counter's main.roc imports pf.Screen and pf.RocText, and the
+        // compile gate admits only capabilities the world has granted;
+        // grant them the way an admin would (`id world caps --grant`).
+        world
+            .update_caps(vec!["Screen".to_owned(), "RocText".to_owned()], Vec::new())
+            .await
+            .unwrap();
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone())
@@ -1352,7 +1379,7 @@ mod tests {
             .unwrap();
         let mut player = connect(addr, join(&capability, None)).await;
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
-        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=0");
+        assert_screen_data(&mut player, 0).await;
         player
             .send(ClientMessage::Text(
                 r#"{"type":"input","data_hex":"696e63"}"#.into(),
@@ -1360,7 +1387,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
-        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=1");
+        assert_screen_data(&mut player, 1).await;
     }
 
     #[cfg(feature = "sandbox")]

@@ -232,7 +232,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
@@ -272,7 +272,7 @@ async fn query_remote_peers(
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(1024 * 1024).await?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
@@ -431,12 +431,9 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let (sender, mut receiver) = gossip_topic.split().await?;
 
     // Join bootstrap peers (defaults + CLI, already merged by resolve_config)
-    let bootstrap_ids: Vec<EndpointId> = config
-        .bootstrap
-        .iter()
-        .filter_map(|s| s.parse::<EndpointId>().ok())
-        .collect();
+    let bootstrap_ids: Vec<EndpointId> = parse_bootstrap_ids(&config.bootstrap);
     if !bootstrap_ids.is_empty() {
+        tracing::info!("joining {} bootstrap peer(s)", bootstrap_ids.len());
         sender.join_peers(bootstrap_ids, None).await?;
     }
 
@@ -460,6 +457,26 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     endpoint.close().await;
 
     Ok(peers.into_values().collect())
+}
+
+/// Parse bootstrap node IDs with serve parity (#2016): warn per invalid
+/// entry, naming the value, and keep the valid IDs. The previous
+/// `filter_map(... .ok())` silently dropped typos - and when no entry
+/// survived, join_peers was skipped entirely, so a bad bootstrap ID
+/// surfaced only as a full-timeout "no peers" result that looked like a
+/// network problem. Serve (serve.rs) and access.rs both warn-and-continue
+/// on the same input; a hard error would break otherwise-working joins
+/// over one stale entry in the merged defaults + config + CLI list.
+fn parse_bootstrap_ids(entries: &[String]) -> Vec<EndpointId> {
+    entries
+        .iter()
+        .filter_map(|id_str| {
+            id_str.parse::<EndpointId>().ok().or_else(|| {
+                tracing::warn!("invalid bootstrap node ID: {}", id_str);
+                None
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -487,6 +504,39 @@ mod tests {
         }
     }
 
+    fn valid_id_string(byte: u8) -> String {
+        SecretKey::from_bytes(&[byte; 32]).public().to_string()
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_keeps_valid_and_drops_invalid() {
+        // Mixed input (#2016): the one real 64-hex EndpointId survives;
+        // invalid entries take the warning path and are dropped.
+        let valid = valid_id_string(7);
+        let entries = vec![
+            "not-a-node-id".to_string(),
+            valid.clone(),
+            "zzzz".to_string(),
+        ];
+        let parsed = parse_bootstrap_ids(&entries);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].to_string(), valid);
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_all_invalid_yields_empty() {
+        let entries = vec!["nope".to_string(), "123".to_string(), String::new()];
+        assert!(parse_bootstrap_ids(&entries).is_empty());
+    }
+
+    #[test]
+    fn test_parse_bootstrap_ids_valid_parses_unchanged() {
+        let valid = valid_id_string(9);
+        let parsed = parse_bootstrap_ids(std::slice::from_ref(&valid));
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].to_string(), valid);
+    }
+
     fn fields(row: &str) -> Vec<&str> {
         row.split('\t').collect()
     }
@@ -499,7 +549,15 @@ mod tests {
 
     #[test]
     fn test_peer_row_control_character_names_stay_one_row() {
-        for name in ["a\nb", "a\rb", "a\tb", "a\r\nb", "\n", "\u{0}", "x\nforged\trow\t0"] {
+        for name in [
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\r\nb",
+            "\n",
+            "\u{0}",
+            "x\nforged\trow\t0",
+        ] {
             let row = format_peer_row(&announcement(1, Some(name)));
             assert_one_row_four_fields(&row);
             assert!(

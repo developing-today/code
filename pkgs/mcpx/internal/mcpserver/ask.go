@@ -382,8 +382,8 @@ func (s *Server) beginAsk(ctx context.Context, req request, peer Peer) (id strin
 
 // finishedAsk is the answer to a request whose asked call has finished.
 //
-// pass says the request is a pass-through upstream's tools/call, the one case
-// an upstream's JSON-RPC error is relayed as itself.
+// pass says the request is a direct upstream tools/call (pass-through or
+// raw), the one case an upstream's JSON-RPC error is relayed as itself.
 func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	fail := func(code int, msg string) *response {
 		return &response{JSONRPC: "2.0", ID: req.ID, Error: &rpcError{Code: code, Message: msg}}
@@ -424,7 +424,11 @@ func finishedAsk(req request, out Outcome, peer Peer, pass bool) *response {
 	return &response{JSONRPC: "2.0", ID: req.ID, Result: askResult(req, out)}
 }
 
-// passCall reports whether req is a tools/call of a pass-through tool.
+// passCall reports whether req is a tools/call of a direct upstream tool:
+// a pass-through tool, or a raw (codemode=false) tool on a raw request.
+// Both are the upstream's own call, so an upstream JSON-RPC error the
+// bridge brings back is relayed as itself rather than flattened into a
+// tool result.
 func (s *Server) passCall(ctx context.Context, req request) bool {
 	if req.Method != "tools/call" {
 		return false
@@ -433,8 +437,11 @@ func (s *Server) passCall(ctx context.Context, req request) bool {
 		Name string `json:"name"`
 	}
 	_ = json.Unmarshal(req.Params, &p)
-	ok, _ := s.isPassTool(ctx, p.Name)
-	return ok
+	if ok, _ := s.isPassTool(ctx, p.Name); ok {
+		return true
+	}
+	_, isRaw, err := s.rawOwner(ctx, p.Name)
+	return err == nil && isRaw
 }
 
 // sendableTo picks the questions this client may be sent.

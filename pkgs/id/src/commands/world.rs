@@ -63,6 +63,26 @@ async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoin
     Ok(endpoint)
 }
 
+/// Renders one row of the plain (non-JSON) `id world list` output.
+///
+/// World names are host-supplied and reach this printer verbatim
+/// (`WorldClient::list_worlds` copies them from the host reply with no
+/// validation), so the name goes through [`plain_field`]: a name holding
+/// LF/CR/TAB or another structure-breaking character is quoted and escaped
+/// instead of forging a row or a column (#3089, Phase 3a of #3455). The
+/// default marker is selected by comparing the RAW name to the raw
+/// default name, before any rendering. Ordinary names render
+/// byte-identically; `--json` output does not use this function and is
+/// unchanged.
+fn world_list_plain_row(name: &str, default: &str, open: bool) -> String {
+    let default_marker = if name == default { " (default)" } else { "" };
+    format!(
+        "{}{default_marker}\t{}",
+        super::text::plain_field(name),
+        if open { "open" } else { "closed" }
+    )
+}
+
 /// Run an `id world` subcommand.
 ///
 /// # Errors
@@ -678,11 +698,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 );
             } else {
                 for (name, open) in worlds {
-                    let default_marker = if name == default { " (default)" } else { "" };
-                    println!(
-                        "{name}{default_marker}\t{}",
-                        if open { "open" } else { "closed" }
-                    );
+                    println!("{}", world_list_plain_row(&name, &default, open));
                 }
             }
             Ok(())
@@ -747,6 +763,155 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             addrs,
             no_relay,
         } => ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await,
+        WorldCommand::Fork {
+            source,
+            dir,
+            name,
+            template,
+            json,
+        } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
+        WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+    }
+}
+
+/// Read a world directory's journal entries for inspection, without
+/// opening the journal for append. A torn final fragment (a crash
+/// mid-append, never acknowledged) is skipped, mirroring
+/// `FileJournal::open`; any other unparseable line is corruption.
+fn read_world_journal(dir: &std::path::Path) -> Result<Vec<crate::world::JournalEntry>> {
+    let path = dir.join("journal.jsonl");
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if bytes.last() != Some(&b'\n') {
+        // The final chunk is an unterminated fragment (or the empty tail
+        // of an empty file): it was never durably acknowledged, so it is
+        // dropped even when it happens to parse — the same rule
+        // `FileJournal::open` and the store-level fork reader apply.
+        lines.pop();
+    }
+    let mut entries = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let entry: crate::world::JournalEntry = serde_json::from_slice(line)
+            .with_context(|| format!("{} is corrupt", path.display()))?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// A world directory's provenance, read from its journal: the `Created`
+/// header's id plus the `Forked` entry a fork appends, if any.
+struct WorldProvenance {
+    world_id: String,
+    forked: Option<(String, String, bool, u64)>,
+}
+
+fn world_provenance(dir: &std::path::Path) -> Result<WorldProvenance> {
+    let entries = read_world_journal(dir)?;
+    let Some(crate::world::JournalEntry::Created { world_id, .. }) = entries.first() else {
+        bail!(
+            "{} has no Created header",
+            dir.join("journal.jsonl").display()
+        );
+    };
+    let world_id = world_id.clone();
+    let forked = entries.iter().rev().find_map(|entry| match entry {
+        crate::world::JournalEntry::Forked {
+            from_world_id,
+            from_module_hash,
+            template,
+            at_sequence,
+        } => Some((
+            from_world_id.clone(),
+            from_module_hash.clone(),
+            *template,
+            *at_sequence,
+        )),
+        _ => None,
+    });
+    Ok(WorldProvenance { world_id, forked })
+}
+
+/// `id world provenance`: print a world directory's provenance, so a
+/// template fork is identifiable without opening the world.
+fn print_world_provenance(dir: &std::path::Path, json: bool) -> Result<()> {
+    let provenance = world_provenance(dir)?;
+    if json {
+        let (from_world_id, from_module_hash, template, at_sequence) = match &provenance.forked {
+            Some((from, hash, template, at)) => {
+                (Some(from.clone()), Some(hash.clone()), *template, Some(*at))
+            }
+            None => (None, None, false, None),
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "world_id": provenance.world_id,
+                "dir": dir.display().to_string(),
+                "forked_from": from_world_id,
+                "from_module_hash": from_module_hash,
+                "template": template,
+                "at_sequence": at_sequence,
+            }))?
+        );
+    } else {
+        println!("world: {}", provenance.world_id);
+        match &provenance.forked {
+            Some((from, hash, template, at)) => {
+                println!("forked_from: {from}");
+                println!("from_module_hash: {hash}");
+                println!("template: {template}");
+                println!("at_sequence: {at}");
+            }
+            None => println!("forked_from: none"),
+        }
+    }
+    Ok(())
+}
+
+/// `id world fork`: wire the store-level `fork_world` (F12.2) into the
+/// CLI. The fork's provenance is read back from the new journal and
+/// printed, so the caller sees exactly what was recorded.
+fn fork_world_on_disk(
+    source: &std::path::Path,
+    dir: &std::path::Path,
+    name: Option<&str>,
+    template: bool,
+    json: bool,
+) -> Result<()> {
+    let to_world_id = match name {
+        Some(name) => name.to_owned(),
+        None => dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+            .context("the destination directory has no name; pass --name")?,
+    };
+    crate::world_hub::validate_world_name(&to_world_id)?;
+    if dir.exists() {
+        anyhow::ensure!(
+            std::fs::read_dir(dir)?.next().is_none(),
+            "{} is not empty",
+            dir.display()
+        );
+    }
+    let from_world_id = world_provenance(source)?.world_id;
+    crate::world_store::fork_world(
+        source,
+        dir,
+        &crate::world_store::ForkSpec {
+            from_world_id,
+            to_world_id,
+            template,
+        },
+    )?;
+    if json {
+        print_world_provenance(dir, true)
+    } else {
+        println!("forked {}", dir.display());
+        print_world_provenance(dir, false)
     }
 }
 
@@ -1722,7 +1887,62 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
+    use super::{
+        PumpLine, check_contract, pump_command, scaffold_world, step_is_applied,
+        world_list_plain_row,
+    };
+
+    /// #3089: a world name containing LF must not forge an extra row in
+    /// plain output — the rendered row is one physical line with exactly
+    /// two tab-separated fields.
+    #[test]
+    fn world_list_plain_row_quotes_newline_forged_row() {
+        let row = world_list_plain_row("alpha\nforged\topen", "other", true);
+        assert_eq!(
+            row.lines().count(),
+            1,
+            "row must be one physical line: {row:?}"
+        );
+        assert_eq!(row.matches('\n').count(), 0);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert!(row.ends_with("\topen"), "{row:?}");
+    }
+
+    /// #3089: a tabbed world name must not forge an extra column.
+    #[test]
+    fn world_list_plain_row_quotes_tabbed_name() {
+        let row = world_list_plain_row("a\tb", "other", false);
+        assert_eq!(
+            row.split('\t').count(),
+            2,
+            "exactly two tab fields: {row:?}"
+        );
+        assert_eq!(row.lines().count(), 1);
+        assert!(row.ends_with("\tclosed"), "{row:?}");
+    }
+
+    /// #3089: the default marker is chosen by comparing the RAW name to
+    /// the raw default name, and ordinary names render byte-identically.
+    #[test]
+    fn world_list_plain_row_default_marker_uses_raw_name() {
+        assert_eq!(
+            world_list_plain_row("home", "home", true),
+            "home (default)\topen"
+        );
+        assert_eq!(world_list_plain_row("home", "away", true), "home\topen");
+        assert_eq!(
+            world_list_plain_row("my world", "x", false),
+            "my world\tclosed"
+        );
+        // A default name that itself needs quoting still gets its marker.
+        let row = world_list_plain_row("a\nb", "a\nb", true);
+        assert!(row.contains(" (default)\t"), "{row:?}");
+        assert_eq!(row.split('\t').count(), 2, "{row:?}");
+    }
 
     /// #818, updated for #807: every step kind is applied by `apply_steps`
     /// over the wire — module install and schedules included — so every
@@ -1940,7 +2160,12 @@ mod tests {
             assert!(calls[kind]["fuel_max"].as_u64().unwrap() > 0, "{kind}");
         }
         assert!(calls.get("restore").is_none(), "{report}");
-        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 1.0);
+        // The worst call is layout, rendering the pf.Screen frame. Its
+        // ceiling is the largest per-call budget FUEL_BUDGETS allows this
+        // module (500_000 of the 10_000_000 limit), so the report must stay
+        // under 5 percent; before the Screen migration the bare-text view
+        // stayed under 1.
+        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 5.0);
 
         // Without a viewport there is no layout call; bad hex is refused
         // before the module runs.

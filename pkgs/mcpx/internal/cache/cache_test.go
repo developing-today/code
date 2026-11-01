@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/cache"
+	"github.com/developing-today/code/pkgs/mcpx/internal/cache"
 )
 
 func writeEntry(t *testing.T, c *cache.Cache, kind, key string, size int, age time.Duration) string {
@@ -265,5 +265,36 @@ func TestPutNeverEvictsItsOwnEntry(t *testing.T) {
 	// The older entry, not the new one, is what eviction removes.
 	if _, ok := c.Get("deps", cache.KeyString("old")); ok {
 		t.Fatal("older entry survived while the new entry was protected")
+	}
+}
+
+func TestPutKeepsLeasedOlderEntry(t *testing.T) {
+	c := cache.Open(t.TempDir())
+	leasedPath := writeEntry(t, c, "deps", cache.KeyString("leased-elder"), 100, time.Hour)
+	lease, err := cache.Acquire(leasedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	// The #2560 repro shape through Put itself: the older entry (100
+	// bytes) holds a live lease, and the second Put (100 bytes) brings
+	// the total above MaxBytes 150. The leased elder is not a victim
+	// and the just-stored entry is protected by its own Put, so Put
+	// must report success with both entries still available.
+	key := cache.KeyString("newcomer")
+	p, hit, err := c.Put("deps", key, cache.Limits{MaxBytes: 150}, func(dir string) error {
+		return os.WriteFile(filepath.Join(dir, "payload"), make([]byte, 100), 0o600)
+	})
+	if err != nil || hit {
+		t.Fatalf("Put newcomer: hit=%v err=%v", hit, err)
+	}
+	if got, ok := c.Get("deps", cache.KeyString("leased-elder")); !ok || got != leasedPath {
+		t.Fatalf("leased older entry lost during Put: Get = %q,%v want %q,true", got, ok, leasedPath)
+	}
+	if got, ok := c.Get("deps", key); !ok || got != p {
+		t.Fatalf("Get after Put = %q,%v want %q,true", got, ok, p)
+	}
+	if _, err := os.Stat(leasedPath); err != nil {
+		t.Fatalf("leased older entry removed by Put eviction: %v", err)
 	}
 }

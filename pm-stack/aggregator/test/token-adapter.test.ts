@@ -207,6 +207,44 @@ describe("file-export adapter (the framework's first adapter)", () => {
     expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
   });
 
+  test("a null or undefined window element is unparseable (never throws), previous retained", () => {
+    for (const windows of [[null], [undefined]]) {
+      const out = collectFileExportAdapter({
+        now: NOW,
+        previous: PREV_ENTRY,
+        fileMtimeIso: "2026-10-29T04:59:00Z",
+        stale: false,
+        doc: {
+          service: "meta",
+          source: "file-export/meta-laptop",
+          status: "ok",
+          measuredAt: "2026-10-29T04:59:00Z",
+          windows: windows as never,
+        },
+      });
+      expect(out.status).toBe("unparseable");
+      expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+    }
+  });
+
+  test("a non-string window name is unparseable drift, not a healthy reading", () => {
+    const out = collectFileExportAdapter({
+      now: NOW,
+      previous: PREV_ENTRY,
+      fileMtimeIso: "2026-10-29T04:59:00Z",
+      stale: false,
+      doc: {
+        service: "meta",
+        source: "file-export/meta-laptop",
+        status: "ok",
+        measuredAt: "2026-10-29T04:59:00Z",
+        windows: [{ name: 42, usedPct: 1 }] as never,
+      },
+    });
+    expect(out.status).toBe("unparseable");
+    expect(out.value?.measuredAt).toBe("2026-10-29T04:30:00Z");
+  });
+
   test("a stale producer is transport-unavailable; a missing document is fetch-failed with null", () => {
     const stale = collectFileExportAdapter({
       now: NOW,

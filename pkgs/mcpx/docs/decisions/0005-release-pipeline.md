@@ -27,10 +27,12 @@ code:     7d1b081c
   `package.nix` (`-X main.version=0.1.0`), the fallback
   `var version = "0.1.0"` in `cmd/mcpx/main.go`, and
   `ARG VERSION=0.1.0` in `Containerfile`.
-- `go.mod` declares `module github.com/dezren39/mcpx` and
-  `package.nix`'s `meta.homepage` points at the same repository, which
-  returns 404. mcpx actually lives at `pkgs/mcpx` in
-  developing-today/code. 328 Go files import by the current path.
+- The module path was the last thing naming a repository that does not
+  exist: slice 3 below renamed it to
+  `github.com/developing-today/code/pkgs/mcpx`, where the code lives,
+  and pointed `meta.homepage` at the real tree. (Before the rename,
+  `go.mod` declared the legacy path and `meta.homepage` 404'd; the
+  328 Go files that imported by it moved with it in the same pass.)
 - A static build works: the SQLite driver is pure Go, `CGO_ENABLED=0`
   cross-compiles, and a fully static Linux binary was verified in #182's
   container work. The shipped artifacts are not static by choice:
@@ -95,9 +97,9 @@ records #1881's recommendation against it as a decision.
 
 ## 4. The module path — options and recommendation
 
-`github.com/dezren39/mcpx` names a repository that does not exist, so
-`go install …@latest` cannot work and `meta.homepage` 404s. Three ways
-out:
+The module path used to name a repository that does not exist, so
+`go install …@latest` could not work and `meta.homepage` 404'd. Three
+ways out were recorded:
 
 - **A — Create the repository the path names** (dezren39/mcpx or
   developing-today/mcpx) and move mcpx into it. Cleanest end state:
@@ -120,9 +122,10 @@ out:
   releases), the homepage stays a lie, and two repositories must be kept
   in sync forever. Recorded for completeness; not recommended.
 
-**Recommendation: B, now.** It makes every other part of this note true
-with one mechanical change and no new repository. A remains available
-whenever Drew wants mcpx to stand alone; nothing in B makes A harder.
+**Decision: B, done in slice 3.** It made every other part of this note
+true with one mechanical change and no new repository. A remains
+available whenever Drew wants mcpx to stand alone; nothing in B makes A
+harder.
 
 ## 5. Static-build policy for releases
 
@@ -139,8 +142,8 @@ where NSS is the point, and it already exists.
 1. This design note.
 2. Version single-sourcing (§3): VERSION file, package.nix, Containerfile
    build-arg, the `0.0.0-dev` fallback sentinel.
-3. Rename slice (§4-B), if Drew has not overruled it: module path,
-   imports, package.nix references, meta.homepage.
+3. Rename slice (§4-B), done: module path, imports, package.nix
+   references, meta.homepage.
 4. Release workflow: tag-triggered (`mcpx/v*`) plus `workflow_dispatch`
    snapshot mode that builds the three artifacts and checksums without
    publishing; the snapshot run is the slice's proof.

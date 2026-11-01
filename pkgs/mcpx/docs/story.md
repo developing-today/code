@@ -18,7 +18,7 @@ their schemas is in the agent's context, which is the entire point, but the
 agent does not know that yet.
 
 What it does have is one instruction file, [`AGENTS.md`](../AGENTS.md),
-injected at session start. Abridged -- the full file is 120 lines and adds
+injected at session start. Abridged -- the full file is 152 lines and adds
 profiles, the script contract and the secrets section, which this walk does
 not need -- it reads:
 
@@ -52,7 +52,7 @@ working directory, then `~/.config/mcpx/scripts/`. Nearest wins.
 
 Scripts are TypeScript on a real runtime (deno, else bun, else node). They get
 the full runtime: filesystem, network, subprocesses. Relative paths resolve
-against *your* working directory, not the script's.
+against _your_ working directory, not the script's.
 
 `log`, `emit`, `tools` and every namespace are already on `globalThis`, so a
 script needs no imports at all. `log(msg)` is `log.info(msg)`. Importing works
@@ -305,9 +305,10 @@ them, and over time learns about:
 ## Zero-context discovery
 
 ```
+id:           zero-context-discovery
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    3
 status:       core
 tags:         area:discovery, cost:context
 description:  ls, search and types answer from an on-disk cache without
@@ -336,9 +337,10 @@ form; never parse the table.
 ## Sharing and scope
 
 ```
+id:           sharing-and-scope
+since:        pre-release
 created:      2026-09-25T18:30:00-05:00
 last-updated: 2026-09-27T06:20:00-05:00
-increment:    5
 status:       core
 tags:         area:pools, area:concurrency
 description:  two independent axes -- how many callers share a process, and
@@ -400,6 +402,7 @@ live= 2 keys= ['psession:root', 'psession:other']
 ```
 
 ### Lifetime
+<!-- id: lifetime since: pre-release -->
 
 `pid`-scoped processes are stopped as soon as the process they belong to
 exits, rather than waiting out an idle timer — there is no possible future
@@ -411,9 +414,10 @@ minted for itself, which are stopped the moment that caller finishes.
 ## Profiles and aliases
 
 ```
+id:           profiles-and-aliases
+since:        pre-release
 created:      2026-09-27T13:00:00-05:00
 last-updated: 2026-09-27T13:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:config, cost:context
 description:  select subsets of servers by profile, and expose one server
@@ -475,9 +479,10 @@ point at the original.
 ## The script contract
 
 ```
+id:           the-script-contract
+since:        pre-release
 created:      2026-09-27T14:30:00-05:00
 last-updated: 2026-09-27T14:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts, area:logging
 description:  stdout is the result, stderr is logs, a default export is the
@@ -648,9 +653,10 @@ runtime. Nothing leaks to the terminal alongside it:
 ## Named scripts
 
 ```
+id:           named-scripts
+since:        pre-release
 created:      2026-09-27T04:45:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts, area:cli
 description:  .mcpx/scripts/<name>.ts, searched upward from cwd then the user
@@ -684,9 +690,10 @@ the command line.
 ## The generated client
 
 ```
+id:           the-generated-client
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
 status:       core
 tags:         area:codegen, area:types
 description:  JSON Schema compiled to a typed TypeScript module written beside
@@ -714,9 +721,10 @@ can type-check it.
 ## Calls without a JavaScript runtime
 
 ```
+id:           calls-without-a-javascript-runtime
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    1
 status:       standard
 tags:         area:cli
 description:  mcpx call runs one tool with no script and no runtime, in ~47ms.
@@ -735,9 +743,10 @@ About 47 ms, no JS runtime involved. `--raw` prints the full MCP envelope;
 ## One daemon per config
 
 ```
+id:           one-daemon-per-config
+since:        pre-release
 created:      2026-09-26T00:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
 status:       standard
 tags:         area:daemon, area:multirepo
 description:  the daemon is keyed to the config file it loaded, so repos do not
@@ -764,9 +773,10 @@ failure mode is otherwise an opaque `bind: invalid argument`.
 ## Runtime portability
 
 ```
+id:           runtime-portability
+since:        pre-release
 created:      2026-09-25T19:40:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
 status:       standard
 tags:         area:runtime
 description:  deno, then bun, then node; the generated client avoids syntax any
@@ -789,9 +799,10 @@ silently re-share every stateful server.
 ## Remote servers without a shim
 
 ```
+id:           remote-servers-without-a-shim
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    1
 status:       standard
 tags:         area:transport
 description:  Streamable HTTP and SSE are spoken directly; no mcp-remote
@@ -811,9 +822,10 @@ streams are both handled; `Mcp-Session-Id` is tracked and released with a
 ## Honest failure reporting
 
 ```
+id:           honest-failure-reporting
+since:        pre-release
 created:      2026-09-26T04:30:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
 status:       standard
 tags:         area:diagnostics
 description:  a server that will not start is reported with its stderr instead
@@ -838,9 +850,10 @@ daemon.
 ## Search
 
 ```
+id:           search
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-10-30T00:00:00-05:00
-increment:    3
 status:       standard
 tags:         area:discovery
 description:  ranked tool search, all-terms first with an any-term fallback.
@@ -866,9 +879,10 @@ per-field breakdown behind each hit's score.
 ## Lifecycle and operations
 
 ```
+id:           lifecycle-and-operations
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    2
 status:       standard
 tags:         area:ops
 description:  status, restart, refresh, stop, daemons, and the trace switch.
@@ -895,9 +909,10 @@ listeners, so a stop followed immediately by a directory removal cannot race.
 ## Reading the log
 
 ```
+id:           reading-the-log
+since:        pre-release
 created:      2026-09-27T21:00:00-05:00
 last-updated: 2026-09-27T21:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:diagnostics
 description:  mcpx log and mcpx stats, over a SQLite index of the JSONL files.
@@ -956,9 +971,10 @@ stop cross-compiling, which is a poor trade for an index.
 ## Configuration
 
 ```
+id:           configuration
+since:        pre-release
 created:      2026-09-25T18:10:00-05:00
 last-updated: 2026-09-27T05:05:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  the same mcpServers object other MCP hosts use, plus an optional
@@ -981,9 +997,10 @@ alike; see [Hiding tools](configuration.md#hiding-tools).
 ## One declaration per setting
 
 ```
+id:           one-declaration-per-setting
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  a setting is described once and is then readable from a file, a
@@ -1024,9 +1041,10 @@ disagreeing genuinely cannot be ordered, so it is refused rather than guessed.
 ## Plumbing
 
 ```
+id:           plumbing
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  internal switches for decisions that could reasonably go either
@@ -1053,9 +1071,10 @@ offering an internal in a tab list is how somebody sets one by accident.
 ## Source that can be a file
 
 ```
+id:           source-that-can-be-a-file
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts
 description:  every string-shaped input also accepts a path, or a directory.
@@ -1084,9 +1103,10 @@ otherwise unattributable.
 ## The launcher is replaceable
 
 ```
+id:           the-launcher-is-replaceable
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts
 description:  a template with named holes, replaceable wholesale or removable
@@ -1131,9 +1151,10 @@ script with no launcher at all. That was found by testing rather than reading.
 ## Search paths
 
 ```
+id:           search-paths
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  lists with a splice point, accepting files as well as
@@ -1164,9 +1185,10 @@ being asked.
 ## Checking before running
 
 ```
+id:           checking-before-running
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts
 description:  everything knowable is checked before a server starts.
@@ -1196,9 +1218,10 @@ them.
 ## What the console does and does not capture
 
 ```
+id:           what-the-console-does-and-does-not-capture
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:logging
 description:  console is redirected, faithfully; raw byte writes are not.
@@ -1235,9 +1258,10 @@ meant to be recorded.
 ## Structured stack traces
 
 ```
+id:           structured-stack-traces
+since:        pre-release
 created:      2026-09-28T02:30:00-05:00
 last-updated: 2026-09-28T02:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:logging
 description:  frames as data, from V8, in all three runtimes.
@@ -1262,9 +1286,10 @@ lost one form before a test asserted both survive.
 ## Cancellation reaches the transport
 
 ```
+id:           cancellation-reaches-the-transport
+since:        pre-release
 created:      2026-09-28T03:40:00-05:00
 last-updated: 2026-09-28T03:40:00-05:00
-increment:    1
 status:       standard
 tags:         area:transport
 description:  a call timeout can interrupt a hung HTTP server.
@@ -1292,9 +1317,10 @@ code after five seconds and passes in under one.
 ## Where a setting is read
 
 ```
+id:           where-a-setting-is-read
+since:        pre-release
 created:      2026-09-28T04:30:00-05:00
 last-updated: 2026-09-28T04:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  what the registry governs, and what still has its own path.
@@ -1331,9 +1357,10 @@ before settings can be resolved, since they say where to look), and most of
 ## Placeholders that take arguments
 
 ```
+id:           placeholders-that-take-arguments
+since:        pre-release
 created:      2026-09-28T07:30:00-05:00
 last-updated: 2026-09-28T07:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts
 description:  @name(a, b), and @names a user declared.
@@ -1386,9 +1413,10 @@ unless named in `plumbing.launcherPlaceholderRepeat`.
 ## The harness knows what the agent does not
 
 ```
+id:           the-harness-knows-what-the-agent-does-not
+since:        pre-release
 created:      2026-09-28T07:30:00-05:00
 last-updated: 2026-09-28T07:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  session identity arrives through the environment, not the model.
@@ -1424,9 +1452,10 @@ shell command, for a number almost nobody reads. Those come from
 ## Statistics from opencode
 
 ```
+id:           statistics-from-opencode
+since:        pre-release
 created:      2026-09-28T07:30:00-05:00
 last-updated: 2026-09-28T07:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:inspection
 description:  read-only reporting over opencode's own database.
@@ -1452,9 +1481,10 @@ enough of them to be worth avoiding.
 ## The explorer
 
 ```
+id:           the-explorer
+since:        pre-release
 created:      2026-09-28T07:30:00-05:00
 last-updated: 2026-09-28T07:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:ux
 description:  a prompt loop over the discovery commands, for a human.
@@ -1487,9 +1517,10 @@ interactive and blocked on a prompt nobody was there to answer.
 ## The browser
 
 ```
+id:           the-browser
+since:        pre-release
 created:      2026-09-28T09:00:00-05:00
 last-updated: 2026-09-28T09:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:ux
 description:  three panes, so comparing two tools is a keystroke.
@@ -1566,6 +1597,7 @@ restores it on shift-drag, which is the convention, and being unable to click
 a log line open is a worse trade than learning one modifier.
 
 ### Testing a full-screen program
+<!-- id: testing-a-full-screen-program since: pre-release -->
 
 The view reads from an interface, not from the daemon client, so a fake drives
 it in tests. A terminal program that cannot be tested is one that breaks
@@ -1580,9 +1612,10 @@ quits.
 ## mcpx speaks MCP
 
 ```
+id:           mcpx-speaks-mcp
+since:        pre-release
 created:      2026-09-28T11:00:00-05:00
 last-updated: 2026-09-28T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  the inversion: mcpx as a server, not only a client.
@@ -1610,9 +1643,10 @@ should ask the same questions an agent does.
 ## Command-line programs as servers
 
 ```
+id:           command-line-programs-as-servers
+since:        pre-release
 created:      2026-09-28T11:00:00-05:00
 last-updated: 2026-09-28T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  a declaration, not a wrapper process.
@@ -1658,9 +1692,10 @@ belongs to whoever asked.
 ## Finding servers that are not configured yet
 
 ```
+id:           finding-servers-that-are-not-configured-yet
+since:        pre-release
 created:      2026-09-28T11:00:00-05:00
 last-updated: 2026-09-28T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  the official registry, and why not HAPI.
@@ -1683,6 +1718,7 @@ HAPI was the other candidate and is not usable: the framework is not open
 source and its public API returns 404.
 
 ### Translating an entry
+<!-- id: translating-an-entry since: pre-release -->
 
 A registry entry says what a server is, not how this machine should run it.
 
@@ -1709,9 +1745,10 @@ making every call read `io_github_microsoft_playwright_mcp_navigate`.
 ## Specifications as tools
 
 ```
+id:           specifications-as-tools
+since:        pre-release
 created:      2026-09-28T13:00:00-05:00
 last-updated: 2026-09-28T13:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  OpenAPI documents become callable tools.
@@ -1732,6 +1769,7 @@ the service does.
 beside everything else.
 
 ### Two things easy to get wrong
+<!-- id: two-things-easy-to-get-wrong since: pre-release -->
 
 **Relative server URLs.** The Swagger petstore declares `/api/v3`, which must
 resolve against wherever the document was fetched. Unresolved it produces a
@@ -1751,9 +1789,10 @@ endpoint is called.
 ## Finding a tool without leaving the script
 
 ```
+id:           finding-a-tool-without-leaving-the-script
+since:        pre-release
 created:      2026-09-28T13:00:00-05:00
 last-updated: 2026-09-28T13:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:scripts
 description:  search() and describe(), inside the program.
@@ -1782,9 +1821,10 @@ tool called `grep` beats one whose description merely mentions grepping.
 ## The half of MCP that is not tools
 
 ```
+id:           the-half-of-mcp-that-is-not-tools
+since:        pre-release
 created:      2026-09-28T15:00:00-05:00
 last-updated: 2026-09-28T15:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  prompts and resources, which mcpx reported as empty.
@@ -1824,9 +1864,10 @@ model's context is the failure this whole tool exists to prevent.
 ## mcpx doctor
 
 ```
+id:           mcpx-doctor
+since:        pre-release
 created:      2026-09-28T15:00:00-05:00
 last-updated: 2026-09-28T15:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:ux
 description:  one command for "it does not work".
@@ -1850,6 +1891,7 @@ Every check says what to do about it. One that only reports a problem leaves
 the reader exactly where they started.
 
 ### It found a bug immediately
+<!-- id: it-found-a-bug-immediately since: pre-release -->
 
 The unknown-key warning was reporting `mcpServers`, `logging`, `paths` and
 every server name as unrecognised. They are not: a section is the path to a
@@ -1862,9 +1904,10 @@ useless since the day it was written, and nothing displayed it until now.
 ## Types, in whichever form a consumer reads
 
 ```
+id:           types-in-whichever-form-a-consumer-reads
+since:        pre-release
 created:      2026-09-28T16:30:00-05:00
 last-updated: 2026-09-28T16:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  four renderings of one fact.
@@ -1885,6 +1928,7 @@ subschemas, so the result is itself a valid schema document rather than a bag
 of them.
 
 ### The specification described the wrong thing
+<!-- id: the-specification-described-the-wrong-thing since: pre-release -->
 
 `mcpx openapi` described mcpx's own ten tools and nothing else. The three
 hundred it actually fronts were reachable from MCP, and from a script, and
@@ -1907,9 +1951,10 @@ restart.
 ## Two protocol eras
 
 ```
+id:           two-protocol-eras
+since:        pre-release
 created:      2026-09-28T20:00:00-05:00
 last-updated: 2026-09-28T20:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  legacy and modern, both directions.
@@ -1944,9 +1989,10 @@ neither side is speaking.
 ## When a server asks a question
 
 ```
+id:           when-a-server-asks-a-question
+since:        pre-release
 created:      2026-09-28T20:00:00-05:00
 last-updated: 2026-09-28T20:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  elicitation, stored rather than blocked on.
@@ -2000,6 +2046,7 @@ Every routing decision records its reason. Routing nobody can inspect is
 routing nobody can correct.
 
 ### Answering
+<!-- id: answering since: pre-release -->
 
 ```sh
 mcpx elicit list
@@ -2017,9 +2064,10 @@ three fields and getting it wrong once.
 ## Credentials
 
 ```
+id:           credentials
+since:        pre-release
 created:      2026-09-28T20:00:00-05:00
 last-updated: 2026-09-28T20:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:config
 description:  what the specification actually requires, which is little.
@@ -2055,9 +2103,10 @@ the first request rather than failing with a 401 nobody can interpret.
 ## The rest of the protocol
 
 ```
+id:           the-rest-of-the-protocol
+since:        pre-release
 created:      2026-09-28T22:00:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    2
 status:       standard
 tags:         area:protocol
 description:  the features that are not tools, and which of them mcpx has.
@@ -2109,6 +2158,7 @@ unable to tell whether the message arrived.
 it unreachable at first.
 
 ### Still not implemented, and declared as such
+<!-- id: still-not-implemented-and-declared-as-such since: pre-release -->
 
 Capabilities are declared only where mcpx can actually deliver. Claiming one
 it cannot serve invites a server to use it and get silence, which is worse
@@ -2122,9 +2172,10 @@ specification would require of a server that declared more is
 ## One daemon, many clients
 
 ```
+id:           one-daemon-many-clients
+since:        pre-release
 created:      2026-09-28T23:30:00-05:00
 last-updated: 2026-09-28T23:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  a socket, a port, or a machine somewhere else.
@@ -2152,6 +2203,7 @@ unauthenticated: whatever can route to the port can run tools as you. That
 should be a sentence somebody read rather than a default they inherited.
 
 ### What each transport costs
+<!-- id: what-each-transport-costs since: pre-release -->
 
 Same request, mean of thirty:
 
@@ -2196,9 +2248,10 @@ With those fixed, a timing record costs 0.09 ms over the socket instead of a
 ## Hearing what the daemon is doing
 
 ```
+id:           hearing-what-the-daemon-is-doing
+since:        pre-release
 created:      2026-09-29T11:00:00-05:00
 last-updated: 2026-09-29T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  one event bus, two views of it.
@@ -2231,6 +2284,7 @@ back as ordinary POSTs -- at the cost of an upgrade that half of all
 middleboxes mishandle.
 
 ### Lossless reconnection
+<!-- id: lossless-reconnection since: pre-release -->
 
 Every event carries a sequence number. Reconnect with `Last-Event-ID` (which
 `EventSource` sends for you) or `?since=N` and everything after N is replayed.
@@ -2251,9 +2305,10 @@ events and has a counter to say so.
 ## Sampling
 
 ```
+id:           sampling
+since:        pre-release
 created:      2026-09-29T11:00:00-05:00
 last-updated: 2026-09-29T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  a server asking for a model's help, passed to whoever has one.
@@ -2285,6 +2340,7 @@ content.
 2026-09-29T11:00:00-05:00
 
 ### It did not work, and nothing said so
+<!-- id: it-did-not-work-and-nothing-said-so since: pre-release -->
 
 The passthrough above shipped unreachable. A server only sends a sampling
 request to a client that declared `sampling`, and mcpx never did: capabilities
@@ -2305,9 +2361,10 @@ and by answering roots before consulting the handler at all.
 ## What 2026-07-28 actually asks of a client
 
 ```
+id:           what-2026-07-28-actually-asks-of-a-client
+since:        pre-release
 created:      2026-09-29T15:00:00-05:00
 last-updated: 2026-09-29T15:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  three MUSTs the first modern implementation missed.
@@ -2347,9 +2404,10 @@ answer inline.
 ## Running without a daemon
 
 ```
+id:           running-without-a-daemon
+since:        pre-release
 created:      2026-09-29T11:00:00-05:00
 last-updated: 2026-09-29T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:integration
 description:  the last rung, and what it costs.
@@ -2390,9 +2448,10 @@ stops pooling is a performance bug nobody can see, so it has to be asked for.
 ## Tasks
 
 ```
+id:           tasks
+since:        pre-release
 created:      2026-09-29T11:00:00-05:00
 last-updated: 2026-09-29T11:00:00-05:00
-increment:    1
 status:       standard
 tags:         area:protocol
 description:  a slow tool call as a handle rather than a held request.
@@ -2416,9 +2475,10 @@ offers it, because a result nobody collects is memory nobody frees.
 ## Nix packaging
 
 ```
+id:           nix-packaging
+since:        pre-release
 created:      2026-09-27T04:20:00-05:00
 last-updated: 2026-09-30T16:10:00-05:00
-increment:    3
 status:       standard
 tags:         area:packaging, platform:nix
 description:  buildGoModule with a pinned vendorHash; unit tests run in the
@@ -2470,9 +2530,10 @@ generated one, which is the failure mode this document keeps finding (#285).
 ## The comparison register
 
 ```
+id:           the-comparison-register
+since:        pre-release
 created:      2026-09-30T08:00:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    2
 status:       standard
 tags:         area:compare, area:protocol
 description:  511 rows, one per difference between mcpx and the five MCP
@@ -2510,9 +2571,10 @@ otherwise.
 ## Finding the repository without git
 
 ```
+id:           finding-the-repository-without-git
+since:        pre-release
 created:      2026-09-30T07:30:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    2
 status:       standard
 tags:         area:config, area:packaging
 description:  the repo and worktree scopes read .git themselves, so git is no
@@ -2565,9 +2627,10 @@ still matters.
 ## Measured against the official suite
 
 ```
+id:           measured-against-the-official-suite
+since:        pre-release
 created:      2026-09-30T09:00:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    3
 status:       standard
 tags:         area:protocol, area:conformance
 description:  every frame validated against the real schema, and the official
@@ -2627,9 +2690,10 @@ obligations the prose implies but never states -- is
 ## Decision records
 
 ```
+id:           decision-records
+since:        pre-release
 created:      2026-09-30T10:00:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    1
 status:       standard
 tags:         area:process
 description:  when two issues answer one question differently, the answer is
@@ -2660,9 +2724,10 @@ month.
 ## A command for every operation
 
 ```
+id:           a-command-for-every-operation
+since:        pre-release
 created:      2026-09-30T13:00:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    2
 status:       standard
 tags:         area:cli, area:parity
 description:  the CLI, /v1, the MCP tools and the plugin are four renderings
@@ -2715,8 +2780,11 @@ carry instead is a description saying so and the MCP annotations
 Everything below is wanted and not yet built. Status fields say so.
 
 ### Plain scripts returning primitives
+<!-- id: plain-scripts-returning-primitives since: pre-release -->
 
 ```
+id:           plain-scripts-returning-primitives
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:scripts
@@ -2730,8 +2798,11 @@ duration in one envelope for programmatic callers.
 2026-09-27T05:05:00-05:00
 
 ### Named, pinned and resumable sessions
+<!-- id: named-pinned-and-resumable-sessions since: pre-release -->
 
 ```
+id:           named-pinned-and-resumable-sessions
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:pools, area:sessions
@@ -2748,8 +2819,11 @@ are naming, persistence across daemon restarts, and listing.
 2026-09-27T05:05:00-05:00
 
 ### Attaching to another session
+<!-- id: attaching-to-another-session since: pre-release -->
 
 ```
+id:           attaching-to-another-session
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:sessions, area:sharing
@@ -2762,8 +2836,11 @@ one holder, plus a permission story for who may attach to whose.
 2026-09-27T05:05:00-05:00
 
 ### Per-session restart
+<!-- id: per-session-restart since: pre-release -->
 
 ```
+id:           per-session-restart
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:pools, area:ops
@@ -2776,8 +2853,11 @@ disturbing the other three.
 2026-09-27T05:05:00-05:00
 
 ### Zero-downtime upgrade
+<!-- id: zero-downtime-upgrade since: pre-release -->
 
 ```
+id:           zero-downtime-upgrade
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:daemon, area:ops
@@ -2790,11 +2870,13 @@ same problem opencode v2 solves for its PTY daemon with a handoff ticket.
 2026-09-27T05:05:00-05:00
 
 ### Service installation
+<!-- id: service-installation since: pre-release -->
 
 ```
+id:           service-installation
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 last-updated: 2026-09-30T14:30:00-05:00
-increment:    2
 status:       partial
 tags:         area:ops, area:packaging
 ```
@@ -2823,8 +2905,11 @@ supported path.
 2026-09-30T14:30:00-05:00
 
 ### Alternative input modes
+<!-- id: alternative-input-modes since: pre-release -->
 
 ```
+id:           alternative-input-modes
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:cli
@@ -2838,8 +2923,11 @@ statements.
 2026-09-27T05:05:00-05:00
 
 ### OAuth for remote servers
+<!-- id: oauth-for-remote-servers since: pre-release -->
 
 ```
+id:           oauth-for-remote-servers
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:transport, area:auth
@@ -2852,8 +2940,11 @@ interactive auth must be reached another way for now.
 2026-09-27T05:05:00-05:00
 
 ### Context-budgeted catalog
+<!-- id: context-budgeted-catalog since: pre-release -->
 
 ```
+id:           context-budgeted-catalog
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:discovery, cost:context
@@ -2872,6 +2963,8 @@ is bounded no matter how many servers are configured.
 ### OpenAPI documents as tools
 
 ```
+id:           openapi-documents-as-tools
+since:        pre-release
 created:      2026-09-27T05:05:00-05:00
 status:       proposed
 tags:         area:transport
@@ -2906,7 +2999,7 @@ else in this document is detail underneath those four verbs.
 
 - [`AGENTS.md`](../AGENTS.md) — the instruction file abridged above. This is
   the text to inject into an agent's session; it is deliberately short, and
-  120 lines today. The quote above is not the whole of it (#264).
+  152 lines today. The quote above is not the whole of it (#264).
 - [`ASSESSMENT.md`](../ASSESSMENT.md) — why this exists, with the measurements
   against the predecessor it replaced.
 - [`OPENCODE-V2.md`](../OPENCODE-V2.md) — how this compares to opencode v2's

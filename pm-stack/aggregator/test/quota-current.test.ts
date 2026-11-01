@@ -344,7 +344,16 @@ describe("overlayTursoUsage (#1049)", () => {
     const at = iso(5 * 60_000);
     const out = overlayTursoUsage(
       [tursoSvc()],
-      file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", state: "error", measuredAt: at, error: "turso /usage HTTP 401" })]),
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          state: "error",
+          measuredAt: at,
+          error: "turso /usage HTTP 401",
+        }),
+      ]),
       NOW,
     );
     expect(out[0].measuredAt).toBe("2026-10-20T00:00:00.000Z");
@@ -359,7 +368,19 @@ describe("overlayTursoUsage (#1049)", () => {
     const arr = [other];
     const at = iso(5 * 60_000);
     expect(
-      overlayTursoUsage(arr, file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", measuredAt: at, windows: [tursoWin("databases", 3, 3, at)] })]), NOW),
+      overlayTursoUsage(
+        arr,
+        file([
+          entry({
+            serviceId: "turso",
+            providerId: "turso",
+            source: "turso-api",
+            measuredAt: at,
+            windows: [tursoWin("databases", 3, 3, at)],
+          }),
+        ]),
+        NOW,
+      ),
     ).toBe(arr);
   });
 });
@@ -448,8 +469,17 @@ describe("per-credential quota rows (#1113)", () => {
     const { renderQuota } = await import("../src/render.ts");
     const out = overlayQuotaCurrent(baseView(), twoLogins(30, 80), NOW);
     const prov = {
-      board: "", roadmap: "", items: "", comments: "", quota: "", usage: "",
-      attention: "", orchestration: "", dns: "", registry: "", aa: "",
+      board: "",
+      roadmap: "",
+      items: "",
+      comments: "",
+      quota: "",
+      usage: "",
+      attention: "",
+      orchestration: "",
+      dns: "",
+      registry: "",
+      aa: "",
     };
     const html = renderQuota(out, prov);
     expect(html).toContain("credential OpenAI:");
@@ -527,5 +557,42 @@ describe("per-credential rows: Codex findings on PR #2978", () => {
       NOW,
     );
     expect(out.pools.find((p) => p.id === "openai:codex")!.credentials).toHaveLength(2);
+  });
+});
+
+describe("stale-path newest pick is finite-gated (#2253)", () => {
+  const staleRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: iso(2 * 3_600_000), source: "real-src", windows: [] });
+  const garbageRead = () =>
+    entry({ serviceId: "meta:high-usage", measuredAt: "not-a-date", source: "garbage-src", windows: [] });
+
+  test("a garbage measuredAt listed first does not shadow the real stale read", () => {
+    const out = overlayQuotaCurrent(baseView(), file([garbageRead(), staleRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a garbage measuredAt listed last gives the same winner (order independence)", () => {
+    const out = overlayQuotaCurrent(baseView(), file([staleRead(), garbageRead()]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(2 * 3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("a +30d future entry does not outrank a real 1h-old stale read", () => {
+    const future = entry({
+      serviceId: "meta:high-usage",
+      measuredAt: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(),
+      source: "future-src",
+      windows: [],
+    });
+    const real = entry({ serviceId: "meta:high-usage", measuredAt: iso(3_600_000), source: "real-src", windows: [] });
+    const out = overlayQuotaCurrent(baseView(), file([future, real]), NOW);
+    const p = out.pools.find((x) => x.id === "meta:high-usage")!;
+    expect(p.freshness).toEqual({ measuredAt: iso(3_600_000), source: "real-src", state: "stale" });
+  });
+
+  test("parseQuotaCurrent still accepts a document carrying a garbage entry (lenient parse)", () => {
+    const doc = file([garbageRead(), staleRead()]);
+    expect(parseQuotaCurrent(JSON.parse(JSON.stringify(doc)))).not.toBeNull();
   });
 });

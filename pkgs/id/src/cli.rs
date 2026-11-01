@@ -196,6 +196,18 @@ pub struct Cli {
 /// Each variant represents a distinct operation mode for the `id` tool.
 /// Commands are organized by their primary function: storage, retrieval,
 /// search, or system operations.
+/// Parses a result limit (`--first` / `--last` / peek `--lines`): zero is
+/// rejected with a clear error instead of silently producing an empty result
+/// or a header-only preview (#3059). Clap names the flag in its error prefix,
+/// so the message stays flag-specific at the boundary.
+fn parse_result_limit(raw: &str) -> Result<usize, String> {
+    match raw.parse::<usize>() {
+        Ok(0) => Err("zero is not a valid limit: use at least 1".to_owned()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Start a server that accepts put/get requests from peers.
@@ -723,10 +735,22 @@ pub enum Command {
         #[arg(short = 'o', long)]
         output: Option<String>,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -780,7 +804,7 @@ pub enum Command {
         #[arg(long)]
         name: bool,
         /// Number of lines to show from head and tail (default: 5).
-        #[arg(short = 'n', long, default_value = "5")]
+        #[arg(short = 'n', long, default_value = "5", value_parser = parse_result_limit)]
         lines: usize,
         /// Show only head lines (no tail).
         #[arg(long, conflicts_with = "tail_only")]
@@ -804,10 +828,22 @@ pub enum Command {
         #[arg(long)]
         all: bool,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Exclude matches where name or hash contains this pattern (repeatable).
         #[arg(long, action = clap::ArgAction::Append)]
@@ -887,13 +923,25 @@ pub enum Command {
         /// - `tag`: each match with its query
         /// - `group`: matches grouped by query
         /// - `union`: deduplicated by hash
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -954,13 +1002,25 @@ pub enum Command {
         #[arg(long)]
         dir: Option<String>,
         /// Output format: tag, group, or union.
-        #[arg(long, default_value = "tag")]
+        #[arg(long, default_value = "tag", value_parser = ["tag", "group", "union"])]
         format: String,
         /// Return only the first N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "last",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         first: Option<usize>,
         /// Return only the last N matches (default 1 if no number given).
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            conflicts_with = "first",
+            num_args = 0..=1,
+            default_missing_value = "1",
+            value_parser = parse_result_limit
+        )]
         last: Option<usize>,
         /// Print count of matches instead of the matches themselves.
         #[arg(long)]
@@ -2035,6 +2095,43 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Fork a durable world on disk into a new world (F12.2).
+    ///
+    /// Copies the source world's journal and modules into the destination
+    /// directory under a new world id and records the fork provenance in
+    /// the new journal. Only the journal and the modules are copied: no
+    /// seed secret or other source file comes along (the F11.11 policy).
+    /// Local only; no host is contacted.
+    Fork {
+        /// Directory of the world to fork (the one holding `journal.jsonl`).
+        source: PathBuf,
+        /// Directory to create for the fork; it must be absent or empty.
+        dir: PathBuf,
+        /// The new world's id: `a-z`, `0-9`, `-` and `_`. Defaults to the
+        /// destination directory's name, which is the id a host serving
+        /// that directory will open it under.
+        #[arg(long)]
+        name: Option<String>,
+        /// Mark the fork reusable as a template (recorded in its
+        /// provenance; see `id world provenance`).
+        #[arg(long)]
+        template: bool,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a durable world's provenance from its journal: its id and,
+    /// for a fork, the world it was forked from, the module hash at the
+    /// fork point, and whether it was marked a template (F12.2). Local
+    /// only; no host is contacted.
+    Provenance {
+        /// Directory of the world to inspect (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Subcommands for `id doc`. A document is a `document.put` event over the content's hash.
@@ -2617,6 +2714,38 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_parse_find_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", bad, "query"]).is_err(),
+                "find --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "find", "--format", good, "query"]).is_ok(),
+                "find --format {good:?} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_invalid_format() {
+        for bad in ["gorup", "yaml", "GROUP", ""] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", bad, "query"]).is_err(),
+                "search --format {bad:?} must be rejected at parse time"
+            );
+        }
+        for good in ["tag", "group", "union"] {
+            assert!(
+                Cli::try_parse_from(["id", "search", "--format", good, "query"]).is_ok(),
+                "search --format {good:?} must parse"
+            );
+        }
+    }
+
+    #[test]
     fn test_cli_parse_search() {
         let cli = Cli::parse_from(["id", "search", "query"]);
         match cli.command {
@@ -2811,6 +2940,62 @@ mod tests {
     fn test_cli_verify() {
         // Verify CLI structure is valid
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    #[test]
+    fn test_cli_rejects_zero_result_limits() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                // #3059: an explicit zero limit is an error at the CLI boundary, never a
+                // silent empty result (find/search/show/peek share the flag pair).
+                for cmd in ["find", "search", "show", "peek"] {
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--first", "0", "query"]).is_err(),
+                        "{cmd} --first 0 must be rejected"
+                    );
+                    assert!(
+                        Cli::try_parse_from(["id", cmd, "--last", "0", "query"]).is_err(),
+                        "{cmd} --last 0 must be rejected"
+                    );
+                }
+                assert!(Cli::try_parse_from(["id", "peek", "--lines", "0", "query"]).is_err());
+                assert!(Cli::try_parse_from(["id", "peek", "-n", "0", "query"]).is_err());
+                // Bare flags keep their defaults (1 / 1 / 5 lines).
+                assert!(Cli::try_parse_from(["id", "find", "query", "--first"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "find", "query", "--last"]).is_ok());
+                assert!(Cli::try_parse_from(["id", "peek", "query"]).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn test_cli_rejects_first_and_last_together() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                assert!(
+                    Cli::try_parse_from(["id", "show", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "peek", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "find", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+                assert!(
+                    Cli::try_parse_from(["id", "search", "--first", "2", "--last", "3", "query"])
+                        .is_err()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     // Tests for Show command

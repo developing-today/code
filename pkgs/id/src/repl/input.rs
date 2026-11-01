@@ -70,6 +70,20 @@
 //! arguments containing operator characters (`get "a<<b"`,
 //! `get $(echo ')')`) preprocess the way a shell user expects.
 //!
+//! # Rescan Boundary
+//!
+//! Content a stage inserts into the line is a protected span that
+//! later stages never rescan:
+//!
+//! - Here-string content — single-quoted, double-quoted, or
+//!   unquoted — is stored literally: a `$(...)` or backtick span
+//!   inside it is text, not a substitution (#2281).
+//! - `$(...)` output is data, not source: the backtick stage never
+//!   rescans it, so backticks in captured output stay literal.
+//!
+//! Substitutions written in the typed line itself, outside any
+//! inserted content, still execute exactly as documented above.
+//!
 //! # Content Markers
 //!
 //! When preprocessing detects inline content (from `$()`, here-strings, or pipes),
@@ -319,6 +333,78 @@ fn remap_spans(
 ///     ReplInput::NeedMore { delimiter, .. } if delimiter == "EOF"
 /// ));
 /// ```
+/// Whether `cmd` ends with the `-` content placeholder in trailing
+/// position — a lone `-` as the final token. The supported form puts
+/// the placeholder before the stored name (`put - name ...`); a
+/// trailing one was historically "handled" by a literal `" -$"`
+/// replace, which is not an end anchor and never matched, so the
+/// content addressed to it was silently dropped or misrouted
+/// (#2280). All three input forms (here-string, pipe, heredoc)
+/// reject the trailing form with the error below instead.
+fn has_trailing_placeholder(cmd: &str) -> bool {
+    let t = cmd.trim_end();
+    t == "-" || t.ends_with(" -")
+}
+
+
+/// `cmd` with every here-string (`<<<` plus its content) removed.
+/// Here-string content is literal data, not command syntax: a `-`
+/// payload (`<<< -`) is not a trailing placeholder, and a quoted
+/// payload is not an operator. Source-level validation that inspects
+/// a command containing a here-string must look at the command with
+/// the data excluded, or it rejects lines the substitution stages
+/// handle correctly (Codex review, PR #3096). An unquoted payload
+/// consumes the rest of the line; an unterminated quote drops the
+/// remainder here too — the here-string stage itself reports that
+/// error when it runs.
+fn without_here_strings(cmd: &str) -> String {
+    let mut result = cmd.to_owned();
+    while let Some(pos) = find_unquoted_from(&result, "<<<", &[], 0) {
+        let before = result[..pos].to_owned();
+        let after = result[pos + 3..].trim_start().to_owned();
+        let rest = match after.chars().next() {
+            Some(quote @ ('\'' | '"')) => match after[1..].find(quote) {
+                Some(end) => after[1 + end + 1..].to_owned(),
+                None => String::new(),
+            },
+            _ => String::new(),
+        };
+        result = format!("{before}{rest}");
+    }
+    result
+}
+
+fn trailing_placeholder_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "unsupported trailing '-' content placeholder: place '-' before the name (put - name ...)"
+    )
+}
+
+// Here-string content is removed before pipes are processed. In particular,
+// unquoted content consumes the rest of the line, including any `|>`.
+fn source_pipe_position(line: &str) -> Option<usize> {
+    let mut from = 0;
+    loop {
+        let pipe = find_unquoted_from(line, "|>", &[], from);
+        let here = find_unquoted_from(line, "<<<", &[], from);
+        match (pipe, here) {
+            (Some(p), Some(h)) if p < h => return Some(p),
+            (Some(p), None) => return Some(p),
+            (_, Some(h)) => {
+                let after = &line[h + 3..];
+                let content = after.trim_start();
+                let quote = content.chars().next()?;
+                if quote != '\'' && quote != '"' {
+                    return None;
+                }
+                let end = content[1..].find(quote)?;
+                from = line.len() - content.len() + 1 + end + 1;
+            }
+            (None, None) => return None,
+        }
+    }
+}
+
 pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
     let line = line.trim();
     if line.is_empty() {
@@ -333,12 +419,35 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             let delimiter = after.trim().to_owned();
             if !delimiter.is_empty() {
                 let original_line = line[..heredoc_start].trim().to_owned();
+                if has_trailing_placeholder(&original_line) {
+                    return Err(trailing_placeholder_error());
+                }
                 return Ok(ReplInput::NeedMore {
                     delimiter,
                     lines: Vec::new(),
                     original_line,
                 });
             }
+        }
+    }
+
+    // Validate the pipe's trailing placeholder on the SOURCE line,
+    // before any stage that executes shell code: the $(...) and
+    // backtick stages below run substitutions while expanding the
+    // left side, so reaching the pipe stage's own check (after those
+    // stages) would already have executed `echo $(touch ...)`
+    // before reporting the placeholder error -- and a failing
+    // substitution would mask the diagnostic with its own error
+    // (Codex review, PR #3096).
+    if let Some(pos) = source_pipe_position(line) {
+        let right = line[pos + 2..].trim();
+        // The right side may carry a here-string whose payload is
+        // literal data: `echo hi |> put - name <<< -` stores `-`
+        // under `name` (the payload fills the mid-line placeholder),
+        // so the trailing check must exclude here-string content or
+        // it rejects a supported line (Codex review, PR #3096).
+        if has_trailing_placeholder(&without_here_strings(right)) {
+            return Err(trailing_placeholder_error());
         }
     }
 
@@ -374,11 +483,12 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
             (after.trim(), "")
         };
 
+        if rest.trim().is_empty() && has_trailing_placeholder(before.trim()) {
+            return Err(trailing_placeholder_error());
+        }
         // Replace - with content marker in the command
         let before_str = before.trim();
-        let new_before = before_str
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"));
+        let new_before = before_str.replace(" - ", &format!(" __STDIN_CONTENT__:{content} "));
         here_contents.push(content.to_owned());
         result = format!("{new_before}{rest}");
         protected = content_spans(&result, &here_contents);
@@ -518,14 +628,15 @@ pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
         let left = result[..pos].trim().to_owned();
         let right = result[pos + 2..].trim().to_owned();
 
+        if has_trailing_placeholder(&right) {
+            return Err(trailing_placeholder_error());
+        }
+
         // Execute left side as shell command
         let output = shell_capture(&left)?;
 
         // Replace - in right side with stdin content marker
-        let mut new_result = right
-            .replace(" - ", &format!(" __STDIN_CONTENT__:{output} "))
-            .replace(" -\n", &format!(" __STDIN_CONTENT__:{output}\n"))
-            .replace(" -$", &format!(" __STDIN_CONTENT__:{output}"));
+        let mut new_result = right.replace(" - ", &format!(" __STDIN_CONTENT__:{output} "));
 
         // If no - found, might be at end
         if !new_result.contains("__STDIN_CONTENT__") {
@@ -702,6 +813,157 @@ mod tests {
     }
 
     #[test]
+    fn test_here_string_pipe_is_literal_content() {
+        for line in [
+            "put - name <<< literal |> -",
+            "put - name <<< 'literal |> -'",
+            "put - name <<< \"literal |> -\"",
+        ] {
+            match preprocess_repl_line(line).unwrap() {
+                ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:literal |> - name"),
+                _ => panic!("expected Ready"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_after_quoted_here_string_rejected_before_substitution() {
+        for quote in ['\'', '"'] {
+            let line = format!("echo $(exit 3) <<< {quote}literal |> -{quote} |> put name -");
+            let error = preprocess_repl_line(&line).unwrap_err().to_string();
+            assert!(error.contains("trailing '-' content placeholder"), "{error}");
+        }
+    }
+
+
+    #[test]
+    fn test_pipe_rhs_here_string_dash_payload_is_literal() {
+        // Codex review, PR #3096: a real pipe before a here-string
+        // whose payload is `-` — the payload is data for the mid-line
+        // placeholder, not a trailing placeholder.
+        for line in [
+            "echo hi |> put - name <<< -",
+            "echo hi |> put - name <<< '-'",
+            "echo hi |> put - name <<< \"-\"",
+        ] {
+            match preprocess_repl_line(line).unwrap() {
+                ReplInput::Ready(s) => {
+                    assert_eq!(s, "put __STDIN_CONTENT__:- name", "{line}")
+                }
+                _ => panic!("expected Ready for {line}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_pipe_rhs_trailing_dash_with_here_string_still_rejected() {
+        // Excluding the here-string payload must not weaken the
+        // rejection: a trailing placeholder in the command itself is
+        // still an error, raised before the left side executes.
+        let result = preprocess_repl_line("exit 3 |> put name - <<< payload");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_here_string_trailing_dash_rejected() {
+        // #2280: the trailing form was silently dropped by a dead
+        // literal " -$" replace; it is rejected consistently now.
+        let result = preprocess_repl_line("put name - <<< 'payload'");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_trailing_dash_rejected_before_execution() {
+        // The left side would fail if it ran; the placeholder error
+        // must win, proving the rejection precedes pipe execution.
+        let result = preprocess_repl_line("exit 3 |> put name -");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_trailing_dash_rejected_before_substitution() {
+        // The substitution on the left would create a file if it ran;
+        // the placeholder error must win and the file must not exist:
+        // rejection precedes every stage that executes shell code
+        // (Codex review, PR #3096).
+        let marker = std::env::temp_dir().join(format!(
+            "mcpx-repl-side-effect-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&marker);
+        let line = format!(
+            "echo $(touch {}) |> put name -",
+            marker.display()
+        );
+        let result = preprocess_repl_line(&line);
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+        assert!(
+            !marker.exists(),
+            "substitution executed before the placeholder rejection"
+        );
+        // A failing substitution must not mask the diagnostic either.
+        let result = preprocess_repl_line("echo $(exit 3) |> put name -");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
+    fn test_preprocess_pipe_midline_placeholder_substitutes() {
+        match preprocess_repl_line("echo hi |> put - name").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put __STDIN_CONTENT__:hi name"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_pipe_without_placeholder_appends() {
+        match preprocess_repl_line("echo hi |> put name").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "put name __STDIN_CONTENT__:hi"),
+            _ => panic!("expected Ready"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_heredoc_trailing_dash_rejected() {
+        // Rejected at the start line, before any body is collected.
+        let result = preprocess_repl_line("put name - <<EOF");
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trailing '-' content placeholder")
+        );
+    }
+
+    #[test]
     fn test_preprocess_here_string_unterminated_single() {
         let result = preprocess_repl_line("put - name <<< 'unterminated");
         assert!(result.is_err());
@@ -870,6 +1132,74 @@ mod tests {
         match preprocess_repl_line("put - $(printf name) <<< \"O'Reilly\"").unwrap() {
             ReplInput::Ready(s) => {
                 assert_eq!(s, "put __STDIN_CONTENT__:O'Reilly name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_substitution_is_literal() {
+        // #2281 regression: single-quoted here-string content is
+        // documented literal; the $(...) stage must not rescan the
+        // content the here-string stage inserted and execute it.
+        match preprocess_repl_line("put - name <<< 'price $(echo SUBSTITUTED) end'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_single_quoted_backticks_are_literal() {
+        // #2281 regression: same boundary for the backtick stage.
+        match preprocess_repl_line("put - name <<< 'a `echo TICK` b'").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(s, "put __STDIN_CONTENT__:a `echo TICK` b name");
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_substitution_output_backticks_are_not_rescanned() {
+        // #2281 regression: $(...) output containing backticks is a
+        // protected span; the backtick stage must not execute it.
+        match preprocess_repl_line("get $(printf '`echo TICK`')").unwrap() {
+            ReplInput::Ready(s) => assert_eq!(s, "get `echo TICK`"),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_double_quoted_substitution_is_literal() {
+        // #2281 pinned semantics: double-quoted here-string content is
+        // literal too — inserted content is never rescanned, whatever
+        // quote form carried it.
+        match preprocess_repl_line("put - name <<< \"price $(echo SUBSTITUTED) end\"").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price $(echo SUBSTITUTED) end name"
+                );
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_preprocess_here_string_unquoted_substitution_is_literal() {
+        // #2281 pinned semantics: unquoted here-string content is
+        // likewise inserted as a protected span and never rescanned.
+        match preprocess_repl_line("put - name <<< price_$(echo SUBSTITUTED)_end").unwrap() {
+            ReplInput::Ready(s) => {
+                assert_eq!(
+                    s,
+                    "put __STDIN_CONTENT__:price_$(echo SUBSTITUTED)_end name"
+                );
             }
             other => panic!("expected Ready, got {other:?}"),
         }

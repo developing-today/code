@@ -244,8 +244,13 @@ export class ImageNodeView implements NodeView {
     if (node.type !== this.node.type) return false;
     this.node = node;
 
-    // Sync DOM
-    if (this.img.src !== node.attrs.src) this.img.src = node.attrs.src || "";
+    // Sync DOM. Compare against the authored attribute, not the
+    // img.src getter: the getter resolves relative sources to an
+    // absolute URL, so it never equals the authored relative attr and
+    // the old guard reassigned (reloading the image) on every update
+    // (#1392).
+    const nextSrc = node.attrs.src || "";
+    if (this.img.getAttribute("src") !== nextSrc) this.img.src = nextSrc;
     if (node.attrs.alt != null) this.img.alt = node.attrs.alt;
     if (node.attrs.title != null) this.img.title = node.attrs.title;
 

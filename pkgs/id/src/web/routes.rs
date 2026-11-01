@@ -22,7 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps, free_archive_name};
+use crate::fileops::{FileOpError, FileOps, claim_archive_name};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -166,7 +166,7 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // timestamp (#2793) — the same rule #809 applied to the "auto-"
     // prefix above. An ordinary file that merely contains ".archive."
     // (notes.archive.txt) is Primary. No producer mints a non-numeric
-    // suffix: free_archive_name always formats a u64.
+    // suffix: the archive claim path always formats a u64.
     if let Some(pos) = name.rfind(".archive.") {
         let ts_str = &name[pos + ".archive.".len()..];
         if let Ok(ts) = ts_str.parse::<u64>() {
@@ -1598,6 +1598,12 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
     let hash = outcome.hash;
     let hash_str = hash.to_string();
 
+    // #2363: Keep the check, unconditional tag set and filename-keyed
+    // metadata writes in one critical section across concurrent uploads.
+    // This only coordinates handlers sharing this AppState, not independent
+    // states/processes or other code that writes blob tags directly.
+    let _upload_name_guard = state.upload_name_lock.lock().await;
+
     // #1549: resolve the stored name before tagging anything. The
     // intended name is kept when free or already naming this blob; a
     // name owned by a different blob is uniquified (stem-N.ext), and
@@ -2099,6 +2105,13 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
 /// recurses into any other inline node's `content` rather than
 /// dropping it. The pre-#1306 version handled only top-level
 /// paragraphs/headings and silently deleted everything else on save.
+///
+/// Inline atoms carry no `content`, so recursion alone loses them.
+/// Pinned representations (#1491): an `image` contributes its `alt`
+/// text verbatim when non-empty, otherwise its `src` verbatim when
+/// non-empty, otherwise nothing. Known remaining gap: `footnote_reference`
+/// atoms are not yet rendered — they contribute nothing; that is
+/// explicitly out of scope for the #1491 fix.
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
@@ -2156,6 +2169,8 @@ fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>
 /// Extract the inline text of one node: `text` verbatim, `hard_break`
 /// as a newline, and any other inline node recursed into (its own
 /// inline content contributes its text instead of being dropped).
+/// The `image` atom has no content — its payload is `attrs`, rendered
+/// per the pinned policy on `extract_plain_text` (#1491).
 fn extract_inline_text(node: &serde_json::Value) -> String {
     let mut out = String::new();
     if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
@@ -2168,6 +2183,20 @@ fn extract_inline_text(node: &serde_json::Value) -> String {
                     }
                 }
                 "hard_break" => out.push('\n'),
+                "image" => {
+                    let attrs = inline.get("attrs");
+                    let alt = attrs
+                        .and_then(|a| a.get("alt"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if !alt.is_empty() {
+                        out.push_str(alt);
+                    } else if let Some(src) =
+                        attrs.and_then(|a| a.get("src")).and_then(|v| v.as_str())
+                    {
+                        out.push_str(src);
+                    }
+                }
                 _ => out.push_str(&extract_inline_text(inline)),
             }
         }
@@ -2243,14 +2272,11 @@ async fn archive_original_tag(
         .as_secs();
     // Bump past an existing archive tag so two archives within the same
     // second never overwrite each other (#1612).
-    let Ok(archive_name) = free_archive_name(store, name, timestamp).await else {
-        tracing::error!("[routes] Failed to find a free archive tag for {}", name);
-        return None;
-    };
-    let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
-
-    match store.tags().set(archive_tag, expected).await {
-        Ok(()) => {
+    // Claim (resolve + set) in one critical section: resolving a free
+    // name first and setting it afterwards was check-then-act, so
+    // concurrent same-second archives could collide (#2462).
+    match claim_archive_name(store, name, timestamp, expected).await {
+        Ok(archive_name) => {
             tracing::info!(
                 "[routes] Archived original: {} -> {}",
                 archive_name,
@@ -2423,6 +2449,11 @@ mod upload_router_tests {
     const BOUNDARY: &str = "----id-upload-test-boundary";
 
     async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let (router, _, dir, endpoint, docs) = router_with_state().await;
+        (router, dir, endpoint, docs)
+    }
+
+    async fn router_with_state() -> (Router, AppState, tempfile::TempDir, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -2450,7 +2481,7 @@ mod upload_router_tests {
         )
         .await
         .unwrap();
-        (create_router(state), dir, endpoint, docs)
+        (create_router(state.clone()), state, dir, endpoint, docs)
     }
 
     fn multipart_body(file_bytes: &[u8]) -> Vec<u8> {
@@ -2549,6 +2580,62 @@ mod upload_router_tests {
         body.extend_from_slice(file_bytes);
         body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
         body
+    }
+
+    #[tokio::test]
+    async fn concurrent_uploads_keep_names_and_metadata_consistent() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        // Hold the same lock used at the resolve/claim boundary while both
+        // requests start; neither may complete its claim until it is released.
+        let guard = state.upload_name_lock.lock().await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let mut tasks = Vec::new();
+        for bytes in [b"first-bytes".as_slice(), b"second-bytes".as_slice()] {
+            let router = router.clone();
+            let barrier = barrier.clone();
+            let body = multipart_body_named("image.png", "image/png", bytes);
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                upload(router, body).await
+            }));
+        }
+        barrier.wait().await;
+        tokio::task::yield_now().await;
+        assert!(tasks.iter().all(|task| !task.is_finished()));
+        drop(guard);
+
+        let images = {
+            let mut results = Vec::new();
+            for task in tasks {
+                let (status, body) = task.await.unwrap();
+                assert_eq!(status, StatusCode::OK, "{body}");
+                results.push(serde_json::from_str::<serde_json::Value>(&body).unwrap());
+            }
+            results
+        };
+        assert_ne!(images[0]["name"], images[1]["name"]);
+        assert_ne!(images[0]["hash"], images[1]["hash"]);
+        let listed = list_images(router.clone()).await;
+        for (image, bytes) in images.iter().zip([b"first-bytes".as_slice(), b"second-bytes".as_slice()]) {
+            let name = image["name"].as_str().unwrap();
+            let hash = image["hash"].as_str().unwrap();
+            assert_eq!(upload_name_owner(&state.store, name).await.unwrap().unwrap().to_string(), hash);
+            assert!(listed.iter().any(|entry| entry["name"] == name && entry["hash"] == hash));
+            let url = image["url"].as_str().unwrap();
+            assert!(url.contains(&format!("filename={name}")));
+            let (status, _, actual) = get_blob(router.clone(), url).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(actual, bytes);
+            for (key, expected) in [(b"content-type".as_slice(), Some("image/png")), (b"created".as_slice(), None)] {
+                let tags = state.tag_store.get_by_key(&state.tag_store.global, name.as_bytes(), key).await.unwrap();
+                let value = tags.first().and_then(|tag| tag.value.as_ref()).and_then(|value| value.as_str()).unwrap();
+                if let Some(expected) = expected {
+                    assert_eq!(value, expected);
+                } else {
+                    assert!(value.parse::<u64>().is_ok(), "invalid creation timestamp: {value}");
+                }
+            }
+        }
     }
 
     // #1549: a second upload under the same filename with different
@@ -3105,6 +3192,64 @@ mod tests {
             extract_plain_text(&doc),
             "intro\nitem\nquote\ncode\ncell\noutro"
         );
+    }
+
+    fn img(attrs: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "image", "attrs": attrs})
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_only_paragraph_saves_as_alt() {
+        // #1491: an image atom's only text is its alt.
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "blob:abc", "alt": "a red barn", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "a red barn");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_between_text_runs() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "before "},
+            img(serde_json::json!({"src": "blob:abc", "alt": "middle", "title": null})),
+            {"type": "text", "text": " after"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "before middle after");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_in_list_item() {
+        // Recursive paths funnel through extract_inline_text, so the
+        // image policy applies inside list items too.
+        let doc = plain_doc(vec![serde_json::json!({"type": "bullet_list", "content": [
+            {"type": "list_item", "content": [serde_json::json!({"type": "paragraph", "content": [
+                img(serde_json::json!({"src": "blob:abc", "alt": "listed", "title": null}))
+            ]})]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "listed");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_without_alt_falls_back_to_src() {
+        // Missing alt and empty alt both fall back to src verbatim.
+        let missing = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "photo.png", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&missing), "photo.png");
+        let empty = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            img(serde_json::json!({"src": "photo.png", "alt": "", "title": null}))
+        ]})]);
+        assert_eq!(extract_plain_text(&empty), "photo.png");
+    }
+
+    #[test]
+    fn test_extract_plain_text_image_with_neither_alt_nor_src_is_empty() {
+        let doc = plain_doc(vec![serde_json::json!({"type": "paragraph", "content": [
+            {"type": "text", "text": "x"},
+            img(serde_json::json!({"alt": "", "title": null})),
+            {"type": "text", "text": "y"}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "xy");
     }
 
     #[test]

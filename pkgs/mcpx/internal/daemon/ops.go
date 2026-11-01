@@ -15,15 +15,16 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/dezren39/mcpx/internal/api"
-	"github.com/dezren39/mcpx/internal/config"
-	"github.com/dezren39/mcpx/internal/defaults"
-	"github.com/dezren39/mcpx/internal/diagnose"
-	"github.com/dezren39/mcpx/internal/logging"
-	"github.com/dezren39/mcpx/internal/logstore"
-	"github.com/dezren39/mcpx/internal/mcpclient"
-	"github.com/dezren39/mcpx/internal/registry"
-	"github.com/dezren39/mcpx/internal/tasks"
+	"github.com/developing-today/code/pkgs/mcpx/internal/api"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/diagnose"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logging"
+	"github.com/developing-today/code/pkgs/mcpx/internal/logstore"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
+	"github.com/developing-today/code/pkgs/mcpx/internal/registry"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // routesV1Ops registers the operations that are not part of the original
@@ -351,6 +352,37 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cs := s.callSettings(r)
+	cc := callContext(r, req.Context, req.Session)
+	// The completion rate limit (#2387, Phase 1 of #2386) is consulted
+	// here -- after shape validation, before any pool lookup -- so a
+	// refused request never acquires a pool lease or wakes an upstream.
+	// The caller is the identity callContext already resolved, never
+	// anything else the request reports.
+	// Both keys use the canonical (configured) server name: Pool also
+	// answers to the namespace spelling, and keying by the raw request
+	// spelling would give one server a budget per spelling (Codex
+	// review, PR #3730). CanonicalName is a registry map read -- it
+	// acquires no lease and wakes no upstream.
+	serverName := s.reg.CanonicalName(req.Server)
+	if refused := s.completeLimiter.admit([]limitCheck{
+		{
+			Name:  "completion.perMinute",
+			What:  "this caller and server",
+			Key:   "caller\x00" + completionCaller(cc) + "\x00" + serverName,
+			Limit: cs.Int("completion.perMinute"),
+		},
+		{
+			Name:  "completion.serverPerMinute",
+			What:  "this server",
+			Key:   "server\x00" + serverName,
+			Limit: cs.Int("completion.serverPerMinute"),
+		},
+	}); refused != nil {
+		writeErr(w, http.StatusTooManyRequests, fmt.Errorf(
+			"completion rate limit: %s allows %d per minute for %s",
+			refused.Name, refused.Limit, refused.What))
+		return
+	}
 	p, ok := s.reg.Pool(req.Server)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown server or namespace %q", req.Server))
@@ -365,7 +397,6 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		fwd["context"] = map[string]any{"arguments": req.Arguments}
 	}
 	params, _ := json.Marshal(fwd)
-	cc := callContext(r, req.Context, req.Session)
 	raw, upstream, err := p.Complete(r.Context(), s.reg.keyFor(p, cc), params)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -382,13 +413,15 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(raw, &res) == nil && len(res.Completion) > 0 {
 			payload = res.Completion
 		}
+		payload = capUpstreamCompletion(payload,
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues")))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"completion": payload, "upstream": true, "source": "upstream"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"completion": localCompletion(p.CachedPrompts(), p.CachedTemplates(), req,
-			cs.Int("completion.maxValues")),
+			settings.EffectiveCompletionCap(cs.Int("completion.maxValues"))),
 		// Said plainly, because a client that cannot tell an empty answer
 		// from an unimplemented one shows nothing and the user concludes
 		// completion is broken. `upstream` stays for the callers that read
@@ -398,6 +431,27 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		"source":   "cache",
 		"because":  "this server did not declare the completions capability",
 	})
+}
+
+// completionCaller names the caller a completion rate-limit window
+// binds: the session the caller resolved to, else its PID, else its
+// per-call id. A PIDShared PID is the daemon's own (every /v1/exec run
+// reports it), not the caller's, so it falls through to the per-call id
+// too -- the same !PIDShared guard CallerOwned applies (#3783). The
+// per-call fallback means a caller with neither a
+// session nor a PID is effectively unwindowed per caller -- which is
+// honest, because there is nothing stable to bind -- and the per-server
+// window (completion.serverPerMinute) remains the backstop that does
+// not depend on caller identity at all.
+func completionCaller(cc config.CallContext) string {
+	switch {
+	case cc.SessionID != "":
+		return "session:" + cc.SessionID
+	case cc.PID > 0 && !cc.PIDShared:
+		return "pid:" + strconv.Itoa(cc.PID)
+	default:
+		return "call:" + cc.CallID
+	}
 }
 
 // localCompletion answers from the schemas mcpx already holds.
@@ -428,6 +482,35 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 		values = values[:max]
 	}
 	return map[string]any{"values": values, "total": total, "hasMore": total > len(values)}
+}
+
+// capUpstreamCompletion applies the shared completion cap to an
+// upstream CompleteResult payload (#2878): values are truncated to
+// limit, total keeps the upstream full count, and hasMore is
+// recomputed from the two. A payload that does not decode as a
+// completion object with a values array passes through unchanged —
+// capping must never corrupt a reply it cannot read.
+func capUpstreamCompletion(payload json.RawMessage, limit int) json.RawMessage {
+	var obj map[string]any
+	if json.Unmarshal(payload, &obj) != nil {
+		return payload
+	}
+	rawValues, ok := obj["values"].([]any)
+	if !ok || len(rawValues) <= limit {
+		return payload
+	}
+	total := len(rawValues)
+	if t, ok := obj["total"].(float64); ok && int(t) > total {
+		total = int(t)
+	}
+	obj["values"] = rawValues[:limit]
+	obj["total"] = total
+	obj["hasMore"] = total > limit
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 // rankCompletions orders the candidates that match value by relevance
@@ -510,16 +593,61 @@ func (s *Server) taskStore() *tasks.Store {
 		}
 		if s.set != nil {
 			s.tasks.PollInterval = s.set.Duration("protoTasks.pollInterval")
+			// The task-store limits (#2498): both surfaces share this
+			// store, so wiring them here covers /v1 and, when this store
+			// is injected into the MCP server, MCP too.
+			s.tasks.MaxTTL = s.set.Duration("protoTasks.maxTTL")
+			s.tasks.MaxPerRequestor = s.set.Int("protoTasks.maxPerRequestor")
+			// The setting's 0 disables the window; the store's 0 means
+			// "default", so translate here.
+			if pm := s.set.Int("protoTasks.perMinute"); pm == 0 {
+				s.tasks.PerMinute = -1
+			} else {
+				s.tasks.PerMinute = pm
+			}
 		}
 	})
 	return s.tasks
 }
 
-func (s *Server) handleTasksList(w http.ResponseWriter, _ *http.Request) {
+// taskRequestor names who a /v1 request belongs to for the task store's
+// per-requestor limits: the session the caller named (the query param,
+// or the X-Mcpx-Session header creation keys by via callContext), else
+// its run, else the unbound bucket (capped like any other).
+func taskRequestor(r *http.Request) tasks.Requestor {
+	if v := r.URL.Query().Get("session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Session"); v != "" {
+		return tasks.Caller(v)
+	}
+	if v := r.Header.Get("X-Mcpx-Run"); v != "" {
+		return tasks.Caller(v)
+	}
+	return tasks.UnboundRequestor
+}
+
+// admitTaskRoute counts one /v1/tasks call against the tasks/* admission
+// window (protoTasks.perMinute) and writes the 429 when it is full.
+func (s *Server) admitTaskRoute(w http.ResponseWriter, r *http.Request) bool {
+	if !s.taskStore().Admit(taskRequestor(r)) {
+		writeErr(w, http.StatusTooManyRequests, tasks.ErrRateWindow)
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleTasksList(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": s.taskStore().List()})
 }
 
 func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	t, ok := s.taskStore().Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, tasks.ErrNoTask{ID: r.PathValue("id")})
@@ -529,9 +657,13 @@ func (s *Server) handleTaskGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
-	wait := s.callSettings(r).Duration("tasks.resultWait")
-	if ms, err := strconv.Atoi(r.URL.Query().Get("waitMs")); err == nil && ms > 0 {
-		wait = time.Duration(ms) * time.Millisecond
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
+	wait, err := pollWait(r.URL.Query().Get("waitMs"), s.callSettings(r).Duration("tasks.resultWait"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
@@ -563,6 +695,9 @@ func (s *Server) handleTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if !s.admitTaskRoute(w, r) {
+		return
+	}
 	reason := r.URL.Query().Get("reason")
 	if reason == "" {
 		reason = "cancelled by client"
@@ -576,8 +711,18 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 // startCallTask runs a tool call in the background and hands back a handle.
-func (s *Server) startCallTask(ttl int64, server, tool string, cc config.CallContext, args any) tasks.Task {
-	return s.taskStore().Start(ttl, func(ctx context.Context) (any, *tasks.Fault) {
+// The task counts against requestor (the caller session, else its
+// run); an empty requestor lands in the store unbound bucket.
+func (s *Server) startCallTask(ttl int64, server, tool string, requestor tasks.Requestor, cc config.CallContext, args any, cs *settings.Set) (tasks.Task, error) {
+	return s.taskStore().Start(requestor, ttl, func(ctx context.Context) (any, *tasks.Fault) {
+		// The task outlives the request that created it, so the
+		// caller's call settings arrive by value (captured in
+		// handleCall) and are attached here, inside the callback --
+		// the same treatment the ask and reporting paths give them.
+		// Registry.Call threads the requested pool.callTimeout off
+		// this context; without it an explicit-task call silently
+		// kept the daemon's configured timeout (#1864 item 4).
+		ctx = withCallSettings(ctx, cs)
 		start := time.Now()
 		res, err := s.reg.Call(ctx, server, tool, cc, args)
 		if err != nil {

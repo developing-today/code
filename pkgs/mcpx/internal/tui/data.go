@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dezren39/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/mattn/go-runewidth"
 )
 
 // Source is everything the view reads.
@@ -156,12 +157,12 @@ func (t Table) Render(width int, selected int, sel, dim func(string) string) str
 	}
 	widths := make([]int, len(t.Columns))
 	for i, c := range t.Columns {
-		widths[i] = len(c)
+		widths[i] = cellWidth(c)
 	}
 	for _, row := range t.Rows {
 		for i, cell := range row {
-			if i < len(widths) && len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if i < len(widths) && cellWidth(cell) > widths[i] {
+				widths[i] = cellWidth(cell)
 			}
 		}
 	}
@@ -219,19 +220,46 @@ func shrink(widths []int, budget int) {
 	}
 }
 
-func pad(s string, n int) string {
-	if len(s) >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-len(s))
+// cellWidth measures s in terminal cells, not bytes: a wide (CJK) rune
+// takes two cells, a combining or zero-width rune none. Every width in
+// this file is a cell count, because the terminal spends cells, and
+// measuring in bytes both misaligns rows and lets truncate split a
+// multi-byte rune and emit invalid UTF-8.
+func cellWidth(s string) int {
+	return runewidth.StringWidth(s)
 }
 
+func pad(s string, n int) string {
+	if w := cellWidth(s); w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s
+}
+
+// truncate shortens s to at most n terminal cells. The cut lands on a
+// rune boundary, a wide rune that does not fit in the remaining budget
+// is dropped whole, and the ellipsis counts against the budget, so the
+// result is always valid UTF-8 no wider than n cells.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if cellWidth(s) <= n {
 		return s
 	}
-	if n <= 1 {
-		return s[:n]
+	if n <= 0 {
+		return ""
 	}
-	return s[:n-1] + "\u2026"
+	if n == 1 {
+		return "\u2026"
+	}
+	budget := n - 1 // the ellipsis takes the last cell
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runewidth.RuneWidth(r)
+		if used+w > budget {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + "\u2026"
 }

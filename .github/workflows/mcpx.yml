@@ -173,6 +173,10 @@ jobs:
       - name: Unit and end-to-end tests
         working-directory: pkgs/mcpx
         env:
+          # #1983: CI always sets MCPX_TEST_REQUIRE -- a runtime this job
+          # installs (deno, bun, node above; python3 on the runner) that is
+          # nevertheless missing must fail the suite, never skip silently.
+          MCPX_TEST_REQUIRE: deno,bun,node,python3
           VARS: ${{ toJSON(vars) }}
           GH_TOKEN: ${{ secrets.MCPX_CONFORMANCE_VARS_TOKEN }}
           ON_MAIN: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -229,6 +233,39 @@ jobs:
       - name: Plugin tests (bun)
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
+
+  docs-history:
+    name: "basic: docs-history check"
+    # #1865: a PR that changes a compendium section's prose must carry
+    # a change fragment naming the section (docs/changes/<slug>.md) or
+    # the trivial marker (docs:trivial label). The workflow trigger
+    # already paths-filters to pkgs/mcpx/**; the diff narrows to docs.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+
+      - name: docs-history check
+        working-directory: pkgs/mcpx
+        run: |
+          git diff "origin/${{ github.base_ref }}...HEAD" -- docs/ > "$RUNNER_TEMP/docs.diff"
+          trivial=""
+          if [ "${{ contains(github.event.pull_request.labels.*.name, 'docs:trivial') }}" = "true" ]; then
+            trivial="--trivial"
+          fi
+          if git log "origin/${{ github.base_ref }}..HEAD" --format=%B | grep -qi '^Docs-Trivial: yes'; then
+            trivial="--trivial"
+          fi
+          go run ./tools/docs-history check --diff "$RUNNER_TEMP/docs.diff" $trivial docs/*.md
 
   lint:
     name: "basic: lint"
