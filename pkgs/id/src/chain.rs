@@ -22,6 +22,7 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
+use crate::chat::{ChatMessage, is_chat_message_kind};
 use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
 use crate::issuer_rotation::{IssuerRotation, check_rotation, is_rotation_kind};
 use crate::note_links::{NoteLinkOp, check_note_link_op, is_note_link_kind};
@@ -137,6 +138,10 @@ pub struct ChainExt {
     /// with the header and persisted with it, because the event store keeps the
     /// header but not an event body, so an event carries its whole rotation.
     pub rotation: Option<IssuerRotation>,
+    /// The chat message of a `chat.message.v1`, and `None` for every other kind. It is the
+    /// message's body (#3799): it is signed with the header, so an event carries its
+    /// message, and sync needs no separate body.
+    pub chat: Option<ChatMessage>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
@@ -163,6 +168,8 @@ struct Wire {
     checkpoint: Option<SessionCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rotation: Option<IssuerRotation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat: Option<ChatMessage>,
 }
 
 impl From<ChainExt> for Wire {
@@ -179,6 +186,7 @@ impl From<ChainExt> for Wire {
             link: ext.link,
             checkpoint: ext.checkpoint,
             rotation: ext.rotation,
+            chat: ext.chat,
         }
     }
 }
@@ -201,6 +209,7 @@ impl TryFrom<Wire> for ChainExt {
             link: wire.link,
             checkpoint: wire.checkpoint,
             rotation: wire.rotation,
+            chat: wire.chat,
         };
         ext.validate()?;
         Ok(ext)
@@ -370,6 +379,26 @@ impl ChainExt {
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
         }
+        match (is_chat_message_kind(&self.kind), &self.chat) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} carries a chat message",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs its chat message",
+                    self.kind
+                )));
+            }
+            (true, Some(message)) => {
+                message
+                    .check()
+                    .map_err(|err| ChainError::Extension(err.to_string()))?;
+            }
+        }
         Ok(())
     }
 }
@@ -528,6 +557,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         }
     }
 
@@ -1237,6 +1267,7 @@ mod golden {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();
@@ -1257,6 +1288,7 @@ mod golden {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             },
         )
         .unwrap();

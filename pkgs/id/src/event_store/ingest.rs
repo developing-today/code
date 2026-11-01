@@ -1159,6 +1159,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1882,6 +1883,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                chat: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
@@ -1918,6 +1920,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            chat: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
