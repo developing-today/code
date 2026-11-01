@@ -2252,11 +2252,29 @@ export function historyChartHtml(records: SnapshotRecord[], metricId: string): s
   return `<div class="chart"><div class="muted">${esc(metricId)} · ${recs.length} snapshot${recs.length === 1 ? "" : "s"} · ${esc(first.ts.slice(0, 10))} → ${esc(last.ts.slice(0, 10))} · dashed amber = window reset, red = limit</div><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="history chart for ${esc(metricId)}">${markers}${limitLine}<path d="${line}" fill="none" stroke="#58a6ff" stroke-width="1.5"></path>${points}</svg></div>`;
 }
 
+function snapshotFreshnessStamp(history: SnapshotRecord[], cadenceDays: number, now: Date): string {
+  const latest = history.reduce<SnapshotRecord | null>(
+    (current, record) => (!current || Date.parse(record.ts) > Date.parse(current.ts) ? record : current),
+    null,
+  );
+  if (!latest) {
+    return '<p class="muted">No snapshot writer has landed a record for this service yet. The feed-ingest tick is the normal landing path; the §4 backfill is a one-shot recovery, not normal history startup.</p>';
+  }
+  const measuredAt = latest.ts.slice(0, 10);
+  const f = freshness(measuredAt, cadenceDays, now);
+  const age = f.ageDays == null ? " · age unknown" : f.ageDays === 0 ? " · today" : ` · ${f.ageDays}d ago`;
+  const state = f.stale
+    ? '<span class="badge stale">stale</span>'
+    : '<span class="badge src">within cadence</span>';
+  return `<p class="muted">Latest stored snapshot: <time datetime="${esc(latest.ts)}">${esc(measuredAt)}</time>${age} · ${cadenceDays}-day expected cadence · ${state}</p>`;
+}
+
 export function renderServiceDetail(
   svc: SaasService,
   history: SnapshotRecord[],
   provenance: Provenance,
   detail?: ProvenanceDetail,
+  now = new Date(),
 ): string {
   const f = freshness(svc.measuredAt, svc.cadenceDays);
   const metricRows = svc.metrics.length
@@ -2297,7 +2315,7 @@ export function renderServiceDetail(
 <h2>Sources</h2><div class="card">${svc.sources ? `<div>quota-view section: <code>${esc(svc.sources.quotaViewSection)}</code> in <code>quota-view.md</code> Part (b)</div><div>tracker row: ${svc.sources.trackerRow ? `<code>Summary (b) — ${esc(svc.sources.trackerRow)}</code>` : (svc.status === "candidate" || svc.status === "no-account") ? "none — no Summary (b) row; candidate / not held (§1.4)" : "none — no Summary (b) row"}</div><div>evidence baseline: <code>${esc(svc.sources.baselineDoc)}</code></div>` : `<div class="muted">source: ${esc(svc.sourceNote)}</div>`}</div>
 <h2>All metrics</h2><div class="tblwrap"><table><caption>All metrics</caption><tr><th scope="col">Metric</th><th scope="col">Used</th><th scope="col">Limit</th><th scope="col">%</th><th scope="col">Note</th></tr>${metricRows}</table></div>
 ${payg}
-<h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
+<h2>Snapshot history</h2>${snapshotFreshnessStamp(history, svc.cadenceDays, now)}${charts || ""}
 ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
 ${conflicts}
 <h2>Dated source reads</h2>${reads}

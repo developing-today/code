@@ -3,11 +3,12 @@
 // billed state on the Supabase card; a missing, failed or stale
 // document reproduces the recorded prose exactly.
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
+import { SnapshotStore } from "../src/snapshots.ts";
 import { liveSource } from "../src/sources/live.ts";
 
 const VIEW = `
@@ -153,5 +154,103 @@ describe("live source usage(): the overlay reaches fleet-feed services too", () 
     expect(db.used).toBe(1.154);
     expect(db.limit).toBe(0.5);
     expect(supabaseCard(usage.services).billedUsd).toBe(0);
+  });
+
+  test("usage reads feed history without writing to a read-only snapshot store", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-supa-readonly-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const nowIso = new Date().toISOString();
+    const record = {
+      ts: nowIso,
+      serviceId: "supabase",
+      metricId: "db-size",
+      value: 1.154,
+      unit: "gb",
+      source: "api",
+      observedBy: "fleet-feed-collector",
+    };
+    try {
+      await mkdir(snapshotsDir);
+      await chmod(snapshotsDir, 0o555);
+      await writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: nowIso,
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          saas: extractSaasServices(VIEW),
+          snapshots: [record],
+        }),
+      );
+      const cfg = loadConfig({
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_AGG_SNAPSHOTS_DIR: snapshotsDir,
+        PM_AGG_SUPABASE_EXPORT: join(dir, "latest.json"),
+        PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+        PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+        PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+        PM_PROJECTOR_URL: "off",
+        KANEO_ADMIN_EMAIL: "",
+        KANEO_ADMIN_PASSWORD: "",
+        GRIST_API_KEY: "",
+      });
+      const usage = await liveSource(cfg).usage();
+      expect(usage.services.some((service) => service.id === "supabase")).toBe(true);
+      expect(await readdir(snapshotsDir)).toEqual([]);
+    } finally {
+      await chmod(snapshotsDir, 0o755).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("background ingestion lands feed records idempotently", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-supa-ingest-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const nowIso = new Date().toISOString();
+    const record = {
+      ts: nowIso,
+      serviceId: "supabase",
+      metricId: "db-size",
+      value: 1.154,
+      unit: "gb",
+      source: "api",
+      observedBy: "fleet-feed-collector",
+    };
+    try {
+      await writeFile(
+        feedFile,
+        JSON.stringify({
+          version: 1,
+          generatedAt: nowIso,
+          quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+          attention: [],
+          saas: extractSaasServices(VIEW),
+          snapshots: [record],
+        }),
+      );
+      const cfg = loadConfig({
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_AGG_SNAPSHOTS_DIR: snapshotsDir,
+        PM_AGG_SUPABASE_EXPORT: join(dir, "latest.json"),
+        PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+        PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+        PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+        PM_PROJECTOR_URL: "off",
+        KANEO_ADMIN_EMAIL: "",
+        KANEO_ADMIN_PASSWORD: "",
+        GRIST_API_KEY: "",
+      });
+      const source = liveSource(cfg);
+      expect(await source.ingestSnapshots?.()).toBe(1);
+      expect(await source.ingestSnapshots?.()).toBe(0);
+      expect(await new SnapshotStore(snapshotsDir).byService()).toMatchObject({ supabase: [record] });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

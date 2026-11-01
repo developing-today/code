@@ -34,8 +34,12 @@ export interface Source {
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
   /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
-   * charges evidence, bubble flags, and snapshot history (hub §3). */
+   * charges evidence, bubble flags, and snapshot history (hub §3). Read-only. */
   usage(): Promise<UsageView>;
+  /** Land the latest feed-carried usage snapshots into the local store.
+   * Optional: live mode runs this from its background writer tick, never
+   * as a side effect of a page/read request. */
+  ingestSnapshots?(): Promise<number>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */

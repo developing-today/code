@@ -1212,6 +1212,27 @@ for (const server of servers) {
   console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
 }
 
+// Collector feeds are replaced on a ~5-minute cadence. Land their
+// snapshot records from a server-owned writer tick rather than from
+// usage() so GET /quota and /quota/service/* never require store writes.
+const SNAPSHOT_INGEST_INTERVAL_MS = 5 * 60_000;
+if (source.ingestSnapshots) {
+  let snapshotIngestRunning = false;
+  const ingestSnapshots = async (): Promise<void> => {
+    if (snapshotIngestRunning) return;
+    snapshotIngestRunning = true;
+    try {
+      await source.ingestSnapshots?.();
+    } catch {
+      // Feed and store failures are retried on the next tick; reads stay up.
+    } finally {
+      snapshotIngestRunning = false;
+    }
+  };
+  void ingestSnapshots(); // recover the latest feed immediately on startup
+  setInterval(() => void ingestSnapshots(), SNAPSHOT_INGEST_INTERVAL_MS);
+}
+
 // The alert throat's engine (#3676): the ~60s delivery/escalation
 // tick (live mode only, fail-soft — see src/alerts.ts).
 startAlertEngine(cfg);

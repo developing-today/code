@@ -548,4 +548,41 @@ describe("hub renders", () => {
     expect(cfHtml).toContain("Conflicts (shown, not resolved)");
     expect(cfHtml).toContain("counted as used");
   });
+  test("service detail: stored snapshot freshness follows the service cadence", () => {
+    const turso = extractSaasServices(VIEW).find((s) => s.id === "turso")!;
+    const now = new Date("2026-11-01T12:00:00Z");
+    const record = (ts: string): SnapshotRecord => ({
+      ts,
+      serviceId: "turso",
+      metricId: "databases",
+      value: 1,
+      unit: "count",
+      source: "manual",
+      observedBy: "test",
+    });
+    const current = renderServiceDetail(
+      turso,
+      [record("2026-10-30T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(current).toContain("Latest stored snapshot:");
+    expect(current).toContain("2026-10-30");
+    expect(current).toContain("7-day expected cadence");
+    expect(current).toContain("within cadence");
+
+    const stale = renderServiceDetail(
+      turso,
+      [record("2026-10-01T12:00:00Z")],
+      fixtureSource().provenance(),
+      undefined,
+      now,
+    );
+    expect(stale).toContain("stale");
+
+    const empty = renderServiceDetail(turso, [], fixtureSource().provenance(), undefined, now);
+    expect(empty).toContain("No snapshot writer has landed a record for this service yet");
+    expect(empty).toContain("one-shot recovery");
+  });
 });

@@ -413,7 +413,7 @@ Everything defaults to **fixtures** and works with no configuration:
 | `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                                                                                            |
 | `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)                                                                     |
 | `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)                                                                          |
-| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by writer jobs + `scripts/backfill-usage-snapshots.ts` |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by the background feed-ingest tick, writer jobs + the one-shot backfill |
 | `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                                                                              |
 | `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback                                                                         |
 | `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                                                                               |
@@ -485,8 +485,11 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   billing incidents supply the gateway accrual + card-alert charges).
   The aggregator's `Source.usage()` serves them with snapshot history
   from the §4 store; older feeds without the sections fall back to a
-  direct read of the two source documents. Seed the store once with
-  `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
+  direct read of the two source documents. A five-minute background
+  writer tick lands feed snapshots into the local store; `Source.usage()`
+  and its GET routes are read-only. Seed historical observations once
+  with `bun run scripts/backfill-usage-snapshots.ts` (idempotent one-shot
+  recovery, not normal history startup).
 - **Snapshot writers (hub §4)** — history accumulates three ways, all
   riding the feed: the collector derives records from its own hub
   sections (`src/snapshot-records.ts`) and embeds them in the feed's
@@ -496,9 +499,9 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   `bun run scripts/append-usage-snapshots.ts` (add
   `--from-provider-usage` for the keeper snapshot) or, for
   check-usage, from Python directly — and the collector drains the
-  outbox into the same field. `Source.usage()` ingests feed records
-  into the local store; dedupe on (service, metric, timestamp, value)
-  makes every writer safe to re-run.
+  outbox into the same field. The server's background feed-ingest tick
+  copies feed records into the local store; dedupe on (service, metric,
+  timestamp, value) makes every writer safe to re-run.
 
 ## The quota gatherer (Stage 2 — #1151)
 
