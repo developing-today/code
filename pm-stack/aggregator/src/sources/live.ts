@@ -188,7 +188,12 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.updatedAt ?? t.createdAt,
+          // #1197: never present creation time as update time. When
+          // Kaneo omits updatedAt the item stays undated: downstream
+          // sorts treat missing as oldest and the done policy keeps
+          // undated cards (age unproven), instead of freshness being
+          // fabricated from createdAt.
+          updatedAt: t.updatedAt,
           kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
