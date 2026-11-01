@@ -1394,7 +1394,7 @@ pub enum GroupCommand {
     },
     /// List the groups in the log, one line each.
     List,
-    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    /// Unavailable: group admission and network joining are not implemented yet.
     Join {
         /// The pasted ticket or link.
         invite: String,
