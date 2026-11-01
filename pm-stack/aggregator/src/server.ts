@@ -15,7 +15,7 @@ import { computeCoverage, CoverageSnapshotStore, nextCoverageSnapshot, type Cove
 import { loadConfig } from "./config.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
+import { buildHealth, pageRenderHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
@@ -50,7 +50,6 @@ import {
   renderPages,
   renderProgram,
   renderProgramProject,
-  renderProjects,
   renderQuota,
   renderRoadmap,
   renderServiceDetail,
@@ -684,24 +683,12 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/projects") {
-    const [pool, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
-      source.projects().catch(() => []),
-      source.orchestration().catch(() => null),
-      commentFormOpts(),
-      actionsStore.byObject(),
-      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
-      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
-    ]);
-    return html(
-      renderProjects(pool, prov(), {
-        area: url.searchParams.get("area"),
-        orchestration,
-        detail: provDetail(),
-        actionsByObject,
-        identities: formOpts.identities,
-        coverage: await coverageSnapshot(census, pool, poolAvailable),
-      }),
-    );
+    // #1497: Projects merged into Program status — the pool view is
+    // the #projects-pool section of /program now. The route redirects
+    // (area filter preserved); /api/projects.json below is unchanged.
+    const area = url.searchParams.get("area");
+    const target = area ? `/program?area=${encodeURIComponent(area)}#projects-pool` : "/program#projects-pool";
+    return new Response(null, { status: 302, headers: { Location: target } });
   }
   if (path === "/api/projects.json") {
     const [pool, census, poolAvailable] = await Promise.all([
@@ -719,18 +706,32 @@ async function handler(req: Request): Promise<Response> {
     // registry in src/project-config.ts; the live half derived from
     // the same Source the other views read (items / projects /
     // roadmap / orchestration), each facet failing soft on its own.
-    const [items, pool, rows, orchestration] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject, census, poolAvailable] = await Promise.all([
       source.items(programRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
       source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
+      source.coverageCensus ? source.coverageCensus().catch(() => null) : Promise.resolve(null),
+      source.projectsAvailable ? source.projectsAvailable().catch(() => false) : Promise.resolve(true),
     ]);
     const data = {
       ...buildProgramData(items, pool, orchestration),
       projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
     };
     if (path === "/api/program.json") return json(data);
-    return html(renderProgram(data, items, prov(), provDetail()));
+    const coverage = await coverageSnapshot(census, pool, poolAvailable);
+    return html(
+      renderProgram(data, items, prov(), provDetail(), {
+        pool,
+        area: url.searchParams.get("area"),
+        orchestration,
+        coverage,
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
@@ -767,7 +768,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/pages") {
-    return html(renderPages(prov()));
+    return html(renderPages(prov(), pageRenderHealth()));
   }
 
   const discussMatch = /^\/discuss\/(.+)$/.exec(path);
