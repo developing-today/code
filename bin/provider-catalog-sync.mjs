@@ -440,14 +440,35 @@ async function fetchJson(url, timeoutMs = 15000) {
   return res.json();
 }
 
+function modelIdsFromProxyResponse(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('response body must be a non-null object');
+  }
+  if (!Object.prototype.hasOwnProperty.call(data, 'data')) {
+    throw new Error('response body is missing data');
+  }
+  if (!Array.isArray(data.data)) {
+    throw new Error('response data must be an array');
+  }
+  return data.data.map((model, index) => {
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+      throw new Error(`response data[${index}] must be an object`);
+    }
+    if (typeof model.id !== 'string' || model.id.trim().length === 0) {
+      throw new Error(`response data[${index}].id must be a non-empty string`);
+    }
+    return model.id;
+  });
+}
+
 async function enumerateProxy(port, sourceDir) {
   if (sourceDir) {
     const file = path.join(sourceDir, `${port}.json`);
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return (data.data ?? []).map((m) => m.id);
+    return modelIdsFromProxyResponse(data);
   }
   const data = await fetchJson(`http://127.0.0.1:${port}/v1/models`, 10000);
-  return (data.data ?? []).map((m) => m.id);
+  return modelIdsFromProxyResponse(data);
 }
 
 async function loadModelsDev(spec) {
