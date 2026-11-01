@@ -34,7 +34,7 @@ import {
   proposalIdentity,
   type NeedsOrder,
 } from "./tier-items.ts";
-import { githubCommentUrl } from "./comments.ts";
+import { commentKindCounts, githubCommentUrl, queuedComments, type CommentKindCounts } from "./comments.ts";
 import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
@@ -697,9 +697,19 @@ export function tierItemObjectRef(item: TierItem): string {
 }
 
 /** A 💬 link to an object's comment thread, with its comment count. */
-export function commentBadge(objectRef: string, counts?: Map<string, number>): string {
-  const n = counts?.get(objectRef) ?? 0;
-  return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="Dashboard comments on this item">💬${n ? ` ${n}` : ""}</a>`;
+export function commentBadge(objectRef: string, counts?: Map<string, number | CommentKindCounts>): string {
+  // #1210: a detailed count distinguishes notes from actionable
+  // comments (awaiting triage / to post / failed) in the badge itself;
+  // a plain number count keeps the original rendering.
+  const v = counts?.get(objectRef) as number | CommentKindCounts | undefined;
+  const n = typeof v === "number" ? v : (v?.total ?? 0);
+  const actionable = typeof v === "object" && v !== null ? v.actionable : 0;
+  const title =
+    typeof v === "object" && v !== null
+      ? `Dashboard comments on this item: ${v.total} total — ${v.notes} notes, ${v.messagesNew} messages awaiting triage, ${v.githubPending} GitHub comments to post, ${v.githubFailed} failed to post`
+      : "Dashboard comments on this item";
+  const queued = actionable ? ` · ${actionable} queued` : "";
+  return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="${esc(title)}">💬${n ? ` ${n}` : ""}${queued}</a>`;
 }
 
 export function authorBadge(a: DashAuthor): string {
@@ -719,7 +729,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
             c.githubState === "posted"
               ? `posted${c.githubUrl ? ` — <a href="${esc(c.githubUrl)}">view</a>` : ""}`
               : c.githubState === "failed"
-                ? "posting failed — a fleet poster will retry"
+                ? `posting failed ${relTime(c.createdAt)} — no automatic retry exists; a fleet poster must post it by hand${c.githubError ? ` — last error: ${esc(c.githubError)}` : ""}`
                 : `pending — will post to ${esc(c.githubRef ?? "")}`
           }</span>`
         : `<span class="badge">note</span>`;
@@ -1568,7 +1578,7 @@ function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): strin
 export function renderBoardBody(
   board: BoardItem[],
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
     poolByRef?: Map<RefKey, ProjectPoolItem>;
@@ -1665,7 +1675,7 @@ export function renderBoard(
   board: BoardItem[],
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
@@ -1777,7 +1787,7 @@ function roadmapDrilldown(drill: RoadmapDrill, row: RoadmapRow): string {
 function roadmapCard(
   row: RoadmapRow,
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   drill?: RoadmapDrill,
 ): string {
   const refs = allRefs([row]);
@@ -1795,7 +1805,7 @@ function roadmapCard(
 function timelineTable(
   tl: ReturnType<typeof buildTimeline>,
   items: Map<RefKey, GhItem>,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   drill?: Map<string, RoadmapDrill>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
@@ -1818,7 +1828,7 @@ export function renderRoadmap(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   grain: RoadmapGrain = "quarter",
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   reconciliation?: RoadmapReconciliation,
   drill?: Map<string, RoadmapDrill>,
@@ -2318,7 +2328,7 @@ function sessionCard(
   e: TieredEntry,
   children: Map<string, TieredEntry[]>,
   depth = 0,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actionsByObject?: Map<string, DashAction[]>;
     identities?: AuthorIdentity[];
@@ -2378,7 +2388,7 @@ function sessionCard(
 function tierItemCard(
   item: TierItem,
   whyLabel: string,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: {
     actions?: DashAction[];
     identities?: AuthorIdentity[];
@@ -2541,7 +2551,7 @@ export function renderAttention(
   view: AttentionView,
   coverage: SourceCoverage[],
   provenance: Provenance,
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   detail?: ProvenanceDetail,
   act?: AttentionAct,
 ): string {
@@ -2567,7 +2577,7 @@ ${sections.header}${sections.queues}${sections.sessions}`,
 export function attentionSections(
   view: AttentionView,
   coverage: SourceCoverage[],
-  counts?: Map<string, number>,
+  counts?: Map<string, number | CommentKindCounts>,
   act?: AttentionAct,
 ): { header: string; queues: string; sessions: string } {
   const children = sessionChildren(view.all);
@@ -5180,6 +5190,31 @@ export function renderDiscuss(
   }</p>
 ${commentThreadHtml(objectRef, comments, opts)}`;
   return layout(title, body, provenance, "", COMMENT_SCRIPT);
+}
+
+// --- Comments queue page (#1210) ------------------------------------------
+
+/** The queue view: every comment still waiting on a loop — messages
+ *  awaiting triage and GitHub comments pending/failed to post — with
+ *  kind/state counts. Terminal comments (triaged/posted) and notes
+ *  are not queued and never render here. */
+export function renderCommentsQueue(comments: DashComment[], provenance: Provenance): string {
+  const queued = queuedComments(comments);
+  const k = commentKindCounts(comments);
+  const summary = `${queued.length} queued — ${k.messagesNew} messages awaiting triage · ${k.githubPending} GitHub comments to post · ${k.githubFailed} failed to post <span class="muted">(of ${k.total} comments total: ${k.notes} notes, ${k.messages} messages, ${k.github} GitHub)</span>`;
+  const list = queued.length
+    ? queued
+        .map(
+          (c) =>
+            `${dashCommentHtml(c, true)}\n<p class="muted"><a href="/discuss/${encodeURIComponent(c.objectRef)}">open the thread</a></p>`,
+        )
+        .join("\n")
+    : `<p class="muted">Nothing is queued — every message is triaged and every GitHub comment is posted.</p>`;
+  const body = `<h1>Comments queue</h1>
+<p class="muted">Every dashboard comment still waiting on a loop (#1210), oldest first. A <strong>note</strong> is never queued: it is read when its item is next picked up. Machine-first: <a href="/api/comments/queue.json">/api/comments/queue.json</a>.</p>
+<p>${summary}</p>
+${list}`;
+  return layout("Comments queue", body, provenance, "/comments");
 }
 
 // --- Projects page (#910 stage 5: the live GitHub Project pool) ------------

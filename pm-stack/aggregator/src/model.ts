@@ -1072,6 +1072,10 @@ export interface DashComment {
   githubState?: "pending" | "posted" | "failed";
   /** kind "github", once posted: the live comment URL. */
   githubUrl?: string;
+  /** kind "github", when githubState is "failed": the last error a
+   *  fleet poster reported (#1210), rendered so a failed comment
+   *  shows why it failed, not just that it did. Cleared on posting. */
+  githubError?: string;
 }
 
 /** Runtime families the session registry tracks. */
