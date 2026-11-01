@@ -153,6 +153,8 @@ function poolFor(provider: string, model: string): string | null {
     case "openai-codex":
     case "chatgpt":
       return "openai:codex";
+    case "openai.alternate":
+      return "openai.alternate";
     case "cline-pass":
       return "cline-pass:cline-pass";
     case "opendesign":

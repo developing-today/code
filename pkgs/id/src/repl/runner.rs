@@ -135,10 +135,7 @@ pub async fn run_repl(target_node: Option<String>) -> Result<()> {
                         // Heredoc mode - read until delimiter
                         match continue_heredoc(&mut rl, &delimiter, &mut lines) {
                             Ok(Some(content)) => {
-                                // Replace - with content marker in original line
-                                original_line
-                                    .replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
-                                    .replace(" -$", &format!(" __STDIN_CONTENT__:{content}"))
+                                substitute_heredoc_content(&original_line, &content)
                             }
                             Ok(None) => continue, // Cancelled
                             Err(e) => {
@@ -429,6 +426,16 @@ async fn execute_repl_command(
             Ok(ReplAction::Continue)
         }
     }
+}
+
+/// Substitute a collected heredoc body for the `-` placeholder in
+/// the original command line. Only the mid-line form can reach this
+/// point: a trailing placeholder is rejected when the heredoc starts
+/// (see `preprocess_repl_line` in input.rs, #2280), and this helper
+/// intentionally has no end-of-line case — the historical literal
+/// `" -$"` replace here never matched anything.
+fn substitute_heredoc_content(original_line: &str, content: &str) -> String {
+    original_line.replace(" - ", &format!(" __STDIN_CONTENT__:{content} "))
 }
 
 /// Handle commands containing the `__STDIN_CONTENT__:` marker.
@@ -1533,6 +1540,31 @@ fn print_peek_words(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_substitute_heredoc_content_midline() {
+        // Supported form: the placeholder sits before the name, and
+        // body content with spaces lands inline (#2280 control).
+        assert_eq!(
+            substitute_heredoc_content("put - name", "hello world"),
+            "put __STDIN_CONTENT__:hello world name"
+        );
+    }
+
+    #[test]
+    fn test_substitute_heredoc_content_multiline() {
+        assert_eq!(
+            substitute_heredoc_content("put - name", "line one\nline two"),
+            "put __STDIN_CONTENT__:line one\nline two name"
+        );
+    }
+
+    #[test]
+    fn test_substitute_heredoc_content_no_placeholder() {
+        // No placeholder: the line passes through unchanged (the
+        // trailing form is rejected at heredoc start, in input.rs).
+        assert_eq!(substitute_heredoc_content("put name", "body"), "put name");
+    }
 
     #[test]
     fn test_parse_target_node_with_node() {

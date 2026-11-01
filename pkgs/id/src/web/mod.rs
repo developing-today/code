@@ -394,7 +394,10 @@ mod tests {
         limiter.record("a.txt").await;
         let remaining = limiter.check("a.txt").await.unwrap_err();
         assert!(remaining <= Duration::from_secs(5) && !remaining.is_zero());
-        assert!(limiter.check("b.txt").await.is_ok(), "other files are not limited");
+        assert!(
+            limiter.check("b.txt").await.is_ok(),
+            "other files are not limited"
+        );
     }
 
     #[tokio::test]
@@ -415,7 +418,10 @@ mod tests {
         let limiter = SaveRateLimiter::new(Duration::from_millis(60));
         limiter.record("a.txt").await;
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(limiter.check("a.txt").await.is_ok(), "the cooldown has lapsed");
+        assert!(
+            limiter.check("a.txt").await.is_ok(),
+            "the cooldown has lapsed"
+        );
         assert!(limiter.last_save.lock().await.is_empty());
     }
 

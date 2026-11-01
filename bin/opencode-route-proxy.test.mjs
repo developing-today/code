@@ -7,7 +7,7 @@
 // purely by routing, and every attempt must land in the fixture
 // route_attempt ledger with session_id NULL (the zero-session proof).
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
@@ -49,6 +49,7 @@ const makeLeaf = (name, expectedKey) => {
         body = JSON.parse(raw || "{}");
       } catch {}
       leaf.last = { headers: req.headers, body, url: req.url };
+      if (leaf.mode === "slow") return;
       if (req.headers.authorization !== `Bearer ${expectedKey}`) {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: "bad key" } }));
@@ -124,7 +125,9 @@ const ROUTE_ATTEMPT_SCHEMA = `CREATE TABLE route_attempt (
   quota text, tokens_estimated integer, error_body text, hedged integer,
   cost_usd real)`;
 
-const startProxy = async ({ nowMs: pinnedNow } = {}) => {
+const startProxy = async (arg = {}) => {
+  const timeout = typeof arg === "string" ? arg : "15000";
+  const pinnedNow = arg && typeof arg === "object" ? arg.nowMs : undefined;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "route-proxy-test-"));
   const leafA = await makeLeaf("LEAF-A", "key-a");
   const leafB = await makeLeaf("LEAF-B", "key-b");
@@ -151,12 +154,15 @@ const startProxy = async ({ nowMs: pinnedNow } = {}) => {
     "leafA": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafA.port}/v1", "apiKey": "key-a" },
-      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } } },
+      "models": { "m-a": { "variants": { "high": { "options": { "reasoning_effort": "high" } } } }, "m-g": {} },
     },
     "leafB": {
       "npm": "@ai-sdk/openai-compatible",
       "options": { "baseURL": "http://127.0.0.1:${leafB.port}/v1" },
-      "models": { "m-b": {} },
+      "models": { "m-b": {}, "m-g": {} },
+    },
+    "openai": {
+      "models": { "m-gpt": {} },
     },
     "leafOff": {
       "npm": "@ai-sdk/openai-compatible",
@@ -165,6 +171,11 @@ const startProxy = async ({ nowMs: pinnedNow } = {}) => {
     },
   },
   "experimental": {
+    "provider_routes": {
+      "grp-ordered": { "providers": ["leafB", "leafA"], "selection": "ordered" },
+      "grp-rr": { "providers": ["leafA", "leafB"], "selection": "round-robin" },
+      "grp-weighted": { "providers": ["leafA", "leafB"], "selection": "weighted", "weights": { "leafA": 0, "leafB": 1 } },
+    },
     "model_route_windows": {
       "peak": { "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"], "start": "01:00", "end": "04:00", "timezone": "UTC" },
     },
@@ -176,6 +187,11 @@ const startProxy = async ({ nowMs: pinnedNow } = {}) => {
       "t-window": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "peak" }, "leafB/m-b" ] },
       "t-window-inv": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": { "name": "peak", "invert": true } }, "leafB/m-b" ] },
       "t-window-unknown": { "selection": "ordered", "targets": [ { "model": "leafA/m-a", "window": "no-such-window" }, "leafB/m-b" ] },
+      "t-group": { "selection": "ordered", "targets": ["grp-ordered/m-g"] },
+      "t-group-rr": { "selection": "ordered", "targets": ["grp-rr/m-g"] },
+      "t-group-weighted": { "selection": "ordered", "targets": ["grp-weighted/m-g"] },
+      "t-group-skip": { "selection": "ordered", "targets": ["grp-ordered/m-a"] },
+      "t-openai-default": { "selection": "ordered", "targets": ["openai/m-gpt"] },
     },
   },
 }`,
@@ -188,7 +204,7 @@ const startProxy = async ({ nowMs: pinnedNow } = {}) => {
     OPENCODE_ROUTE_PROXY_PORT: String(port),
     OPENCODE_ROUTE_PROXY_CONFIG: configPath,
     OPENCODE_ROUTE_PROXY_DB: dbPath,
-    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: "15000",
+    OPENCODE_ROUTE_PROXY_TIMEOUT_MS: timeout,
     ...(pinnedNow
       ? { OPENCODE_ROUTE_PROXY_NOW_MS: String(pinnedNow) }
       : {}),
@@ -238,6 +254,34 @@ const MSGS = [
   { role: "system", content: "be terse" },
   { role: "user", content: "hello" },
 ];
+
+test("invalid timeout exits at startup with a useful diagnostic", () => {
+  for (const raw of ["0", "-1", "1.5", "1e3", "0x10", " 100", "2147483648", "3000000000", "abc", "nope"]) {
+    const result = spawnSync(process.execPath, [path.join(binDir, "opencode-route-proxy.mjs")], {
+      env: { ...process.env, OPENCODE_ROUTE_PROXY_PORT: "18750", OPENCODE_ROUTE_PROXY_TIMEOUT_MS: raw },
+      encoding: "utf8", timeout: 5000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.includes("OPENCODE_ROUTE_PROXY_TIMEOUT_MS"));
+    assert.ok(result.stderr.includes(`"${raw}"`));
+    assert.doesNotMatch(result.stdout, /listening/i);
+  }
+});
+
+test("configured deadline aborts a slow leaf", async () => {
+  const p = await startProxy("150");
+  try {
+    p.leafA.mode = "slow";
+    const start = Date.now();
+    const res = await p.post({ model: "opencode-route/t-variant", messages: MSGS });
+    assert.ok(res.status >= 500, `unexpected status ${res.status}`);
+    assert.ok(Date.now() - start < 3000, "deadline did not abort the slow leaf promptly");
+    assert.equal(p.leafA.hits, 1);
+    assert.equal(p.attempts()[0].outcome, "timeout");
+  } finally {
+    await p.cleanup();
+  }
+});
 
 test("health and model list are served locally", async () => {
   const p = await startProxy();
@@ -440,6 +484,94 @@ test("a gate naming an unknown window fails closed", async () => {
     const rows = p.attempts();
     assert.equal(rows.length, 1);
     assert.equal(rows[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (ordered) expands to member providers in group order", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered lists leafB first; the attempt must be recorded
+    // under the concrete member, never under the group id (#3256).
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "leafB");
+    assert.equal(rows[0].model_id, "m-g");
+    assert.equal(rows[0].outcome, "success");
+    assert.equal(rows[0].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (round-robin) rotates the starting member", async () => {
+  const p = await startProxy();
+  try {
+    const first = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    const second = await (await p.post({ model: "opencode-route/t-group-rr", messages: MSGS })).json();
+    assert.equal(first.choices[0].message.content, "LEAF-A");
+    assert.equal(second.choices[0].message.content, "LEAF-B");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA", "leafB"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route (weighted) honors weights keyed by member provider id", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-weighted", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // leafA carries weight 0 in grp-weighted, leafB weight 1.
+    assert.equal(json.choices[0].message.content, "LEAF-B");
+    assert.equal(p.attempts()[0].provider_id, "leafB");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("provider route skips a member whose catalog lacks the model", async () => {
+  const p = await startProxy();
+  try {
+    const res = await p.post({ model: "opencode-route/t-group-skip", messages: MSGS });
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    // grp-ordered is [leafB, leafA], but only leafA offers m-a.
+    assert.equal(json.choices[0].message.content, "LEAF-A");
+    assert.deepEqual(
+      p.attempts().map((r) => r.provider_id),
+      ["leafA"],
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("empty-shell openai block resolves the built-in endpoint default", async () => {
+  const p = await startProxy();
+  try {
+    // The fixture openai block is an empty shell (models only, no
+    // npm/options/baseURL) and no credential is stored for it, so a
+    // resolved endpoint surfaces as a credential failure — while an
+    // unresolved one would surface as UnknownProvider (#3256). The
+    // check order in callLeaf (endpoint first, credential second)
+    // makes this a network-free proof the default resolved.
+    const res = await p.post({ model: "opencode-route/t-openai-default", messages: MSGS });
+    assert.equal(res.status, 502);
+    const rows = p.attempts();
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].provider_id, "openai");
+    assert.equal(rows[0].error_tag, "Authentication");
+    assert.notEqual(rows[0].error_tag, "UnknownProvider");
   } finally {
     await p.cleanup();
   }

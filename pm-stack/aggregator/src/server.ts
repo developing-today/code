@@ -497,6 +497,14 @@ async function handler(req: Request): Promise<Response> {
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
 
+  // --- Author identities for the on-demand picker (#1179) ------------------
+  // List pages render author pickers with the standing identities only;
+  // the full standing + per-session list is fetched once, on first use.
+  if (req.method === "GET" && path === "/api/author-identities") {
+    const records = await source.registry().catch(() => []);
+    return json({ identities: identitiesFromRecords(records) });
+  }
+
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/comments") {
     try {
@@ -639,7 +647,7 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/board") {
     const { board, items, counts, act } = await boardRender();
-    return html(renderBoard(board, items, prov(), counts, provDetail(), act));
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act, { showAllDone: url.searchParams.get("done") === "all" }));
   }
   if (path === "/frag/board") {
     const { board, items, counts, act } = await boardRender();
